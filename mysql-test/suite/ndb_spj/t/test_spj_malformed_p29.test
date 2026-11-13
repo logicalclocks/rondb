@@ -1,0 +1,11 @@
+--source include/have_ndb.inc
+
+# P-29: join aggregation DECIMAL load with scale above precision.
+# The case runs a well-formed join aggregation first, then the malformed
+# one, which must get SCAN_TABREF with every data node still started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P29
+--let $spj_case_title = P-29: join aggregation DECIMAL scale above precision
+--source suite/ndb_spj/include/spj_malformed_case.inc

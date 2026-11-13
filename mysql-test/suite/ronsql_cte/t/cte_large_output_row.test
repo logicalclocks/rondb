@@ -6,7 +6,7 @@
 # unfragmented signal, while its output buffer holds ZATTR_BUFFER_SIZE
 # (32768) words, four times one transporter message: a larger row to
 # another node would stop the data node ("Message too big in
-# sendSignal").  Dblqh::sendCteTransIdAI now sends a row over
+# sendSignal").  Dblqh::sendTransIdAIRow now sends a row over
 # MAX_TRANSID_AI_SIZE as a batched fragmented signal, as DBTUP does for
 # table rows, and the G2b probe-result cache only captures a payload
 # that fits one message (CTE_LOOKUP_CONF carries it and DBSPJ replays

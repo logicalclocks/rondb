@@ -21,6 +21,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <utility>
@@ -100,20 +101,29 @@ bool AggInterpreter::Init(const Uint32* prog) {
   require(prog != nullptr);
 
   /* Step 3 Cand-A: peek the program header (sets m_n_gb_cols /
-   * m_n_agg_results + asserts).  Version mismatch returns true without
-   * setting m_inited so ProcessRec rejects on entry. */
+   * m_n_agg_results).  A malformed header fails Init.  Version mismatch
+   * returns true without setting m_inited so ProcessRec rejects on
+   * entry. */
   bool compatible = true;
-  peekProgramHeader(prog, &compatible);
+  if (!peekProgramHeader(prog, &compatible)) return false;
   if (!compatible) return true;
 
   /* Right-sized buffer-block carve.  Skip the m_gb_map_buf slot when
-   * n_gb_cols == 0 — scalar aggregation never touches a hash table. */
-  if (initBufBlock(/*prog_words=*/m_prog_len,
-                   /*n_gb_cols_alloc=*/m_n_gb_cols,
-                   /*n_agg_results_alloc=*/m_n_agg_results,
+   * n_gb_cols == 0 — scalar aggregation never touches a hash table.
+   * The program words are followed by its instruction-start bitmap.
+   * The header counts are not checked yet: bound them here, a program
+   * with larger ones is rejected right below. */
+  if (initBufBlock(/*prog_words=*/m_prog_len + insnStartWords(m_prog_len),
+                   /*n_gb_cols_alloc=*/
+                   std::min(m_n_gb_cols, Uint32(MAX_AGG_N_GROUPBY_COLS)),
+                   /*n_agg_results_alloc=*/
+                   std::min(m_n_agg_results, Uint32(MAX_AGG_N_RESULTS)),
                    /*alloc_gb_map=*/m_n_gb_cols > 0,
                    /*extra_tail_bytes=*/0) == nullptr) {
     g_eventLogger->error("AggInterpreter::Init: m_buf_block allocation failed");
+    return false;
+  }
+  if (!checkInitProgram(prog, "AggInterpreter")) {
     return false;
   }
 
@@ -127,11 +137,6 @@ bool AggInterpreter::Init(const Uint32* prog) {
     initChunkAllocator(m_thread_id,
                        /*budget_pages=*/1,
                        /*available_pages=*/UINT32_MAX / MEM_CHUNK_SIZE);
-  }
-
-  /* Validate embedded interpreter blocks. */
-  if (!scanAndValidateEmbeddedPrograms("AggInterpreter")) {
-    return false;
   }
   return true;
 }
@@ -355,8 +360,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
   Uint32 exec_pos = m_agg_prog_start_pos;
   bool debug_print = (m_frag_id == DEBUG_PA_INTERP_PART_ID);
-  /* New row: no string register points into m_attr_read_buf yet. */
+  /* New row: no string register points into m_attr_read_buf yet, and
+   * no register is loaded (K-1, m_loaded_regs). */
   m_attr_read_hwm = 0;
+  m_loaded_regs = 0;
   while (exec_pos < m_prog_len) {
     value = m_prog[exec_pos++];
     Uint8 op = (value & 0xFC000000) >> 26;
@@ -431,7 +438,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
             req_struct->signal, req_struct,
             &m_prog[exec_pos], emb_len,   /* main program = embedded portion */
             local_tmpArea, 16,
-            m_registers);
+            m_registers, m_loaded_regs);
 
         req_struct->no_exec_instructions = saved_instr_count;
 
@@ -458,8 +465,12 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         Uint32 skip_offset = block_tup->c_interpreter_output[0];
         if (skip_offset == AGG_EMBEDDED_INTERP_STOP_PROGRAM) {
           exec_pos = m_prog_len;
-        } else {
-          exec_pos += emb_len + skip_offset;
+        } else if (unlikely(!embeddedSkipTarget(exec_pos + emb_len,
+                                                skip_offset, &exec_pos))) {
+          g_eventLogger->debug("AggInterpreter::ProcessRec "
+              "ZAGG_EMBEDDED_INTERP_ERROR: skip %u lands inside an "
+              "instruction", skip_offset);
+          return ZAGG_EMBEDDED_INTERP_ERROR;
         }
         break;
       }

@@ -1,0 +1,119 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== sd-1: SUM of a DECIMAL column with a cross-table filter ===
+== Query ==
+SELECT o.id,
+(SELECT SUM(l.price) FROM sd_l AS l
+WHERE l.order_id = o.id AND l.qty > o.min_qty) AS s
+FROM sd_o AS o;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id,
+(SELECT SUM(l.price) FROM sd_l AS l
+WHERE l.order_id = o.id AND l.qty > o.min_qty) AS s
+FROM sd_o AS o|
+id	s
+1	51.25
+2	2.02
+3	NULL
+4	16.65
+5	NULL
+
+=== sd-2: MIN and MAX of a DECIMAL column, two filters in one leaf ===
+== Query ==
+SELECT o.id,
+(SELECT MIN(l.price) FROM sd_l AS l
+WHERE l.order_id = o.id AND l.qty > o.min_qty) AS lo,
+(SELECT MAX(l2.price) FROM sd_l AS l2
+WHERE l2.order_id = o.id AND l2.qty <= o.min_qty) AS hi
+FROM sd_o AS o;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id,
+(SELECT MIN(l.price) FROM sd_l AS l
+WHERE l.order_id = o.id AND l.qty > o.min_qty) AS lo,
+(SELECT MAX(l2.price) FROM sd_l AS l2
+WHERE l2.order_id = o.id AND l2.qty <= o.min_qty) AS hi
+FROM sd_o AS o|
+id	lo	hi
+1	20.50	40.00
+2	2.02	1.01
+3	NULL	6.66
+4	7.77	NULL
+5	NULL	NULL
+
+=== sd-3: COUNT of a nullable DECIMAL UNSIGNED column with a filter ===
+== Query ==
+SELECT o.id,
+(SELECT COUNT(l.uprice) FROM sd_l AS l
+WHERE l.order_id = o.id AND l.qty < o.min_qty) AS n
+FROM sd_o AS o;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id,
+(SELECT COUNT(l.uprice) FROM sd_l AS l
+WHERE l.order_id = o.id AND l.qty < o.min_qty) AS n
+FROM sd_o AS o|
+id	n
+1	2
+2	1
+3	2
+4	0
+5	0
+
+=== sd-4: filtered DECIMAL UNSIGNED SUM beside unfiltered aggregates ===
+== Query ==
+SELECT o.id,
+(SELECT SUM(l.uprice) FROM sd_l AS l
+WHERE l.order_id = o.id AND l.qty > o.min_qty) AS s,
+(SELECT COUNT(*) FROM sd_l AS l2 WHERE l2.order_id = o.id) AS n_all,
+(SELECT SUM(l3.price) FROM sd_l AS l3 WHERE l3.order_id = o.id) AS s_all
+FROM sd_o AS o;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id,
+(SELECT SUM(l.uprice) FROM sd_l AS l
+WHERE l.order_id = o.id AND l.qty > o.min_qty) AS s,
+(SELECT COUNT(*) FROM sd_l AS l2 WHERE l2.order_id = o.id) AS n_all,
+(SELECT SUM(l3.price) FROM sd_l AS l3 WHERE l3.order_id = o.id) AS s_all
+FROM sd_o AS o|
+id	s	n_all	s_all
+1	5.625	4	101.50
+2	0.002	2	3.03
+3	NULL	2	12.21
+4	8.888	2	16.65
+5	NULL	0	NULL
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_subquery_filter_decimal_jit_fallback_delta;
+ronsql_subquery_filter_decimal_jit_fallback_delta
+0

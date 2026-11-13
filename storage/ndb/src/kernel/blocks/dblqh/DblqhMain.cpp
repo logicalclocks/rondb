@@ -16553,17 +16553,20 @@ Dblqh::getJoinAggResultInterpreter(JoinAggregationState *state) {
 }
 
 /*
- * A join-aggregation result record goes to the API in one TRANSID_AI
- * (sendSignal, not fragmented), so it must fit one transporter message
- * with the protocol and signal headers; 32 words cover those.  A larger
- * record would stop the node ("Message too big in sendSignal").  The
- * bound also keeps the record's key_len and val_len inside the 16-bit
- * fields of its length word (AggInterpreterBase::resultLensFit).
+ * The largest join-aggregation result record: 4 header words, then the
+ * key and the values, whose byte lengths are the 16-bit fields of the
+ * length word (AggInterpreterBase::resultLensFit).  sendTransIdAIRow
+ * sends a record over MAX_TRANSID_AI_SIZE fragmented, so it may be
+ * several transporter messages long.
  */
-static constexpr Uint32 JOIN_AGG_MAX_RESULT_WORDS =
+static constexpr Uint32 JOIN_AGG_MAX_RESULT_WORDS = 4 + ((2 * 0xFFFF) >> 2);
+
+/*
+ * The most a TRANSID_AI can carry unfragmented: one transporter message
+ * less the protocol and signal headers, which 32 words cover.
+ */
+static constexpr Uint32 MAX_UNFRAGMENTED_ROW_WORDS =
     (MAX_SEND_MESSAGE_BYTESIZE >> 2) - 32;
-static_assert(JOIN_AGG_MAX_RESULT_WORDS * sizeof(Uint32) <= 0xFFFF,
-              "join-agg result lengths must fit 16 bits");
 
 /*
  * sendEvictedAggGroup
@@ -16592,29 +16595,21 @@ bool Dblqh::sendEvictedAggGroup(Signal *signal,
   if (unlikely(evict_ret != 0)) {
     jam();
     /* Nothing to evict: the interpreter could not allocate a group even
-     * with an empty table (query memory exhausted), or the group does not
-     * fit one result record (JOIN_AGG_MAX_RESULT_WORDS).  Fail the
-     * operation, not the node. */
+     * with an empty table (query memory exhausted), or the group's key
+     * or values are too long for the 16-bit lengths of a result record
+     * (resultLensFit).  Fail the operation, not the node. */
     return false;
   }
 
-  TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-  {
-    Uint32 key_len = cevictBuffer[3] >> 16;
-    const char *key_data = reinterpret_cast<const char*>(&cevictBuffer[4]);
-    transIdAI->connectPtr =
-        state->selectReceiverData(interp->hashGroupKey(
-            key_data, key_len,
-            c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen()));  // D26
-  }
-  transIdAI->transId[0] = state->m_transid[0];
-  transIdAI->transId[1] = state->m_transid[1];
-
-  LinearSectionPtr ptr[3];
-  ptr[0].p = cevictBuffer;
-  ptr[0].sz = words_written;
-  sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
-             TransIdAI::HeaderLength, JBB, ptr, 1);
+  const Uint32 key_len = cevictBuffer[3] >> 16;
+  const char *key_data = reinterpret_cast<const char*>(&cevictBuffer[4]);
+  const Uint32 receiverData =
+      state->selectReceiverData(interp->hashGroupKey(
+          key_data, key_len,
+          c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen()));  // D26
+  sendTransIdAIRow(signal, state->m_resultRef, receiverData,
+                   state->m_transid, cevictBuffer, words_written,
+                   /*corrAtEnd=*/false);
 
   state->m_rows_sent++;
   return true;
@@ -21089,7 +21084,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
         has_strings ? interp->stringPayloadSize(scalar_slots) : 0;
     const Uint32 v_len_total = agg_bytes + payload_bytes;
     const Uint32 v_words_total = v_len_total >> 2;
-    if (unlikely(4 + v_words_total > JOIN_AGG_MAX_RESULT_WORDS)) {
+    if (unlikely(!JoinAggInterpreter::resultLensFit(0, v_len_total))) {
       jam();
       if (state->m_error_code == 0) {
         state->m_error_code = ZJOIN_AGG_RESULT_TOO_LARGE;
@@ -21107,7 +21102,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
       return;
     }
     Uint32 *buf = &cevictBuffer[0];
-    ndbrequire(4 + v_words_total <= sizeof(cevictBuffer) / sizeof(Uint32));
+    ndbrequire(4 + v_words_total <= JOIN_AGG_MAX_RESULT_WORDS);
     Uint32 pos = 0;
     buf[pos++] = marker << 16 | 0x0721;
     buf[pos++] = 0 << 16 | n_agg_results;
@@ -21120,24 +21115,15 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
     }
     pos += v_words_total;
 
-    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-    transIdAI->connectPtr = state->m_receiverIds[0];
-    transIdAI->transId[0] = state->m_transid[0];
-    transIdAI->transId[1] = state->m_transid[1];
-
-    LinearSectionPtr ptr[3];
-    ptr[0].p = buf;
-    ptr[0].sz = pos;
-
     DEB_JOIN_AGG(("(%u)DBLQH 1:Sending TRANSID_AI to 0x%x, receiverId:"
                   " %u, size: %u",
       getThreadId(),
       state->m_resultRef,
-      transIdAI->connectPtr,
+      state->m_receiverIds[0],
       pos));
 
-    sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
-               TransIdAI::HeaderLength, JBB, ptr, 1);
+    sendTransIdAIRow(signal, state->m_resultRef, state->m_receiverIds[0],
+                     state->m_transid, buf, pos, /*corrAtEnd=*/false);
 
     state->m_state.store(JoinAggregationState::COMPLETED);
 
@@ -21203,7 +21189,8 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
           has_strings ? interp->stringPayloadSize(slots) : 0;
       const Uint32 v_len_total = v_len_base + payload_bytes;
       const Uint32 data_words = (key_len + v_len_total) >> 2;
-      if (unlikely(4 + data_words > JOIN_AGG_MAX_RESULT_WORDS)) {
+      if (unlikely(!JoinAggInterpreter::resultLensFit(key_len,
+                                                      v_len_total))) {
         jam();
         /* Groups sent so far are dropped with the query; this one stays
          * in the table, which the state's release frees. */
@@ -21223,7 +21210,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
         return;
       }
       Uint32 *buf = &cevictBuffer[0];
-      ndbrequire(4 + data_words <= sizeof(cevictBuffer) / sizeof(Uint32));
+      ndbrequire(4 + data_words <= JOIN_AGG_MAX_RESULT_WORDS);
       Uint32 pos = 0;
       buf[pos++] = marker << 16 | 0x0721;
       buf[pos++] = n_gb_cols << 16 | n_agg_results;
@@ -21236,20 +21223,10 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       }
       pos += data_words;
 
-      TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-      {
-        const char *key_data = reinterpret_cast<const char*>(iter.data());
-        transIdAI->connectPtr =
-            state->selectReceiverData(interp->hashGroupKey(
-                key_data, key_len,
-                c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen()));  // D26
-      }
-      transIdAI->transId[0] = state->m_transid[0];
-      transIdAI->transId[1] = state->m_transid[1];
-
-      LinearSectionPtr ptr[3];
-      ptr[0].p = buf;
-      ptr[0].sz = pos;
+      const Uint32 receiverData =
+          state->selectReceiverData(interp->hashGroupKey(
+              reinterpret_cast<const char*>(iter.data()), key_len,
+              c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen()));  // D26
 
 #ifdef DEBUG_JOIN_AGG
       const Uint32 keyWordsForDebug = (key_len + 3) >> 2;
@@ -21267,7 +21244,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
                     " processed_rows=%llu gb_map_size=%u",
         getThreadId(),
         state->m_resultRef,
-        transIdAI->connectPtr,
+        receiverData,
         pos,
         aggStateKey,
         key_len,
@@ -21279,8 +21256,8 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
         interp->processed_rows(),
         gb_map->size()));
 
-      sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
-                 TransIdAI::HeaderLength, JBB, ptr, 1);
+      sendTransIdAIRow(signal, state->m_resultRef, receiverData,
+                       state->m_transid, buf, pos, /*corrAtEnd=*/false);
 
       num_result_rows++;
       total_bytes += pos * sizeof(Uint32);
@@ -21681,6 +21658,86 @@ Dblqh::runCteFilter(Signal *signal,
 }
 
 /**
+ * feedCteLinkedRow — feed one CTE group (its GROUP BY key and
+ * accumulators) as a linked row into a leaf of another aggregation.
+ * Shared by cteLookupAggFeed and both cteScanAggFeed feeds (grouped and
+ * scalar), so that they handle evictions and errors the same way.
+ *
+ * The target asks for room with AGG_EVICT_NEEDED: evict a target group
+ * and try again until the row goes in.  One eviction is often not
+ * enough: freeGroupData returns memory only when the group's 32 KB chunk
+ * empties, so once the query memory has run out it can take several.
+ * The row is built again before every try, because sendEvictedAggGroup
+ * assembles the evicted record in cevictBuffer, which also holds the
+ * row.  An empty target table, or a CTE materialization target (which
+ * must keep every group), cannot make room: out of query memory.
+ *
+ * Returns 0, or the error code for the caller's REF.
+ */
+Uint32 Dblqh::feedCteLinkedRow(Signal *signal,
+                               const JoinAggInterpreter *interp,
+                               const char *groupData, Uint32 keyLen,
+                               const Uint32 *attrInfoBuf,
+                               Uint32 attrInfoLen,
+                               JoinAggregationState *targetState,
+                               JoinAggInterpreter *targetInterp,
+                               const LeafProgram *leaf) {
+  Dbtup::KeyReqStruct aggReq(c_tup);
+  /* A CTE agg feed has no scanned table row: the aggregator's input
+   * comes entirely from the linked buffer (CTE virtual columns).  c_tup's
+   * tablePtrP is NOT valid here — there is no fragment/table set up for
+   * this request, and under DBQLQH the table would have to come from the
+   * fragment owner.  Set tablePtrP to a deterministic nullptr so that if
+   * the aggregation program ever references a normal (non-linked) column,
+   * the interpreter aborts the query cleanly instead of dereferencing the
+   * uninitialised (poisoned) tablePtrP. */
+  aggReq.tablePtrP = nullptr;
+  aggReq.signal = signal;
+  aggReq.read_length = 0;
+  aggReq.log_size = 0;
+  aggReq.last_row = false;
+
+  Uint32 *const linkedBuf = cevictBuffer;
+  for (;;) {
+    Uint32 linkedPos = 0;
+    buildCteLinkedBuffer(interp, groupData, keyLen,
+                         attrInfoBuf, attrInfoLen,
+                         linkedBuf, &linkedPos);
+    aggReq.no_exec_instructions = 0;
+    const Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
+        c_tup,
+        &aggReq,
+        linkedBuf,
+        linkedPos,
+        getThreadId(),
+        jamBuffer(),
+        leaf);
+    if (likely(aggRet == 0)) {
+      return 0;
+    }
+    if (unlikely(aggRet != AGG_EVICT_NEEDED)) {
+      jam();
+      g_eventLogger->info("(%u) CTE agg feed FAILED: aggRet=%d "
+          "linkedWords=%u n_gb=%u n_agg=%u processed_rows=%llu inited=%d",
+          instance(), aggRet, linkedPos, targetInterp->n_gb_cols(),
+          targetInterp->n_agg_results(),
+          (unsigned long long)targetInterp->processed_rows(),
+          targetInterp->inited() ? 1 : 0);
+      return joinAggFeedError(aggRet, ZJOIN_AGG_INTERPRETER_ERROR);
+    }
+    jam();
+    /* Outside error insert 5126 an eviction request means a group could
+     * not be allocated.  When no group can be evicted that is out of
+     * query memory, a temporary error. */
+    if (unlikely(targetState->m_cte_mode ||
+                 !sendEvictedAggGroup(signal, targetInterp, targetState))) {
+      jam();
+      return DbspjErr::OutOfQueryMemory;
+    }
+  }
+}
+
+/**
  * cteLookupAggFeed — CTE_LOOKUP result feeds into another JoinAggInterpreter
  * (CTE-to-CTE dependency or CTE_LOOKUP as main aggregate leaf).
  * Builds linked_attr_data from the group's key + accumulators and inserts
@@ -21717,15 +21774,6 @@ void Dblqh::cteLookupAggFeed(Signal *signal, const CteLookupReq &req,
   JoinAggInterpreter *targetInterp = getJoinAggInterpreter(targetState);
   ndbrequire(targetInterp != nullptr);
 
-  Uint32 *linkedBuf = cevictBuffer;
-  Uint32 linkedPos = 0;
-  buildCteLinkedBuffer(interp, groupData, req.keyLen,
-                       attrInfoBuf, attrInfoLen,
-                       linkedBuf, &linkedPos);
-
-  DEB_CTE(("(%u) cteLookupAggFeed: built linked buffer (%u words)",
-           instance(), linkedPos));
-
   const LeafProgram *leaf = nullptr;
   if (targetState->m_num_leaves > 1) {
     jam();
@@ -21733,67 +21781,15 @@ void Dblqh::cteLookupAggFeed(Signal *signal, const CteLookupReq &req,
     leaf = &targetState->m_leaf_programs[targetLeafIndex];
   }
 
-  DEB_CTE(("(%u) CTE_LOOKUP agg feed: targetKey=%u leafIdx=%u "
-           "linkedWords=%u",
-           instance(), targetBaseKey, targetLeafIndex, linkedPos));
+  DEB_CTE(("(%u) CTE_LOOKUP agg feed: targetKey=%u leafIdx=%u",
+           instance(), targetBaseKey, targetLeafIndex));
 
-  Dbtup::KeyReqStruct aggReq(c_tup);
-  /* A CTE_LOOKUP agg feed has no scanned table row: the aggregator's input
-   * comes entirely from the linked buffer (CTE virtual columns).  c_tup's
-   * tablePtrP is NOT valid here — there is no fragment/table set up for this
-   * request, and under DBQLQH the table would have to come from the fragment
-   * owner.  Set tablePtrP to a deterministic nullptr so that if the
-   * aggregation program ever references a normal (non-linked) column, the
-   * interpreter aborts the query cleanly instead of dereferencing the
-   * uninitialised (poisoned) tablePtrP. */
-  aggReq.tablePtrP = nullptr;
-  aggReq.signal = signal;
-  aggReq.read_length = 0;
-  aggReq.log_size = 0;
-  aggReq.last_row = false;
-
-retry_agg:
-  aggReq.no_exec_instructions = 0;
-  Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
-      c_tup,
-      &aggReq,
-      linkedBuf,
-      linkedPos,
-      getThreadId(),
-      jamBuffer(),
-      leaf);
-  if (aggRet == AGG_EVICT_NEEDED) {
+  const Uint32 err = feedCteLinkedRow(signal, interp, groupData, req.keyLen,
+                                      attrInfoBuf, attrInfoLen,
+                                      targetState, targetInterp, leaf);
+  if (unlikely(err != 0)) {
     jam();
-    if (unlikely(targetState->m_cte_mode)) {
-      /* Eviction is not supported for CTE materialization targets —
-       * the CTE hash table must hold all groups.  Outside error insert
-       * 5126 an eviction request means a group could not be allocated:
-       * out of query memory, a temporary error. */
-      jam();
-      sendCteLookupRef(signal, req.senderRef, req.senderData,
-                       DbspjErr::OutOfQueryMemory, req.correlation);
-      return;
-    }
-    if (unlikely(!sendEvictedAggGroup(signal, targetInterp, targetState))) {
-      jam();
-      sendCteLookupRef(signal, req.senderRef, req.senderData,
-                       DbspjErr::OutOfQueryMemory, req.correlation);
-      return;
-    }
-    goto retry_agg;
-  }
-  if (unlikely(aggRet != 0)) {
-    jam();
-    g_eventLogger->info("(%u) CTE_LOOKUP agg feed FAILED: aggRet=%d "
-        "targetKey=%u leafIdx=%u linkedWords=%u n_gb=%u n_agg=%u "
-        "processed_rows=%llu inited=%d",
-        instance(), aggRet, targetBaseKey, targetLeafIndex,
-        linkedPos, targetInterp->n_gb_cols(),
-        targetInterp->n_agg_results(),
-        (unsigned long long)targetInterp->processed_rows(),
-        targetInterp->inited() ? 1 : 0);
-    sendCteLookupRef(signal, req.senderRef, req.senderData,
-                     joinAggFeedError(aggRet, ZJOIN_AGG_INTERPRETER_ERROR),
+    sendCteLookupRef(signal, req.senderRef, req.senderData, err,
                      req.correlation);
     return;
   }
@@ -21807,7 +21803,7 @@ retry_agg:
              signal, CteLookupConf::SignalLength, JBB);
 }
 
-void Dblqh::sendCteTransIdAI(Signal *signal, Uint32 ref, Uint32 connectPtr,
+void Dblqh::sendTransIdAIRow(Signal *signal, Uint32 ref, Uint32 connectPtr,
                              const Uint32 transId[2], const Uint32 *data,
                              Uint32 len, bool corrAtEnd, Uint32 routeRef) {
   LinearSectionPtr lsp[3];
@@ -21892,7 +21888,7 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
   Uint32 outPos = 0;
   /* outPos just after the last CORR_FACTOR64 written, 0 if none since
    * the last FLUSH_AI: a chunk that ends there carries the row's
-   * correlation in its fragmented header (sendCteTransIdAI). */
+   * correlation in its fragmented header (sendTransIdAIRow). */
   Uint32 corr64End = 0;
   Uint32 pos = 0;
   while (pos < finalRLen) {
@@ -21923,7 +21919,7 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
         if (params.captureSectionPtrI != nullptr) {
           jam();
           bool capOk = true;
-          if (unlikely(2 + outPos > JOIN_AGG_MAX_RESULT_WORDS)) {
+          if (unlikely(2 + outPos > MAX_UNFRAGMENTED_ROW_WORDS)) {
             jam();
             capOk = false;
           } else if (*params.captureSectionPtrI == RNIL) {
@@ -21952,7 +21948,7 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
         const bool corrAtEnd = (corr64End == outPos);
         if (likely(getNodeInfo(refToNode(fRef)).m_connected)) {
           jam();
-          sendCteTransIdAI(signal, fRef, fData, params.transId, outBuf,
+          sendTransIdAIRow(signal, fRef, fData, params.transId, outBuf,
                            outPos, corrAtEnd);
         } else {
           jam();
@@ -21967,7 +21963,7 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
                         "words=%u transid=(0x%x,0x%x)",
                         instance(), fRef, routeRef, outPos,
                         params.transId[0], params.transId[1]));
-          sendCteTransIdAI(signal, fRef, fData, params.transId, outBuf,
+          sendTransIdAIRow(signal, fRef, fData, params.transId, outBuf,
                            outPos, corrAtEnd, routeRef);
         }
         outPos = 0;
@@ -22169,7 +22165,7 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
     DEB_CTE(("(%u) CTE_LOOKUP residual: outPos=%d → senderRef=0x%x "
              "connectPtr=0x%x",
              instance(), outPos, req.senderRef, req.senderData));
-    sendCteTransIdAI(signal, req.senderRef, req.senderData,
+    sendTransIdAIRow(signal, req.senderRef, req.senderData,
                      state->m_transid, outBuf, (Uint32)outPos,
                      /*corrAtEnd=*/false);
   }
@@ -23029,66 +23025,16 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
         return;
       }
 
-      /* Build linked_attr_data via the shared CTE writer so the
-       * inline CTE virt-column encoding (CteLinkedAttr.hpp) stays
-       * consistent with cteLookupAggFeed.  No parent linked columns
-       * for cteScanAggFeed (it's a hash-walk feed, not a per-row
-       * CTE_LOOKUP), so the attrInfoBuf args are nullptr/0. */
-      Uint32 *linkedBuf = cevictBuffer;
-      Uint32 linkedPos = 0;
-      buildCteLinkedBuffer(interp, groupData, keyLen,
-                            nullptr, 0,
-                            linkedBuf, &linkedPos);
-
-      Dbtup::KeyReqStruct aggReq(c_tup);
-      /* No scanned table row in a CTE_SCAN agg feed — see cteLookupAggFeed.
-       * Deterministic nullptr so normal-column reads abort, not crash. */
-      aggReq.tablePtrP = nullptr;
-      aggReq.signal = signal;
-      aggReq.read_length = 0;
-      aggReq.log_size = 0;
-      aggReq.last_row = false;
-
-    retry_agg_scan:
-      aggReq.no_exec_instructions = 0;
-      Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
-          c_tup,
-          &aggReq,
-          linkedBuf,
-          linkedPos,
-          getThreadId(),
-          jamBuffer(),
-          leaf);
-      if (aggRet == AGG_EVICT_NEEDED) {
+      /* No parent linked columns for cteScanAggFeed (it's a hash-walk
+       * feed, not a per-row CTE_LOOKUP), so the attrInfoBuf args are
+       * nullptr/0. */
+      const Uint32 err = feedCteLinkedRow(signal, interp, groupData, keyLen,
+                                          nullptr, 0,
+                                          targetState, targetInterp, leaf);
+      if (unlikely(err != 0)) {
         jam();
-        if (unlikely(targetState->m_cte_mode)) {
-          /* Eviction is not supported for CTE materialization targets;
-           * the group could not be allocated (see the CTE_LOOKUP feed). */
-          jam();
-          releaseCteScanIterState(aggFeedStateI);
-          sendCteScanRef(signal, senderRef, senderData,
-                         DbspjErr::OutOfQueryMemory);
-          return;
-        }
-        if (unlikely(!sendEvictedAggGroup(signal, targetInterp,
-                                          targetState))) {
-          jam();
-          releaseCteScanIterState(aggFeedStateI);
-          sendCteScanRef(signal, senderRef, senderData,
-                         DbspjErr::OutOfQueryMemory);
-          return;
-        }
-        goto retry_agg_scan;
-      }
-      if (unlikely(aggRet != 0)) {
-        jam();
-        g_eventLogger->info("(%u) CTE_SCAN agg feed FAILED: aggRet=%d "
-            "targetKey=%u leafIdx=%u linkedWords=%u",
-            instance(), aggRet, targetBaseKey, targetLeafIndex,
-            linkedPos);
         releaseCteScanIterState(aggFeedStateI);
-        sendCteScanRef(signal, senderRef, senderData,
-                       joinAggFeedError(aggRet, ZJOIN_AGG_INTERPRETER_ERROR));
+        sendCteScanRef(signal, senderRef, senderData, err);
         return;
       }
       rowsThisBatch++;
@@ -23161,81 +23107,14 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
       /* Single scalar group rejected — groupsSent stays 0, fall
        * through to CTE_SCAN_CONF with EndOfData + numRows=0. */
     } else {
-      Uint32 *linkedBuf = cevictBuffer;
-      Uint32 linkedPos = 0;
-
-      buildCteLinkedBuffer(interp,
-                           reinterpret_cast<const char *>(accumulators),
-                           /*keyLen=*/0, nullptr, 0,
-                           linkedBuf, &linkedPos);
-
-      const LeafProgram *leaf = nullptr;
-      if (targetState->m_num_leaves > 1) {
-        ndbrequire(targetLeafIndex < targetState->m_num_leaves);
-        leaf = &targetState->m_leaf_programs[targetLeafIndex];
-      }
-
-      Dbtup::KeyReqStruct aggReq(c_tup);
-      /* No scanned table row in a scalar CTE_SCAN agg feed — see
-       * cteLookupAggFeed.  Deterministic nullptr so normal-column reads
-       * abort, not crash. */
-      aggReq.tablePtrP = nullptr;
-      aggReq.signal = signal;
-      aggReq.read_length = 0;
-      aggReq.no_exec_instructions = 0;
-      aggReq.log_size = 0;
-      aggReq.last_row = false;
-
-      Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
-          c_tup,
-          &aggReq,
-          linkedBuf,
-          linkedPos,
-          getThreadId(),
-          jamBuffer(),
-          leaf);
-      if (unlikely(aggRet != 0 && aggRet != AGG_EVICT_NEEDED)) {
+      const Uint32 err = feedCteLinkedRow(
+          signal, interp, reinterpret_cast<const char *>(accumulators),
+          /*keyLen=*/0, nullptr, 0, targetState, targetInterp, leaf);
+      if (unlikely(err != 0)) {
         jam();
         releaseCteScanIterState(aggFeedStateI);
-        sendCteScanRef(signal, senderRef, senderData,
-                       joinAggFeedError(aggRet, ZJOIN_AGG_INTERPRETER_ERROR));
+        sendCteScanRef(signal, senderRef, senderData, err);
         return;
-      }
-      if (aggRet == AGG_EVICT_NEEDED) {
-        jam();
-        if (unlikely(targetState->m_cte_mode)) {
-          jam();
-          releaseCteScanIterState(aggFeedStateI);
-          sendCteScanRef(signal, senderRef, senderData,
-                         DbspjErr::OutOfQueryMemory);
-          return;
-        }
-        if (unlikely(!sendEvictedAggGroup(signal, targetInterp,
-                                          targetState))) {
-          jam();
-          releaseCteScanIterState(aggFeedStateI);
-          sendCteScanRef(signal, senderRef, senderData,
-                         DbspjErr::OutOfQueryMemory);
-          return;
-        }
-        /* Retry after eviction */
-        aggReq.no_exec_instructions = 0;
-        aggRet = targetInterp->processRecWithLinkedAttrs(
-            c_tup,
-            &aggReq,
-            linkedBuf,
-            linkedPos,
-            getThreadId(),
-            jamBuffer(),
-            leaf);
-        if (unlikely(aggRet != 0)) {
-          jam();
-          releaseCteScanIterState(aggFeedStateI);
-          sendCteScanRef(signal, senderRef, senderData,
-                         joinAggFeedError(aggRet,
-                                          ZJOIN_AGG_INTERPRETER_ERROR));
-          return;
-        }
       }
       groupsSent = 1;
     }  /* else branch of scalar filter gate */
@@ -23408,7 +23287,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
         /* Residual (e.g. CORR_FACTOR after FLUSH_AI) goes to DBSPJ */
         if (outPos > 0) {
           const Uint32 transId[2] = {req.transId1, req.transId2};
-          sendCteTransIdAI(signal, req.senderRef, req.senderData, transId,
+          sendTransIdAIRow(signal, req.senderRef, req.senderData, transId,
                            outBuf, (Uint32)outPos,
                            /*corrAtEnd=*/false);
           numRowsToSpj++;
@@ -23454,7 +23333,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
         }
 
         const Uint32 transId[2] = {req.transId1, req.transId2};
-        sendCteTransIdAI(signal, req.senderRef, req.senderData, transId,
+        sendTransIdAIRow(signal, req.senderRef, req.senderData, transId,
                          outBuf, outPos,
                          /*corrAtEnd=*/false);
         numRowsToSpj++;
@@ -23528,7 +23407,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
       }
       if (outPos > 0) {
         const Uint32 transId[2] = {req.transId1, req.transId2};
-        sendCteTransIdAI(signal, req.senderRef, req.senderData, transId,
+        sendTransIdAIRow(signal, req.senderRef, req.senderData, transId,
                          outBuf, (Uint32)outPos,
                          /*corrAtEnd=*/false);
         numRowsToSpj++;
@@ -23558,7 +23437,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
       outPos += 2;
 
       const Uint32 transId[2] = {req.transId1, req.transId2};
-      sendCteTransIdAI(signal, req.senderRef, req.senderData, transId,
+      sendTransIdAIRow(signal, req.senderRef, req.senderData, transId,
                        outBuf, outPos,
                        /*corrAtEnd=*/false);
       numRowsToSpj++;
@@ -26359,13 +26238,25 @@ void Dblqh::accScanConfScanLab(Signal *signal,
       jamEntryDebug();
       Uint32 storedProcId = signal->theData[1];
       scanPtr->scanStoredProcId = storedProcId;
+      Uint32 pushdownError = 0;
       if (unlikely(c_tup->scanCopyAttrinfo(storedProcId,
                                            bool(regTcPtr->opExec),
                                            true,
-                                           scanPtr) == 0)) {
+                                           scanPtr,
+                                           &pushdownError) == 0)) {
         jam();
         scanPtr->scanCompletedStatus = ZTRUE;
         tcConnectptr.p->errorCode = ZMEM_NOMEM_ERROR;
+        closeScanLab(signal, tcConnectptr.p);
+        return;
+      }
+      if (unlikely(pushdownError != 0)) {
+        /* The interpreter of the pushed aggregation or vector search
+         * could not be created; the scan has no interpreter and has not
+         * read a row.  tupScanCloseConfLab sends SCAN_FRAGREF. */
+        jam();
+        scanPtr->scanCompletedStatus = ZTRUE;
+        tcConnectptr.p->errorCode = pushdownError;
         closeScanLab(signal, tcConnectptr.p);
         return;
       }
@@ -27743,10 +27634,14 @@ void Dblqh::closeScanLab(Signal *signal, TcConnectionrec *regTcPtr) {
   /*
    * PA related
    * statemach
+   * WAIT_ACC_SCAN: accScanConfScanLab closes a scan that failed to
+   * start (its stored procedure, attrinfo cache or pushdown interpreter
+   * could not be created) before it read a row.
    */
   ndbrequire(!scanPtr->m_has_pushdown ||
              (scanPtr->scanState == ScanRecord::WAIT_SCAN_NEXTREQ ||
-             scanPtr->scanState == ScanRecord::WAIT_NEXT_SCAN));
+             scanPtr->scanState == ScanRecord::WAIT_NEXT_SCAN ||
+             scanPtr->scanState == ScanRecord::WAIT_ACC_SCAN));
   scanPtr->scanState = ScanRecord::WAIT_CLOSE_SCAN;
   scanPtr->scan_lastSeen = __LINE__;
   scanPtr->scan_check_lcp_stop = 0;

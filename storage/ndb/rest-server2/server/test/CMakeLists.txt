@@ -27,10 +27,17 @@ NDB_ADD_EXECUTABLE(error_handling_test error_handling_test.cpp
 
 # RonSQL parser regression driver. ronsql_oom_test.cpp provides main()
 # to initialize and shut down the NDB client library.
+# ronsql, which calls the NdbApi, comes before ndbclient_static on this
+# test's own link line, which CMake keeps in order: GNU ld takes from a
+# static library only what the objects and libraries before it need, and
+# with STATIC_NDBCLIENT the NdbApi came before libronsql.a, so the
+# NdbScanFilter calls of RonSQLPreparer stayed undefined on Linux.
 NDB_ADD_EXECUTABLE(ronsql_oom_test ronsql_oom_test.cpp
-                   ronsql_parse_only_test.cpp STATIC_NDBCLIENT)
+                   ronsql_parse_only_test.cpp)
 TARGET_LINK_LIBRARIES(
   ronsql_oom_test
+  ronsql
+  ndbclient_static
   ndbgeneral
   rdrs2_lib
   ${GTEST_LIBRARIES}

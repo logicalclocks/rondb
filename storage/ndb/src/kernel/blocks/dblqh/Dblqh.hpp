@@ -3622,6 +3622,19 @@ private:
                                const char *groupData, Uint32 keyLen,
                                const Uint32 *cinBuf, Uint32 attrInfoLen);
 
+  /* Feed one CTE group (GROUP BY key and accumulators) as a linked row
+   * into a leaf of the target aggregation, evicting target groups for as
+   * long as the target asks for room.  Shared by cteLookupAggFeed and
+   * both cteScanAggFeed feeds (grouped and scalar).  Returns 0, or the
+   * error code for the caller's REF. */
+  Uint32 feedCteLinkedRow(Signal *signal,
+                          const JoinAggInterpreter *interp,
+                          const char *groupData, Uint32 keyLen,
+                          const Uint32 *attrInfoBuf, Uint32 attrInfoLen,
+                          JoinAggregationState *targetState,
+                          JoinAggInterpreter *targetInterp,
+                          const struct LeafProgram *leaf);
+
   void cteLookupAggFeed(Signal* signal, const CteLookupReq &req,
                         const JoinAggInterpreter *interp,
                         const char *groupData,
@@ -3662,17 +3675,18 @@ private:
                            Uint32 n_gb_cols, Uint32 n_agg_results,
                            const AggResItem *accumulators,
                            Uint32 *outBuf);
-  /* Send one CTE output row of len words as TRANSID_AI to ref, or with
+  /* Send one result row of len words (a CTE output row or a join
+   * aggregation result record) as TRANSID_AI to ref, or with
    * routeRef != 0 as TRANSID_AI_R through that DBTC.  A row over
-   * MAX_TRANSID_AI_SIZE goes as a batched fragmented signal (a CTE row
-   * can be up to ZATTR_BUFFER_SIZE words, four times one transporter
-   * message), with the header its receiver needs: a data node block
-   * reassembles fragments (Dbtup::sendReadAttrinfoLong), while the API
-   * reads TransIdAILong::totalLen and, for a pushed-join scan, the
-   * row's correlation from the header (Dbtup::flush_read_buffer).
+   * MAX_TRANSID_AI_SIZE goes as a batched fragmented signal (either
+   * row can be several transporter messages long), with the header its
+   * receiver needs: a data node block reassembles fragments
+   * (Dbtup::sendReadAttrinfoLong), while the API reads
+   * TransIdAILong::totalLen and, for a pushed-join scan, the row's
+   * correlation from the header (Dbtup::flush_read_buffer).
    * corrAtEnd: the row ends with a CORR_FACTOR64 (3 words).  data must
    * not point into signal. */
-  void sendCteTransIdAI(Signal* signal, Uint32 ref, Uint32 connectPtr,
+  void sendTransIdAIRow(Signal* signal, Uint32 ref, Uint32 connectPtr,
                         const Uint32 transId[2], const Uint32 *data,
                         Uint32 len, bool corrAtEnd, Uint32 routeRef = 0);
 

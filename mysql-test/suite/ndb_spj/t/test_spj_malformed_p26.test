@@ -1,0 +1,11 @@
+--source include/have_ndb.inc
+
+# P-26: join aggregation n_agg_results above MAX_AGG_N_RESULTS.
+# The case runs a well-formed join aggregation first, then the malformed
+# one, which must get SCAN_TABREF with every data node still started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P26
+--let $spj_case_title = P-26: join aggregation n_agg_results above MAX_AGG_N_RESULTS
+--source suite/ndb_spj/include/spj_malformed_case.inc

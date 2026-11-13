@@ -3363,7 +3363,8 @@ public:
                            Uint32 *tmpArea, Uint32 tmpAreaSz,
                            const InterpreterHandler *handlerTable,
                            Uint32 flags,
-                           const Register *aggRegisters = nullptr);
+                           const Register *aggRegisters = nullptr,
+                           Uint32 aggRegistersLoaded = 0);
 
   /* Thin wrapper preserved for the CTE filter call sites from
    * Phase A/B.  Calls interpreterJumpTable with s_cte_filter_handlers
@@ -3383,10 +3384,14 @@ public:
   int interpreterAggEmbedded(Signal *signal, KeyReqStruct *req_struct,
                              Uint32 *mainProgram, Uint32 TmainProgLen,
                              Uint32 *tmpArea, Uint32 tmpAreaSz);
+  /* aggRegistersLoaded: bit r set when the aggregation program's row
+   * loaded aggRegisters[r]; READ_AGG_REG_TO_REG of another register
+   * fails with ZREGISTER_INIT_ERROR (K-1). */
   int interpreterAggEmbedded(Signal *signal, KeyReqStruct *req_struct,
                              Uint32 *mainProgram, Uint32 TmainProgLen,
                              Uint32 *tmpArea, Uint32 tmpAreaSz,
-                             const Register *aggRegisters);
+                             const Register *aggRegisters,
+                             Uint32 aggRegistersLoaded);
 
   /* RONDB-1056 Phase 7: public forwarder to the private
    * readSingleAttribute fast path, callable from the DbtupJitGlue
@@ -3627,6 +3632,9 @@ private:
     return ERROR_INSERT_EXTRA;
   }
 #endif
+
+  /* Error insert 4044, see DbtupExecQuery.cpp. False in release builds. */
+  bool pushdownInitErrorInserted() const;
 
   // Read only PK attributes, without AttributeHeader.
   // Optinally xfrm'ing the key in preparation for hash
@@ -4019,10 +4027,16 @@ private:
   void flush_read_buffer(KeyReqStruct *, const Uint32 *outBuf, Uint32 resultRef,
                          Uint32 resultData, Uint32 routeRef);
 public:
+  /* Returns the length of the scan's attrinfo, 0 if it could not be
+   * cached.  When the interpreter of a pushed aggregation or vector
+   * search cannot be created for scan_rec, *pushdownError (if given) is
+   * set to the error to fail the scan with; the scan record is left
+   * without an interpreter. */
   Uint32 scanCopyAttrinfo(Uint32 storedProcId,
                           bool interpretedFlag,
                           bool first_call,
-                          void* scan_rec = nullptr);
+                          void* scan_rec = nullptr,
+                          Uint32* pushdownError = nullptr);
   Uint32 keyCopyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal);
 
   void nextAttrInfoParam(Uint32 storedProcId);

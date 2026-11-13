@@ -49,6 +49,7 @@
 #include "AggInterpreter.hpp"
 #include "JoinAggInterpreter.hpp"
 #include "PushdownInterpreter.hpp"
+#include "TypedRegisterOps.hpp"
 #include "VecSearchInterpreter.hpp"
 #include "DbtupJitGlue.hpp"   /* Phase 7: scan-filter compile/invoke glue */
 #include "dblqh/JoinAggregationState.hpp"
@@ -977,10 +978,28 @@ Uint32 Dbtup::keyCopyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal) {
   return 0;
 }
 
+/*
+ * Error insert 4044: the interpreter of a pushed aggregation or vector
+ * search fails Init as when query memory runs out.  ALL ERROR reaches the
+ * DBTUP instances of the LDM threads only, so a scan or key read running
+ * in a query thread checks the LDM instance whose fragment it accesses.
+ */
+bool Dbtup::pushdownInitErrorInserted() const {
+#ifdef ERROR_INSERT
+  const Dbtup* ldm = (m_ldm_instance_used != nullptr)
+                         ? m_ldm_instance_used
+                         : this;
+  return ldm->jit_error_inserted(4044);
+#else
+  return false;
+#endif
+}
+
 Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
                                bool interpretedFlag,
                                bool first_call,
-                               void* scan_rec)
+                               void* scan_rec,
+                               Uint32* pushdownError)
 {
   /* Get stored procedure */
   StoredProcPtr storedPtr;
@@ -1071,16 +1090,43 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
           scan_rec_ptr->m_agg_interpreter == nullptr &&
           scan_rec_ptr->m_vs_interpreter == nullptr) {
         jam();
-        Uint32 proc_start = paramAreaStart + paramLen;
-        ndbrequire((cinBuffer[proc_start] >> 16) == 0x0721);
-        Uint32 proc_len = cinBuffer[proc_start] & 0xFFFF;
+        /* The program follows the parameters.  As for an aggregation on a
+         * key read (handleAggReadRow), a malformed or rejected program, or
+         * an interpreter that cannot be allocated, fails the scan instead
+         * of the node: DBLQH closes the scan with *pushdownError before it
+         * reads a row. */
+        const Uint32 proc_start = paramAreaStart + paramLen;
+        Uint32 proc_len = 0;
+        if (likely(proc_start < totalLen &&
+                   (cinBuffer[proc_start] >> 16) == 0x0721)) {
+          proc_len = cinBuffer[proc_start] & 0xFFFF;
+        }
+        if (unlikely(proc_len < 8 || proc_len > totalLen - proc_start)) {
+          jam();
+          if (pushdownError != nullptr) {
+            *pushdownError = ZAGG_WRONG_OPERATION;
+          }
+          return totalLen;
+        }
 
+        bool out_of_memory = false;
         PushdownCreateResult result = PushdownInterpreterFactory::Create(
             &cinBuffer[proc_start], proc_len,
             prepare_fragptr.p->fragTableId,
             prepare_fragptr.p->fragmentId,
-            getThreadId());
-        ndbrequire(result.agg != nullptr || result.vs != nullptr);
+            getThreadId(),
+            pushdownInitErrorInserted(),
+            &out_of_memory);
+        if (unlikely(result.agg == nullptr && result.vs == nullptr)) {
+          jam();
+          /* 1870 is temporary (out of query memory); a rejected program
+           * is the statement's own error. */
+          if (pushdownError != nullptr) {
+            *pushdownError = out_of_memory ? ZAGG_ALLOC_MEM_FAILED
+                                           : ZAGG_WRONG_OPERATION;
+          }
+          return totalLen;
+        }
 #ifdef ERROR_INSERT
         /* ronsql_jit slice 3 — ERROR_INSERT 4064 "strict JIT compile":
          * a PROGRAM-LEVEL compile reject (bridge reject or engine
@@ -6631,7 +6677,8 @@ int Dbtup::handleAggReadRow(Signal *signal, KeyReqStruct *req_struct,
   bool out_of_memory = false;
   AggInterpreter *interp = PushdownInterpreterFactory::CreateAggForRead(
       &cinBuffer[proc_start], proc_len, req_struct->fragPtrP->fragTableId,
-      req_struct->fragPtrP->fragmentId, getThreadId(), &out_of_memory);
+      req_struct->fragPtrP->fragmentId, getThreadId(),
+      pushdownInitErrorInserted(), &out_of_memory);
   if (unlikely(interp == nullptr)) {
     jam();
     /* 1870 is temporary (out of query memory); a rejected program is
@@ -6933,6 +6980,10 @@ struct Dbtup::InterpreterContext {
   // Aggregation register import source.  Only set for aggregation
   // embedded interpreter calls; normal interpreter and CTE filters keep NULL.
   const Register* aggRegisters;
+  // K-1: bit r is set when the current row of the aggregation program
+  // loaded aggRegisters[r] (AggInterpreterBase::m_loaded_regs); the
+  // other registers hold an undefined value or one of an earlier row.
+  Uint32 aggRegistersLoaded;
 
   /* ============================================================
    * Phase A handlers — extracted case bodies
@@ -7056,224 +7107,8 @@ struct Dbtup::InterpreterContext {
 
   /* --- Batch 2 --- register comparison branches (reg-reg and reg-const) */
 
-  /* Phase I.18: type-aware register-vs-register three-way comparison.
-   * Returns -1 / 0 / 1 by analogy with `memcmp`.  Both operands must
-   * be non-NULL (caller checks via `(leftType & rightType) != 0`).
-   *
-   * Type-word layout from Interpreter.hpp:
-   *   byte 0 = NOT_NULL flag (always 1 for non-NULL operands here)
-   *   byte 1 = UNSIGNED flag
-   *   byte 2 = FLOAT flag
-   *
-   * Single-byte loads keep the dispatch cheap on most CPUs. */
-  static inline int compareTypedRegs(Uint32 leftType, Uint64 leftBits,
-                                     Uint32 rightType, Uint64 rightBits) {
-    const Uint8* lw = reinterpret_cast<const Uint8*>(&leftType);
-    const Uint8* rw = reinterpret_cast<const Uint8*>(&rightType);
-    bool leftFloat  = lw[2] != 0;
-    bool rightFloat = rw[2] != 0;
-    if (unlikely(leftFloat || rightFloat)) {
-      double l;
-      double r;
-      if (leftFloat) {
-        memcpy(&l, &leftBits, 8);
-      } else if (lw[1] != 0) {
-        l = static_cast<double>(leftBits);
-      } else {
-        l = static_cast<double>(static_cast<Int64>(leftBits));
-      }
-      if (rightFloat) {
-        memcpy(&r, &rightBits, 8);
-      } else if (rw[1] != 0) {
-        r = static_cast<double>(rightBits);
-      } else {
-        r = static_cast<double>(static_cast<Int64>(rightBits));
-      }
-      return (l < r) ? -1 : (l > r) ? 1 : 0;
-    }
-    bool leftUnsigned  = lw[1] != 0;
-    bool rightUnsigned = rw[1] != 0;
-    if (likely(leftUnsigned == rightUnsigned)) {
-      if (leftUnsigned) {
-        return (leftBits < rightBits) ? -1 :
-               (leftBits > rightBits) ?  1 : 0;
-      }
-      Int64 ls = static_cast<Int64>(leftBits);
-      Int64 rs = static_cast<Int64>(rightBits);
-      return (ls < rs) ? -1 : (ls > rs) ? 1 : 0;
-    }
-    /* Mixed signed / unsigned: a negative signed operand is strictly
-     * less than any unsigned operand.  Otherwise both fit non-negative
-     * in Uint64 so the unsigned comparison is exact. */
-    if (leftUnsigned) {
-      if (static_cast<Int64>(rightBits) < 0) return 1;
-      return (leftBits < rightBits) ? -1 :
-             (leftBits > rightBits) ?  1 : 0;
-    }
-    if (static_cast<Int64>(leftBits) < 0) return -1;
-    return (leftBits < rightBits) ? -1 :
-           (leftBits > rightBits) ?  1 : 0;
-  }
-
-  /* Phase I.18: type-aware register arithmetic.  Op is one of
-   * '+' '-' '*' '/' '%'.  Promotion rules:
-   *
-   *   - either operand FLOAT  → double arithmetic, result REG_TYPE_DOUBLE.
-   *     Div/Mod by 0.0 returns -ZDIV_BY_ZERO_ERROR.
-   *   - else either UNSIGNED  → exact mixed signed/unsigned integer
-   *     arithmetic.  Negative results are tagged REG_TYPE_INT when
-   *     they fit Int64; non-negative results are tagged REG_TYPE_UINT
-   *     when they fit Uint64.  Add/Sub/Mul reject overflow.  Div/Mod
-   *     by 0 rejected.
-   *   - else both signed      → Int64 arithmetic, result REG_TYPE_INT.
-   *     Add/Sub/Mul reject overflow.  Div/Mod reject divide-by-zero
-   *     and the LLONG_MIN / -1 signed-overflow case.
-   *
-   * Returns 0 on success, negative error code on failure. */
-  static inline int applyTypedArith(char op,
-                                     Uint32 leftType, Uint64 leftBits,
-                                     Uint32 rightType, Uint64 rightBits,
-                                     Uint32* resultType,
-                                     Uint64* resultBits) {
-    const Uint8* lw = reinterpret_cast<const Uint8*>(&leftType);
-    const Uint8* rw = reinterpret_cast<const Uint8*>(&rightType);
-    bool leftFloat  = lw[2] != 0;
-    bool rightFloat = rw[2] != 0;
-    if (unlikely(leftFloat || rightFloat)) {
-      double l;
-      double r;
-      if (leftFloat) {
-        memcpy(&l, &leftBits, 8);
-      } else if (lw[1] != 0) {
-        l = static_cast<double>(leftBits);
-      } else {
-        l = static_cast<double>(static_cast<Int64>(leftBits));
-      }
-      if (rightFloat) {
-        memcpy(&r, &rightBits, 8);
-      } else if (rw[1] != 0) {
-        r = static_cast<double>(rightBits);
-      } else {
-        r = static_cast<double>(static_cast<Int64>(rightBits));
-      }
-      double res;
-      switch (op) {
-        case '+': res = l + r; break;
-        case '-': res = l - r; break;
-        case '*': res = l * r; break;
-        case '/':
-          if (r == 0.0) return -ZDIV_BY_ZERO_ERROR;
-          res = l / r;
-          break;
-        case '%':
-          if (r == 0.0) return -ZDIV_BY_ZERO_ERROR;
-          res = std::fmod(l, r);
-          break;
-        default: return -ZCALC_OVERFLOW_ERROR;
-      }
-      *resultType = Interpreter::REG_TYPE_DOUBLE;
-      memcpy(resultBits, &res, 8);
-      return 0;
-    }
-    bool leftUnsigned  = lw[1] != 0;
-    bool rightUnsigned = rw[1] != 0;
-    if (leftUnsigned || rightUnsigned) {
-      __int128 l = leftUnsigned
-          ? static_cast<__int128>(leftBits)
-          : static_cast<__int128>(static_cast<Int64>(leftBits));
-      __int128 r = rightUnsigned
-          ? static_cast<__int128>(rightBits)
-          : static_cast<__int128>(static_cast<Int64>(rightBits));
-      __int128 res;
-      switch (op) {
-        case '+':
-          res = l + r;
-          break;
-        case '-':
-          res = l - r;
-          break;
-        case '*':
-          res = l * r;
-          break;
-        case '/':
-          if (r == 0) return -ZDIV_BY_ZERO_ERROR;
-          res = l / r;
-          break;
-        case '%':
-          if (r == 0) return -ZDIV_BY_ZERO_ERROR;
-          res = l % r;
-          break;
-        default: return -ZCALC_OVERFLOW_ERROR;
-      }
-      if (res < 0) {
-        if (unlikely(leftUnsigned && rightUnsigned)) {
-          return -ZCALC_OVERFLOW_ERROR;
-        }
-        if (unlikely(res < static_cast<__int128>(LLONG_MIN))) {
-          return -ZCALC_OVERFLOW_ERROR;
-        }
-        *resultType = Interpreter::REG_TYPE_INT;
-        *resultBits = static_cast<Uint64>(static_cast<Int64>(res));
-      } else {
-        if (unlikely(static_cast<unsigned __int128>(res) >
-                     static_cast<unsigned __int128>(UINT64_MAX))) {
-          return -ZCALC_OVERFLOW_ERROR;
-        }
-        *resultType = Interpreter::REG_TYPE_UINT;
-        *resultBits = static_cast<Uint64>(res);
-      }
-      return 0;
-    }
-    /* Both signed integer. */
-    Int64 l = static_cast<Int64>(leftBits);
-    Int64 r = static_cast<Int64>(rightBits);
-    Int64 res;
-    switch (op) {
-      case '+':
-        if (unlikely((r >= 0 && LLONG_MAX - r < l) ||
-                     (r <  0 && LLONG_MIN - r > l))) {
-          return -ZCALC_OVERFLOW_ERROR;
-        }
-        res = l + r;
-        break;
-      case '-':
-        if (unlikely((r >= 0 && LLONG_MIN + r > l) ||
-                     (r <  0 && LLONG_MAX + r < l))) {
-          return -ZCALC_OVERFLOW_ERROR;
-        }
-        res = l - r;
-        break;
-      case '*':
-      {
-        __int128 wide =
-            static_cast<__int128>(l) * static_cast<__int128>(r);
-        if (unlikely(wide > static_cast<__int128>(LLONG_MAX) ||
-                     wide < static_cast<__int128>(LLONG_MIN))) {
-          return -ZCALC_OVERFLOW_ERROR;
-        }
-        res = static_cast<Int64>(wide);
-        break;
-      }
-      case '/':
-        if (r == 0) return -ZDIV_BY_ZERO_ERROR;
-        if (unlikely(l == LLONG_MIN && r == -1)) {
-          return -ZCALC_OVERFLOW_ERROR;
-        }
-        res = l / r;
-        break;
-      case '%':
-        if (r == 0) return -ZDIV_BY_ZERO_ERROR;
-        if (unlikely(l == LLONG_MIN && r == -1)) {
-          return -ZCALC_OVERFLOW_ERROR;
-        }
-        res = l % r;
-        break;
-      default: return -ZCALC_OVERFLOW_ERROR;
-    }
-    *resultType = Interpreter::REG_TYPE_INT;
-    *resultBits = static_cast<Uint64>(res);
-    return 0;
-  }
+  /* compareTypedRegs and applyTypedArith are in TypedRegisterOps.hpp,
+   * shared with JoinAggInterpreter::evalEmbeddedForNullRow. */
 
   /* Phase I.18: type-aware register bitwise / shift operations.
    * Op is one of:
@@ -8689,6 +8524,11 @@ struct Dbtup::InterpreterContext {
     }
     Uint32 aggReg = ctx.theInstruction >> 16;
     if (unlikely(aggReg >= kRegTotal)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    /* K-1: a register this row of the aggregation program did not load
+     * holds an undefined value or one of an earlier row. */
+    if (unlikely(((ctx.aggRegistersLoaded >> aggReg) & 1) == 0)) {
       return -ZREGISTER_INIT_ERROR;
     }
     const Register& src = ctx.aggRegisters[aggReg];
@@ -11305,6 +11145,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
     tmpArea,             /* Uint32*                                      */
     tmpAreaSz,           /* Uint32                                       */
     nullptr,             /* const Register*                              */
+    0,                   /* Uint32   — aggRegistersLoaded                */
   };
 
   /* Macro to dispatch a switch case to an extracted handler function.
@@ -11766,7 +11607,8 @@ int Dbtup::interpreterJumpTable(Signal* signal,
                                 Uint32 tmpAreaSz,
                                 const InterpreterHandler *handlerTable,
                                 Uint32 flags,
-                                const Register *aggRegisters)
+                                const Register *aggRegisters,
+                                Uint32 aggRegistersLoaded)
 {
   Uint32 theRegister;
   Uint32 theInstruction;
@@ -11819,6 +11661,7 @@ int Dbtup::interpreterJumpTable(Signal* signal,
     tmpArea,             /* Uint32*                                      */
     tmpAreaSz,           /* Uint32                                       */
     aggRegisters,        /* const Register*                              */
+    aggRegistersLoaded,  /* Uint32                                       */
   };
 
   const bool noBackJumps = (flags & IFLAG_DISALLOW_BACKWARD_JUMPS) != 0;
@@ -11909,7 +11752,7 @@ int Dbtup::interpreterAggEmbedded(Signal* signal,
                                   Uint32 tmpAreaSz)
 {
   return interpreterAggEmbedded(signal, req_struct, mainProgram, TmainProgLen,
-                                tmpArea, tmpAreaSz, nullptr);
+                                tmpArea, tmpAreaSz, nullptr, 0);
 }
 
 int Dbtup::interpreterAggEmbedded(Signal* signal,
@@ -11918,7 +11761,8 @@ int Dbtup::interpreterAggEmbedded(Signal* signal,
                                   Uint32 TmainProgLen,
                                   Uint32* tmpArea,
                                   Uint32 tmpAreaSz,
-                                  const Register *aggRegisters)
+                                  const Register *aggRegisters,
+                                  Uint32 aggRegistersLoaded)
 {
   return interpreterJumpTable(signal, req_struct,
                               mainProgram, TmainProgLen,
@@ -11926,7 +11770,7 @@ int Dbtup::interpreterAggEmbedded(Signal* signal,
                               tmpArea, tmpAreaSz,
                               s_agg_interp_handlers,
                               IFLAG_DISALLOW_BACKWARD_JUMPS,
-                              aggRegisters);
+                              aggRegisters, aggRegistersLoaded);
 }
 
 /**

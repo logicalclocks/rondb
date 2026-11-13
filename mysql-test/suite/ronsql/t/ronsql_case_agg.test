@@ -1,0 +1,133 @@
+# Aggregates over CASE, compiled by AggregationAPICompiler into an
+# EmbeddedInterp condition, a THEN arm, a Skip and an ELSE arm.
+#
+# F-1: AVG(CASE ...) compiles the same CASE twice, once for SUM and once
+# for COUNT. The THEN arm counted the use of its value only on the first
+# compilation, but the ELSE arm's AggRepeat counted it every time, so the
+# second compilation failed an ndbrequire in svm_use and aborted the
+# process (ronsql_cli or RDRS). The same holds when another aggregate
+# shares the CASE.
+#
+# Expected results come from mysqld (strict_diff). Averages are over at
+# most three values, so no result has a rounding tie (O-6).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE ca_t (
+  id INT NOT NULL,
+  g  INT NOT NULL,
+  a  INT NOT NULL,
+  b  INT,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_g (g)
+) ENGINE=NDB;
+
+CREATE TABLE ca_p (
+  g   INT NOT NULL,
+  lbl VARCHAR(8) NOT NULL,
+  PRIMARY KEY USING HASH (g)
+) ENGINE=NDB;
+
+# THEN a for a > 50, ELSE b, which is NULL in some rows, so that SUM and
+# COUNT of the CASE differ.
+INSERT INTO ca_t VALUES
+  (1, 1, 60, 5), (2, 1, 40, NULL), (3, 1, 70, 7),
+  (4, 2, 10, 3), (5, 2, 20, NULL),
+  (6, 3, 55, NULL);
+INSERT INTO ca_p VALUES (1, 'one'), (2, 'two'), (3, 'three');
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === ca-1: AVG(CASE) with a constant ELSE, GROUP BY ===
+let $QUERY=
+SELECT g, AVG(CASE WHEN a > 50 THEN a ELSE 0 END)
+FROM ca_t GROUP BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, AVG(CASE WHEN a > 50 THEN a ELSE 0 END)
+FROM ca_t GROUP BY g|
+
+--echo
+--echo === ca-2: AVG(CASE) with a nullable column in ELSE, GROUP BY ===
+let $QUERY=
+SELECT g, AVG(CASE WHEN a > 50 THEN a ELSE b END)
+FROM ca_t GROUP BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, AVG(CASE WHEN a > 50 THEN a ELSE b END)
+FROM ca_t GROUP BY g|
+
+--echo
+--echo === ca-3: AVG(CASE) without GROUP BY ===
+let $QUERY=
+SELECT AVG(CASE WHEN a > 50 THEN a ELSE b END)
+FROM ca_t;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT AVG(CASE WHEN a > 50 THEN a ELSE b END)
+FROM ca_t|
+
+--echo
+--echo === ca-4: SUM and COUNT of the same CASE ===
+let $QUERY=
+SELECT g, SUM(CASE WHEN a > 50 THEN a ELSE b END),
+       COUNT(CASE WHEN a > 50 THEN a ELSE b END)
+FROM ca_t GROUP BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, SUM(CASE WHEN a > 50 THEN a ELSE b END),
+       COUNT(CASE WHEN a > 50 THEN a ELSE b END)
+FROM ca_t GROUP BY g|
+
+--echo
+--echo === ca-5: AVG and SUM of the same CASE ===
+let $QUERY=
+SELECT g, AVG(CASE WHEN a > 50 THEN a ELSE b END),
+       SUM(CASE WHEN a > 50 THEN a ELSE b END)
+FROM ca_t GROUP BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, AVG(CASE WHEN a > 50 THEN a ELSE b END),
+       SUM(CASE WHEN a > 50 THEN a ELSE b END)
+FROM ca_t GROUP BY g|
+
+--echo
+--echo === ca-6: AVG(CASE) in a join aggregate ===
+let $QUERY=
+SELECT p.lbl, AVG(CASE WHEN t.a > 50 THEN t.a ELSE t.b END)
+FROM ca_p AS p JOIN ca_t AS t ON t.g = p.g
+GROUP BY p.lbl;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT p.lbl, AVG(CASE WHEN t.a > 50 THEN t.a ELSE t.b END)
+FROM ca_p AS p JOIN ca_t AS t ON t.g = p.g
+GROUP BY p.lbl|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE ca_p;
+DROP TABLE ca_t;
+--enable_warnings
+--enable_query_log

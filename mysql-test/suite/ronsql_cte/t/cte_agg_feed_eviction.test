@@ -1,0 +1,121 @@
+# cte_agg_feed_eviction
+#
+# A CTE_LOOKUP leaf that carries the main aggregation feeds each probed
+# CTE group into it in DBLQH (cteLookupAggFeed), and the CTE_SCAN
+# aggregation feeds do the same for each CTE group they walk.  They
+# build the row for the main aggregation (the CTE group's key and
+# aggregates, after the parent's linked columns) in cevictBuffer.  When
+# the main aggregation's group table is full, sendEvictedAggGroup sends
+# a group to the API, building its record in cevictBuffer too, over that
+# row, and the retry fed the evicted record's words to the main
+# aggregation as the row.  The feeds now build the row again after an
+# eviction.
+#
+# DBLQH error insert 5126 limits every join aggregation interpreter to
+# 3 groups.  The CTE body has 3 groups (k = 1, 2, 3), so the CTE, which
+# cannot evict, still builds; the main aggregation groups by d.g, 20
+# groups, so it has to evict while the CTE_LOOKUP leaf feeds it.
+#
+#   fe-0  the plan: fe_drv scanned at the root, CTE_LOOKUP leaf
+#   fe-1  control, no error insert
+#   fe-2  error insert 5126: evictions in cteLookupAggFeed
+#
+# The CTE_SCAN feeds get the same fix but no case here: under 5126 an
+# LDM thread holds at most 3 CTE groups, so the main aggregation a
+# CTE_SCAN feeds there never needs more than 3.
+#
+# Run:    ./mtr --suite=ronsql_cte cte_agg_feed_eviction
+# Record: ./mtr --suite=ronsql_cte --record cte_agg_feed_eviction
+
+--source include/have_ndb.inc
+--source include/have_debug.inc
+--source include/have_ndb_debug.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/cte-agg-feed-eviction-explain.out
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE fe_src (
+  id INT NOT NULL,
+  k  INT NOT NULL,
+  v  INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+# No index on fe_drv.k: the join can only probe the CTE from fe_drv.
+CREATE TABLE fe_drv (
+  id INT NOT NULL,
+  g  INT NOT NULL,
+  k  INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+# Groups k = 1, 2, 3 with three rows each.
+INSERT INTO fe_src VALUES
+  (1, 1, 10), (2, 2, 20), (3, 3, 30),
+  (4, 1, 40), (5, 2, 50), (6, 3, 60),
+  (7, 1, 70), (8, 2, 80), (9, 3, 90);
+
+# 60 rows: g = id % 20 (20 main groups), k = id % 3 + 1.
+--let $i= 1
+while ($i <= 60)
+{
+  eval INSERT INTO fe_drv VALUES ($i, $i % 20, $i % 3 + 1);
+  inc $i;
+}
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === fe-0: the plan is a fe_drv root with a CTE_LOOKUP leaf ===
+let $QUERY=
+WITH fc AS (SELECT k, SUM(v) AS t, COUNT(*) AS n
+            FROM fe_src GROUP BY k)
+SELECT d.g, COUNT(*), SUM(fc.t), SUM(fc.n)
+FROM fe_drv AS d JOIN fc ON fc.k = d.k
+GROUP BY d.g;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF '[INNER] CTE_LOOKUP CTE:fc' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+--echo
+--echo === fe-1: control, no forced eviction ===
+let $QUERY=
+WITH fc AS (SELECT k, SUM(v) AS t, COUNT(*) AS n
+            FROM fe_src GROUP BY k)
+SELECT d.g, COUNT(*), SUM(fc.t), SUM(fc.n)
+FROM fe_drv AS d JOIN fc ON fc.k = d.k
+GROUP BY d.g;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === fe-2: main aggregation limited to 3 groups (DBLQH 5126) ===
+--exec $NDB_MGM -e "ALL ERROR 5126" > /dev/null
+let $QUERY=
+WITH fc AS (SELECT k, SUM(v) AS t, COUNT(*) AS n
+            FROM fe_src GROUP BY k)
+SELECT d.g, COUNT(*), SUM(fc.t), SUM(fc.n)
+FROM fe_drv AS d JOIN fc ON fc.k = d.k
+GROUP BY d.g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+
+DELIMITER ;|
+
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+
+--disable_query_log
+DROP TABLE fe_drv;
+DROP TABLE fe_src;
+--enable_query_log

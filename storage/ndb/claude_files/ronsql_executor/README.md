@@ -59,6 +59,14 @@ T-1 contains O-7; C-15 overlaps T-3. J-2 has the same root cause as C-1.
   - The size switch is at 13994-14075.
   - A pass-through CTE_LOOKUP child undersizes its receive buffer: a debug assert, or a heap overflow in a release RDRS.
 - **F-2 (likely): unary minus over a float scalar subquery dereferences NULL** (`simplify_ce` T_MINUS, 16950). Trigger: `WHERE o.total > -(SELECT MIN(dec_col) FROM p)`.
+- **K-1 (reproduced; fixed by bug 14, K-1a and K-1b): the data node runs an aggregation program that reads a register the row never loaded.**
+  - Found while fixing D-1. The kernel side is tracked in `../pushdown_join_aggregation/ronsql_exec_fixes_handoff.md` §4.2.
+  - Before the D-1 fix, `ronsql_subquery_filter_decimal` sd-1 aborted both data nodes of a debug build on `assert(a.type != NDB_TYPE_UNDEFINED)` in `AggInterpreterBase::Sum`. A release build silently uses an undefined or stale value: registers are zeroed once in Init, not per row.
+  - Bug 14 (`8878794d1fd`, `AggInterpreterBase::checkProgram`) now refuses at setup: bad header counts and versions, out-of-range registers and result slots (the unchecked `kOpSum`/`kOpMax`/`kOpMin`/`kOpCount` index), operands past the end, and a `kOpSkip` into an instruction. `embeddedSkipTarget` refuses a per-row skip onto an operand word.
+  - Also fixed:
+    - Fixed (K-1b): an aggregate reading a register not loaded in this row. The skip after an embedded program is computed per row, so it cannot be checked before the program runs. `AggInterpreterBase::m_loaded_regs` is a per-row bitmask of loaded registers: loads, constants and `kOpSetRegNull` set a bit, `kOpMov` and arithmetic set their result's. An aggregate, `kOpMov` or arithmetic reading a register outside it fails the row with 1868, and an embedded `READ_AGG_REG_TO_REG` (DBTUP and the NULL-row evaluator) with 878. The JIT's register file is zeroed per row, so it would have aggregated 0: its compiler (`ndb_jit_bridge.c`) tracks the registers loaded on every path and refuses such a program (`JIT_BRIDGE_REG_NOT_LOADED`), which then runs on the interpreter.
+    - Fixed (K-1a): `peekProgramHeader` checked the magic word, `prog_len`, the reserved flag bits and the 1024-word limit with `assert` only. `checkProgramHeader` now refuses them for `checkProgram` (a join setup gets 20002) and `peekProgramHeader` (Init fails, a single-table scan gets 1868). Tests: `testSpjMalformed` P30 (bad magic word) and P31 (reserved flag bit), MTR `ndb_spj.test_spj_malformed_p30`/`p31`.
+  - Test: `testSpjMalformed` P32, a leaf whose `kOpSkip` jumps over the load of the register its `kOpSumBigint` reads (MTR `ndb_spj.test_spj_malformed_p32`, and `_p32_jit` with the JIT on); `bridge_tests` T85a-e.
 - **X-14 = J-10 = O-17: invariant checks in the executor and printer abort RDRS on API-side conditions.**
   - There are about 108 `ndbrequire` and 26 `abort()` calls, including `ndbrequire(qb != NULL)` when out of memory.
   - In a long-running server they should throw an internal error instead.
@@ -87,6 +95,7 @@ T-1 contains O-7; C-15 overlaps T-3. J-2 has the same root cause as C-1.
   - ELSE arm: THEN rows land on `AggRepeat` and add a stale register.
   - The multi-leaf join aggregator hard-codes the same size (11451).
   - Every existing SUM(CASE) test uses INT or BIGINT columns.
+  - Reproduced by `ronsql_subquery_filter_decimal` on the multi-leaf path: in a debug build both data nodes aborted (K-1).
 - **F-4 (verified): right-nested arithmetic in a cross-table filter overwrites the left operand.**
   - `emit_embedded_filter_expr` (17466) has two registers and swaps them for the right subtree.
   - `WHERE o.x < l.y * (l.z + 1)` is evaluated with `l.y` overwritten.
@@ -287,6 +296,7 @@ Longest executor functions, with the suggested split (D section of `review_dupli
    - O-1: carry the chained charset and guard the GROUP BY comparator.
    - C-3: complete the virtual column size switch.
    - F-2.
+   - K-1: the per-row loaded-register check in the data node (the rest is bug 14, `8878794d1fd`).
 3. **Wrong-result fixes:**
    - C-1: a design decision, either kernel-order virtual tables with a map or rejecting other layouts.
    - J-1: bind constants in index column order.
@@ -302,7 +312,8 @@ Longest executor functions, with the suggested split (D section of `review_dupli
 
 ## Fix status
 
-Branch `RONDB-1124-lqh-fixes`. One commit per fix, each with its regression
+Branches `RONDB-1124-lqh-fixes` (1.1-3.1, merged in #1230) and
+`RONDB-1124-lqh-fix2` (from 1.2, rebased onto `RONDB-1124-exec-fixes` and pushed there, #1231). One commit per fix, each with its regression
 test. Lanes: 1 = parse and aggregate compile, 2 = join planning and
 cross-table filters, 3 = CTE virtual tables and result metadata.
 
@@ -311,3 +322,10 @@ cross-table filters, 3 = CTE virtual tables and result metadata.
 | 1.1 | X-1 | fixed | `Context::set_err_state` keeps the left-most error instead of requiring it was recorded first | `ronsql_parsing` (+ `ronsql_jit` mirror): two >64-byte unaliased outputs followed by a lexer error |
 | 2.1 | J-1 | fixed | `emit_pk_equality_index_scan_root` binds each index column to the constant of the PK column with the same name | new `ronsql_join_root_pk_index`: hash-only and ordered PK with a permuted index, aggregate, pass-through, residual, mixed key types |
 | 3.1 | C-3 | fixed | `build_cte_virtual_tables` sizes Datetime2/Timestamp2/Time2, DECIMAL, BINARY/VARBINARY/LONGVARBINARY and BIT virtual columns as the dictionary does; any other type is refused instead of left at size 0 | new `ronsql_cte_dd_virtcol_sizes` (+ `ronsql_cte_jit` and the four ng mirrors): pass-through child, lookupCte root and single-group root keyed on these types |
+| 1.2 | F-1 | fixed | The ELSE arm's `AggRepeat` counts the use of its value only on the first compilation of the CASE, as the THEN arm does | new `ronsql_case_agg` (+ `ronsql_jit` mirror): AVG(CASE) with and without GROUP BY, SUM/COUNT and AVG/SUM sharing a CASE, join aggregate |
+| 2.2 | C-2 | fixed | `is_null_rejecting` counts only the LEFT-joined table's columns as NULL; a WHERE condition or cross-table filter still on a LEFT-joined op (CTE_LOOKUP included) is rejected instead of being applied as a join condition | `ronsql_left_join_where`: lj-5/lj-6 (OR on the right side still promotes, real table and CTE), lj-r5/lj-r6 (two-table OR rejected), lj-r7 (CTE IS NULL in OR) |
+| 1.3 | D-1 | fixed | The SELECT-list subquery path skips a failed cross-table filter past a DECIMAL column load as 3 words (the load has a precision / scale word), not 2; the CASE-arm part of D-1 was fixed upstream in `c57d796fafa` | new `ronsql_subquery_filter_decimal` (+ `ronsql_jit` mirror): SUM, MIN/MAX, COUNT and merged filtered/unfiltered subqueries over DECIMAL and DECIMAL UNSIGNED |
+| 3.2 | O-1 | fixed | `build_result_column_metadata` keeps the charset of a string and the precision of a DECIMAL (scale 0 included) for a chained CTE output; the GROUP BY arm of `compare_rows` requires a charset for string keys, as the aggregate arm does | new `ronsql_cte_dd_chained_keys` (+ `ronsql_cte_jit` and the four ng mirrors): VARCHAR key through two and three CTEs with and without ORDER BY, DECIMAL(10,0) key with and without ORDER BY, DECIMAL(10,2) control |
+| 1.4 | F-2 | fixed | `substitute_subquery_results_ce` folds a unary minus over a scalar subquery into the substituted constant (-NULL is NULL), so the single-table path no longer refuses it and the join and CTE paths no longer negate a T_FLOAT through its missing source text; `negate_numeric_constant`, shared with `simplify_ce`, keeps a T_FLOAT without text and refuses -INT64_MIN as MySQL does | new `ronsql_subquery_unary_minus` (+ `ronsql_jit` mirror): join, double minus, INT result, single-table aggregate and pass-through, HAVING, WITH query joined to its CTE |
+| 1.5 | K-1 (header) | fixed | `AggInterpreterBase::checkProgramHeader` refuses a bad magic word, reserved flag bits and a program over 1024 words in `checkProgram` (join setup, 20002) and `peekProgramHeader` (Init fails, 1868), which also refuses a header length that differs from the program; `program_rejected()` keeps such a failure from being reported as out of query memory | `testSpjMalformed` P30, P31 (MTR `ndb_spj.test_spj_malformed_p30`, `p31`): leaf 0 with a bad magic word, with a reserved flag bit |
+| 1.6 | K-1 (per row) | fixed | `AggInterpreterBase::m_loaded_regs` marks the registers each row loads; an aggregate, `kOpMov` or arithmetic reading another fails the row with 1868 instead of an assert or a stale value, and `READ_AGG_REG_TO_REG` (DBTUP, NULL-row evaluator) fails with 878. The JIT compiler tracks the registers loaded on every path and refuses a program that may read another (`JIT_BRIDGE_REG_NOT_LOADED`) | `testSpjMalformed` P32 (MTR `ndb_spj.test_spj_malformed_p32`, `_p32_jit` with `CompiledInterpreter=ON`): SUM of a register a `kOpSkip` jumps the load of; `bridge_tests` T85a-e, T8/T51f/T58e/T62f/T64d now write their registers with `kOpSetRegNull` |

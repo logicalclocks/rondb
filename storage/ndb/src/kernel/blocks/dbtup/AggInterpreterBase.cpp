@@ -182,6 +182,18 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
         sint4korr(reinterpret_cast<char*>(&m_prog[exec_pos++]));
     precision = decimal_info >> 16;
     scale = decimal_info & 0xFFFF;
+    /* checkProgram bounded precision and scale.  Whether they describe
+     * this value can only be checked per row, as the stored size comes
+     * with the row: bin2decimal reads decimal_bin_size(precision,
+     * scale) bytes whatever the value's size. */
+    if (unlikely(!header->isNULL() &&
+                 static_cast<Uint32>(decimal_bin_size(precision, scale)) !=
+                     header->getByteSize())) {
+      g_eventLogger->debug("%s::ProcessRec ZAGG_DECIMAL_PARSE_ERROR: "
+          "DECIMAL(%d,%d) for a value of %u bytes",
+          class_name, precision, scale, header->getByteSize());
+      return ZAGG_DECIMAL_PARSE_ERROR;
+    }
   }
 
   /* The value decode is shared with aggregation in the RonSQL layer
@@ -195,6 +207,7 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
       header->isNULL(), &m_decimal, &m_registers[reg_index]);
   switch (load_status) {
     case AggLoadStatus::Ok:
+      m_loaded_regs |= 1U << reg_index;
       PA_INTERP_TRACE(m_frag_id,
                       "Load type %u null %u value 0x%llx",
                       type, (Uint32)m_registers[reg_index].is_null,
@@ -299,6 +312,7 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
       }
       m_attr_read_pos += words_consumed;
       m_attr_read_hwm = m_attr_read_pos;
+      m_loaded_regs |= 1U << reg_index;
       return 0;
     }
     default:
@@ -312,39 +326,86 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
  * subclasses' Inits used to do this identically (after sed-collapsing
  * trivial comment differences).
  */
-void AggInterpreterBase::peekProgramHeader(const Uint32* prog,
+bool AggInterpreterBase::peekProgramHeader(const Uint32* prog,
                                             bool* compatible) {
   *compatible = true;
-  Uint32 hdr0 = prog[0];
-  assert(((hdr0 & 0xFFFF0000) >> 16) == 0x0721);
-  assert((hdr0 & 0xFFFF) == m_prog_len);
-  (void)hdr0;
+  /* K-1: the header comes from the API, so a malformed one fails Init
+   * instead of an assert.  The callers pass at least 8 words; the
+   * length check guards the reads below all the same. */
+  const char* reason = nullptr;
+  bool newer_version = false;
+  if (m_prog_len < 8) {
+    reason = "shorter than its header";
+  } else if ((prog[0] & 0xFFFF) != m_prog_len) {
+    reason = "header length differs from the program length";
+  } else {
+    reason = checkProgramHeader(prog, m_prog_len, &newer_version);
+  }
+  if (reason != nullptr) {
+    g_eventLogger->warning("Aggregation program rejected: %s", reason);
+    m_program_rejected = true;
+    return false;
+  }
 
   Uint32 hdr1 = prog[1];
   m_n_gb_cols = (hdr1 >> 16) & 0xFFFF;
   m_n_agg_results = hdr1 & 0xFFFF;
 
-  Uint32 version = prog[2];
-  if (version > PUSHDOWN_AGGREGATION_VERSION) {
+  if (newer_version) {
     g_eventLogger->warning("Pushdown aggregation program version(%u) is "
                            "not compatible with "
                            "the version (%u) on data node",
-                           version, PUSHDOWN_AGGREGATION_VERSION);
+                           prog[2], PUSHDOWN_AGGREGATION_VERSION);
     *compatible = false;
-    return;
+    return true;
   }
   /* prog[3]: flags word. Bit 0 (AGG_PROG_FLAG_REUSABLE) marks a program
    * the client re-sends across executions (RonSQL / prepared
    * statements) — the JIT compile then pins the blob in the reuse
-   * cache (Phase 8 Slice 4). Bit 31 is the vector-search type marker
-   * and never set here (DetectType routes those before Init). All
-   * other bits reserved-zero. */
+   * cache (Phase 8 Slice 4).  checkProgramHeader refused the other
+   * bits. */
   m_prog_reusable = (prog[3] & AGG_PROG_FLAG_REUSABLE) != 0;
-  assert((prog[3] & ~(Uint32)AGG_PROG_FLAG_REUSABLE) == 0);
+  /* m_n_gb_cols and m_n_agg_results come from the API: checkProgram
+   * rejects them when too large, an assert here would stop a debug
+   * build first. */
+  return true;
+}
 
-  assert(m_prog_len <= MAX_AGG_PROGRAM_WORD_SIZE);
-  assert(m_n_gb_cols <= MAX_AGG_N_GROUPBY_COLS);
-  assert(m_n_agg_results <= MAX_AGG_N_RESULTS);
+const char* AggInterpreterBase::checkProgramHeader(const Uint32* prog,
+                                                   Uint32 prog_len,
+                                                   bool* newer_version) {
+  *newer_version = false;
+  if (((prog[0] >> 16) & 0xFFFF) != 0x0721) {
+    return "bad magic word";
+  }
+  if (prog_len > MAX_AGG_PROGRAM_WORD_SIZE) {
+    return "longer than MAX_AGG_PROGRAM_WORD_SIZE words";
+  }
+  if (prog[2] > PUSHDOWN_AGGREGATION_VERSION) {
+    *newer_version = true;
+    return nullptr;
+  }
+  /* Bit 31 marks a vector search program, which
+   * PushdownInterpreterFactory::DetectType routes elsewhere; the other
+   * bits are reserved. */
+  if ((prog[3] & ~Uint32(AGG_PROG_FLAG_REUSABLE)) != 0) {
+    return "reserved flag bits set";
+  }
+  return nullptr;
+}
+
+bool AggInterpreterBase::checkInitProgram(const Uint32* prog,
+                                          const char* class_name) {
+  Uint32* insn_starts = m_prog_buf + m_prog_len;
+  const char* reason = checkProgram(prog, m_prog_len, insn_starts, nullptr);
+  if (reason != nullptr) {
+    g_eventLogger->warning("%s::Init: aggregation program rejected: %s",
+                           class_name, reason);
+    m_program_rejected = true;
+    return false;
+  }
+  m_insn_starts = insn_starts;
+  return true;
 }
 
 /**
@@ -406,39 +467,156 @@ void AggInterpreterBase::initSharedAfterAlloc(const Uint32* prog) {
 }
 
 /**
- * Step 3b — shared validate-embedded-programs scan.  Both subclass
- * Inits used to walk m_prog from m_agg_prog_start_pos and invoke
- * validateEmbeddedProgram on every kOpEmbeddedInterp arm.  Bodies
- * were byte-identical except for the class name in the warning.
+ * checkProgram — see AggInterpreterBase.hpp.  Instruction lengths are
+ * those of the interpreters (aggInstructionWords).  The opcode fields
+ * checked are those executeStandardOpcode and the subclasses' kOpLoadCol
+ * arms decode; an opcode without a handler fails its row with
+ * ZAGG_WRONG_OPERATION and is left alone here.
  */
-bool AggInterpreterBase::scanAndValidateEmbeddedPrograms(
-    const char* class_name) {
-  Uint32 scan_pos = m_agg_prog_start_pos;
-  while (scan_pos < m_prog_len) {
-    Uint32 w = m_prog[scan_pos];
-    Uint8 op = (w & 0xFC000000) >> 26;
-    if (op == kOpEmbeddedInterp) {
-      Uint32 emb_len = w & 0xFFFF;
-      if (scan_pos + 1 + emb_len > m_prog_len ||
-          !validateEmbeddedProgram(&m_prog[scan_pos + 1], emb_len)) {
-        g_eventLogger->warning(
-            "%s::Init: embedded program validation failed "
-            "at scan_pos=%u", class_name, scan_pos);
-        m_inited = false;
-        return false;
+const char* AggInterpreterBase::checkProgram(const Uint32* prog,
+                                             Uint32 prog_len,
+                                             Uint32* insn_starts,
+                                             bool* uses_avg) {
+  if (uses_avg != nullptr) {
+    *uses_avg = false;
+  }
+  /* Header: 8 words, then the GROUP BY column ids. */
+  if (prog_len < 8) {
+    return "shorter than its header";
+  }
+  const Uint32 n_gb_cols = (prog[1] >> 16) & 0xFFFF;
+  const Uint32 n_slots = prog[1] & 0xFFFF;
+  bool newer_version = false;
+  const char* header_reason =
+      checkProgramHeader(prog, prog_len, &newer_version);
+  if (header_reason != nullptr) {
+    return header_reason;
+  }
+  if (newer_version) {
+    return "unsupported version";
+  }
+  if (n_slots > MAX_AGG_N_RESULTS) {
+    return "too many aggregate results";
+  }
+  if (n_gb_cols > MAX_AGG_N_GROUPBY_COLS || n_gb_cols > prog_len - 8) {
+    return "too many GROUP BY columns";
+  }
+  memset(insn_starts, 0, insnStartWords(prog_len) * sizeof(Uint32));
+
+  const Uint32 start = 8 + n_gb_cols;
+  for (Uint32 pos = start; pos < prog_len;) {
+    const Uint32 word = prog[pos];
+    const Uint32 op = aggProgramOp(word);
+    const Uint32 words = aggInstructionWords(word);
+    if (words > prog_len - pos) {
+      return "operand words past the end";
+    }
+    insn_starts[pos >> 5] |= 1U << (pos & 31);
+    /* Register fields: bits 12-15 and 8-11 of two-register
+     * instructions, bits 16-19 of the others. */
+    const Uint32 reg_a = (word >> 12) & 0xF;
+    const Uint32 reg_b = (word >> 8) & 0xF;
+    const Uint32 reg = (word >> 16) & 0xF;
+    switch (op) {
+      case kOpPlus:
+      case kOpMinus:
+      case kOpMul:
+      case kOpDiv:
+      case kOpDivInt:
+      case kOpMod:
+      case kOpMov:
+      case kOpPlusBigint:
+      case kOpPlusDouble:
+      case kOpMinusBigint:
+      case kOpMinusDouble:
+      case kOpMulBigint:
+      case kOpMulDouble:
+      case kOpDivDouble:
+      case kOpDivIntBigint:
+        if (reg_a >= kRegTotal || reg_b >= kRegTotal) {
+          return "register out of range";
+        }
+        break;
+      case kOpLoadCol: {
+        if (reg >= kRegTotal) {
+          return "register out of range";
+        }
+        const Uint32 type = decodeLoadColType(word);
+        if (type == NDB_TYPE_DECIMAL || type == NDB_TYPE_DECIMALUNSIGNED) {
+          /* Decoded as loadColumnTypedFromBuf does. */
+          const Int32 decimal_info =
+              sint4korr(reinterpret_cast<const char*>(&prog[pos + 1]));
+          const Int32 precision = decimal_info >> 16;
+          const Int32 scale = decimal_info & 0xFFFF;
+          if (precision < 1 || precision > AGG_DECIMAL_MAX_PRECISION ||
+              scale > AGG_DECIMAL_MAX_SCALE || scale > precision) {
+            return "DECIMAL precision or scale out of range";
+          }
+        }
+        break;
       }
-      scan_pos += 1 + emb_len;  /* header + embedded words */
-    } else if (op == kOpLoadConst) {
-      scan_pos += 3;  /* header + 2 constant value words */
-    } else if (op == kOpLoadCol) {
-      Uint32 type = decodeLoadColType(w);
-      scan_pos += (type == NDB_TYPE_DECIMAL ||
-                   type == NDB_TYPE_DECIMALUNSIGNED) ? 2 : 1;
-    } else {
-      scan_pos++;
+      case kOpLoadConst: {
+        if (reg >= kRegTotal) {
+          return "register out of range";
+        }
+        const Uint32 type = (word >> 21) & 0x1F;
+        if (type != NDB_TYPE_BIGINT && type != NDB_TYPE_BIGUNSIGNED &&
+            type != NDB_TYPE_DOUBLE) {
+          return "constant of an unsupported type";
+        }
+        break;
+      }
+      case kOpSetRegNull:
+        if (reg >= kRegTotal) {
+          return "register out of range";
+        }
+        break;
+      case kOpAvg:
+        if (uses_avg != nullptr) {
+          *uses_avg = true;
+        }
+        [[fallthrough]];
+      case kOpSum:
+      case kOpMax:
+      case kOpMin:
+      case kOpCount:
+      case kOpSumBigint:
+      case kOpSumDouble:
+      case kOpMaxBigint:
+      case kOpMaxDouble:
+      case kOpMinBigint:
+      case kOpMinDouble:
+        if (reg >= kRegTotal) {
+          return "register out of range";
+        }
+        if ((word & 0xFFFF) >= n_slots) {
+          return "aggregate slot out of range";
+        }
+        break;
+      case kOpEmbeddedInterp:
+        if (!validateEmbeddedProgram(&prog[pos + 1], words - 1)) {
+          return "invalid embedded program";
+        }
+        break;
+      default:
+        break;
+    }
+    pos += words;
+  }
+
+  /* Skips are forward, so each target is known once every instruction
+   * start is. */
+  for (Uint32 pos = start; pos < prog_len;
+       pos += aggInstructionWords(prog[pos])) {
+    if (aggProgramOp(prog[pos]) == kOpSkip) {
+      const Uint32 target = pos + 1 + (prog[pos] & 0xFFFF);
+      if (target < prog_len &&
+          ((insn_starts[target >> 5] >> (target & 31)) & 1) == 0) {
+        return "kOpSkip into an instruction";
+      }
     }
   }
-  return true;
+  return nullptr;
 }
 
 /**
@@ -1386,7 +1564,12 @@ Int32 AggInterpreterBase::minMaxString(Uint32 reg_index, Uint32 agg_index,
     }
   }
   const StringResult& src = m_register_string_data[reg_index];
-  StringResult& slot = m_string_results[agg_index];
+  /* agg_res_ptr is the current leaf's slice of the row and agg_index is
+   * leaf-local, but m_string_results is indexed like the combined row
+   * (setup metadata, stringPayloadSize, encodeStringPayload, merges):
+   * on a later leaf the leaf-local index named another leaf's slot,
+   * whose charset and length prefix then decided the compare. */
+  StringResult& slot = m_string_results[m_acc_offset + agg_index];
   if (slot.declared_size == 0) {
     slot.charset = src.charset;
     slot.prefix_bytes = src.prefix_bytes;
@@ -1428,8 +1611,17 @@ Int32 AggInterpreterBase::minMaxString(Uint32 reg_index, Uint32 agg_index,
   const Uint32 type_id =
       (slot.prefix_bytes == 0) ? NDB_TYPE_CHAR :
       (slot.prefix_bytes == 1) ? NDB_TYPE_VARCHAR : NDB_TYPE_LONGVARCHAR;
-  const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(type_id);
-  int cmp = (*sqlType.m_cmp)(slot.charset, v_new, n_new, v_old, n_old);
+  /* A CASE's arms can be CHAR columns of different sizes */
+  NdbSqlUtil::Cmp* const cmp_fn = NdbSqlUtil::getStringResultCmp(type_id);
+  if (unlikely(slot.charset == nullptr)) {
+    /* The collation compare dereferences the charset.  A string column
+     * always has one; a slot without it was described from a value that
+     * came without it (a CTE row built from a slot first described by a
+     * redistributed value, or API metadata with no charset).  Fail the
+     * query rather than the node. */
+    return ZAGG_OTHER_ERROR;
+  }
+  int cmp = (*cmp_fn)(slot.charset, v_new, n_new, v_old, n_old);
   const bool replace = is_max ? (cmp > 0) : (cmp < 0);
   if (!replace) return 0;
 
@@ -1505,6 +1697,15 @@ Int32 AggInterpreterBase::jitMinMaxStringCol(
  * divergent opcodes (kOpLoadCol, kOpEmbeddedInterp) are still handled
  * in each subclass's own switch.
  */
+Int32 AggInterpreterBase::unloadedRegisterError(Uint8 op,
+                                                Uint32 exec_pos) const {
+  g_eventLogger->debug("AggInterpreterBase::executeStandardOpcode "
+                       "ZAGG_WRONG_OPERATION: opcode %u at %u reads a "
+                       "register this row did not load (loaded 0x%x)",
+                       op, exec_pos - 1, m_loaded_regs);
+  return ZAGG_WRONG_OPERATION;
+}
+
 Int32 AggInterpreterBase::executeStandardOpcode(
     Uint8 op, Uint32 value, Uint32& exec_pos,
     AggResItem* agg_res_ptr, bool debug_print,
@@ -1515,6 +1716,32 @@ Int32 AggInterpreterBase::executeStandardOpcode(
   Uint32 agg_index;
   Uint32 type;
   int ret;
+
+  /* K-1: an instruction reads only registers this row loaded
+   * (m_loaded_regs).  The skip after an embedded program is computed per
+   * row, so checkProgram cannot see a row that skips a load; the read
+   * would take an undefined register (an assert in a debug build) or a
+   * value of an earlier row.  Two-register instructions read the
+   * register in bits 8-11 and, except kOpMov, the one in bits 12-15,
+   * and write the latter; the aggregates read the one in bits 16-19. */
+  if ((op >= kOpPlus && op <= kOpMod) ||
+      (op >= kOpPlusBigint && op <= kOpDivIntBigint) || op == kOpMov) {
+    const Uint32 dst = (value >> 12) & 0x0F;
+    Uint32 reads = 1U << ((value >> 8) & 0x0F);
+    if (op != kOpMov) {
+      reads |= 1U << dst;
+    }
+    if (unlikely((reads & ~m_loaded_regs) != 0)) {
+      return unloadedRegisterError(op, exec_pos);
+    }
+    m_loaded_regs |= 1U << dst;
+  } else if (aggIsSlotOp(op) || op == kOpAvg) {
+    if (unlikely(((m_loaded_regs >> ((value >> 16) & 0x0F)) & 1) == 0)) {
+      return unloadedRegisterError(op, exec_pos);
+    }
+  } else if (op == kOpLoadConst || op == kOpSetRegNull) {
+    m_loaded_regs |= 1U << ((value >> 16) & 0x0F);
+  }
 
   switch (op) {
     case kOpPlus:

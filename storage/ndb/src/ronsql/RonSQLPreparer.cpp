@@ -3844,31 +3844,38 @@ RonSQLPreparer::classify_where_by_table(QueryScope& scope,
   }
 }
 
-// True when the expression is certainly NULL once its column references
-// are NULL (the NULL-extended row of a LEFT JOIN's right side): a column,
-// and every operator that propagates a NULL operand — arithmetic,
-// comparison, LIKE, NOT, XOR, GREATEST / LEAST, date arithmetic; AND and
-// OR only when both operands are NULL (NULL AND FALSE is FALSE, NULL OR
-// TRUE is TRUE).  IS [NOT] NULL is never NULL; constants and subqueries
-// are not known to be.
+// The table (join op index) of a column reference, or -1 when it is not
+// a column of the scope's tables: classify_ce_table_resolved on a
+// T_IDENTIFIER.  Given to the NULL-rejection checks below, which only
+// count the columns of the LEFT-joined table as NULL (C-2).
+typedef std::function<Int32(const ConditionalExpression*)> ColumnTable;
+
+// True when the expression is certainly NULL in the NULL-extended row of
+// the LEFT-joined table t, whose columns are then NULL (the columns of
+// the other tables are not; C-2): a column of t, and every operator that
+// propagates a NULL operand — arithmetic, comparison, LIKE, NOT, XOR,
+// GREATEST / LEAST, date arithmetic; AND and OR only when both operands
+// are NULL (NULL AND FALSE is FALSE, NULL OR TRUE is TRUE).  IS [NOT]
+// NULL is never NULL; constants and subqueries are not known to be.
 static bool
-is_null_for_null_columns(const ConditionalExpression* ce)
+is_null_for_null_columns(const ColumnTable& table_of, Uint32 t,
+                         const ConditionalExpression* ce)
 {
   if (ce == NULL) return false;
   switch (ce->op) {
   case T_IDENTIFIER:
-    return true;
+    return table_of(ce) == (Int32)t;
   case T_NOT:
   case T_EXCLAMATION:
-    return is_null_for_null_columns(ce->args.left);
+    return is_null_for_null_columns(table_of, t, ce->args.left);
   case T_INTERVAL:
-    return is_null_for_null_columns(ce->interval.arg);
+    return is_null_for_null_columns(table_of, t, ce->interval.arg);
   case T_EXTRACT:
-    return is_null_for_null_columns(ce->extract.arg);
+    return is_null_for_null_columns(table_of, t, ce->extract.arg);
   case T_AND:
   case T_OR:
-    return is_null_for_null_columns(ce->args.left) &&
-           is_null_for_null_columns(ce->args.right);
+    return is_null_for_null_columns(table_of, t, ce->args.left) &&
+           is_null_for_null_columns(table_of, t, ce->args.right);
   case T_XOR:
   case T_EQUALS: case T_NOT_EQUALS:
   case T_LT: case T_LE: case T_GT: case T_GE:
@@ -3879,37 +3886,42 @@ is_null_for_null_columns(const ConditionalExpression* ce)
   case T_BITWISE_OR: case T_BITWISE_AND: case T_BITWISE_XOR:
   case T_BITSHIFT_LEFT: case T_BITSHIFT_RIGHT:
   case T_DATE_ADD: case T_DATE_SUB:
-    return is_null_for_null_columns(ce->args.left) ||
-           is_null_for_null_columns(ce->args.right);
+    return is_null_for_null_columns(table_of, t, ce->args.left) ||
+           is_null_for_null_columns(table_of, t, ce->args.right);
   default:
     return false;
   }
 }
 
-// Predicate is null-rejecting if it evaluates to FALSE/NULL whenever
-// any of its column references is NULL.  Used by Phase J's LEFT-to-
-// INNER promotion: a LEFT JOIN with a null-rejecting WHERE conjunct
-// over the RHS is equivalent to INNER JOIN.  See cte_filter_phase_j.md
-// and cte_filter_phase_i1.md.
+// Predicate is null-rejecting for the LEFT-joined table t if it is FALSE
+// or NULL in t's NULL-extended row.  Used by Phase J's LEFT-to-INNER
+// promotion: a LEFT JOIN with a WHERE conjunct that rejects its
+// NULL-extended row is equivalent to INNER JOIN.  See
+// cte_filter_phase_j.md and cte_filter_phase_i1.md.
+//
+// A test rejects that row only through an operand that is NULL in it,
+// i.e. one over t's columns: in `c.n > 4 OR cu.x = 3` the second branch
+// holds for a NULL-extended c, so the OR does not reject it (C-2).
 static bool
-is_null_rejecting(const ConditionalExpression* ce)
+is_null_rejecting(const ColumnTable& table_of, Uint32 t,
+                  const ConditionalExpression* ce)
 {
   if (ce == NULL) return false;
   switch (ce->op) {
   case T_EQUALS: case T_NOT_EQUALS:
   case T_LT: case T_LE: case T_GT: case T_GE:
-    return true;
+  case T_LIKE:
+    // A comparison or LIKE with a NULL operand is NULL.
+    return is_null_for_null_columns(table_of, t, ce->args.left) ||
+           is_null_for_null_columns(table_of, t, ce->args.right);
   case T_IS:
     // IS NOT NULL rejects NULL; IS NULL preserves NULL.
-    return !ce->is.null;
-  case T_LIKE:
-    // LIKE with a NULL operand is NULL.
-    return true;
+    return !ce->is.null && is_null_for_null_columns(table_of, t, ce->is.arg);
   case T_XOR:
     // XOR is NULL when either operand is NULL, so it rejects the
     // NULL-extended row when one operand is certainly NULL for it.
-    return is_null_for_null_columns(ce->args.left) ||
-           is_null_for_null_columns(ce->args.right);
+    return is_null_for_null_columns(table_of, t, ce->args.left) ||
+           is_null_for_null_columns(table_of, t, ce->args.right);
   case T_NOT:
   case T_EXCLAMATION:
   {
@@ -3921,11 +3933,10 @@ is_null_rejecting(const ConditionalExpression* ce)
     case T_EQUALS: case T_NOT_EQUALS:
     case T_LT: case T_LE: case T_GT: case T_GE:
     case T_LIKE:
-      return true;
-    case T_IS:
-      return arg->is.null;
     case T_XOR:
-      return is_null_for_null_columns(arg);
+      return is_null_for_null_columns(table_of, t, arg);
+    case T_IS:
+      return arg->is.null && is_null_for_null_columns(table_of, t, arg->is.arg);
     default:
       return false;
     }
@@ -3933,12 +3944,12 @@ is_null_rejecting(const ConditionalExpression* ce)
   case T_AND:
     // AND is null-rejecting if at least one branch is — the whole
     // AND evaluates to FALSE/NULL when that branch does.
-    return is_null_rejecting(ce->args.left) ||
-           is_null_rejecting(ce->args.right);
+    return is_null_rejecting(table_of, t, ce->args.left) ||
+           is_null_rejecting(table_of, t, ce->args.right);
   case T_OR:
     // OR is null-rejecting only if every branch rejects NULL.
-    return is_null_rejecting(ce->args.left) &&
-           is_null_rejecting(ce->args.right);
+    return is_null_rejecting(table_of, t, ce->args.left) &&
+           is_null_rejecting(table_of, t, ce->args.right);
   default:
     return false;
   }
@@ -4038,12 +4049,16 @@ RonSQLPreparer::cte_sum_arg_never_null(
 void
 RonSQLPreparer::promote_left_to_inner_for_where(QueryScope& scope)
 {
+  const ColumnTable table_of =
+      [this, &scope](const ConditionalExpression* col) -> Int32 {
+        return classify_ce_table_resolved(scope, col);
+      };
   for (Uint32 t = 1; t < scope.join_plan.num_ops; t++)
   {
     JoinOp& op = scope.join_plan.ops[t];
     if (op.match_type != JoinOp::LEFT_OUTER) continue;
 
-    if (is_null_rejecting(scope.join_where_ce[t]))
+    if (is_null_rejecting(table_of, t, scope.join_where_ce[t]))
     {
       op.match_type = JoinOp::INNER;
     }
@@ -4064,7 +4079,7 @@ RonSQLPreparer::promote_left_to_inner_for_where(QueryScope& scope)
     if (ctf.child_table_idx >= scope.join_plan.num_ops) continue;
     JoinOp& op = scope.join_plan.ops[ctf.child_table_idx];
     if (op.match_type == JoinOp::LEFT_OUTER &&
-        is_null_rejecting(ctf.ce))
+        is_null_rejecting(table_of, ctf.child_table_idx, ctf.ce))
     {
       op.match_type = JoinOp::INNER;
     }
@@ -4093,17 +4108,25 @@ RonSQLPreparer::promote_left_to_inner_for_where(QueryScope& scope)
   }
 
   // A WHERE conjunct still on a LEFT-joined table here can hold for its
-  // NULL-extended row (e.g. col IS NULL).  The table's op can only apply
-  // it as its own filter, i.e. as part of the join condition: a match
-  // that fails it is NULL-extended and kept, where WHERE removes the
-  // parent row.  emit_cte_lookup_filter rejects this for a CTE_LOOKUP;
-  // reject it for every other op until post-join filtering exists.
+  // NULL-extended row (e.g. col IS NULL, or an OR with a branch on
+  // another table, C-2).  The table's op can only apply it as its own
+  // filter, i.e. as part of the join condition: a match that fails it is
+  // NULL-extended and kept, where WHERE removes the parent row.  Reject
+  // it until post-join filtering exists.  This includes a CTE_LOOKUP:
+  // emit_cte_lookup_filter rejects only IS NULL atoms, not a routed
+  // two-table OR.  A cross-table filter whose child is still LEFT-joined
+  // is such a conjunct too; before C-2 every one of them promoted its
+  // child to INNER, so none has run on a NULL-extended row.
   for (Uint32 t = 1; t < scope.join_plan.num_ops; t++)
   {
     const JoinOp& op = scope.join_plan.ops[t];
-    if (op.match_type != JoinOp::LEFT_OUTER ||
-        op.type == JoinOp::CTE_LOOKUP ||
-        scope.join_where_ce[t] == NULL)
+    if (op.match_type != JoinOp::LEFT_OUTER)
+      continue;
+    bool has_where = (scope.join_where_ce[t] != NULL);
+    for (Uint32 i = 0;
+         !has_where && i < scope.cross_table_where_filters.size(); i++)
+      has_where = (scope.cross_table_where_filters[i].child_table_idx == t);
+    if (!has_where)
       continue;
     std::basic_ostream<char>& err = *m_conf.err_stream;
     err << "WHERE condition on '" << op.alias.c_str()
@@ -8808,9 +8831,16 @@ RonSQLPreparer::build_result_column_metadata()
       // (found by obc-11): a CHAINED aggregate output — e.g. b's
       // SUM(s) over a's s = SUM(DECIMAL) — plumbs no stored column
       // either, and resolve_chained_column_type now carries the D15
-      // scale/precision through aggregate layers.  rscale == 0 leaves
-      // has_metadata false; AVG formatting independently distinguishes
-      // floating CTE results from integer results.
+      // scale/precision through aggregate layers.  AVG formatting
+      // independently distinguishes floating CTE results from integer
+      // results.
+      //
+      // O-1: a chained output of a string or DECIMAL source column (a
+      // GROUP BY key passed up a CTE chain) has no plumbed dict_column
+      // either, so keep its charset and DECIMAL precision here.  Without
+      // them a string key was compared under ORDER BY with a NULL
+      // CHARSET_INFO and printed with "Could not find charset", and a
+      // DECIMAL(p,0) key was printed with precision 0.
       if (ref.kind ==
               QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
           ref.cte_output != NULL) {
@@ -8824,11 +8854,22 @@ RonSQLPreparer::build_result_column_metadata()
           if (rt == NdbDictionary::Column::Float ||
               rt == NdbDictionary::Column::Double)
             column_metadata[col_idx].avg_scale = -1;
-          if (rscale > 0) {
+          const bool is_decimal =
+              (rt == NdbDictionary::Column::Decimal ||
+               rt == NdbDictionary::Column::Decimalunsigned);
+          if (rscale > 0 || is_decimal) {
             column_metadata[col_idx].precision = rprecision;
             column_metadata[col_idx].scale = rscale;
             column_metadata[col_idx].has_metadata = true;
             column_metadata[col_idx].avg_scale = std::min(rscale + 4, 30);
+          }
+          // A chained MIN/MAX or GROUP BY key over a CHAR/VARCHAR keeps
+          // the source charset through every CTE layer; the printer
+          // needs it to print and sort the result.
+          if (rcs != NULL) {
+            column_metadata[col_idx].charset = const_cast<CHARSET_INFO*>(
+                static_cast<const CHARSET_INFO*>(rcs));
+            column_metadata[col_idx].has_metadata = true;
           }
         }
       }
@@ -9562,6 +9603,30 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
   case T_OR:
     substitute_subquery_results_ce(&ce->args.left, polarity);
     substitute_subquery_results_ce(&ce->args.right, polarity);
+    return;
+  case T_MINUS:
+    substitute_subquery_results_ce(&ce->args.left, 0);
+    substitute_subquery_results_ce(&ce->args.right, 0);
+    if (ce->args.left == NULL && ce->args.right != NULL)
+    {
+      // F-2: a unary minus over a scalar subquery becomes the negated
+      // constant here, in place, so every path sees a constant.  The
+      // single-table path simplified its WHERE before substitution and
+      // left the minus to the filter, which refused it; the join path
+      // simplifies after substitution, and simplify_ce read the source
+      // text that a substituted T_FLOAT does not have.  A minus over a
+      // literal folds the same way simplify_ce folds it, and -NULL is
+      // NULL.
+      const ConditionalExpression* n = ce->args.right;
+      if (n->op == T_NULL)
+      {
+        ce->op = T_NULL;
+      }
+      else
+      {
+        negate_numeric_constant(n, ce);
+      }
+    }
     return;
   case T_IDENTIFIER:
   case T_INT:
@@ -11423,6 +11488,7 @@ RonSQLPreparer::execute_join()
           select_count_column(/*int_only=*/false);
         }
         NdbAttrId attr_id = 0;
+        const NdbDictionary::Column* load_column = count_column;
         if (count_column != NULL) {
           attr_id = count_column->getAttrId();
         } else if (!sl.is_count_star) {
@@ -11433,6 +11499,7 @@ RonSQLPreparer::execute_join()
               agg_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
               "Subquery aggregate input is not a stored-table column.");
           attr_id = agg_ref.attr_id;
+          load_column = agg_ref.dict_column;
         }
         const bool count_star_needs_row_guard =
             sl.is_count_star && count_column == NULL;
@@ -11454,9 +11521,18 @@ RonSQLPreparer::execute_join()
                       cf->op == T_EQUALS || cf->op == T_NOT_EQUALS,
                       "Cross-table filter must use <, <=, >, >=, = or !=.");
           // Guarded COUNT(*): LoadUint64 (3), embedded program (7),
-          // SetRegNull (1), and Count (1). Column load + aggregate: 2.
+          // SetRegNull (1), and Count (1). Column load + aggregate: 2,
+          // or 3 for a DECIMAL column, which LoadColumn emits as two
+          // words (kOpLoadCol and its precision / scale word).  Counted
+          // as 2, a failed filter skipped onto the aggregate, which then
+          // added the register's previous value (D-1).
+          const bool load_is_decimal =
+              load_column != NULL &&
+              (load_column->getType() == NdbDictionary::Column::Decimal ||
+               load_column->getType() ==
+                   NdbDictionary::Column::Decimalunsigned);
           Uint32 aggregate_update_raw_size =
-              count_star_needs_row_guard ? 12 : 2;
+              count_star_needs_row_guard ? 12 : (load_is_decimal ? 3 : 2);
           generate_embedded_condition(
               agg, m_main_scope, cf, 0, /*cteVirtualTables=*/NULL,
               /*use_custom_outputs=*/true,
@@ -17000,20 +17076,7 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
       if (n->op == T_INT || n->op == T_FLOAT) {
         ConditionalExpression* r =
           m_amalloc->alloc_exc<ConditionalExpression>(1);
-        r->op = n->op;
-        if (n->op == T_INT) {
-          r->constant_integer = -n->constant_integer;
-        } else {
-          r->constant_float.dbl = -n->constant_float.dbl;
-          assert(n->constant_float.ls.len > 0);
-          if (n->constant_float.ls.str[0] == '-') {
-            r->constant_float.ls.str = &n->constant_float.ls.str[1];
-            r->constant_float.ls.len = n->constant_float.ls.len - 1;
-          } else {
-            r->constant_float.ls = (LexString{"-", 1})
-              .concat(n->constant_float.ls, m_amalloc);
-          }
-        }
+        negate_numeric_constant(n, r);
         return r;
       }
       return ce;
@@ -17022,6 +17085,43 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
     // No simplification to do
     return ce;
   }
+}
+
+bool
+RonSQLPreparer::negate_numeric_constant(const ConditionalExpression* n,
+                                        ConditionalExpression* out)
+{
+  if (n->op == T_INT)
+  {
+    // MySQL fails the statement with "BIGINT value is out of range".
+    require_prm(n->constant_integer != INT64_MIN,
+                "BIGINT value is out of range in a negation.");
+    out->op = T_INT;
+    out->constant_integer = -n->constant_integer;
+    return true;
+  }
+  if (n->op != T_FLOAT)
+  {
+    return false;
+  }
+  const LexString ls = n->constant_float.ls;
+  out->op = T_FLOAT;
+  out->constant_float.dbl = -n->constant_float.dbl;
+  if (ls.str == NULL || ls.len == 0)
+  {
+    // A scalar subquery result substituted at execution has no source
+    // text; encode_constant and the printers then use .dbl.
+    out->constant_float.ls = LexString{NULL, 0};
+  }
+  else if (ls.str[0] == '-')
+  {
+    out->constant_float.ls = LexString{&ls.str[1], ls.len - 1};
+  }
+  else
+  {
+    out->constant_float.ls = (LexString{"-", 1}).concat(ls, m_amalloc);
+  }
+  return true;
 }
 
 // D11 helper: evaluate a constant-integer comparison arm at prepare time.

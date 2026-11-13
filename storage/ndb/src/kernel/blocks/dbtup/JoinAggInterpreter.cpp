@@ -21,6 +21,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -32,6 +33,7 @@
 #include "JoinAggInterpreter.hpp"
 #include "DbtupJitGlue.hpp"
 #include "InterpreterCommonOp.hpp"
+#include "TypedRegisterOps.hpp"
 #include "util/require.h"
 #include "decimal.h"
 #include "Dbtup.hpp"
@@ -100,10 +102,11 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
   }
   require(prog != nullptr);
 
-  /* Step 3 Cand-A: peek the program header.  Version mismatch returns
-   * true without setting m_inited so ProcessRec rejects on entry. */
+  /* Step 3 Cand-A: peek the program header.  A malformed header fails
+   * Init.  Version mismatch returns true without setting m_inited so
+   * ProcessRec rejects on entry. */
   bool compatible = true;
-  peekProgramHeader(prog, &compatible);
+  if (!peekProgramHeader(prog, &compatible)) return false;
   if (!compatible) return true;
 
   /* m_buf_block carve.  m_prog_buf right-sized to m_prog_len,
@@ -113,14 +116,18 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
    * upward after Init for multi-leaf queries, and the buffers must
    * still fit.  m_gb_map_buf is always allocated (JoinAgg needs
    * scalar-CTE redistribute paths to land entries even with
-   * n_gb_cols == 0). */
+   * n_gb_cols == 0).  The program words are followed by its
+   * instruction-start bitmap.  The header counts are not checked yet:
+   * n_gb_cols is bounded here, a program with larger counts is rejected
+   * right below. */
   if (m_buf_block == nullptr) {
     /* Tail layout: [Uint16 avg-hidden map, MAX entries] then
      * [Uint8 cached-agg-ops, MAX entries].  The Uint16 array comes
      * first so its 2-byte alignment is inherited from the block. */
     char* tail = initBufBlock(
-        /*prog_words=*/m_prog_len,
-        /*n_gb_cols_alloc=*/m_n_gb_cols,
+        /*prog_words=*/m_prog_len + insnStartWords(m_prog_len),
+        /*n_gb_cols_alloc=*/
+        std::min(m_n_gb_cols, Uint32(MAX_AGG_N_GROUPBY_COLS)),
         /*n_agg_results_alloc=*/MAX_AGG_N_RESULTS,
         /*alloc_gb_map=*/true,
         /*extra_tail_bytes=*/MAX_AGG_N_RESULTS *
@@ -133,6 +140,9 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
     m_avg_hidden_map = reinterpret_cast<Uint16*>(tail);
     m_cached_agg_ops = reinterpret_cast<Uint8*>(
         tail + MAX_AGG_N_RESULTS * sizeof(Uint16));
+  }
+  if (!checkInitProgram(prog, "JoinAggInterpreter")) {
+    return false;
   }
 
   /* Common post-allocation steps. */
@@ -312,11 +322,6 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
     extractAggOps(m_prog, m_prog_len, m_agg_prog_start_pos,
                   m_cached_agg_ops, m_n_agg_results,
                   m_avg_hidden_map, m_n_visible_results);
-  }
-
-  /* Validate embedded interpreter blocks (Step 3b — shared helper). */
-  if (!scanAndValidateEmbeddedPrograms("JoinAggInterpreter")) {
-    return false;
   }
   return true;
 }
@@ -918,52 +923,12 @@ static bool nullRowCondHolds(Uint32 cond, int res1) {
   }
 }
 
-/* E-4: Dbtup's compareTypedRegs for two non-NULL registers: as doubles
- * when one is a DOUBLE, else exactly as signed / unsigned 64-bit
- * integers. */
-static int nullRowCompareRegs(Uint32 left_type, Int64 left_value,
-                              Uint32 right_type, Int64 right_value) {
-  const bool left_float = (left_type & 0x00010000) != 0;
-  const bool right_float = (right_type & 0x00010000) != 0;
-  const bool left_unsigned = (left_type & 0x00000100) != 0;
-  const bool right_unsigned = (right_type & 0x00000100) != 0;
-  const Uint64 left_bits = Uint64(left_value);
-  const Uint64 right_bits = Uint64(right_value);
-  if (left_float || right_float) {
-    double l;
-    double r;
-    if (left_float) {
-      memcpy(&l, &left_bits, 8);
-    } else {
-      l = left_unsigned ? double(left_bits) : double(left_value);
-    }
-    if (right_float) {
-      memcpy(&r, &right_bits, 8);
-    } else {
-      r = right_unsigned ? double(right_bits) : double(right_value);
-    }
-    return (l < r) ? -1 : (l > r) ? 1 : 0;
-  }
-  if (left_unsigned == right_unsigned) {
-    if (left_unsigned) {
-      return (left_bits < right_bits) ? -1 : (left_bits > right_bits) ? 1 : 0;
-    }
-    return (left_value < right_value) ? -1 : (left_value > right_value) ? 1 : 0;
-  }
-  /* A negative signed value is less than any unsigned one */
-  if (left_unsigned) {
-    if (right_value < 0) return 1;
-  } else if (left_value < 0) {
-    return -1;
-  }
-  return (left_bits < right_bits) ? -1 : (left_bits > right_bits) ? 1 : 0;
-}
-
 /*
  * E-4: evaluate the embedded program of a kOpEmbeddedInterp (a CASE
- * condition) for a NULL-extended row of an outer join.  The row has no
- * tuple, so Dbtup::interpreterAggEmbedded cannot run; every column of
- * the outer-joined (local) table is NULL instead.  The instructions a
+ * condition or a WHERE filter over two tables) for a NULL-extended row
+ * of an outer join.  The row has no tuple, so
+ * Dbtup::interpreterAggEmbedded cannot run; every column of the
+ * outer-joined (local) table is NULL instead.  The instructions a
  * condition on those columns uses are evaluated as DBTUP evaluates them
  * for a NULL column value: READ_ATTR_INTO_REG loads NULL, BRANCH_ATTR_*
  * take their NULL path, and output and exit work as in DBTUP.
@@ -980,10 +945,12 @@ static int nullRowCompareRegs(Uint32 left_type, Int64 left_value,
  * here.
  *
  * READ_AGG_REG_TO_REG copies one of agg_regs, the aggregation registers,
- * as Dbtup's handleReadAggRegToReg does.  RonSQL's GREATEST / LEAST
- * pair-op reads its two operands this way; one that kOpLoadCol loaded
- * from a column of the outer-joined table is NULL, so the pair-op's
- * BRANCH_REG_EQ_NULL guard makes the result NULL, as in SQL.
+ * as Dbtup's handleReadAggRegToReg does, and fails as it does for a
+ * register not in agg_regs_loaded, those this row loaded (K-1).
+ * RonSQL's GREATEST / LEAST pair-op reads its two operands this way;
+ * one that kOpLoadCol loaded from a column of the outer-joined table is
+ * NULL, so the pair-op's BRANCH_REG_EQ_NULL guard makes the result
+ * NULL, as in SQL.
  *
  * One difference: a register compare with a NULL operand is not taken,
  * where DBTUP fails the row with ZREGISTER_INIT_ERROR.  The API guards a
@@ -995,8 +962,14 @@ static int nullRowCompareRegs(Uint32 left_type, Int64 left_value,
  * RonSQL guards its operands also for a NOT NULL column of an
  * outer-joined table.
  *
- * Arithmetic needs DBTUP; such a program returns
- * EMB_NULL_ROW_UNSUPPORTED.
+ * ADD_REG_REG, SUB_REG_REG and MUL_REG_REG compute as Dbtup's handlers
+ * do, through the shared applyTypedArith (TypedRegisterOps.hpp): a NULL
+ * operand gives NULL and overflow fails the row.  RonSQL emits them in
+ * a WHERE filter over two INNER-joined tables above the outer-joined
+ * one, such as a.x + 1 > b.y, whose columns are all linked.
+ *
+ * READ_*_MEM_TO_REG need DBTUP's memory; a program with one returns
+ * EMB_NULL_ROW_UNSUPPORTED.  No API emits them in an embedded program.
  */
 JoinAggInterpreter::EmbeddedNullRowResult
 JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
@@ -1005,6 +978,7 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
                                            Uint32 linked_attr_len,
                                            const Dbtup* meta_tup,
                                            const Register* agg_regs,
+                                           Uint32 agg_regs_loaded,
                                            Uint32* skip_offset) {
   /* The 8 registers start NULL, as in Dbtup::interpreterJumpTable */
   Uint32 reg_type[8];
@@ -1137,6 +1111,10 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
         /* As Dbtup's handleReadAggRegToReg */
         const Uint32 agg_reg = instr >> 16;
         if (unlikely(agg_reg >= kRegTotal)) return EMB_NULL_ROW_ERROR;
+        /* Not loaded by this row (K-1): ZREGISTER_INIT_ERROR in DBTUP */
+        if (unlikely(((agg_regs_loaded >> agg_reg) & 1) == 0)) {
+          return EMB_NULL_ROW_ERROR;
+        }
         const Register& src = agg_regs[agg_reg];
         if (src.is_null) {
           reg_type[reg] = Interpreter::REG_TYPE_NULL;
@@ -1151,6 +1129,40 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
           /* ZREGISTER_INIT_ERROR in DBTUP */
           return EMB_NULL_ROW_ERROR;
         }
+        break;
+      }
+      case Interpreter::ADD_REG_REG:
+      case Interpreter::SUB_REG_REG:
+      case Interpreter::MUL_REG_REG: {
+        /* As Dbtup's handleAddRegReg, handleSubRegReg and handleMulRegReg:
+         * ADD and SUB write Reg4, MUL writes Reg3.  A NULL operand gives
+         * NULL; overflow fails the row as in DBTUP. */
+        const Uint32 reg2 = Interpreter::getReg2(instr);
+        const Uint32 dest = (opcode == Interpreter::MUL_REG_REG)
+                                ? Interpreter::getReg3(instr)
+                                : Interpreter::getReg4(instr);
+        if (reg_type[reg] == Interpreter::REG_TYPE_NULL ||
+            reg_type[reg2] == Interpreter::REG_TYPE_NULL) {
+          reg_type[dest] = Interpreter::REG_TYPE_NULL;
+          reg_value[dest] = 0;
+          break;
+        }
+        char op = '*';
+        if (opcode == Interpreter::ADD_REG_REG) {
+          op = '+';
+        } else if (opcode == Interpreter::SUB_REG_REG) {
+          op = '-';
+        }
+        Uint32 result_type = Interpreter::REG_TYPE_NULL;
+        Uint64 result_bits = 0;
+        if (unlikely(applyTypedArith(
+                         op, reg_type[reg], static_cast<Uint64>(reg_value[reg]),
+                         reg_type[reg2], static_cast<Uint64>(reg_value[reg2]),
+                         &result_type, &result_bits) != 0)) {
+          return EMB_NULL_ROW_ERROR;
+        }
+        reg_type[dest] = result_type;
+        reg_value[dest] = static_cast<Int64>(result_bits);
         break;
       }
       case Interpreter::BRANCH:
@@ -1174,8 +1186,9 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
             reg_type[reg2] == Interpreter::REG_TYPE_NULL) {
           break;
         }
-        const int cmp = nullRowCompareRegs(reg_type[reg], reg_value[reg],
-                                           reg_type[reg2], reg_value[reg2]);
+        const int cmp = compareTypedRegs(
+            reg_type[reg], static_cast<Uint64>(reg_value[reg]),
+            reg_type[reg2], static_cast<Uint64>(reg_value[reg2]));
         switch (opcode) {
           case Interpreter::BRANCH_EQ_REG_REG: take_branch = (cmp == 0); break;
           case Interpreter::BRANCH_NE_REG_REG: take_branch = (cmp != 0); break;
@@ -1410,7 +1423,7 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
         return EMB_NULL_ROW_ERROR;
       }
       default:
-        /* Arithmetic, READ_*_MEM_TO_REG */
+        /* READ_*_MEM_TO_REG */
         return EMB_NULL_ROW_UNSUPPORTED;
     }
     if (take_branch) {
@@ -1740,8 +1753,10 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
 
   Uint32 exec_pos = m_agg_prog_start_pos;
   bool debug_print = (m_frag_id == DEBUG_PA_INTERP_PART_ID);
-  /* New row: no string register points into m_attr_read_buf yet. */
+  /* New row: no string register points into m_attr_read_buf yet, and
+   * no register is loaded (K-1, m_loaded_regs). */
   m_attr_read_hwm = 0;
+  m_loaded_regs = 0;
   while (exec_pos < m_prog_len) {
     const Uint32 load_program_offset =
         ((m_acc_offset & 0xFFFF) << 16) | (exec_pos & 0xFFFF);
@@ -1832,23 +1847,25 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
           const EmbeddedNullRowResult res = evalEmbeddedForNullRow(
               &m_prog[exec_pos], emb_len, m_linked_attr_data,
               m_linked_attr_len, m_null_row_meta_tup, m_registers,
-              &skip_offset);
+              m_loaded_regs, &skip_offset);
           if (unlikely(res == EMB_NULL_ROW_ERROR)) {
             return ZAGG_EMBEDDED_INTERP_ERROR;
           }
           if (res == EMB_NULL_ROW_UNSUPPORTED) {
             /*
-             * The condition needs DBTUP (arithmetic).  Skip the
-             * embedded program and take the THEN path as before; local
-             * column reads return NULL there.
+             * The condition needs DBTUP (READ_*_MEM_TO_REG, or
+             * BRANCH_MEM_OP_ARG without meta_tup).  Skip the embedded
+             * program and take the THEN path as before; local column
+             * reads return NULL there.
              */
             thrjam(jamBuf);
             exec_pos += emb_len;
           } else if (res == EMB_NULL_ROW_REJECT ||
                      skip_offset == AGG_EMBEDDED_INTERP_STOP_PROGRAM) {
             exec_pos = m_prog_len;
-          } else {
-            exec_pos += emb_len + skip_offset;
+          } else if (unlikely(!embeddedSkipTarget(exec_pos + emb_len,
+                                                  skip_offset, &exec_pos))) {
+            return ZAGG_EMBEDDED_INTERP_ERROR;
           }
           break;
         }
@@ -1869,7 +1886,7 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
             req_struct->signal, req_struct,
             &m_prog[exec_pos], emb_len,
             local_tmpArea, 16,
-            m_registers);
+            m_registers, m_loaded_regs);
 
         req_struct->no_exec_instructions = saved_instr_count;
         req_struct->m_linked_attr_data = nullptr;
@@ -1892,8 +1909,9 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         Uint32 skip_offset = block_tup->c_interpreter_output[0];
         if (skip_offset == AGG_EMBEDDED_INTERP_STOP_PROGRAM) {
           exec_pos = m_prog_len;
-        } else {
-          exec_pos += emb_len + skip_offset;
+        } else if (unlikely(!embeddedSkipTarget(exec_pos + emb_len,
+                                                skip_offset, &exec_pos))) {
+          return ZAGG_EMBEDDED_INTERP_ERROR;
         }
         break;
       }
@@ -1949,6 +1967,7 @@ Int32 JoinAggInterpreter::processRecWithLinkedAttrs(
     m_prog = const_cast<Uint32*>(leaf->m_agg_program);
     m_prog_len = leaf->m_agg_program_len;
     m_agg_prog_start_pos = leaf->m_agg_prog_start_pos;
+    m_insn_starts = leaf->m_insn_starts;
     m_acc_offset = leaf->m_acc_offset;
     m_jit_entry = leaf->m_jit_entry;
     /* ronsql_jit item 15: a single-leaf program's JIT'd kOpAvg writes
@@ -2155,12 +2174,21 @@ static Int32 mergeStringAccumulator(AggResItem* dst,
       string_results[agg_index].prefix_bytes : stringPrefixBytes(src->type);
   const Uint32 src_len = prefix + src_payload_len;
   const Uint32 dst_len = prefix + dst_payload_len;
-  const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(src->type);
+  /* A CASE's arms can be CHAR columns of different sizes */
+  NdbSqlUtil::Cmp* const cmp_fn = NdbSqlUtil::getStringResultCmp(src->type);
   const CHARSET_INFO* charset = (string_results != nullptr) ?
       string_results[agg_index].charset : nullptr;
-  const int cmp = (*sqlType.m_cmp)(charset,
-                                   src_buf + 4, src_len,
-                                   dst_buf + 4, dst_len);
+  if (unlikely(charset == nullptr)) {
+    /* The collation compare dereferences the charset.  A string slot
+     * gets its collation from the setup metadata or from a local row; a
+     * slot first described by a redistributed value has none, since the
+     * collation is not sent.  That takes a request without the metadata,
+     * which is API input: fail the query rather than the node. */
+    return ZAGG_OTHER_ERROR;
+  }
+  const int cmp = (*cmp_fn)(charset,
+                            src_buf + 4, src_len,
+                            dst_buf + 4, dst_len);
   const bool replace = isMaxAggOp(op) ? (cmp > 0) : (cmp < 0);
   if (!replace) {
     return 0;
@@ -2748,6 +2776,7 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
     m_prog = const_cast<Uint32*>(leaf->m_agg_program);
     m_prog_len = leaf->m_agg_program_len;
     m_agg_prog_start_pos = leaf->m_agg_prog_start_pos;
+    m_insn_starts = leaf->m_insn_starts;
     m_acc_offset = leaf->m_acc_offset;
     /* Phase 6-3: keep the JIT fields in sync with the program even
      * here — this row never dispatches (m_null_local_columns), but a
@@ -2780,24 +2809,44 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
 
 Int32 JoinAggInterpreter::ensureStringResultsFrom(
     const StringResult* source) {
-  if (m_string_results != nullptr || source == nullptr) {
+  if (source == nullptr) {
     return 0;
   }
-  const Uint32 nbytes = m_n_agg_results * sizeof(StringResult);
-  m_string_results = static_cast<StringResult*>(
-      lc_ndbd_pool_malloc(nbytes, RG_QUERY_MEMORY, m_thread_id, true));
   if (m_string_results == nullptr) {
-    return ZAGG_ALLOC_MEM_FAILED;
+    const Uint32 nbytes = m_n_agg_results * sizeof(StringResult);
+    m_string_results = static_cast<StringResult*>(
+        lc_ndbd_pool_malloc(nbytes, RG_QUERY_MEMORY, m_thread_id, true));
+    if (m_string_results == nullptr) {
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
   }
-  memcpy(m_string_results, source, nbytes);
+  /* Slot by slot: this interpreter may have described some string slots
+   * from its own rows but not a slot that only `source` saw values for.
+   * The values moved in from `source` would then be merged and emitted
+   * with no collation and a length-prefix size of 0.  A slot described
+   * here keeps its description; both come from the same column. */
   for (Uint32 i = 0; i < m_n_agg_results; i++) {
-    m_string_results[i].ptr = nullptr;
-    m_string_results[i].length = 0;
-    m_string_results[i].size = 0;
+    StringResult& slot = m_string_results[i];
+    const StringResult& src = source[i];
+    if (slot.declared_size != 0 || slot.charset != nullptr ||
+        (src.declared_size == 0 && src.charset == nullptr)) {
+      continue;
+    }
+    slot.prefix_bytes = src.prefix_bytes;
+    slot.declared_size = src.declared_size;
+    slot.charset = src.charset;
   }
   return 0;
 }
 
+/* Describes the string slots of a redistributed group when this
+ * interpreter has no string slot yet.  The setup metadata the NDB API
+ * sends describes every string MIN/MAX slot, on every interpreter of the
+ * state, and a local row describes the slots it updates, so this runs
+ * only for a request without that metadata.  The length-prefix size
+ * follows from the type, but the collation is not sent: the slot gets
+ * none, and a merge that must compare two of its values fails the query
+ * (mergeStringAccumulator). */
 Int32 JoinAggInterpreter::ensureStringResultsFromRedistribution(
     const AggResItem* slots,
     const char* appended,

@@ -5,20 +5,31 @@ call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
 
-# One group's aggregation result record is larger than its wire format
-# allows (dblqh_ronsql_analysis.md bug 6).
+# Aggregation result records larger than one transporter message
+# (dblqh_ronsql_analysis.md bug 6).
 #
-# A record's length word is key_len << 16 | val_len, and a join
-# aggregation sends each record to the API as one unfragmented
-# TRANSID_AI, which must fit one transporter message (32 KB).  NdbAggregator
-# ::Finalize caps one aggregator's group at 16 KB, counted at the declared
-# column sizes, but SELECT-list subqueries on different tables each get
-# their own leaf aggregator, and the data node puts all leaves' slots in
-# one group record.  Three string MAX leaves of about 15 KB each make a
-# 45 KB record: the data node used to stop ("Message too big in
-# sendSignal").  Five make 75 KB, over the 16-bit val_len field as well.
-# Both must now fail the query with error 1256 (join aggregation result
-# too large), and the cluster must stay up.
+# NdbAggregator::Finalize caps one aggregator's group at 16 KB, counted
+# at the declared column sizes, but SELECT-list subqueries on different
+# tables each get their own leaf aggregator, and the data node puts all
+# leaves' slots in one group record.  Three string MAX leaves of about
+# 15 KB each make a 45 KB record, larger than one transporter message
+# (32 KB): DBLQH sent it as one TRANSID_AI and stopped ("Message too big
+# in sendSignal"), and then failed the query with error 1256 instead.
+# Dblqh::sendTransIdAIRow now sends it as a fragmented signal, and the
+# API puts each sender's fragments together on their own
+# (NdbQueryImpl::execAggTRANSID_AI_frag), since records from several
+# LDM threads go to the same receivers and their fragments can
+# interleave.
+#
+# A record's length word is key_len << 16 | val_len, so its values must
+# still fit 64 KB: five 15 KB leaves (75 KB) fail the query with error
+# 1256 (join aggregation result too large), and the cluster stays up.
+#
+#   rs-1  three leaves: a 45 KB record for entity 1, a short one for 2.
+#   rs-2  five leaves: a 75 KB record for entity 1 -> error 1256.
+#   rs-3  five leaves on the short rows only -> rows.
+#   rs-4  three leaves for eight entities: eight 45 KB records from the
+#         LDM threads that own their groups.
 
 --let $strict_diff=yes
 --let QUERY_FILE=$MYSQL_TMP_DIR/ronsql_agg_record_size.sql
@@ -26,6 +37,10 @@ call mtr.add_suppression("Participant timeout");
 --disable_query_log
 --disable_warnings
 CREATE TABLE rs_entity (
+  id INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE rs_many (
   id INT NOT NULL,
   PRIMARY KEY USING HASH (id)
 ) ENGINE=NDB;
@@ -47,23 +62,37 @@ while ($i <= 5)
   inc $i;
 }
 INSERT INTO rs_entity VALUES (1), (2);
+# Entities 11-18 (rs_many): two 15000-byte values each in rs_s1 to
+# rs_s3, so MAX picks one; each value ends with its table, entity and
+# row.
+--let $e= 11
+while ($e <= 18)
+{
+  eval INSERT INTO rs_many VALUES ($e);
+  --let $i= 1
+  while ($i <= 3)
+  {
+    eval INSERT INTO rs_s$i VALUES
+      ($e * 10, $e, CONCAT(REPEAT('p', 14985), 't$i-e$e-r1')),
+      ($e * 10 + 1, $e, CONCAT(REPEAT('p', 14985), 't$i-e$e-r2'));
+    inc $i;
+  }
+  inc $e;
+}
 --enable_warnings
 --enable_query_log
 
 --echo
---echo === rs-1: three 15 KB MAX leaves (45 KB record) -> error 1256 ===
---write_file $QUERY_FILE
+--echo === rs-1: three 15 KB MAX leaves (45 KB record) -> rows ===
+DELIMITER |;
+let $QUERY=
 SELECT e.id,
   (SELECT MAX(a.s) FROM rs_s1 AS a WHERE a.entity_id = e.id) AS m1,
   (SELECT MAX(b.s) FROM rs_s2 AS b WHERE b.entity_id = e.id) AS m2,
   (SELECT MAX(c.s) FROM rs_s3 AS c WHERE c.entity_id = e.id) AS m3
-FROM rs_entity AS e;
-EOF
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test < '$QUERY_FILE' > $MYSQL_TMP_DIR/ronsql-rs.out 2>&1
---exec grep -q "1256" $MYSQL_TMP_DIR/ronsql-rs.out
---echo failed with error 1256
---remove_file $QUERY_FILE
+FROM rs_entity AS e;|
+DELIMITER ;|
+--source suite/ronsql/include/ronsql_compare.inc
 
 --echo
 --echo === rs-2: five 15 KB MAX leaves (75 KB record, over 16 bits) -> error 1256 ===
@@ -98,8 +127,20 @@ WHERE e.id > 1;|
 DELIMITER ;|
 --source suite/ronsql/include/ronsql_compare.inc
 
+--echo
+--echo === rs-4: eight 45 KB records from several LDM threads -> rows ===
+DELIMITER |;
+let $QUERY=
+SELECT e.id,
+  (SELECT MAX(a.s) FROM rs_s1 AS a WHERE a.entity_id = e.id) AS m1,
+  (SELECT MAX(b.s) FROM rs_s2 AS b WHERE b.entity_id = e.id) AS m2,
+  (SELECT MAX(c.s) FROM rs_s3 AS c WHERE c.entity_id = e.id) AS m3
+FROM rs_many AS e;|
+DELIMITER ;|
+--source suite/ronsql/include/ronsql_compare.inc
+
 --disable_query_log
 --disable_warnings
-DROP TABLE rs_entity, rs_s1, rs_s2, rs_s3, rs_s4, rs_s5;
+DROP TABLE rs_entity, rs_many, rs_s1, rs_s2, rs_s3, rs_s4, rs_s5;
 --enable_warnings
 --enable_query_log

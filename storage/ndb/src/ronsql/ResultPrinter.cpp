@@ -1051,11 +1051,12 @@ ResultPrinter::compare_rows(StoredRow& a, StoredRow& b)
             data_a = raw_a;
             data_b = raw_b;
           }
-          const NdbSqlUtil::Type& sqlType =
-              NdbSqlUtil::getType(static_cast<Uint32>(res_a.type()));
-          cmp = (*sqlType.m_cmp)(spec.charset,
-                                 data_a, prefix + len_a,
-                                 data_b, prefix + len_b);
+          // A CASE's arms can be CHAR columns of different sizes
+          NdbSqlUtil::Cmp* const cmp_fn = NdbSqlUtil::getStringResultCmp(
+              static_cast<Uint32>(res_a.type()));
+          cmp = (*cmp_fn)(spec.charset,
+                          data_a, prefix + len_a,
+                          data_b, prefix + len_b);
         }
         break;
       default:
@@ -1089,6 +1090,19 @@ ResultPrinter::compare_rows(StoredRow& a, StoredRow& b)
       if (col_a.is_null() && col_b.is_null()) continue;
       if (col_a.is_null()) return spec.ascending ? -1 : 1;
       if (col_b.is_null()) return spec.ascending ? 1 : -1;
+      switch (col_a.type())
+      {
+      case NdbDictionary::Column::Char:
+      case NdbDictionary::Column::Varchar:
+      case NdbDictionary::Column::Longvarchar:
+        // As in the AGGREGATE arm: the string comparators dereference
+        // the charset (O-1).
+        require_sch(spec.charset != nullptr,
+                    "Could not find charset for string GROUP BY column");
+        break;
+      default:
+        break;
+      }
       const NdbSqlUtil::Type& sqlType =
           NdbSqlUtil::getType(static_cast<Uint32>(col_a.type()));
       int cmp = (*sqlType.m_cmp)(spec.charset,
@@ -2688,10 +2702,25 @@ ResultPrinter::aggregate_arg_charset(const Outputs* out) const
     return NULL;
   if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX)
     return NULL;
-  AggregationAPICompiler::Expr* arg = out->aggregate.arg;
-  if (arg == NULL || !arg->isLoad())
+  const AggregationAPICompiler::Expr* arg = out->aggregate.arg;
+  if (arg != NULL && arg->isCase())
+  {
+    // MIN / MAX (CASE WHEN c THEN x ELSE y END) over strings: the grammar
+    // allows one WHEN and requires the ELSE, and NdbAggregator::RepeatAgg
+    // refuses string arms of different types or collations, so either
+    // arm's column gives the charset.
+    CHARSET_INFO* cs = load_arg_charset(arg->getLeft());
+    return cs != NULL ? cs : load_arg_charset(arg->getRight());
+  }
+  return load_arg_charset(arg);
+}
+
+CHARSET_INFO*
+ResultPrinter::load_arg_charset(const AggregationAPICompiler::Expr* e) const
+{
+  if (e == NULL || !e->isLoad())
     return NULL;
-  Uint32 col_idx = arg->getLoadIdx();
+  Uint32 col_idx = e->getLoadIdx();
   if (m_column_names == NULL || col_idx >= m_column_names->size())
     return NULL;
   if (m_column_metadata == NULL ||

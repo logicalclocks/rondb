@@ -1,0 +1,16 @@
+--source include/have_ndb.inc
+
+# P-32: a join aggregation whose rows read a register they did not load
+# (K-1). kOpSkip jumps over the kOpLoadConst of the register that the
+# following kOpSumBigint reads. The program is well formed, so the setup
+# accepts it; the interpreter's SumBigint asserted the register's type,
+# so a debug data node stopped. Each row now fails with 1868.
+# test_spj_malformed_p32_jit runs the case with the JIT on.
+# The case runs a well-formed join aggregation first, then the malformed
+# one, which must get SCAN_TABREF with every data node still started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P32
+--let $spj_case_title = P-32: join aggregation SUM of a register the row did not load
+--source suite/ndb_spj/include/spj_malformed_case.inc

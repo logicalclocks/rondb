@@ -53,8 +53,8 @@ class JoinAggInterpreter : public AggInterpreterBase {
                        table_id, frag_id, thread_id),
     /* m_cur_pos / m_attr_read_pos / m_processed_rows / m_result_size lifted
      * to base in Step 3a-A; m_n_gb_cols / m_gb_cols / m_gb_map / m_n_groups
-     * lifted in Step 2b; m_attr_read_buf lifted in Step 3a-B. */
-    m_acc_offset(0),
+     * lifted in Step 2b; m_attr_read_buf lifted in Step 3a-B;
+     * m_acc_offset lifted with the string MIN/MAX side-table fix. */
     m_linked_attr_data(nullptr), m_linked_attr_len(0),
     m_null_local_columns(false),
     m_null_row_meta_tup(nullptr),
@@ -389,14 +389,14 @@ class JoinAggInterpreter : public AggInterpreterBase {
   enum EmbeddedNullRowResult {
     EMB_NULL_ROW_OUTPUT,       // *skip_offset holds interpreter output 0
     EMB_NULL_ROW_REJECT,       // EXIT_REFUSE: stop the row's program
-    EMB_NULL_ROW_UNSUPPORTED,  // needs DBTUP (arithmetic, ...)
+    EMB_NULL_ROW_UNSUPPORTED,  // needs DBTUP (READ_*_MEM_TO_REG, ...)
     EMB_NULL_ROW_ERROR         // fails as in DBTUP
   };
   static EmbeddedNullRowResult evalEmbeddedForNullRow(
       const Uint32* emb_prog, Uint32 emb_len,
       const Uint32* linked_attr_data, Uint32 linked_attr_len,
       const Dbtup* meta_tup, const Register* agg_regs,
-      Uint32* skip_offset);
+      Uint32 agg_regs_loaded, Uint32* skip_offset);
 
   // Phase I.6 (F.2-K.4): running thread id for the in-flight ProcessRec
   // call.  Set on entry to processRecWithLinkedAttrs /
@@ -415,10 +415,9 @@ class JoinAggInterpreter : public AggInterpreterBase {
   // static wire-header constants all lifted to AggInterpreterBase in
   // Steps 1.3 / 2b / 3a-A / 3a-B.
 
-  // Multi-leaf: accumulator offset applied after group lookup/creation.
-  // agg_res_ptr is shifted by m_acc_offset so the leaf's 0-based program
-  // indices map to the correct physical slots in the combined row.
-  Uint32 m_acc_offset;
+  // m_acc_offset (multi-leaf accumulator offset, applied after group
+  // lookup/creation) lifted to AggInterpreterBase: minMaxString indexes
+  // m_string_results by the combined slot, m_acc_offset + agg_index.
 
   // m_decimal, m_decimal_buf lifted to AggInterpreterBase in Step 1.3.
 

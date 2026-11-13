@@ -1209,6 +1209,12 @@ private:
                                            const NdbDictionary::Column* col);
   struct ConditionalExpression* simplify_ce(struct ConditionalExpression* ce,
                                             int maxdepth);
+  // F-2: writes -n into out and returns true when n is a T_INT or
+  // T_FLOAT; returns false and leaves out alone otherwise.  A T_FLOAT
+  // substituted from a scalar subquery result has no source text and
+  // gets none.  INT64_MIN fails the statement, as in MySQL.
+  bool negate_numeric_constant(const struct ConditionalExpression* n,
+                               struct ConditionalExpression* out);
   // D11: lower a `GREATEST(...) <cmp> const` / `LEAST(...) <cmp> const`
   // comparison (either operand may be the min/max node) into a boolean
   // OR/AND of per-argument column-vs-constant comparisons (with IS NOT NULL

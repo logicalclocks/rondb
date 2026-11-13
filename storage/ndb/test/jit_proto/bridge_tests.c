@@ -601,11 +601,14 @@ static void test_embedded_interp_reject(void) {
  * (the kernel's runtime i64→double conversion has no JIT lowering;
  * only the all-double case lowers — see T50b). Both regs are UNKNOWN
  * here, so this rejects as an unimplemented conversion, not a type
- * bug. */
+ * bug.  kOpSetRegNull writes them without giving the tracker a type;
+ * a register nothing writes rejects as reg_not_loaded (K-1, T85a). */
 static void test_div_reject(void) {
-  uint32_t prog[1] = { enc_2reg(kOpDiv, 0, 1) };
-  assert_rejected("T8 div_reject", prog, 1,
-                   JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpDiv);
+  uint32_t prog[3] = { enc_op(kOpSetRegNull, 0u << 16),
+                       enc_op(kOpSetRegNull, 1u << 16),
+                       enc_2reg(kOpDiv, 0, 1) };
+  assert_rejected("T8 div_reject", prog, 3,
+                   JIT_BRIDGE_UNSUPPORTED_OP, 2, kOpDiv);
 }
 
 /* T9 (flipped in Phase 5C-2): kOpLoadConst with NDB_TYPE_DOUBLE now
@@ -1985,17 +1988,19 @@ static void test_avg_double_shape_accept(void) {
   mark_pass(name);
 }
 
-/* T51f: an f64 consumer over a NEVER-WRITTEN (UNKNOWN) register
- * rejects. (Pre-ronsql_jit-slice-2 this test used an empty embedded
- * block to invalidate a loaded register; the register-file split
- * removed that invalidation — see T51g — so the UNKNOWN case is now
- * produced the direct way.) */
+/* T51f: an f64 consumer over an UNKNOWN register rejects.
+ * (Pre-ronsql_jit-slice-2 this test used an empty embedded block to
+ * invalidate a loaded register; the register-file split removed that
+ * invalidation — see T51g.)  kOpSetRegNull writes the register without
+ * giving the tracker a type; a register nothing writes rejects as
+ * reg_not_loaded (K-1, T85a). */
 static void test_embedded_invalidates_f64_reject(void) {
-  uint32_t prog[1] = {
+  uint32_t prog[2] = {
+    enc_op(kOpSetRegNull, 0u << 16),
     enc_agg(kOpSumDouble, /*reg=*/0, /*agg=*/0),
   };
-  assert_rejected("T51f sum_double_unknown_reject", prog, 1,
-                  JIT_BRIDGE_TYPE_MISMATCH, 0, kOpSumDouble);
+  assert_rejected("T51f sum_double_unknown_reject", prog, 2,
+                  JIT_BRIDGE_TYPE_MISMATCH, 1, kOpSumDouble);
 }
 
 /* T51g: ronsql_jit slice 2 item 2 — outer register tracking SURVIVES
@@ -2467,13 +2472,16 @@ static void test_dec_truncated_reject(void) {
                   JIT_BRIDGE_MALFORMED, 0, kOpLoadCol);
 }
 
-/* T58e: generic Sum over an UNPROVEN register keeps the fallback. */
+/* T58e: generic Sum over an UNPROVEN register keeps the fallback.
+ * kOpSetRegNull writes the register without giving the tracker a
+ * type. */
 static void test_generic_sum_unknown_reject(void) {
-  uint32_t prog[1] = {
+  uint32_t prog[2] = {
+    enc_op(kOpSetRegNull, 0u << 16),
     enc_agg(kOpSum, /*reg=*/0, /*agg=*/0),
   };
-  assert_rejected("T58e generic_sum_unknown_reject", prog, 1,
-                  JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpSum);
+  assert_rejected("T58e generic_sum_unknown_reject", prog, 2,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 1, kOpSum);
 }
 
 /* T58f: nonsense precision/scale rejects (scale > precision). */
@@ -3052,20 +3060,22 @@ static void test_generic_arith_u64_signed_reject(void) {
                   JIT_BRIDGE_UNSUPPORTED_OP, 2, kOpPlus);
 }
 
-/* T62f: generic + over UNKNOWN (never-written) registers ->
- * UNSUPPORTED. An untyped op over an unproven register could be int
- * or double — the typed families tolerate UNKNOWN because their
- * opcode IS the type proof; the generic ones cannot. (Formerly the
- * UNKNOWN state came from an empty embedded block; tracking now
- * survives blocks — T51g — so the registers are simply never
- * loaded.) */
+/* T62f: generic + over UNKNOWN registers -> UNSUPPORTED. An untyped
+ * op over an unproven register could be int or double — the typed
+ * families tolerate UNKNOWN because their opcode IS the type proof;
+ * the generic ones cannot. (Formerly the UNKNOWN state came from an
+ * empty embedded block; tracking now survives blocks — T51g.)
+ * kOpSetRegNull writes the registers without giving the tracker a
+ * type; registers nothing writes reject as reg_not_loaded (K-1). */
 static void test_generic_arith_unknown_reject(void) {
-  uint32_t prog[2] = {
+  uint32_t prog[4] = {
+    enc_op(kOpSetRegNull, 0u << 16),
+    enc_op(kOpSetRegNull, 1u << 16),
     enc_2reg(kOpPlus, 0, 1),
     enc_sum(/*reg=*/0, /*agg=*/0),
   };
-  assert_rejected("T62f generic_arith_unknown_reject", prog, 2,
-                  JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpPlus);
+  assert_rejected("T62f generic_arith_unknown_reject", prog, 4,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 2, kOpPlus);
 }
 
 /* T62g: THE LIVE PATH for the generic case — DECIMAL operands. The
@@ -3331,15 +3341,19 @@ static void test_div_conv_mixed(void) {
   mark_pass(name);
 }
 
-/* T64d: UNKNOWN (never-written) operand still rejects. (Formerly
+/* T64d: an UNKNOWN operand still rejects. (Formerly
  * post-embedded-block invalidation; tracking now survives blocks —
- * T51g.) */
+ * T51g.)  kOpSetRegNull writes the registers without giving the
+ * tracker a type; registers nothing writes reject as reg_not_loaded
+ * (K-1). */
 static void test_div_conv_unknown_reject(void) {
-  uint32_t prog[1] = {
+  uint32_t prog[3] = {
+    enc_op(kOpSetRegNull, 0u << 16),
+    enc_op(kOpSetRegNull, 1u << 16),
     enc_2reg(kOpDiv, 0, 1),
   };
-  assert_rejected("T64d div_conv_unknown_reject", prog, 1,
-                  JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpDiv);
+  assert_rejected("T64d div_conv_unknown_reject", prog, 3,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 2, kOpDiv);
 }
 
 /* T64e: both-F64 keeps the HOT OP_DIV_F64 (regression pin). */
@@ -5427,6 +5441,98 @@ static void test_other_pseudo_read_reject(void) {
                   JIT_BRIDGE_REG_OUT_OF_RANGE, 1, EMB_READ_ATTR);
 }
 
+/* ------------------------------------------------------------------ */
+/* K-1 (RONDB-1124): an instruction reads only registers that every   */
+/* path to it loaded.  The interpreter fails a row that reads one it  */
+/* did not load (AggInterpreterBase m_loaded_regs); the JIT register  */
+/* file is zeroed per row and would give 0, so the bridge rejects     */
+/* such a program (JIT_BRIDGE_REG_NOT_LOADED) and it runs on the      */
+/* interpreter.                                                       */
+/* ------------------------------------------------------------------ */
+
+/* T85a: a register nothing writes. */
+static void test_reg_never_loaded_reject(void) {
+  uint32_t prog[1] = { enc_sum(/*reg=*/0, /*agg=*/0) };
+  assert_rejected("T85a reg_never_loaded_reject", prog, 1,
+                  JIT_BRIDGE_REG_NOT_LOADED, 0, kOpSumBigint);
+}
+
+/* T85b: kOpSkip over the only load (testSpjMalformed P-32).  The load
+ * is dead code; the Sum is reached only by the jump, whose state has
+ * no load. */
+static void test_skip_over_load_reject(void) {
+  uint32_t prog[5] = {
+    enc_op(kOpSkip, /*count=*/3),
+    enc_load_const(NDB_TYPE_BIGINT, /*reg=*/0), 1u, 0u,
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T85b skip_over_load_reject", prog, 5,
+                  JIT_BRIDGE_REG_NOT_LOADED, 4, kOpSumBigint);
+}
+
+/* T85c: a CASE whose second arm does not load the register the Sum
+ * after the arms reads.  Output 0 lands on arm 0 (word 10), which
+ * loads r0 and skips arm 1; output 2 lands on arm 1 (word 12), which
+ * loads r1 only.  The Sum (word 13) is reached from both. */
+static void test_case_arm_without_load_reject(void) {
+  uint32_t prog[14] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/9),
+    enc_emb_load_const16(/*reg=*/1, /*val=*/1),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/2),
+    enc_emb_branch_reg_reg(EMB_BRANCH_LT_REG_REG, 1, 2, /*offset=*/4),
+    enc_emb_load_const16(3, 0),
+    enc_emb_write_output(3, 0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_load_const16(3, 2),
+    enc_emb_write_output(3, 0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),   /* arm 0 */
+    enc_op(kOpSkip, /*count=*/1),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),   /* arm 1 */
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T85c case_arm_without_load_reject", prog, 14,
+                  JIT_BRIDGE_REG_NOT_LOADED, 13, kOpSumBigint);
+}
+
+/* T85d: T85c with arm 1 loading r0 too — accepted.  2xLC16 + BRANCH_LT
+ * + 2x(LC16+JUMP) + arm 0 (load, Skip-JUMP) + arm 1 (load) + SUM +
+ * tail (2) = 13 ops. */
+static void test_case_arms_both_load_accept(void) {
+  uint32_t prog[14] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/9),
+    enc_emb_load_const16(/*reg=*/1, /*val=*/1),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/2),
+    enc_emb_branch_reg_reg(EMB_BRANCH_LT_REG_REG, 1, 2, /*offset=*/4),
+    enc_emb_load_const16(3, 0),
+    enc_emb_write_output(3, 0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_load_const16(3, 2),
+    enc_emb_write_output(3, 0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),   /* arm 0 */
+    enc_op(kOpSkip, /*count=*/1),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/1),   /* arm 1 */
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  assert_accepted("T85d case_arms_both_load_accept", prog, 14,
+                  /*expected_n_ops=*/13);
+}
+
+/* T85e: an embedded READ_AGG_REG_TO_REG of an outer register nothing
+ * loaded (Dbtup's handleReadAggRegToReg fails such a row). */
+static void test_import_unloaded_reg_reject(void) {
+  uint32_t prog[5] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/4),
+    enc_emb_rar(/*src_outer=*/0, /*dst_emb=*/1),
+    enc_emb_load_const16(3, 0),
+    enc_emb_write_output(3, 0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  assert_rejected("T85e import_unloaded_reg_reject", prog, 5,
+                  JIT_BRIDGE_REG_NOT_LOADED, 1, EMB_READ_AGG_REG_TO_REG);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -5640,6 +5746,11 @@ int main(void) {
   test_avg_two_with_sum();
   test_avg_no_visible_count_rejects();
   test_avg_slot_bounds();
+  test_reg_never_loaded_reject();
+  test_skip_over_load_reject();
+  test_case_arm_without_load_reject();
+  test_case_arms_both_load_accept();
+  test_import_unloaded_reg_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;
