@@ -23442,7 +23442,12 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
                        /*corrAtEnd=*/false);
       numRowsToSpj++;
     }
-    numRowsSent = 1;
+    /* Count the row only when it went out.  DBSPJ adds numRows to the
+     * rows the API waits for, so a rejected row counted here left the
+     * API waiting until the receive timeout (K-2). */
+    if (fr == CTE_FILTER_ACCEPT) {
+      numRowsSent = 1;
+    }
     scanState->groupsSent = 1;
   }
 

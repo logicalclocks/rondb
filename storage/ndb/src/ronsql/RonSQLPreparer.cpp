@@ -13051,9 +13051,9 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
       // NULL.  Scan the CTE and pass no row; the rest of the tree still
       // returns the result of no rows.  A scalar CTE root takes the
       // filtered scalar lookupCte below instead, the one form a scalar
-      // root with a filter has (DBLQH's scalar CTE_SCAN arm counts a
-      // rejected group as a row sent, so the API waits for a row that
-      // never comes).
+      // root with a filter has.  A data node without the K-2 fix also
+      // hangs a filtered scalar scanCte whose row is rejected: it counts
+      // the row as sent, and the API waits for it.
       NdbInterpretedCode code(cteVirtualTables[0]);
       NdbScanFilter filter(&code);
       apply_reject_all_filter(&filter);

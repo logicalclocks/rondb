@@ -26,7 +26,8 @@
 # dummy-key lookupCte with a filter that rejects the row, as any filtered
 # scalar root. As a filtered scanCte it hung: DBLQH's scalar CTE_SCAN arm
 # counted the rejected group as a row sent, and the API waited for it
-# until the receive timeout.
+# until the receive timeout (K-2, fixed in DBLQH, testCteNdbApiFilter
+# test 32).
 
 --source include/have_ndb.inc
 
