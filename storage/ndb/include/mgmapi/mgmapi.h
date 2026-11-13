@@ -2037,6 +2037,63 @@ int ndb_mgm_get_tls_stats(NdbMgmHandle handle,
                         const char *user_name);
 
   /**
+   * Add one rule to a user alias, creating the alias when it does not
+   * exist (RONDB-1158). A rule maps the alias on a scope to a target
+   * user's rate limits.
+   *
+   * @param   handle        Management handle.
+   * @param   alias_name    Alias name (an account name)
+   * @param   target_name   Target user name
+   * @param   scope_type    0 one table, 1 one database, 2 all
+   * @param   scope_name    "db.table" for 0, database name for 1,
+   *                        NULL or "" for 2
+   */
+  int ndb_mgm_set_user_alias(NdbMgmHandle handle,
+                             const char *alias_name,
+                             const char *target_name,
+                             int scope_type,
+                             const char *scope_name);
+
+  /**
+   * Drop one rule from a user alias, or the whole alias.
+   *
+   * @param   handle        Management handle.
+   * @param   alias_name    Alias name
+   * @param   scope_type    As in ndb_mgm_set_user_alias; negative drops
+   *                        the whole alias
+   * @param   scope_name    As in ndb_mgm_set_user_alias
+   */
+  int ndb_mgm_drop_user_alias(NdbMgmHandle handle,
+                              const char *alias_name,
+                              int scope_type,
+                              const char *scope_name);
+
+  /**
+   * Get one user alias with its rules.
+   *
+   * @param   handle        Management handle.
+   * @param   alias_name    Alias name
+   * @param   result_buf    The result rows; the caller frees it with
+   *                        delete[]
+   */
+  int ndb_mgm_get_user_alias(NdbMgmHandle handle,
+                             const char *alias_name,
+                             char **result_buf);
+
+  /**
+   * List user aliases with their rules.
+   *
+   * @param   handle        Management handle.
+   * @param   nextAliasId   Next alias id to start searching from.
+   *                        Both input parameter and output
+   * @param   result_buf    The result rows; the caller frees it with
+   *                        delete[]
+   */
+  int ndb_mgm_list_user_aliases(NdbMgmHandle handle,
+                                Uint32 *nextAliasId,
+                                char **result_buf);
+
+  /**
    * Error printer
    */
   void ndb_mgm_print_error(NdbMgmHandle handle);

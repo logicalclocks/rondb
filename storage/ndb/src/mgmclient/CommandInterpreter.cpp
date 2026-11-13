@@ -202,6 +202,7 @@ class CommandInterpreter {
   int executeUserBackup(char* parameters);
   int executeUserRestore(char* parameters);
   int executeUser(char* parameters, int);
+  int executeUserAlias(char* parameters);
   int executeDatabaseQuotaSet(char* parameters);
   int executeDatabaseQuotaAlter(char* parameters);
   int executeDatabaseQuotaDrop(char* parameters);
@@ -848,6 +849,16 @@ static const char* helpUser =
 "USER GET Retrieve rate information for specific user\n\n"
 "USER LIST Retrieve quota information for all users\n\n"
 "USER BACKUP Backup quota information for all users\n\n"
+"USER ALIAS SET <alias> --target=<user> [--table=db.tbl | --database=db]\n"
+"  Add one rule to an alias, creating the alias when needed. A request\n"
+"  tagged with the alias name is charged to the target user's rate limits\n"
+"  when it touches the rule's table, the rule's database, or, without a\n"
+"  scope option, anything. One rule per scope; changing a scope's target\n"
+"  is an explicit USER ALIAS DROP followed by a new SET\n\n"
+"USER ALIAS DROP <alias> [--table=db.tbl | --database=db | --all]\n"
+"  Drop one rule, or without a scope option the whole alias\n\n"
+"USER ALIAS GET <alias> Show one alias with its rules\n\n"
+"USER ALIAS LIST Show all aliases with their rules\n\n"
 "  The following properties can be set (altered):\n"
 "    --rate-per-sec = VALUE\n"
 "      The maximum rate per second a user is allowed to perform\n\n"
@@ -1672,6 +1683,12 @@ bool CommandInterpreter::execute_impl(const char *_line, bool interactive) {
 	    native_strncasecmp(allAfterFirstToken, "QUOTA RESTORE",
                       sizeof("QUOTA RESTORE") - 1) == 0) {
     m_error = executeDatabaseQuotaRestore(allAfterFirstToken);
+    DBUG_RETURN(true);
+  } else if(native_strcasecmp(firstToken, "USER") == 0 &&
+	    allAfterFirstToken != NULL &&
+	    native_strncasecmp(allAfterFirstToken, "ALIAS",
+                      sizeof("ALIAS") - 1) == 0) {
+    m_error = executeUserAlias(allAfterFirstToken);
     DBUG_RETURN(true);
   } else if(native_strcasecmp(firstToken, "USER") == 0 &&
 	    allAfterFirstToken != NULL &&
@@ -5222,6 +5239,188 @@ int CommandInterpreter::executeUser(char* parameters, int type) {
          << type_str
          << " successfully executed"
          << endl;
+  return 0;
+}
+
+/**
+ * USER ALIAS commands (RONDB-1158):
+ *   USER ALIAS SET  <alias> --target=<user> [--table=db.tbl | --database=db]
+ *   USER ALIAS DROP <alias> [--table=db.tbl | --database=db | --all]
+ *   USER ALIAS GET  <alias>
+ *   USER ALIAS LIST
+ * A SET without a scope option adds the rule that matches everything. A
+ * DROP without a scope option drops the whole alias; --all drops only the
+ * matches-everything rule. "parameters" starts with the sub-command ALIAS.
+ */
+int CommandInterpreter::executeUserAlias(char* parameters) {
+  Vector<BaseString> command_list;
+  split_args_with_equal(parameters, command_list);
+  Uint32 command_list_size = command_list.size();
+  /* command_list[0] is "ALIAS" (dispatch matched its prefix). */
+  if (command_list_size < 2) {
+    ndbout << "Expected USER ALIAS SET | DROP | GET | LIST" << endl;
+    return -1;
+  }
+  const char *sub = command_list[1].c_str();
+
+  if (native_strncasecmp(sub, "LIST", sizeof("LIST") - 1) == 0) {
+    if (command_list_size > 2) {
+      ndbout << "Expected no parameters in USER ALIAS LIST" << endl;
+      return -1;
+    }
+    Uint32 nextAliasId = 0;
+    int result = 0;
+    do {
+      char *result_buf = nullptr;
+      result = ndb_mgm_list_user_aliases(m_mgmsrv, &nextAliasId, &result_buf);
+      if (result == 0) {
+        if (nextAliasId == RNIL) {
+          fprintf(stdout, "User Alias List command completed\n");
+          break;
+        }
+        fprintf(stdout, "%s", result_buf);
+        delete[] result_buf;
+      } else {
+        ndbout << "USER ALIAS LIST command failed: Error:" << endl;
+        printError();
+        break;
+      }
+    } while (true);
+    return result;
+  }
+
+  if (native_strncasecmp(sub, "GET", sizeof("GET") - 1) == 0) {
+    if (command_list_size != 3) {
+      ndbout << "Expected USER ALIAS GET <alias name>" << endl;
+      return -1;
+    }
+    const char *alias_name = command_list[2].c_str();
+    char *result_buf = nullptr;
+    int result = ndb_mgm_get_user_alias(m_mgmsrv, alias_name, &result_buf);
+    if (result == 0) {
+      fprintf(stdout, "%s", result_buf);
+      delete[] result_buf;
+    } else {
+      ndbout << "USER ALIAS GET command failed: Error:" << endl;
+      printError();
+    }
+    return result;
+  }
+
+  const bool is_set = native_strncasecmp(sub, "SET", sizeof("SET") - 1) == 0;
+  const bool is_drop = native_strncasecmp(sub, "DROP",
+                                          sizeof("DROP") - 1) == 0;
+  if (!is_set && !is_drop) {
+    ndbout << "Expected USER ALIAS SET | DROP | GET | LIST" << endl;
+    return -1;
+  }
+  const char *type_str = is_set ? "SET" : "DROP";
+  if (command_list_size < 3) {
+    ndbout << "USER ALIAS " << type_str
+           << " should have an alias name as parameter at a minimum" << endl;
+    return -1;
+  }
+  const char *alias_name = command_list[2].c_str();
+  for (Uint32 i = 0; alias_name[i] != 0; i++) {
+    if (alias_name[i] == '/') {
+      ndbout << "USER ALIAS " << type_str << " " << alias_name
+             << " have a / in the alias name, not allowed" << endl;
+      return -1;
+    }
+  }
+
+  const char *target = nullptr;
+  const char *scope_name = nullptr;
+  int scope_type = -1;
+  bool all_scope = false;
+  Uint32 command_pos = 3;
+  Uint32 remaining_commands = command_list_size - 3;
+  while (remaining_commands > 0) {
+    const char *key = command_list[command_pos].c_str();
+    if (native_strncasecmp(key, "--", 2) != 0) {
+      ndbout << "Parameters should always start with --" << endl;
+      return -1;
+    }
+    key += 2;
+    if (native_strcasecmp(key, "ALL") == 0) {
+      /* --ALL takes no value */
+      all_scope = true;
+      command_pos++;
+      remaining_commands--;
+      continue;
+    }
+    if (remaining_commands < 3) {
+      ndbout << "USER ALIAS " << type_str
+             << " with key = value, was missing a value here" << endl;
+      return -1;
+    }
+    const char *equal_str = command_list[command_pos + 1].c_str();
+    const char *val_str = command_list[command_pos + 2].c_str();
+    command_pos += 3;
+    remaining_commands -= 3;
+    if (native_strncasecmp(equal_str, "=", 1) != 0) {
+      ndbout << "USER ALIAS " << type_str
+             << " with key = value, was missing a = here" << endl;
+      return -1;
+    }
+    if (native_strcasecmp(key, "TARGET") == 0) {
+      target = val_str;
+    } else if (native_strcasecmp(key, "TABLE") == 0) {
+      if (scope_type != -1) {
+        ndbout << "At most one of --table and --database" << endl;
+        return -1;
+      }
+      scope_type = 0;
+      scope_name = val_str;
+    } else if (native_strcasecmp(key, "DATABASE") == 0) {
+      if (scope_type != -1) {
+        ndbout << "At most one of --table and --database" << endl;
+        return -1;
+      }
+      scope_type = 1;
+      scope_name = val_str;
+    } else {
+      ndbout << "Wrong key: " << key << ", choose one of:" << endl
+             << "target, table, database, all" << endl;
+      return -1;
+    }
+  }
+  if (all_scope) {
+    if (scope_type != -1) {
+      ndbout << "--all cannot be combined with --table or --database" << endl;
+      return -1;
+    }
+    scope_type = 2;
+  }
+
+  int result;
+  if (is_set) {
+    if (target == nullptr) {
+      ndbout << "USER ALIAS SET needs --target = <user name>" << endl;
+      return -1;
+    }
+    /* No scope option means the rule that matches everything. */
+    if (scope_type == -1) {
+      scope_type = 2;
+    }
+    result = ndb_mgm_set_user_alias(m_mgmsrv, alias_name, target,
+                                    scope_type, scope_name);
+  } else {
+    if (target != nullptr) {
+      ndbout << "USER ALIAS DROP takes no --target" << endl;
+      return -1;
+    }
+    /* scope_type stays negative without a scope option: whole alias. */
+    result = ndb_mgm_drop_user_alias(m_mgmsrv, alias_name,
+                                     scope_type, scope_name);
+  }
+  if (result == -1) {
+    ndbout << "USER ALIAS " << type_str
+           << " command failed: Error:" << endl;
+    printError();
+    return -1;
+  }
+  ndbout << "USER ALIAS " << type_str << " successfully executed" << endl;
   return 0;
 }
 

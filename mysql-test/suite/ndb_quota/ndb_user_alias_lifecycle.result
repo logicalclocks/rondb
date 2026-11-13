@@ -1,0 +1,113 @@
+# Target users must exist before aliases reference them
+# SET: all three scope kinds, alias created on first SET
+# Repeating a SET with the same scope and target is a no-op
+# GET shows the rules in insertion order
+User alias rules for mary01ab
+aliasId = <id>
+numRules = 3
+  --table=marketing.clicks_1 --target=clicks_rl
+  --database=marketing --target=team_rl
+  --target=team_rl
+# A second SET on an existing scope with another target is refused
+USER ALIAS SET command failed: Error:
+*  1247: Error
+*        Set User Alias failed
+# A missing target user is refused
+USER ALIAS SET command failed: Error:
+*  1246: Error
+*        Set User Alias failed
+# A '$'-prefixed target is refused
+USER ALIAS SET command failed: Error:
+*   703: Error
+*        Set User Alias failed
+# The refused SETs created nothing
+USER ALIAS GET command failed: Error:
+*   709: Error
+*        No such user alias exists
+# Kind separation: USER commands do not see aliases
+USER GET command failed: Error:
+*   723: Error
+*        Get user failed with error
+USER DROP command failed: Error:
+*   723: Error
+*        Drop User failed
+USER ALTER command failed: Error:
+*   723: Error
+*        Alter User failed
+# Kind separation: USER ALIAS commands do not see users
+USER ALIAS GET command failed: Error:
+*   723: Error
+*        No such user alias exists
+USER ALIAS DROP command failed: Error:
+*   723: Error
+*        Drop User Alias failed
+# A USER SET on an existing alias name is refused (name space shared)
+USER SET command failed: Error:
+*   721: Error
+*        Create User failed
+# A USER ALIAS SET on an existing plain user name is refused
+USER ALIAS SET command failed: Error:
+*   723: Error
+*        Set User Alias failed
+# USER LIST shows the users and not the aliases
+User rate limits for team_rl
+  userId = <id>
+  userVersion = <id>
+  RatePerSec = 100000
+  MaxTransactionSize = 0
+  MaxParallelTransactions = 0
+  MaxParallelComplexQueries = 0
+
+User rate limits for clicks_rl
+  userId = <id>
+  userVersion = <id>
+  RatePerSec = 50000
+  MaxTransactionSize = 0
+  MaxParallelTransactions = 0
+  MaxParallelComplexQueries = 0
+
+User List command completed
+# USER ALIAS LIST shows the aliases and not the users
+User alias rules for alice4f2
+  aliasId = <id>
+  numRules = 1
+  --target=team_rl
+
+User alias rules for mary01ab
+  aliasId = <id>
+  numRules = 3
+  --table=marketing.clicks_1 --target=clicks_rl
+  --database=marketing --target=team_rl
+  --target=team_rl
+
+User Alias List command completed
+# Scoped DROP removes one rule; dropping it again is a no-op
+User alias rules for mary01ab
+aliasId = <id>
+numRules = 1
+  --table=marketing.clicks_1 --target=clicks_rl
+# Client-side option validation
+USER ALIAS SET needs --target = <user name>
+At most one of --table and --database
+--all cannot be combined with --table or --database
+USER ALIAS DROP takes no --target
+# A table scope needs the db.table form
+USER ALIAS SET command failed: Error:
+*   703: Error
+*        Set User Alias failed
+USER ALIAS SET command failed: Error:
+*   703: Error
+*        Set User Alias failed
+# The 32-rule cap: rule 33 is refused
+USER ALIAS SET command failed: Error:
+*  1248: Error
+*        Set User Alias failed
+# Whole-alias DROP removes it entirely
+USER ALIAS GET command failed: Error:
+*   709: Error
+*        No such user alias exists
+# A target in use by no alias can be dropped; cleanup
+# Nothing of either kind is left
+User List command completed
+User Alias List command completed
+USER ALIAS lifecycle completed
