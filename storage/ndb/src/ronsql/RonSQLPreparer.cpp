@@ -17636,22 +17636,54 @@ RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
     // Add/Sub/Mul on a NULL register would error just like a
     // compare), so the whole expression is UNKNOWN when any operand
     // is NULL — matching SQL.
-    emit_embedded_filter_expr(agg, scope, ce->args.left, leaf_idx,
-                              reg, tmp_reg, cur_pos, null_fail_target);
-    emit_embedded_filter_expr(agg, scope, ce->args.right, leaf_idx,
-                              tmp_reg, reg, cur_pos, null_fail_target);
+    //
+    // There are only two registers, reg and tmp_reg, and the operand
+    // evaluated second must not use the one holding the first. The
+    // operand evaluated first may use both, so it must be the one
+    // that needs two registers: in `l.y * (l.z + 1)` evaluating l.y
+    // first let `l.z + 1` load its 1 over it. cross_table_where_filters
+    // accepts a side only when filter_expr_reg_depth is at most 2,
+    // which is exactly what this order can evaluate.
+    const Uint32 left_depth = filter_expr_reg_depth(ce->args.left);
+    const Uint32 right_depth = filter_expr_reg_depth(ce->args.right);
+    require_run((left_depth == 1 && right_depth <= 2) ||
+                (right_depth == 1 && left_depth <= 2),
+                "Cross-table WHERE filter expression needs more than "
+                "two registers.");
+    Uint32 left_reg = reg;
+    Uint32 right_reg = tmp_reg;
+    if (right_depth > left_depth) {
+      left_reg = tmp_reg;
+      right_reg = reg;
+      emit_embedded_filter_expr(agg, scope, ce->args.right, leaf_idx,
+                                right_reg, left_reg, cur_pos,
+                                null_fail_target);
+      emit_embedded_filter_expr(agg, scope, ce->args.left, leaf_idx,
+                                left_reg, right_reg, cur_pos,
+                                null_fail_target);
+    } else {
+      emit_embedded_filter_expr(agg, scope, ce->args.left, leaf_idx,
+                                left_reg, right_reg, cur_pos,
+                                null_fail_target);
+      emit_embedded_filter_expr(agg, scope, ce->args.right, leaf_idx,
+                                right_reg, left_reg, cur_pos,
+                                null_fail_target);
+    }
+    // The left value is always the first source, so SUB keeps its
+    // operand order and no mixed-sign typing depends on + and *
+    // commuting.
     switch (ce->op) {
     case T_PLUS:
-      programAggregator_do_or_fail(
-          agg->EmitEmbeddedWord(Interpreter::Add(reg, reg, tmp_reg)));
+      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+          Interpreter::Add(reg, left_reg, right_reg)));
       break;
     case T_MINUS:
-      programAggregator_do_or_fail(
-          agg->EmitEmbeddedWord(Interpreter::Sub(reg, reg, tmp_reg)));
+      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+          Interpreter::Sub(reg, left_reg, right_reg)));
       break;
     case T_MULTIPLY:
-      programAggregator_do_or_fail(
-          agg->EmitEmbeddedWord(Interpreter::Mul(reg, reg, tmp_reg)));
+      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+          Interpreter::Mul(reg, left_reg, right_reg)));
       break;
     default:
       break;

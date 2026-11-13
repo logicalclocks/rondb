@@ -1,0 +1,223 @@
+# Right-nested arithmetic in a two-table WHERE filter.
+#
+# README finding F-4: a WHERE conjunct comparing columns of two
+# INNER-joined tables, like a.x < b.y * (b.z + 1), runs as an embedded
+# program in the aggregation program of the leaf. Each side of the
+# comparison is evaluated with two registers. emit_embedded_filter_expr
+# always evaluated the left operand of + - * first, so for an operand
+# like b.y * (b.z + 1) the 1 of the inner + was loaded over b.y and the
+# filter computed 1 * (b.z + 1). It now evaluates first the operand
+# that needs both registers, as filter_expr_reg_depth assumes when it
+# accepts the side.
+#
+# Every case with a WHERE gives a different result with the old order.
+#
+#   na-0  no WHERE (control)
+#   na-1  MUL over ADD on the right side (the README example)
+#   na-2  SUB over SUB on the right side (operand order of SUB)
+#   na-3  the nested side on the left of the comparison
+#   na-4  nested on both sides
+#   na-5  a nullable column inside the nested operand (its NULL guard)
+#   na-6  nested on the other table's side, nullable left operand
+#   na-7  OR of two nested atoms
+#   na-8  na-1 without GROUP BY
+#   na-9  a constant minus a nested SUB
+#
+# Expected results come from mysqld (strict_diff).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE cna (
+  id  INT NOT NULL,
+  grp INT NOT NULL,
+  x   INT NOT NULL,
+  xn  INT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE cnb (
+  id INT NOT NULL,
+  y  INT NOT NULL,
+  z  INT NOT NULL,
+  zn INT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+INSERT INTO cna VALUES
+  (1, 1, 5, 5), (2, 1, 12, NULL), (3, 1, 30, 3),
+  (4, 2, 7, 7), (5, 2, 20, NULL),
+  (6, 3, 1, 1), (7, 3, 50, 10),
+  (8, 4, 9, 2), (9, 4, 15, 15), (10, 4, -4, -4);
+INSERT INTO cnb VALUES
+  (1, 2, 3, 3), (2, 3, 3, NULL), (3, 4, 6, 6), (4, 1, 0, 0),
+  (5, 5, 3, 3), (6, 0, 9, NULL), (7, 6, 8, 1), (8, 3, 1, 1),
+  (9, 2, 7, 7), (10, -1, 2, 2);
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === na-0: no WHERE (control) ===
+let $QUERY=
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+GROUP BY a.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+GROUP BY a.grp|
+
+--echo
+--echo === na-1: MUL over ADD on the right side ===
+let $QUERY=
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < b.y * (b.z + 1)
+GROUP BY a.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < b.y * (b.z + 1)
+GROUP BY a.grp|
+
+--echo
+--echo === na-2: SUB over SUB on the right side ===
+let $QUERY=
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x > b.y - (b.z - 10)
+GROUP BY a.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x > b.y - (b.z - 10)
+GROUP BY a.grp|
+
+--echo
+--echo === na-3: nested side on the left of the comparison ===
+let $QUERY=
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE b.y * (b.z - 2) <= a.x
+GROUP BY a.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE b.y * (b.z - 2) <= a.x
+GROUP BY a.grp|
+
+--echo
+--echo === na-4: nested on both sides ===
+let $QUERY=
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x * (a.x - 3) > b.y + (b.z * 2)
+GROUP BY a.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x * (a.x - 3) > b.y + (b.z * 2)
+GROUP BY a.grp|
+
+--echo
+--echo === na-5: nullable column inside the nested operand ===
+let $QUERY=
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < b.y * (b.zn + 1)
+GROUP BY a.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < b.y * (b.zn + 1)
+GROUP BY a.grp|
+
+--echo
+--echo === na-6: nested on the other side, nullable left operand ===
+let $QUERY=
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.xn - (a.x - 10) > b.z
+GROUP BY a.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.xn - (a.x - 10) > b.z
+GROUP BY a.grp|
+
+--echo
+--echo === na-7: OR of two nested atoms ===
+let $QUERY=
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < b.y * (b.z + 1) OR a.x > 2 * (b.y + b.z)
+GROUP BY a.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < b.y * (b.z + 1) OR a.x > 2 * (b.y + b.z)
+GROUP BY a.grp|
+
+--echo
+--echo === na-8: MUL over ADD, no GROUP BY ===
+let $QUERY=
+SELECT COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < b.y * (b.z + 1);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < b.y * (b.z + 1)|
+
+--echo
+--echo === na-9: a constant minus a nested SUB ===
+let $QUERY=
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < 12 - (b.y - b.z)
+GROUP BY a.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < 12 - (b.y - b.z)
+GROUP BY a.grp|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE cnb;
+DROP TABLE cna;
+--enable_warnings
+--enable_query_log
