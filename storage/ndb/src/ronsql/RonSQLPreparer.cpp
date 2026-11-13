@@ -12993,38 +12993,32 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
             cteVirtualTables[0]->getColumn(pk_name);
         ndbrequire(pk_col != NULL);
         const ConditionalExpression* ce_const = root_pk_const[k];
-        // Synthetic virt-table columns have m_attrSize == 0
-        // (memory: project_synthetic_virt_table_gotcha.md), so
-        // the (void*, len) constValue overload fails column
-        // validation at lookupCte().  Dispatch to the typed
-        // constValue overloads instead — they create operands
-        // independent of column metadata.
         switch (pk_col->getType()) {
         case NdbDictionary::Column::Tinyint:
         case NdbDictionary::Column::Smallint:
         case NdbDictionary::Column::Mediumint:
         case NdbDictionary::Column::Int:
-          require_prm(ce_const->op == T_INT,
-                      "Expected integer constant for CTE root lookup key.");
-          lookup_keys[k] = qb->constValue((Int32) ce_const->constant_integer);
-          break;
         case NdbDictionary::Column::Bigint:
-          require_prm(ce_const->op == T_INT,
-                      "Expected integer constant for CTE root lookup key.");
-          lookup_keys[k] = qb->constValue((Int64) ce_const->constant_integer);
-          break;
         case NdbDictionary::Column::Tinyunsigned:
         case NdbDictionary::Column::Smallunsigned:
         case NdbDictionary::Column::Mediumunsigned:
         case NdbDictionary::Column::Unsigned:
-          require_prm(ce_const->op == T_INT,
-                      "Expected integer constant for CTE root lookup key.");
-          lookup_keys[k] = qb->constValue((Uint32) ce_const->constant_integer);
-          break;
         case NdbDictionary::Column::Bigunsigned:
           require_prm(ce_const->op == T_INT,
                       "Expected integer constant for CTE root lookup key.");
-          lookup_keys[k] = qb->constValue((Uint64) ce_const->constant_integer);
+          // Encoded as on the real-table root, which refuses a literal
+          // outside the column type's domain with a permanent error
+          // (build_cte_virtual_tables sizes the virtual column as the
+          // dictionary would, so the byte-buffer operand binds).  The
+          // typed constValue overloads took the literal cast to Int32,
+          // Uint32 or Uint64, which wrapped it into another key (J-3:
+          // INT 4294967297 probed key 1), and sent a MEDIUMINT key as 4
+          // bytes where the materialized group key has 3.
+          {
+            raw_value rv = encode_constant(
+                const_cast<ConditionalExpression*>(ce_const), pk_col);
+            lookup_keys[k] = query_const_value(qb, rv, pk_col);
+          }
           break;
         case NdbDictionary::Column::Float:
         case NdbDictionary::Column::Double:
