@@ -217,6 +217,30 @@ static Uint32 create_obj_inc_schema_version(Uint32 old) {
   return (old + 0x00000001) & 0x00FFFFFF;
 }
 
+/**
+ * Clear a schema file entry for an object id that is not in use after a
+ * restart, but keep the highest create version known for the id, from our
+ * own schema file and the master's.
+ *
+ * The next object created with this id gets this version plus one, so each
+ * object that has used an id keeps a version of its own. RESTORE relies on
+ * this when it decides whether an LCP control file belongs to the table
+ * now using the id or to a table dropped while this node was down: it
+ * compares only the table id, fragment id and the create version. A node
+ * that later becomes master must not start counting from 0 again, or a
+ * new table can get the version of a dropped table whose LCP files are
+ * still on the disk of a node that was down when it was dropped.
+ */
+static void init_unused_schema_entry(
+    SchemaFile::TableEntry *ownEntry,
+    const SchemaFile::TableEntry *masterEntry) {
+  const Uint32 version =
+      std::max(table_version_major(ownEntry->m_tableVersion),
+               table_version_major(masterEntry->m_tableVersion));
+  ownEntry->init();
+  ownEntry->m_tableVersion = version;
+}
+
 static const Uint32 SuspectGETTABINFOREQMillis = 5000;
 
 /* **************************************************************** */
@@ -4699,7 +4723,7 @@ void Dbdict::checkSchemaStatus(Signal *signal) {
       if (masterState != SchemaFile::SF_IN_USE) {
         if (ownEntry->m_tableType != DictTabInfo::SchemaTransaction) {
           jam();
-          ownEntry->init();
+          init_unused_schema_entry(ownEntry, masterEntry);
         }
         continue;
       }
@@ -4884,7 +4908,7 @@ void Dbdict::set_max_check_schema_status() {
     if (ownState == SchemaFile::SF_UNUSED &&
         masterState == SchemaFile::SF_UNUSED &&
         ownEntry->m_tableType != DictTabInfo::SchemaTransaction) {
-      ownEntry->init();
+      init_unused_schema_entry(ownEntry, masterEntry);
       continue;
     }
     c_max_restart_table_id = tableId;
