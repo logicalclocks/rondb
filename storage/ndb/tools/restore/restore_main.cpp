@@ -52,6 +52,7 @@
 #include <NdbThread.h>
 
 #include <my_dir.h>
+#include <atomic>
 
 #define TMP_TABLE_PREFIX "#sql"
 #define TMP_TABLE_PREFIX_LEN 4
@@ -83,6 +84,10 @@ static const int g_max_parts = 128;
 static int ga_backup_format = BF_UNKNOWN;
 static int ga_part_count = 1;
 static int ga_error_thread = 0;
+/* A part restored all its data with data errors skipped by
+   --continue-on-data-errors: the exit code is FAILED, but the other
+   parts go on (ga_error_thread would stop them) */
+static std::atomic<bool> ga_data_errors{false};
 
 static const char *default_backupPath = "." DIR_SEPARATOR;
 static const char *ga_backupPath = default_backupPath;
@@ -2655,6 +2660,7 @@ int do_restore(RestoreThreadData *thrdata) {
     if (g_consumers[j]->has_data_error())
     {
       restoreLogger.log_error("Restore: Failed to restore some data.");
+      thrdata->m_data_errors_only = true;
       return NdbToolsProgramExitCode::FAILED;
     }
   }
@@ -2723,8 +2729,13 @@ static void *start_restore_worker(void *data) {
   RestoreThreadData *rdata = (RestoreThreadData *)data;
   rdata->m_result = do_restore(rdata);
   if (rdata->m_result == NdbToolsProgramExitCode::FAILED) {
-    info.println("Thread %u failed, exiting", rdata->m_part_id);
-    ga_error_thread = rdata->m_part_id;
+    if (rdata->m_data_errors_only) {
+      info.println("Thread %u completed with data errors", rdata->m_part_id);
+      ga_data_errors = true;
+    } else {
+      info.println("Thread %u failed, exiting", rdata->m_part_id);
+      ga_error_thread = rdata->m_part_id;
+    }
   }
   return 0;
 }
@@ -2896,6 +2907,12 @@ int main(int argc, char **argv) {
       }
 
       if (do_restore(&thrdata) == NdbToolsProgramExitCode::FAILED) {
+        if (thrdata.m_data_errors_only) {
+          // Restored with data errors skipped, go on with the next part
+          ga_data_errors = true;
+          clear_consumers(&thrdata);
+          continue;
+        }
         if (ga_backup_format == BF_SINGLE) {
           info << "Failed to restore BACKUP-" << ga_backupId << endl;
         } else {
@@ -2988,7 +3005,7 @@ int main(int argc, char **argv) {
 
   cleanup_restore();
 
-  if (ga_error_thread > 0) {
+  if (ga_error_thread > 0 || ga_data_errors) {
     exitHandler(NdbToolsProgramExitCode::FAILED);
   }
 

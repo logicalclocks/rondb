@@ -178,6 +178,9 @@ class RestoreThreadData {
  public:
   Uint32 m_part_id;
   int m_result;
+  /* Restored all its data, but some rows failed with data errors that
+     --continue-on-data-errors skipped */
+  bool m_data_errors_only;
   bool m_restore_meta;
   bool m_disable_indexes;
   NdbThread *m_thread;
@@ -185,12 +188,14 @@ class RestoreThreadData {
   RestoreThreadData(Uint32 part_id)
       : m_part_id(part_id),
         m_result(0),
+        m_data_errors_only(false),
         m_restore_meta(false),
         m_thread(NULL) {}
   CyclicBarrier *m_barrier;
   RestoreThreadData(Uint32 partId, CyclicBarrier *barrier)
       : m_part_id(partId),
         m_result(0),
+        m_data_errors_only(false),
         m_restore_meta(false),
         m_thread(NULL),
         m_barrier(barrier) {}
