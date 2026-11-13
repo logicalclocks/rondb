@@ -1,0 +1,663 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== nw-1: aggregate without GROUP BY, a subquery with no row ===
+== Query ==
+SELECT COUNT(*) AS cnt, SUM(v) AS s FROM nw_o
+WHERE v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS cnt, SUM(v) AS s FROM nw_o
+WHERE v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id)|
+cnt	s
+0	NULL
+
+=== nw-2: aggregate with GROUP BY, a subquery that is NULL ===
+== Query ==
+SELECT c, COUNT(*) AS cnt FROM nw_o
+WHERE v <= (SELECT MAX(n_x) FROM nw_n)
+GROUP BY c;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c, COUNT(*) AS cnt FROM nw_o
+WHERE v <= (SELECT MAX(n_x) FROM nw_n)
+GROUP BY c|
+c	cnt
+
+=== nw-3: pass-through filter, MAX over an empty table ===
+== Query ==
+SELECT id, v FROM nw_o
+WHERE v = (SELECT MAX(e_x) FROM nw_e);
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id, v FROM nw_o
+WHERE v = (SELECT MAX(e_x) FROM nw_e)|
+id	v
+
+=== nw-4: primary key lookup ===
+== Query ==
+SELECT id, c FROM nw_o
+WHERE id = (SELECT MAX(e_x) FROM nw_e GROUP BY e_id);
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id, c FROM nw_o
+WHERE id = (SELECT MAX(e_x) FROM nw_e GROUP BY e_id)|
+id	c
+
+=== nw-5: index bound, aggregate without GROUP BY ===
+== Query ==
+SELECT COUNT(*) AS cnt, MAX(k) AS mx FROM nw_o
+WHERE k >= (SELECT MAX(n_x) FROM nw_n);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS cnt, MAX(k) AS mx FROM nw_o
+WHERE k >= (SELECT MAX(n_x) FROM nw_n)|
+cnt	mx
+0	NULL
+
+=== nw-6: index bound, pass-through equality ===
+== Query ==
+SELECT id, k FROM nw_o
+WHERE k = (SELECT MAX(e_x) FROM nw_e GROUP BY e_id);
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id, k FROM nw_o
+WHERE k = (SELECT MAX(e_x) FROM nw_e GROUP BY e_id)|
+id	k
+
+=== nw-7: NOT over the comparison is still UNKNOWN ===
+== Query ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE NOT (v > (SELECT MAX(n_x) FROM nw_n));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE NOT (v > (SELECT MAX(n_x) FROM nw_n))|
+cnt
+0
+
+=== nw-8: NOT over an AND keeps the rows where the other side is FALSE ===
+== Query ==
+SELECT id FROM nw_o
+WHERE NOT (v > (SELECT MAX(n_x) FROM nw_n) AND c = 1);
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM nw_o
+WHERE NOT (v > (SELECT MAX(n_x) FROM nw_n) AND c = 1)|
+id
+3
+4
+5
+6
+
+=== nw-9: OR with a side that is TRUE for some rows ===
+== Query ==
+SELECT id, c FROM nw_o
+WHERE v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id) OR c = 2;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id, c FROM nw_o
+WHERE v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id) OR c = 2|
+id	c
+3	2
+4	2
+
+=== nw-10: OR with a side that is FALSE for every row ===
+== Query ==
+SELECT id, c FROM nw_o
+WHERE v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id) OR c = 9;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id, c FROM nw_o
+WHERE v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id) OR c = 9|
+id	c
+
+=== nw-11: NOT over an OR ===
+== Query ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE NOT (v > (SELECT MAX(n_x) FROM nw_n) OR c = 9);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE NOT (v > (SELECT MAX(n_x) FROM nw_n) OR c = 9)|
+cnt
+0
+
+=== nw-12: XOR with UNKNOWN is UNKNOWN ===
+== Query ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE (v > (SELECT MAX(n_x) FROM nw_n)) XOR (c = 1);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE (v > (SELECT MAX(n_x) FROM nw_n)) XOR (c = 1)|
+cnt
+0
+
+=== nw-13: IN list with a NULL subquery ===
+== Query ==
+SELECT id, v FROM nw_o
+WHERE v IN (10, 40, (SELECT MAX(n_x) FROM nw_n));
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id, v FROM nw_o
+WHERE v IN (10, 40, (SELECT MAX(n_x) FROM nw_n))|
+id	v
+1	10
+4	40
+
+=== nw-14: NOT over an IN list with a NULL subquery ===
+== Query ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE NOT (v IN (10, (SELECT MAX(n_x) FROM nw_n)));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE NOT (v IN (10, (SELECT MAX(n_x) FROM nw_n)))|
+cnt
+0
+
+=== nw-15: IS NULL of a NULL subquery is TRUE ===
+== Query ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE (SELECT MAX(n_x) FROM nw_n) IS NULL;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE (SELECT MAX(n_x) FROM nw_n) IS NULL|
+cnt
+6
+
+=== nw-16: IS NOT NULL of a subquery with no row is FALSE ===
+== Query ==
+SELECT c, COUNT(*) AS cnt FROM nw_o
+WHERE (SELECT MAX(e_x) FROM nw_e GROUP BY e_id) IS NOT NULL
+GROUP BY c;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c, COUNT(*) AS cnt FROM nw_o
+WHERE (SELECT MAX(e_x) FROM nw_e GROUP BY e_id) IS NOT NULL
+GROUP BY c|
+c	cnt
+
+=== nw-17: IS NOT NULL of a value is TRUE, under AND ===
+== Query ==
+SELECT id FROM nw_o
+WHERE (SELECT MAX(q) FROM nw_l) IS NOT NULL AND c = 3;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM nw_o
+WHERE (SELECT MAX(q) FROM nw_l) IS NOT NULL AND c = 3|
+id
+5
+6
+
+=== nw-18: IS NULL of a value is FALSE, under OR ===
+== Query ==
+SELECT id FROM nw_o
+WHERE (SELECT MAX(q) FROM nw_l) IS NULL OR c = 1;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM nw_o
+WHERE (SELECT MAX(q) FROM nw_l) IS NULL OR c = 1|
+id
+1
+2
+
+=== nw-19: arithmetic over a NULL subquery ===
+== Query ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE v > (SELECT MAX(n_x) FROM nw_n) + 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE v > (SELECT MAX(n_x) FROM nw_n) + 1|
+cnt
+0
+
+=== nw-20: arithmetic over a NULL subquery, under OR ===
+== Query ==
+SELECT id, k FROM nw_o
+WHERE k < (SELECT MAX(e_x) FROM nw_e) - 1 OR k > 40;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id, k FROM nw_o
+WHERE k < (SELECT MAX(e_x) FROM nw_e) - 1 OR k > 40|
+id	k
+5	45
+6	55
+
+=== nw-21: unary minus over a NULL subquery, under NOT ===
+== Query ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE NOT (v < -(SELECT MAX(n_x) FROM nw_n));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE NOT (v < -(SELECT MAX(n_x) FROM nw_n))|
+cnt
+0
+
+=== nj-1: join, root filter ===
+== Query ==
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.v > (SELECT MAX(n_x) FROM nw_n)
+GROUP BY o.c;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.v > (SELECT MAX(n_x) FROM nw_n)
+GROUP BY o.c|
+c	cnt
+
+=== nj-2: join, aggregate without GROUP BY ===
+== Query ==
+SELECT COUNT(*) AS cnt, SUM(l.q) AS sq
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS cnt, SUM(l.q) AS sq
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id)|
+cnt	sq
+0	NULL
+
+=== nj-3: join, root primary key, pass-through ===
+== Query ==
+SELECT o.id, l.q
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.id = (SELECT MAX(n_x) FROM nw_n);
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id, l.q
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.id = (SELECT MAX(n_x) FROM nw_n)|
+id	q
+
+=== nj-4: join, root primary key, aggregate ===
+== Query ==
+SELECT o.c, SUM(l.q) AS sq
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.id = (SELECT MAX(e_x) FROM nw_e GROUP BY e_id)
+GROUP BY o.c;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.c, SUM(l.q) AS sq
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.id = (SELECT MAX(e_x) FROM nw_e GROUP BY e_id)
+GROUP BY o.c|
+c	sq
+
+=== nj-5: join, root index bound ===
+== Query ==
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.k >= (SELECT MAX(n_x) FROM nw_n)
+GROUP BY o.c;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.k >= (SELECT MAX(n_x) FROM nw_n)
+GROUP BY o.c|
+c	cnt
+
+=== nj-6: join, root index bound with a residual that folds ===
+== Query ==
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.k >= 10 AND (o.v < (SELECT MAX(n_x) FROM nw_n) OR o.c = 3)
+GROUP BY o.c;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.k >= 10 AND (o.v < (SELECT MAX(n_x) FROM nw_n) OR o.c = 3)
+GROUP BY o.c|
+c	cnt
+3	3
+
+=== nj-7: join, NOT over an AND, pass-through ===
+== Query ==
+SELECT o.id, l.q
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE NOT (o.v > (SELECT MAX(n_x) FROM nw_n) AND o.c = 1);
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id, l.q
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE NOT (o.v > (SELECT MAX(n_x) FROM nw_n) AND o.c = 1)|
+id	q
+3	4
+5	5
+6	6
+6	7
+
+=== nj-8: LEFT JOIN, the NULL comparison drops out of an OR ===
+== Query ==
+SELECT o.c, COUNT(l.id) AS cnt
+FROM nw_o AS o LEFT JOIN nw_l AS l ON l.ok = o.id
+WHERE o.v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id) OR o.c = 2
+GROUP BY o.c;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.c, COUNT(l.id) AS cnt
+FROM nw_o AS o LEFT JOIN nw_l AS l ON l.ok = o.id
+WHERE o.v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id) OR o.c = 2
+GROUP BY o.c|
+c	cnt
+2	1
+
+=== nj-9: LEFT JOIN, root filter ===
+== Query ==
+SELECT o.c, COUNT(l.id) AS cnt
+FROM nw_o AS o LEFT JOIN nw_l AS l ON l.ok = o.id
+WHERE o.v > (SELECT MAX(n_x) FROM nw_n)
+GROUP BY o.c;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.c, COUNT(l.id) AS cnt
+FROM nw_o AS o LEFT JOIN nw_l AS l ON l.ok = o.id
+WHERE o.v > (SELECT MAX(n_x) FROM nw_n)
+GROUP BY o.c|
+c	cnt
+
+=== nj-10: join, IN list on the root primary key ===
+== Query ==
+SELECT o.id, l.q
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.id IN (2, 5, (SELECT MAX(e_x) FROM nw_e GROUP BY e_id));
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id, l.q
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.id IN (2, 5, (SELECT MAX(e_x) FROM nw_e GROUP BY e_id))|
+id	q
+2	3
+5	5
+
+=== nj-11: join, IS NULL of a NULL subquery is TRUE ===
+== Query ==
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE (SELECT MAX(n_x) FROM nw_n) IS NULL
+GROUP BY o.c;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE (SELECT MAX(n_x) FROM nw_n) IS NULL
+GROUP BY o.c|
+c	cnt
+1	3
+2	1
+3	3
+
+=== nj-12: join, arithmetic over a NULL subquery, under OR ===
+== Query ==
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.k < (SELECT MAX(e_x) FROM nw_e) + 100 OR o.c = 1
+GROUP BY o.c;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.k < (SELECT MAX(e_x) FROM nw_e) + 100 OR o.c = 1
+GROUP BY o.c|
+c	cnt
+1	3
+
+=== nj-13: join, XOR, aggregate without GROUP BY ===
+== Query ==
+SELECT COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE (o.v > (SELECT MAX(n_x) FROM nw_n)) XOR (o.c = 1);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE (o.v > (SELECT MAX(n_x) FROM nw_n)) XOR (o.c = 1)|
+cnt
+0

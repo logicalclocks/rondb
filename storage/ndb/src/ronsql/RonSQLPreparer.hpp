@@ -551,6 +551,10 @@ private:
   };
   DynamicArray<SubqueryInfo> m_subquery_infos;
   bool m_has_subqueries = false;
+  // X-3: set by fold_where_after_substitution() when a scalar subquery
+  // result makes the WHERE TRUE for no row.  The plan's keys and bounds
+  // may then hold a NULL, so execution reads no row through them.
+  bool m_where_never_true = false;
   bool m_has_ctes = false;
   // RONDB-1124 M1.3: name of the CTE collapse_collect_cte() folded into the
   // single-table pass-through statement ({NULL, 0} when no collapse ran);
@@ -1091,6 +1095,23 @@ private:
   // 0 where the exact truth value matters (XOR, IS, comparisons).
   void substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
                                       int polarity = 1);
+  // X-3: what a WHERE condition is once the constants that scalar
+  // subqueries substituted are folded into it.  A comparison with NULL
+  // is UNKNOWN, and WHERE keeps only the rows where it is TRUE: UNKNOWN
+  // keeps the same rows as FALSE under an even number of NOTs and as
+  // TRUE under an odd number (polarity 1 and -1).  The truth is that of
+  // the whole WHERE, not of the subexpression alone.
+  enum class FoldedTruth { ALWAYS_TRUE, ALWAYS_FALSE, VARIES };
+  // Sets *out to ce, or to a new tree for VARIES when something folded.
+  // Nodes are never changed in place: the plan shares them.
+  FoldedTruth fold_where_constants(struct ConditionalExpression* ce,
+                                   int polarity,
+                                   struct ConditionalExpression** out);
+  // Folds a list of top-level conjuncts; an ALWAYS_TRUE one becomes NULL.
+  void fold_where_conjuncts(DynamicArray<ConditionalExpression*>& conjuncts);
+  // Folds every WHERE structure the plan made at prepare time and sets
+  // m_where_never_true.
+  void fold_where_after_substitution();
   void execute_join();
   // Pass-through row delivery for projection-only main SELECTs.
   // Originally Phase E.3 (single CTE_SCAN root); generalized in
@@ -1185,6 +1206,8 @@ private:
   ResultPrinter::ColumnMetadata* build_result_column_metadata();
   bool column_uses_float_display(QueryScope& scope, Uint32 col_idx);
   void apply_filter_top_level(NdbScanFilter* filter);
+  // X-3: the whole filter, rejecting every row (m_where_never_true).
+  void apply_reject_all_filter(NdbScanFilter* filter);
   void apply_filter(NdbScanFilter* filter, QueryScope& scope,
                     struct ConditionalExpression* ce);
   void apply_filter_cmp(NdbScanFilter* filter, QueryScope& scope,

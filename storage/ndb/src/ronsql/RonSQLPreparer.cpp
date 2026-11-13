@@ -9649,6 +9649,261 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
   }
 }
 
+// X-3: true when ce is NULL in every row: a NULL scalar subquery result,
+// or an operator that a NULL operand makes NULL.
+static bool
+is_null_constant(const ConditionalExpression* ce)
+{
+  if (ce == NULL) return false;
+  switch (ce->op)
+  {
+  case T_NULL:
+    return true;
+  case T_INTERVAL:
+    return is_null_constant(ce->interval.arg);
+  case T_EXTRACT:
+    return is_null_constant(ce->extract.arg);
+  case T_PLUS:
+  case T_MINUS:
+  case T_MULTIPLY:
+  case T_SLASH:
+  case T_DIV:
+  case T_MODULO:
+  case T_BITWISE_OR:
+  case T_BITWISE_AND:
+  case T_BITWISE_XOR:
+  case T_BITSHIFT_LEFT:
+  case T_BITSHIFT_RIGHT:
+  case T_DATE_ADD:
+  case T_DATE_SUB:
+  case T_GREATEST:
+  case T_LEAST:
+  case T_COMMA:
+    // A unary minus has no left operand, and GREATEST and LEAST hold
+    // their arguments in a T_COMMA list.
+    return is_null_constant(ce->args.left) ||
+           is_null_constant(ce->args.right);
+  default:
+    return false;
+  }
+}
+
+static bool
+is_non_null_literal(const ConditionalExpression* ce)
+{
+  return ce != NULL &&
+         (ce->op == T_INT || ce->op == T_FLOAT || ce->op == T_STRING ||
+          ce->op == I_MYSQL_TIME);
+}
+
+static ConditionalExpression*
+new_condition_node(ArenaMalloc* amalloc, TokenKind op,
+                   ConditionalExpression* left, ConditionalExpression* right)
+{
+  ConditionalExpression* n = amalloc->alloc_exc<ConditionalExpression>(1);
+  n->conjunct_sql = LexString{NULL, 0};
+  n->op = op;
+  n->args.left = left;
+  n->args.right = right;
+  return n;
+}
+
+RonSQLPreparer::FoldedTruth
+RonSQLPreparer::fold_where_constants(ConditionalExpression* ce, int polarity,
+                                     ConditionalExpression** out)
+{
+  *out = ce;
+  switch (ce->op)
+  {
+  case T_EQUALS:
+  case T_NOT_EQUALS:
+  case T_LT:
+  case T_LE:
+  case T_GT:
+  case T_GE:
+  case T_LIKE:
+    if (!is_null_constant(ce->args.left) && !is_null_constant(ce->args.right))
+    {
+      return FoldedTruth::VARIES;
+    }
+    // UNKNOWN.  Folding it to FALSE also under NOT would keep the rows
+    // that NOT UNKNOWN (UNKNOWN) drops.
+    return (polarity > 0) ? FoldedTruth::ALWAYS_FALSE
+                          : FoldedTruth::ALWAYS_TRUE;
+  case T_IS:
+    // IS [NOT] NULL is never UNKNOWN.
+    if (is_null_constant(ce->is.arg))
+    {
+      return ce->is.null ? FoldedTruth::ALWAYS_TRUE
+                         : FoldedTruth::ALWAYS_FALSE;
+    }
+    if (is_non_null_literal(ce->is.arg))
+    {
+      return ce->is.null ? FoldedTruth::ALWAYS_FALSE
+                         : FoldedTruth::ALWAYS_TRUE;
+    }
+    return FoldedTruth::VARIES;
+  case T_NOT:
+  case T_EXCLAMATION:
+  {
+    ConditionalExpression* arg = NULL;
+    switch (fold_where_constants(ce->args.left, -polarity, &arg))
+    {
+    case FoldedTruth::ALWAYS_TRUE:
+      return FoldedTruth::ALWAYS_FALSE;
+    case FoldedTruth::ALWAYS_FALSE:
+      return FoldedTruth::ALWAYS_TRUE;
+    case FoldedTruth::VARIES:
+      break;
+    }
+    if (arg != ce->args.left)
+    {
+      *out = new_condition_node(m_amalloc, ce->op, arg, NULL);
+    }
+    return FoldedTruth::VARIES;
+  }
+  case T_AND:
+  case T_OR:
+  {
+    // FALSE decides an AND and TRUE an OR; the other constant drops out.
+    const FoldedTruth decides = (ce->op == T_AND)
+                                    ? FoldedTruth::ALWAYS_FALSE
+                                    : FoldedTruth::ALWAYS_TRUE;
+    ConditionalExpression* left = NULL;
+    ConditionalExpression* right = NULL;
+    const FoldedTruth left_truth =
+        fold_where_constants(ce->args.left, polarity, &left);
+    const FoldedTruth right_truth =
+        fold_where_constants(ce->args.right, polarity, &right);
+    if (left_truth == decides || right_truth == decides)
+    {
+      return decides;
+    }
+    if (left_truth != FoldedTruth::VARIES)
+    {
+      *out = right;
+      return right_truth;
+    }
+    if (right_truth != FoldedTruth::VARIES)
+    {
+      *out = left;
+      return left_truth;
+    }
+    if (left != ce->args.left || right != ce->args.right)
+    {
+      *out = new_condition_node(m_amalloc, ce->op, left, right);
+    }
+    return FoldedTruth::VARIES;
+  }
+  case T_XOR:
+  {
+    // An operand of XOR has both polarities.  (x OR y) AND (NOT x OR
+    // NOT y), the form simplify_ce gives XOR, is equal to it in
+    // three-valued logic and gives each occurrence one polarity, so
+    // fold that form when an operand has something to fold.
+    ConditionalExpression* x = ce->args.left;
+    ConditionalExpression* y = ce->args.right;
+    ConditionalExpression* probe = NULL;
+    if (fold_where_constants(x, polarity, &probe) == FoldedTruth::VARIES &&
+        probe == x &&
+        fold_where_constants(y, polarity, &probe) == FoldedTruth::VARIES &&
+        probe == y)
+    {
+      return FoldedTruth::VARIES;
+    }
+    ConditionalExpression* cnf = new_condition_node(
+        m_amalloc, T_AND,
+        new_condition_node(m_amalloc, T_OR, x, y),
+        new_condition_node(m_amalloc, T_OR,
+                           new_condition_node(m_amalloc, T_NOT, x, NULL),
+                           new_condition_node(m_amalloc, T_NOT, y, NULL)));
+    return fold_where_constants(cnf, polarity, out);
+  }
+  default:
+    return FoldedTruth::VARIES;
+  }
+}
+
+void
+RonSQLPreparer::fold_where_conjuncts(
+    DynamicArray<ConditionalExpression*>& conjuncts)
+{
+  for (Uint32 i = 0; i < conjuncts.size(); i++)
+  {
+    if (conjuncts[i] == NULL) continue;
+    ConditionalExpression* folded = NULL;
+    switch (fold_where_constants(conjuncts[i], 1, &folded))
+    {
+    case FoldedTruth::ALWAYS_TRUE:
+      conjuncts[i] = NULL;
+      break;
+    case FoldedTruth::ALWAYS_FALSE:
+      m_where_never_true = true;
+      break;
+    case FoldedTruth::VARIES:
+      conjuncts[i] = folded;
+      break;
+    }
+  }
+}
+
+/*
+ * X-3 = J-11: a scalar subquery result replaces its node only at
+ * execution, after planning took the node for a constant: a key, an
+ * index bound, or a value in a filter.  A NULL result (or no row) reached
+ * encode_constant, which refused it as a stale schema, so the schema was
+ * reloaded and the query failed.  MySQL compares with NULL as UNKNOWN.
+ * Here every WHERE structure the plan made is folded: what remains holds
+ * no NULL, and a conjunct that is never TRUE makes the whole WHERE never
+ * TRUE.  Keys and bounds are top-level comparisons, so a NULL in one
+ * always ends there, and execution then reads no row through them.
+ */
+void
+RonSQLPreparer::fold_where_after_substitution()
+{
+  if (!is_join_query())
+  {
+    fold_where_conjuncts(m_toplevel_conditions);
+    if (m_pk_lookup && m_pk_lookup_has_residual)
+    {
+      // The residual arms require at least one residual conjunct.
+      bool has_residual = false;
+      for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++)
+      {
+        if (m_pk_lookup_cond_map[i] == -1 && m_toplevel_conditions[i] != NULL)
+        {
+          has_residual = true;
+        }
+      }
+      m_pk_lookup_has_residual = has_residual;
+    }
+    return;
+  }
+  // A subquery may only be in a condition on the root table: a joined
+  // table's and a cross-table condition refuse one at prepare time
+  // (classify_where_by_table).  emit_root_op takes the root's keys and
+  // filter from join_where_ce[0] at execution, but an index-scan root
+  // has its conjuncts from prepare time.
+  QueryScope& scope = m_main_scope;
+  if (scope.join_where_ce[0] != NULL)
+  {
+    ConditionalExpression* folded = NULL;
+    switch (fold_where_constants(scope.join_where_ce[0], 1, &folded))
+    {
+    case FoldedTruth::ALWAYS_TRUE:
+      scope.join_where_ce[0] = NULL;
+      break;
+    case FoldedTruth::ALWAYS_FALSE:
+      m_where_never_true = true;
+      break;
+    case FoldedTruth::VARIES:
+      scope.join_where_ce[0] = folded;
+      break;
+    }
+  }
+  fold_where_conjuncts(scope.body_toplevel_conditions);
+}
+
 void
 RonSQLPreparer::execute()
 {
@@ -9692,6 +9947,7 @@ RonSQLPreparer::execute()
       STAT_TS(m_conf.phase_stats, s_subq_start);
       execute_subqueries();
       substitute_subquery_results();
+      fold_where_after_substitution();
       STAT_TS(m_conf.phase_stats, s_subq_end);
       STAT_SET(m_conf.phase_stats, subquery_us, s_subq_start, s_subq_end);
     }
@@ -9740,7 +9996,12 @@ RonSQLPreparer::execute()
     aggregator.set_reusable_program(true);
     DBGV(programAggregator(&aggregator));
     finalize_aggregator(&aggregator, "Failed to finalize aggregator.");
-    if (m_pk_lookup) {
+    if (m_where_never_true) {
+      // X-3: no row passes the WHERE.  The result is that of no rows, as
+      // when every key of the lookup arm is missing: one row without
+      // GROUP BY.
+      aggregator.PrepareResults();
+    } else if (m_pk_lookup) {
       // WP-F F1b: IN list on the primary key — N aggregating key reads.
       execute_pk_lookup_aggregate(&aggregator);
     } else {
@@ -9817,7 +10078,9 @@ RonSQLPreparer::execute_pk_lookup_aggregate(NdbAggregator* aggregator)
                 "Failed to apply lookup filter.");
     Uint32 num_residual = 0;
     for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
-      if (m_pk_lookup_cond_map[i] == -1) {
+      // A NULL conjunct was folded to TRUE (X-3).
+      if (m_pk_lookup_cond_map[i] == -1 &&
+          m_toplevel_conditions[i] != NULL) {
         apply_filter(&filter, m_main_scope, m_toplevel_conditions[i]);
         num_residual++;
       }
@@ -9986,11 +10249,28 @@ RonSQLPreparer::execute_count_star_shortcut()
 NdbScanOperation*
 RonSQLPreparer::open_single_table_scan_op(Uint32 batch_rows)
 {
+  if (m_where_never_true) {
+    // X-3: the bounds or the key may hold the NULL, and m_scan_config is
+    // NULL on a lookup plan, so scan the table and pass no row: the
+    // caller still delivers the result of no rows in its own format.
+    NdbScanOperation* scanOp =
+        DBG(m_trans->getNdbScanOperation(DBG(m_main_scope.table)));
+    require_sch(scanOp != NULL, "Failed to get scan operation.");
+    require_prm(DBG(scanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead,
+                                       0, 0, DBG(batch_rows))) == 0,
+                "Failed to initialize scan operation.");
+    NdbScanFilter filter(scanOp);
+    DBGV(filter.setSqlCmpSemantics());
+    apply_reject_all_filter(&filter);
+    return scanOp;
+  }
   ScanConfig& sc = *m_scan_config;
   const NdbDictionary::Index* index = sc.index;
   bool has_filter = false;
   for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
-    if (sc.condition_handling_map[i] == -1) {
+    // A NULL conjunct was folded to TRUE (X-3).
+    if (sc.condition_handling_map[i] == -1 &&
+        m_toplevel_conditions[i] != NULL) {
       has_filter = true;
     }
   }
@@ -10744,7 +11024,9 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
 
   STAT_TS(m_conf.phase_stats, s_scandef_start);
 
-  if (m_pk_lookup) {
+  // X-3: a WHERE that is never TRUE may have a NULL key; the scan arm
+  // then reads no row.
+  if (m_pk_lookup && !m_where_never_true) {
     /*
      * Primary key lookup(s).  Two definition arms share the execute +
      * print tail below: the RecAttr readTuple when the WHERE was fully
@@ -10808,7 +11090,9 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
                     "Failed to apply lookup filter.");
         Uint32 num_residual = 0;
         for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
-          if (m_pk_lookup_cond_map[i] == -1) {
+          // A NULL conjunct was folded to TRUE (X-3).
+          if (m_pk_lookup_cond_map[i] == -1 &&
+              m_toplevel_conditions[i] != NULL) {
             apply_filter(&filter, m_main_scope, m_toplevel_conditions[i]);
             num_residual++;
           }
@@ -12543,6 +12827,8 @@ RonSQLPreparer::emit_index_scan_root(NdbQueryBuilder* qb,
     if (scope.body_scan_config->condition_handling_map[ci] != -1)
       continue;
     ConditionalExpression* ce = scope.body_toplevel_conditions[ci];
+    if (ce == NULL)
+      continue;  // folded to TRUE (X-3)
     if (residual_root == NULL) {
       residual_root = ce;
     } else {
@@ -12743,6 +13029,48 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     for (const Outputs* o = plan.ops[0].cte_def->stmt->outputs;
          o != NULL; o = o->next) numResultCols++;
 
+    // Single-row CTEs (cte_single_row_kernel_plan.md) also have no
+    // GROUP BY but are NOT scalar: as a FROM root they take the
+    // scanCte path below (WHERE as a jump-table filter).  The scalar
+    // dummy-key lookupCte arm and the full-virt-PK lookupCte arm are
+    // both wrong for them (no positions declared; the kernel's
+    // single-row probe rejects position-less keys).
+    const bool root_cte_is_single_row =
+        (plan.ops[0].cte_def != NULL &&
+         plan.ops[0].cte_def->stmt->is_single_row_cte);
+    const bool root_cte_is_scalar =
+        (plan.ops[0].cte_def != NULL &&
+         plan.ops[0].cte_def->stmt->groupby_columns == NULL &&
+         !root_cte_is_single_row);
+    const bool where_never_true =
+        (&scope == &m_main_scope && m_where_never_true);
+
+    if (where_never_true && !root_cte_is_scalar)
+    {
+      // X-3: the WHERE is TRUE for no row, and its keys may hold the
+      // NULL.  Scan the CTE and pass no row; the rest of the tree still
+      // returns the result of no rows.  A scalar CTE root takes the
+      // filtered scalar lookupCte below instead, the one form a scalar
+      // root with a filter has (DBLQH's scalar CTE_SCAN arm counts a
+      // rejected group as a row sent, so the API waits for a row that
+      // never comes).
+      NdbInterpretedCode code(cteVirtualTables[0]);
+      NdbScanFilter filter(&code);
+      apply_reject_all_filter(&filter);
+      require_run(rootOpts.setInterpretedCode(code) == 0,
+                  "Failed to set interpreted code on CTE_SCAN root.");
+      if (singleAgg != NULL && plan.agg_leaf_idx == 0 &&
+          plan.num_agg_leaves == 0 && scope.agg != NULL)
+      {
+        require_run(rootOpts.setAggregation(*singleAgg) == 0,
+                    "Failed to set aggregation on CTE_SCAN root.");
+      }
+      opDefs[0] = qb->scanCte(plan.ops[0].cte_def_idx, numResultCols,
+                              cteVirtualTables[0], &rootOpts);
+      require_run(opDefs[0] != NULL, "Failed to create scanCte root.");
+      return;
+    }
+
     // Phase I.7: when the WHERE clause supplies equality predicates
     // on every virt-table PK column (i.e. every GROUP BY column of
     // the CTE body), convert the scan to a single-row lookupCte
@@ -12756,24 +13084,13 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     ConditionalExpression* root_pk_eq[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
     ConditionalExpression* root_residual = NULL;
     bool root_has_scan_child = false;
-    // Single-row CTEs (cte_single_row_kernel_plan.md) also have no
-    // GROUP BY but are NOT scalar: as a FROM root they take the
-    // scanCte path below (WHERE as a jump-table filter).  The scalar
-    // dummy-key lookupCte arm and the full-virt-PK lookupCte arm are
-    // both wrong for them (no positions declared; the kernel's
-    // single-row probe rejects position-less keys).
-    bool root_cte_is_single_row =
-        (plan.ops[0].cte_def != NULL &&
-         plan.ops[0].cte_def->stmt->is_single_row_cte);
-    bool root_cte_is_scalar =
-        (plan.ops[0].cte_def != NULL &&
-         plan.ops[0].cte_def->stmt->groupby_columns == NULL &&
-         !root_cte_is_single_row);
     // F19: the filtered scalar root below has only the lookupCte form,
     // which would drop the misses of an outer-joined child (see
-    // outer_agg_needs_scan_root); reject the shape instead.
+    // outer_agg_needs_scan_root); reject the shape instead.  A WHERE
+    // that is never TRUE (X-3) passes no root row, so there is no miss
+    // to NULL-extend and the lookupCte gives the result of no rows.
     if (root_cte_is_scalar && scope.join_where_ce[0] != NULL &&
-        outer_agg_needs_scan_root)
+        outer_agg_needs_scan_root && !where_never_true)
     {
       ndbrequire(m_conf.err_stream != NULL);
       *m_conf.err_stream
@@ -12784,12 +13101,22 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
       throw RonSQLPermanentError(
           "Outer join below a filtered scalar CTE root not supported.");
     }
-    if (root_cte_is_scalar && scope.join_where_ce[0] != NULL)
+    if (root_cte_is_scalar &&
+        (scope.join_where_ce[0] != NULL || where_never_true))
     {
       NdbInterpretedCode code(cteVirtualTables[0]);
-      emit_cte_lookup_filter(code, scope, /*op_idx=*/0,
-                             cteVirtualTables[0],
-                             scope.join_where_ce[0]);
+      if (where_never_true)
+      {
+        // X-3: reject the one row; the WHERE may hold the NULL.
+        NdbScanFilter filter(&code);
+        apply_reject_all_filter(&filter);
+      }
+      else
+      {
+        emit_cte_lookup_filter(code, scope, /*op_idx=*/0,
+                               cteVirtualTables[0],
+                               scope.join_where_ce[0]);
+      }
       require_run(rootOpts.setInterpretedCode(code) == 0,
                   "Failed to set interpreted code on scalar CTE root.");
       if (singleAgg != NULL && plan.agg_leaf_idx == 0 &&
@@ -13104,6 +13431,21 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
   }
 
   const NdbDictionary::Table* root_table = plan.ops[0].table;
+
+  if (&scope == &m_main_scope && m_where_never_true)
+  {
+    // X-3: the WHERE is TRUE for no row, and its key or index bounds may
+    // hold the NULL.  Scan the table and pass no row; the rest of the
+    // tree still returns the result of no rows.
+    NdbInterpretedCode code(root_table);
+    NdbScanFilter filter(&code);
+    apply_reject_all_filter(&filter);
+    require_run(rootOpts.setInterpretedCode(code) == 0,
+                "Failed to set interpreted code on root scan.");
+    opDefs[0] = qb->scanTable(root_table, &rootOpts);
+    require_run(opDefs[0] != NULL, "Failed to create root scan.");
+    return;
+  }
 
   // Scan-config-selected index-scan root (join_root_index_scan_plan.md):
   // select_root_scan_config flipped ops[0] to INDEX_SCAN because the
@@ -16239,12 +16581,25 @@ RonSQLPreparer::apply_filter_top_level(NdbScanFilter* filter)
   require_run(DBG(filter->begin(NdbScanFilter::AND)) >= 0, filter_fail);
   bool has_filter = false;
   for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
-    if (m_scan_config->condition_handling_map[i] == -1) {
+    // A NULL conjunct was folded to TRUE (X-3).
+    if (m_scan_config->condition_handling_map[i] == -1 &&
+        m_toplevel_conditions[i] != NULL) {
       has_filter = true;
       apply_filter(filter, m_main_scope, m_toplevel_conditions[i]);
     }
   }
   ndbrequire(has_filter);
+  require_sch(DBG(filter->end()) >= 0, filter_fail);
+}
+
+void
+RonSQLPreparer::apply_reject_all_filter(NdbScanFilter* filter)
+{
+  // isfalse() gives a branch and two exits.  A program of one word, a
+  // lone exit_nok, is what runCteFilter in DBLQH takes for the empty
+  // filter of a CTE and accepts every row with.
+  require_run(DBG(filter->begin(NdbScanFilter::AND)) >= 0, filter_fail);
+  require_run(DBG(filter->isfalse()) >= 0, filter_fail);
   require_sch(DBG(filter->end()) >= 0, filter_fail);
 }
 

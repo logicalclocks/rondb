@@ -1,0 +1,226 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== sn-1: grouped CTE root, key compared with NULL ===
+== Query ==
+WITH s AS (SELECT c AS k, SUM(v) AS m FROM sn_o GROUP BY c)
+SELECT k, m FROM s WHERE k = (SELECT MAX(n_x) FROM sn_n);
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT c AS k, SUM(v) AS m FROM sn_o GROUP BY c)
+SELECT k, m FROM s WHERE k = (SELECT MAX(n_x) FROM sn_n)|
+k	m
+
+=== sn-2: grouped CTE root, the key is the other side of an OR ===
+== Query ==
+WITH s AS (SELECT c AS k, SUM(v) AS m FROM sn_o GROUP BY c)
+SELECT k, m FROM s
+WHERE m > (SELECT MAX(e_x) FROM sn_e GROUP BY e_id) OR k = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT c AS k, SUM(v) AS m FROM sn_o GROUP BY c)
+SELECT k, m FROM s
+WHERE m > (SELECT MAX(e_x) FROM sn_e GROUP BY e_id) OR k = 2|
+k	m
+2	40
+
+=== sn-3: grouped CTE root, IN list with a NULL subquery ===
+== Query ==
+WITH s AS (SELECT c AS k, SUM(v) AS m FROM sn_o GROUP BY c)
+SELECT k, m FROM s WHERE k IN (1, 3, (SELECT MAX(n_x) FROM sn_n));
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT c AS k, SUM(v) AS m FROM sn_o GROUP BY c)
+SELECT k, m FROM s WHERE k IN (1, 3, (SELECT MAX(n_x) FROM sn_n))|
+k	m
+1	30
+3	50
+
+=== sn-4: grouped CTE root, IS NULL of a NULL subquery is TRUE ===
+== Query ==
+WITH s AS (SELECT c AS k, COUNT(*) AS n FROM sn_o GROUP BY c)
+SELECT k, n FROM s WHERE (SELECT MAX(n_x) FROM sn_n) IS NULL;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT c AS k, COUNT(*) AS n FROM sn_o GROUP BY c)
+SELECT k, n FROM s WHERE (SELECT MAX(n_x) FROM sn_n) IS NULL|
+k	n
+1	2
+2	2
+3	2
+
+=== sn-5: aggregate without GROUP BY over a grouped CTE root ===
+== Query ==
+WITH s AS (SELECT c AS k, SUM(v) AS m FROM sn_o GROUP BY c)
+SELECT COUNT(*) AS cnt, SUM(m) AS sm FROM s
+WHERE k = (SELECT MAX(e_x) FROM sn_e GROUP BY e_id);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT c AS k, SUM(v) AS m FROM sn_o GROUP BY c)
+SELECT COUNT(*) AS cnt, SUM(m) AS sm FROM s
+WHERE k = (SELECT MAX(e_x) FROM sn_e GROUP BY e_id)|
+cnt	sm
+0	NULL
+
+=== sn-6: scalar CTE root, comparison with no row ===
+== Query ==
+WITH s AS (SELECT MAX(v) AS m FROM sn_o)
+SELECT m FROM s WHERE m > (SELECT MAX(e_x) FROM sn_e GROUP BY e_id);
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(v) AS m FROM sn_o)
+SELECT m FROM s WHERE m > (SELECT MAX(e_x) FROM sn_e GROUP BY e_id)|
+m
+
+=== sn-7: scalar CTE root, the NULL comparison drops out of an OR ===
+== Query ==
+WITH s AS (SELECT MAX(v) AS m FROM sn_o)
+SELECT m FROM s WHERE m < (SELECT MAX(n_x) FROM sn_n) OR m > 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(v) AS m FROM sn_o)
+SELECT m FROM s WHERE m < (SELECT MAX(n_x) FROM sn_n) OR m > 0|
+m
+50
+
+=== sn-8: real-table root joined to a CTE, root filter ===
+== Query ==
+WITH ls AS (SELECT ok AS k, COUNT(*) AS m FROM sn_l GROUP BY ok)
+SELECT o.c, SUM(ls.m) AS m_sum
+FROM sn_o AS o JOIN ls ON ls.k = o.id
+WHERE o.v > (SELECT MAX(n_x) FROM sn_n)
+GROUP BY o.c;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH ls AS (SELECT ok AS k, COUNT(*) AS m FROM sn_l GROUP BY ok)
+SELECT o.c, SUM(ls.m) AS m_sum
+FROM sn_o AS o JOIN ls ON ls.k = o.id
+WHERE o.v > (SELECT MAX(n_x) FROM sn_n)
+GROUP BY o.c|
+c	m_sum
+
+=== sn-9: real-table root joined to a CTE, OR ===
+== Query ==
+WITH ls AS (SELECT ok AS k, COUNT(*) AS m FROM sn_l GROUP BY ok)
+SELECT o.c, SUM(ls.m) AS m_sum
+FROM sn_o AS o JOIN ls ON ls.k = o.id
+WHERE o.v > (SELECT MAX(n_x) FROM sn_n) OR o.c = 3
+GROUP BY o.c;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH ls AS (SELECT ok AS k, COUNT(*) AS m FROM sn_l GROUP BY ok)
+SELECT o.c, SUM(ls.m) AS m_sum
+FROM sn_o AS o JOIN ls ON ls.k = o.id
+WHERE o.v > (SELECT MAX(n_x) FROM sn_n) OR o.c = 3
+GROUP BY o.c|
+c	m_sum
+3	3
+
+=== sn-10: real-table root joined to a CTE, primary key, pass-through ===
+== Query ==
+WITH ls AS (SELECT ok AS k, COUNT(*) AS m FROM sn_l GROUP BY ok)
+SELECT o.id, ls.m
+FROM sn_o AS o JOIN ls ON ls.k = o.id
+WHERE o.id = (SELECT MAX(e_x) FROM sn_e GROUP BY e_id);
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH ls AS (SELECT ok AS k, COUNT(*) AS m FROM sn_l GROUP BY ok)
+SELECT o.id, ls.m
+FROM sn_o AS o JOIN ls ON ls.k = o.id
+WHERE o.id = (SELECT MAX(e_x) FROM sn_e GROUP BY e_id)|
+id	m
+
+=== sn-11: scalar CTE root under an aggregate, comparison with NULL ===
+== Query ==
+WITH s AS (SELECT MAX(v) AS m FROM sn_o)
+SELECT COUNT(*) AS cnt, SUM(m) AS sm FROM s
+WHERE m = (SELECT MAX(n_x) FROM sn_n);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(v) AS m FROM sn_o)
+SELECT COUNT(*) AS cnt, SUM(m) AS sm FROM s
+WHERE m = (SELECT MAX(n_x) FROM sn_n)|
+cnt	sm
+0	NULL
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_cte_dd_subquery_null_root_jit_fallback_delta;
+ronsql_cte_dd_subquery_null_root_jit_fallback_delta
+0
