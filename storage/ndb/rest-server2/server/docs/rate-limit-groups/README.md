@@ -16,6 +16,7 @@ new session does not have to re-read the rondb and hopsworks repos.
 |---|---|---|
 | `Hopsworks-OnlineFS-Ratelimiting-v1.0.html` | customer | White paper. The feature, what a 20% budget means, worked scenario, admin UI mockup, planning, several clusters, FAQ. Only two entry points are named: REST server (RDRS) and MySQL server. Never mentions the design doc. |
 | `Hopsworks-OnlineFS-Ratelimiting-Design-v1.0.html` | internal | Detailed design: what exists vs what is new, the two entry points, Hopsworks accounts, new tables (ERD), REST-path matching, SQL-path matching and the kernel `USER ALIAS` proposal, sync loop, save/delete rules, admin page, one cluster vs several, build list, kernel reference, open decisions, DDL appendix. |
+| `Hopsworks-OnlineFS-Ratelimiting-Variants-Explained.html` | internal | Plain-words companion to the design doc: the two resolution variants (A, RDRS resolves; B, RonDB resolves) with five inline SVG pictures, including why the data nodes never read the Hopsworks tables. Adds no facts; precise semantics stay in the design doc, sections 5 to 8. |
 | `RonDB-Group-Rate-Limits.html` | internal, historical | The 2026-10-02 original (bucket terminology, `--bucket=` syntax, table names `rate_limit_bucket*`). Kept untouched as the source both documents were spliced from. |
 | `dist/*.pdf`, `dist/*.docx` | share | Printed copies of the two v1.0 documents, built 2026-10-21. Regenerate after editing the HTML (see below). |
 
