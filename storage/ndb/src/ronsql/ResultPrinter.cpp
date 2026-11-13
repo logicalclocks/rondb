@@ -1709,7 +1709,17 @@ ResultPrinter::print_passthrough_row(const Attr* const* attrs,
     for (Uint32 i = 0; i < num_cols; i++) {
       assert(o != NULL);
       if (i > 0) out << ',';
-      out << '"' << o->output_name << "\":";
+      // The output name is an alias or column name the query spelled,
+      // which may hold a quote, a backslash or a control character:
+      // escape it like the aggregate printer does (PRINT_STR_JSON).
+      out << '"';
+      print_string(out,
+                   o->output_name,
+                   &my_charset_utf8mb4_bin,
+                   true,          // json_escape
+                   m_utf8_output, // \u-escape non-ASCII under JSON_ASCII
+                   false);        // trim_space_suffix
+      out << "\":";
       // Numbers print without quotes; strings and temporals quote
       // themselves (m_quote) inside print_passthrough_value.
       print_passthrough_output(out, attrs[i], o, i);
