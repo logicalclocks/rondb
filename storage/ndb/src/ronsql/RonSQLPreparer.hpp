@@ -1230,6 +1230,10 @@ private:
   // without its length prefix).
   const NdbQueryOperand* query_const_value(NdbQueryBuilder* qb, raw_value rv,
                                            const NdbDictionary::Column* col);
+  // The ignored key of a lookupCte over a scalar CTE (root or cross-join
+  // child), typed and sized for the virtual primary key, its first output.
+  const NdbQueryOperand* scalar_cte_dummy_key(
+      NdbQueryBuilder* qb, const NdbDictionary::Table* virtTab);
   struct ConditionalExpression* simplify_ce(struct ConditionalExpression* ce,
                                             int maxdepth);
   // F-2: writes -n into out and returns true when n is a T_INT or
