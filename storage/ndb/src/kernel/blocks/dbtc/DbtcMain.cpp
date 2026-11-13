@@ -1062,6 +1062,9 @@ void Dbtc::execTC_SCHVERREQ(Signal *signal) {
   tabptr.p->m_partition_hash_fanout =
       (Uint16)getPartitionHashFanout(req->partitionHash);
   tabptr.p->databaseRecord = RNIL64;
+  /* A dropped table leaves its alias attachments in the slot (the drop
+   * path cleans them, but belt and braces for the slot's next life). */
+  releaseAliasRulesOfTable(tabptr.i);
   tabptr.p->set_user_defined_partitioning(userDefinedPartitioning);
   if (req->hashFunctionFlag)
   {
@@ -1215,6 +1218,9 @@ void Dbtc::execDROP_TAB_REQ(Signal *signal) {
   tabPtr.p->set_enabled(false);
   tabPtr.p->set_prepared(false);
   tabPtr.p->set_dropping(false);
+  /* The table's USER ALIAS attachments die with it (RONDB-1158): a table
+   * drop sends no DISCONNECT, so this is where they are torn down. */
+  releaseAliasRulesOfTable(tabPtr.i);
 
   DropTabConf *conf = (DropTabConf *)signal->getDataPtrSend();
   conf->tableId = tabPtr.i;
@@ -1527,6 +1533,8 @@ void Dbtc::execREAD_CONFIG_REQ(Signal *signal) {
   }
   m_databaseRecordPool.init(RT_DBTC_DATABASE_RECORD, pc);
   m_databaseRecordHash.setSize(16384);
+  m_aliasRuleRecordPool.init(RT_DBTC_ALIAS_RULE, pc);
+  m_aliasRuleRecordHash.setSize(16384);
 }
 
 void Dbtc::execSTTOR(Signal *signal) {
@@ -3743,6 +3751,29 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   } else {
     databaseRecordPtr.i = localTabptr.p->databaseRecord;
     databaseRecordPtr.p = nullptr;
+  }
+  if (unlikely(databaseRecordPtr.p != nullptr &&
+               databaseRecordPtr.p->m_is_alias)) {
+    jam();
+    /**
+     * USER ALIAS (RONDB-1158): resolve (alias, table) to the target USER
+     * before the record can become the transaction's sticky record. An
+     * index operation matches on its base table. No matching rule, or a
+     * target that is gone, falls back to the table's database record
+     * exactly like an untagged request.
+     */
+    Uint32 rule_table_id = (localTabptr.p->m_primary_table_id != RNIL) ?
+      localTabptr.p->m_primary_table_id : localTabptr.i;
+    DatabaseRecordPtr targetPtr;
+    if (resolveAliasTarget(databaseRecordPtr.i, databaseRecordPtr.p,
+                           rule_table_id, targetPtr)) {
+      jam();
+      databaseRecordPtr = targetPtr;
+    } else {
+      jam();
+      databaseRecordPtr.i = localTabptr.p->databaseRecord;
+      databaseRecordPtr.p = nullptr;
+    }
   }
 
   passQueueingFlag = passQueueingFlag &&
@@ -16308,6 +16339,24 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
       databaseRecordPtr.i = tabptr.p->databaseRecord;
       databaseRecordPtr.p = nullptr;
     }
+    if (unlikely(databaseRecordPtr.p != nullptr &&
+                 databaseRecordPtr.p->m_is_alias)) {
+      jam();
+      /* USER ALIAS (RONDB-1158), see execTCKEYREQ: an ordered-index scan
+       * matches on its base table. */
+      Uint32 rule_table_id = (tabptr.p->m_primary_table_id != RNIL) ?
+        tabptr.p->m_primary_table_id : tabptr.i;
+      DatabaseRecordPtr targetPtr;
+      if (resolveAliasTarget(databaseRecordPtr.i, databaseRecordPtr.p,
+                             rule_table_id, targetPtr)) {
+        jam();
+        databaseRecordPtr = targetPtr;
+      } else {
+        jam();
+        databaseRecordPtr.i = tabptr.p->databaseRecord;
+        databaseRecordPtr.p = nullptr;
+      }
+    }
 
     if (unlikely(passQueueingFlag ||
                  databaseRecordPtr.i != RNIL64 ||
@@ -19696,6 +19745,7 @@ void Dbtc::initTable(Signal *signal) {
     tabptr.p->noOfDistrKeys = 0;
     tabptr.p->hasVarKeys = 0;
     tabptr.p->databaseRecord = RNIL64;
+    tabptr.p->m_first_alias_attach = RNIL64;
     tabptr.p->m_ttl_sec = RNIL;
     tabptr.p->m_ttl_col_no = RNIL;
     tabptr.p->m_primary_table_id = RNIL;
@@ -22535,6 +22585,24 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
   } else {
     databaseRecordPtr.i = localTabptr.p->databaseRecord;
     databaseRecordPtr.p = nullptr;
+  }
+  if (unlikely(databaseRecordPtr.p != nullptr &&
+               databaseRecordPtr.p->m_is_alias)) {
+    jam();
+    /* USER ALIAS (RONDB-1158), see execTCKEYREQ: localTabptr here is the
+     * index table, so the rule matches on its base table. */
+    Uint32 rule_table_id = (localTabptr.p->m_primary_table_id != RNIL) ?
+      localTabptr.p->m_primary_table_id : localTabptr.i;
+    DatabaseRecordPtr targetPtr;
+    if (resolveAliasTarget(databaseRecordPtr.i, databaseRecordPtr.p,
+                           rule_table_id, targetPtr)) {
+      jam();
+      databaseRecordPtr = targetPtr;
+    } else {
+      jam();
+      databaseRecordPtr.i = localTabptr.p->databaseRecord;
+      databaseRecordPtr.p = nullptr;
+    }
   }
 
   passQueueingFlag = passQueueingFlag &&
@@ -27200,6 +27268,8 @@ Dbtc::release_database_record(Signal *signal, DatabaseRecordPtr dbPtr) {
     lc_ndbd_pool_free(dbPtr.p->theDatabaseConcurrentTransactionMutex);
   }
   jam();
+  /* A dropped alias takes its rule attachments with it. */
+  releaseAliasRulesOfAlias(dbPtr.p);
   m_databaseRecordHash.remove(dbPtr);
   m_databaseRecordPool.release(dbPtr);
   send_drop_db_conf(signal, dbPtr, DropDbReq::COMMIT_DROP);
@@ -27590,6 +27660,197 @@ Dbtc::getDatabaseRecord(Uint32 databaseId) {
   return nullptr;
 }
 
+/**
+ * USER ALIAS rule attachments (RONDB-1158). See AliasRuleRecord in
+ * Dbtc.hpp for the structure; DBDICT installs and removes attachments
+ * through CONNECT/DISCONNECT_TABLE_DB_REQ alias request types.
+ */
+
+Dbtc::AliasRuleRecord*
+Dbtc::findAliasRuleRecord(Uint64 alias_record_i, Uint32 tableId) {
+  AliasRuleRecordPtr rulePtr;
+  AliasRuleRecord key;
+  key.m_alias_record_i = alias_record_i;
+  key.m_table_id = tableId;
+  if (m_aliasRuleRecordHash.find(rulePtr, key)) {
+    return rulePtr.p;
+  }
+  return nullptr;
+}
+
+void Dbtc::upsertAliasRuleRecord(Uint64 alias_record_i,
+                                 DatabaseRecord *aliasRec,
+                                 Uint32 tableId,
+                                 Uint32 targetDatabaseId,
+                                 Uint32 priority,
+                                 bool &ok) {
+  ok = true;
+  AliasRuleRecord *existing = findAliasRuleRecord(alias_record_i, tableId);
+  if (existing != nullptr) {
+    jam();
+    /* Priority 0 (an explicit table rule) beats 1 (a database-rule
+     * expansion); an equal priority replaces the target. */
+    if (priority <= existing->m_priority) {
+      jam();
+      existing->m_target_database_id = targetDatabaseId;
+      existing->m_priority = priority;
+      mb();
+    }
+    return;
+  }
+  AliasRuleRecordPtr rulePtr;
+  m_aliasRuleRecordPool.seize(rulePtr);
+  if (rulePtr.i == RNIL64) {
+    jam();
+    ok = false;
+    return;
+  }
+  new (rulePtr.p) AliasRuleRecord();
+  rulePtr.p->m_alias_record_i = alias_record_i;
+  rulePtr.p->m_table_id = tableId;
+  rulePtr.p->m_target_database_id = targetDatabaseId;
+  rulePtr.p->m_priority = priority;
+  m_aliasRuleRecordHash.add(rulePtr);
+
+  TableRecordPtr tabPtr;
+  tabPtr.i = tableId;
+  ptrCheckGuard(tabPtr, ctabrecFilesize, tableRecord);
+  rulePtr.p->m_next_in_table = tabPtr.p->m_first_alias_attach;
+  if (tabPtr.p->m_first_alias_attach != RNIL64) {
+    jam();
+    AliasRuleRecordPtr nextPtr;
+    nextPtr.i = tabPtr.p->m_first_alias_attach;
+    ndbrequire(m_aliasRuleRecordPool.getPtr(nextPtr));
+    nextPtr.p->m_prev_in_table = rulePtr.i;
+  }
+  tabPtr.p->m_first_alias_attach = rulePtr.i;
+
+  rulePtr.p->m_next_in_alias = aliasRec->m_first_alias_attach;
+  if (aliasRec->m_first_alias_attach != RNIL64) {
+    jam();
+    AliasRuleRecordPtr nextPtr;
+    nextPtr.i = aliasRec->m_first_alias_attach;
+    ndbrequire(m_aliasRuleRecordPool.getPtr(nextPtr));
+    nextPtr.p->m_prev_in_alias = rulePtr.i;
+  }
+  aliasRec->m_first_alias_attach = rulePtr.i;
+  mb();
+}
+
+void Dbtc::releaseAliasRuleRecord(AliasRuleRecordPtr rulePtr) {
+  if (rulePtr.p->m_prev_in_table != RNIL64) {
+    jam();
+    AliasRuleRecordPtr prevPtr;
+    prevPtr.i = rulePtr.p->m_prev_in_table;
+    ndbrequire(m_aliasRuleRecordPool.getPtr(prevPtr));
+    prevPtr.p->m_next_in_table = rulePtr.p->m_next_in_table;
+  } else {
+    jam();
+    TableRecordPtr tabPtr;
+    tabPtr.i = rulePtr.p->m_table_id;
+    ptrCheckGuard(tabPtr, ctabrecFilesize, tableRecord);
+    tabPtr.p->m_first_alias_attach = rulePtr.p->m_next_in_table;
+  }
+  if (rulePtr.p->m_next_in_table != RNIL64) {
+    jam();
+    AliasRuleRecordPtr nextPtr;
+    nextPtr.i = rulePtr.p->m_next_in_table;
+    ndbrequire(m_aliasRuleRecordPool.getPtr(nextPtr));
+    nextPtr.p->m_prev_in_table = rulePtr.p->m_prev_in_table;
+  }
+
+  if (rulePtr.p->m_prev_in_alias != RNIL64) {
+    jam();
+    AliasRuleRecordPtr prevPtr;
+    prevPtr.i = rulePtr.p->m_prev_in_alias;
+    ndbrequire(m_aliasRuleRecordPool.getPtr(prevPtr));
+    prevPtr.p->m_next_in_alias = rulePtr.p->m_next_in_alias;
+  } else {
+    jam();
+    DatabaseRecordPtr aliasPtr;
+    aliasPtr.i = rulePtr.p->m_alias_record_i;
+    ndbrequire(m_databaseRecordPool.getPtr(aliasPtr));
+    aliasPtr.p->m_first_alias_attach = rulePtr.p->m_next_in_alias;
+  }
+  if (rulePtr.p->m_next_in_alias != RNIL64) {
+    jam();
+    AliasRuleRecordPtr nextPtr;
+    nextPtr.i = rulePtr.p->m_next_in_alias;
+    ndbrequire(m_aliasRuleRecordPool.getPtr(nextPtr));
+    nextPtr.p->m_prev_in_alias = rulePtr.p->m_prev_in_alias;
+  }
+
+  m_aliasRuleRecordHash.remove(rulePtr);
+  m_aliasRuleRecordPool.release(rulePtr);
+}
+
+void Dbtc::removeAliasRuleRecord(Uint64 alias_record_i, Uint32 tableId) {
+  AliasRuleRecordPtr rulePtr;
+  AliasRuleRecord key;
+  key.m_alias_record_i = alias_record_i;
+  key.m_table_id = tableId;
+  if (m_aliasRuleRecordHash.find(rulePtr, key)) {
+    jam();
+    releaseAliasRuleRecord(rulePtr);
+    mb();
+  }
+}
+
+void Dbtc::releaseAliasRulesOfTable(Uint32 tableId) {
+  TableRecordPtr tabPtr;
+  tabPtr.i = tableId;
+  ptrCheckGuard(tabPtr, ctabrecFilesize, tableRecord);
+  while (tabPtr.p->m_first_alias_attach != RNIL64) {
+    jam();
+    AliasRuleRecordPtr rulePtr;
+    rulePtr.i = tabPtr.p->m_first_alias_attach;
+    ndbrequire(m_aliasRuleRecordPool.getPtr(rulePtr));
+    releaseAliasRuleRecord(rulePtr);
+  }
+  mb();
+}
+
+void Dbtc::releaseAliasRulesOfAlias(DatabaseRecord *aliasRec) {
+  while (aliasRec->m_first_alias_attach != RNIL64) {
+    jam();
+    AliasRuleRecordPtr rulePtr;
+    rulePtr.i = aliasRec->m_first_alias_attach;
+    ndbrequire(m_aliasRuleRecordPool.getPtr(rulePtr));
+    releaseAliasRuleRecord(rulePtr);
+  }
+  mb();
+}
+
+bool Dbtc::resolveAliasTarget(Uint64 alias_record_i,
+                              DatabaseRecord *aliasRec,
+                              Uint32 tableId,
+                              Ptr64<DatabaseRecord> &targetPtr) {
+  Uint32 target_id;
+  AliasRuleRecord *rule = findAliasRuleRecord(alias_record_i, tableId);
+  if (rule != nullptr) {
+    jam();
+    /* The matched rule decides, even when its target is gone. */
+    target_id = rule->m_target_database_id;
+  } else {
+    jam();
+    target_id = aliasRec->m_alias_all_target_id;
+  }
+  if (target_id == RNIL) {
+    jam();
+    return false;
+  }
+  DatabaseRecord key(*this, target_id);
+  if (!m_databaseRecordHash.find(targetPtr, key)) {
+    jam();
+    return false;
+  }
+  if (!targetPtr.p->m_is_user || targetPtr.p->m_is_alias) {
+    jam();
+    return false;
+  }
+  return true;
+}
+
 void Dbtc::execCREATE_DB_REQ(Signal* signal) {
   jamEntry();
   CreateDbReq req = *(CreateDbReq*)signal->getDataPtr();
@@ -27673,6 +27934,14 @@ void Dbtc::execCREATE_DB_REQ(Signal* signal) {
     Uint64(req.diskSpaceSizeGB) * Uint64(1024 * 32);
   dbPtr.p->m_rate_per_sec = req.ratePerSec;
   dbPtr.p->m_is_user = req.isUser;
+  dbPtr.p->m_is_alias = false;
+  dbPtr.p->m_alias_all_target_id = RNIL;
+  dbPtr.p->m_first_alias_attach = RNIL64;
+  if (signal->getLength() >= CreateDbReq::SignalLengthTC) {
+    jam();
+    dbPtr.p->m_is_alias = (req.isAlias != 0);
+    dbPtr.p->m_alias_all_target_id = req.aliasAllTargetId;
+  }
   dbPtr.p->m_max_transaction_size = req.maxTransactionSize;
   dbPtr.p->m_max_parallel_transactions = req.maxParallelTransactions;
   dbPtr.p->m_max_parallel_complex_queries = req.maxParallelComplexQueries;
@@ -27749,6 +28018,11 @@ void Dbtc::execALTER_DB_REQ(Signal* signal) {
     return;
   }
   ndbrequire(dbPtr.p->m_is_user == req.isUser);
+  if (signal->getLength() >= AlterDbReq::SignalLength) {
+    jam();
+    ndbrequire(dbPtr.p->m_is_alias == (req.isAlias != 0));
+    dbPtr.p->m_alias_all_target_id = req.aliasAllTargetId;
+  }
   dbPtr.p->m_database_version = req.databaseVersion;
   dbPtr.p->m_in_memory_size_limit8k =
     Uint64(req.inMemorySizeMB) * Uint64(128);
@@ -27793,6 +28067,40 @@ void Dbtc::execCONNECT_TABLE_DB_REQ(Signal *signal) {
     ref->errorStatus = 0;
     sendSignal(req.senderRef, GSN_CONNECT_TABLE_DB_REF, signal,
                ConnectTableDbRef::SignalLength, JBB);
+    return;
+  }
+  if (req.requestType == ConnectTableDbReq::ALIAS_ATTACH ||
+      req.requestType == ConnectTableDbReq::ALIAS_ATTACH_ALTER) {
+    jam();
+    ndbrequire(signal->getLength() >= ConnectTableDbReq::SignalLengthAlias);
+    ndbrequire(dbPtr.p->m_is_user && dbPtr.p->m_is_alias);
+    bool ok = true;
+    upsertAliasRuleRecord(dbPtr.i, dbPtr.p, req.tableId,
+                          req.targetDatabaseId, req.priority, ok);
+    if (!ok) {
+      jam();
+      ConnectTableDbRef* ref = (ConnectTableDbRef*)signal->getDataPtrSend();
+      ref->senderRef = reference();
+      ref->senderData = req.senderData;
+      ref->requestType = req.requestType;
+      ref->databaseId = req.databaseId;
+      ref->tableId = req.tableId;
+      ref->errorCode = CreateTableRef::NoMoreTableRecords;
+      ref->errorLine = __LINE__;
+      ref->errorKey = 0;
+      ref->errorStatus = 0;
+      sendSignal(req.senderRef, GSN_CONNECT_TABLE_DB_REF, signal,
+                 ConnectTableDbRef::SignalLength, JBB);
+      return;
+    }
+    ConnectTableDbConf* conf = (ConnectTableDbConf*)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = req.senderData;
+    conf->requestType = req.requestType;
+    conf->databaseId = req.databaseId;
+    conf->tableId = req.tableId;
+    sendSignal(req.senderRef, GSN_CONNECT_TABLE_DB_CONF, signal,
+               ConnectTableDbConf::SignalLength, JBB);
     return;
   }
   ndbrequire(dbPtr.p->m_is_user == false);
@@ -27846,6 +28154,33 @@ void Dbtc::execDISCONNECT_TABLE_DB_REQ(Signal *signal) {
   TableRecordPtr tabPtr;
   tabPtr.i = req.tableId;
   ptrCheckGuard(tabPtr, ctabrecFilesize, tableRecord);
+
+  if (req.requestType == DisconnectTableDbReq::ALIAS_DETACH_TABLE ||
+      req.requestType == DisconnectTableDbReq::ALIAS_DETACH) {
+    jam();
+    /**
+     * USER ALIAS detachments (RONDB-1158). Detaching from a vanished alias
+     * or table is a no-op: DBDICT replays diffs and the attachments are
+     * also torn down locally when the table or the alias drops.
+     */
+    if (req.requestType == DisconnectTableDbReq::ALIAS_DETACH_TABLE) {
+      jam();
+      releaseAliasRulesOfTable(req.tableId);
+    } else if (m_databaseRecordHash.find(dbPtr, key)) {
+      jam();
+      removeAliasRuleRecord(dbPtr.i, req.tableId);
+    }
+    DisconnectTableDbConf* conf =
+      (DisconnectTableDbConf*)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = req.senderData;
+    conf->requestType = req.requestType;
+    conf->databaseId = req.databaseId;
+    conf->tableId = req.tableId;
+    sendSignal(req.senderRef, GSN_DISCONNECT_TABLE_DB_CONF, signal,
+               DisconnectTableDbConf::SignalLength, JBB);
+    return;
+  }
 
   if (!m_databaseRecordHash.find(dbPtr, key)) {
     jam();

@@ -132,6 +132,7 @@
 #define ZDICT_CONNECT_LOOP 12
 #define ZDICT_DISCONNECT_LOOP 13
 #define ZNSL_FK_REPORT 14
+#define ZDICT_ALIAS_ATTACH_LOOP 15
 
 
 /*--------------------------------------------------------------*/
@@ -4856,6 +4857,13 @@ class Dbdict : public SimulatedBlock {
   bool copyAliasRules(Uint32 src_first, Uint32& dst_first,
                       Uint32& dst_count);
   void releaseAliasRules(Uint32& first_rule, Uint32& rule_count);
+  Uint32 getAliasAllTargetId(DatabasePtr db_ptr);
+  bool computeAliasRuleMatch(Uint32 first_rule, const char* table_name,
+                             Uint32& target_id, Uint32& priority);
+  void sendAliasAttachLoop(Signal* signal, Uint32 op_key,
+                           DatabasePtr alias_ptr, Uint32 next_table_id,
+                           bool is_alter);
+  void aliasAttachLoopDone(Signal* signal, Uint32 op_key, bool is_alter);
 
   void createDb_writeTableConf(Signal* signal,
                                Uint32 op_key,

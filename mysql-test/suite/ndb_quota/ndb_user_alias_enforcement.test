@@ -1,0 +1,353 @@
+--source include/have_ndb.inc
+
+# RONDB-1158: USER ALIAS rules must charge tagged SQL traffic to the rule's
+# target USER, with the design's evaluation order: a table rule beats a
+# database rule beats the matches-everything rule, and no match (or a target
+# that is gone) runs unmetered.
+#
+# The accounts are tagged by ha_ndbcluster::set_user_id with the bare MySQL
+# account name; each account's alias was installed by the mgm USER ALIAS
+# commands before the account sends traffic, so the attach walk only has to
+# cover tables that exist at SET time (tables created after a SET are the
+# follow-up commit's test). Throttle detection follows
+# ndb_user_rate_limits.test: drive enough statements and count errors; a
+# tiny-rate target throttles within the loop, a big-rate target never does.
+#
+# Coverage:
+#   1. an ALL rule charges every table (alice -> team_rl, rate 1)
+#   2. a table rule charges only its table (mary: marketing.clicks ->
+#      clicks_rl rate 1; marketing.other unmetered)
+#   3. a table rule beats a database rule (rosa: marketing -> team_rl rate 1,
+#      but marketing.clicks -> big_rl rate 200k: clicks unthrottled, other
+#      throttled)
+#   4. unique-index and ordered-index access resolve through the base table
+#      (mary again, via index lookups and range scans on marketing.clicks)
+#   5. a rule whose target USER was dropped runs unmetered (bob)
+
+CREATE DATABASE marketing;
+CREATE DATABASE sales;
+CREATE TABLE marketing.clicks (a INT PRIMARY KEY, b INT NOT NULL,
+                               c INT NOT NULL,
+                               UNIQUE KEY ub (b), KEY oc (c)) ENGINE ndb;
+CREATE TABLE marketing.other (a INT PRIMARY KEY, b INT) ENGINE ndb;
+CREATE TABLE sales.orders (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO marketing.clicks VALUES
+  (1,1,1),(2,2,1),(3,3,1),(4,4,2),(5,5,2),(6,6,2),(7,7,3),(8,8,3),(9,9,3),
+  (10,10,4);
+INSERT INTO marketing.other VALUES (1,0),(2,0),(3,0),(4,0),(5,0);
+INSERT INTO sales.orders VALUES (1,0),(2,0),(3,0),(4,0),(5,0);
+
+CREATE USER 'alice4f2'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'mary01ab'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'rosa9e1f'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'bob77'@'%' IDENTIFIED BY 'pw';
+GRANT ALL PRIVILEGES ON marketing.* TO 'alice4f2'@'%';
+GRANT ALL PRIVILEGES ON sales.* TO 'alice4f2'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'mary01ab'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'rosa9e1f'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'bob77'@'%';
+
+--disable_result_log
+--exec $NDB_MGM -e "USER SET team_rl --rate-per-sec=1"
+--exec $NDB_MGM -e "USER SET clicks_rl --rate-per-sec=1"
+--exec $NDB_MGM -e "USER SET big_rl --rate-per-sec=200000"
+--exec $NDB_MGM -e "USER SET temp_rl --rate-per-sec=1"
+--exec $NDB_MGM -e "USER ALIAS SET alice4f2 --target=team_rl"
+--exec $NDB_MGM -e "USER ALIAS SET mary01ab --target=clicks_rl --table=marketing.clicks"
+--exec $NDB_MGM -e "USER ALIAS SET rosa9e1f --target=team_rl --database=marketing"
+--exec $NDB_MGM -e "USER ALIAS SET rosa9e1f --target=big_rl --table=marketing.clicks"
+--exec $NDB_MGM -e "USER ALIAS SET bob77 --target=temp_rl --table=marketing.clicks"
+--exec $NDB_MGM -e "USER DROP temp_rl"
+--enable_result_log
+
+connect (alice, 127.0.0.1, alice4f2, pw, sales,     $MASTER_MYPORT);
+connect (mary,  127.0.0.1, mary01ab, pw, marketing, $MASTER_MYPORT);
+connect (rosa,  127.0.0.1, rosa9e1f, pw, marketing, $MASTER_MYPORT);
+connect (bob,   127.0.0.1, bob77,    pw, marketing, $MASTER_MYPORT);
+
+--echo #
+--echo # 1. ALL rule: alice is throttled on a table in another database.
+--echo #
+connection alice;
+--disable_query_log
+--disable_result_log
+let $throttled = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a, b FROM sales.orders;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $throttled;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($throttled)
+{
+  --echo alice: throttled on sales.orders as expected (ALL rule)
+}
+if (!$throttled)
+{
+  --echo alice: NOT THROTTLED - the ALL rule did not charge team_rl
+}
+
+--echo #
+--echo # 2. Table rule: mary is throttled on marketing.clicks only.
+--echo #
+connection mary;
+--disable_query_log
+--disable_result_log
+let $throttled = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a, b FROM marketing.clicks;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $throttled;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($throttled)
+{
+  --echo mary: throttled on marketing.clicks as expected (table rule)
+}
+if (!$throttled)
+{
+  --echo mary: NOT THROTTLED on marketing.clicks - table rule had no effect
+}
+
+--disable_query_log
+--disable_result_log
+let $free = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a, b FROM marketing.other;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $free;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($free)
+{
+  --echo mary: UNEXPECTEDLY THROTTLED on marketing.other - rule leaked
+}
+if (!$free)
+{
+  --echo mary: not throttled on marketing.other as expected
+}
+
+--echo #
+--echo # 3. Precedence: rosa's table rule to a big target beats her
+--echo #    database rule to a tiny one.
+--echo #
+connection rosa;
+--disable_query_log
+--disable_result_log
+let $throttled = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a, b FROM marketing.clicks;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $throttled;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($throttled)
+{
+  --echo rosa: THROTTLED on marketing.clicks - table rule lost to db rule
+}
+if (!$throttled)
+{
+  --echo rosa: not throttled on marketing.clicks as expected (table rule wins)
+}
+
+--disable_query_log
+--disable_result_log
+let $throttled = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a, b FROM marketing.other;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $throttled;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($throttled)
+{
+  --echo rosa: throttled on marketing.other as expected (database rule)
+}
+if (!$throttled)
+{
+  --echo rosa: NOT THROTTLED on marketing.other - database rule had no effect
+}
+
+--echo #
+--echo # 4. Index access resolves through the base table: mary throttled
+--echo #    via unique-index lookups and ordered-index range scans too.
+--echo #
+connection mary;
+--disable_query_log
+--disable_result_log
+let $throttled = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a FROM marketing.clicks WHERE b = 5;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $throttled;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($throttled)
+{
+  --echo mary: throttled via unique index as expected
+}
+if (!$throttled)
+{
+  --echo mary: NOT THROTTLED via unique index - TCINDXREQ path missed
+}
+
+--disable_query_log
+--disable_result_log
+let $throttled = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a FROM marketing.clicks WHERE c > 1;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $throttled;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($throttled)
+{
+  --echo mary: throttled via ordered index scan as expected
+}
+if (!$throttled)
+{
+  --echo mary: NOT THROTTLED via ordered index scan - scan path missed
+}
+
+--echo #
+--echo # 5. A rule whose target USER is gone runs unmetered (fail generous).
+--echo #
+connection bob;
+--disable_query_log
+--disable_result_log
+let $throttled = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a, b FROM marketing.clicks;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $throttled;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($throttled)
+{
+  --echo bob: UNEXPECTEDLY THROTTLED - dropped target must mean unmetered
+}
+if (!$throttled)
+{
+  --echo bob: not throttled with a dropped target as expected
+}
+
+--echo #
+--echo # 6. Dropping a rule releases the budget: mary unthrottled after
+--echo #    USER ALIAS DROP of her table rule.
+--echo #
+--disable_result_log
+--exec $NDB_MGM -e "USER ALIAS DROP mary01ab --table=marketing.clicks"
+--enable_result_log
+--sleep 3
+connection mary;
+--disable_query_log
+--disable_result_log
+let $throttled = 0;
+let $count = 100;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a, b FROM marketing.clicks;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $throttled;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($throttled)
+{
+  --echo mary: STILL THROTTLED after dropping the rule
+}
+if (!$throttled)
+{
+  --echo mary: unthrottled after dropping the rule as expected
+}
+
+# Cleanup
+connection default;
+disconnect alice;
+disconnect mary;
+disconnect rosa;
+disconnect bob;
+--disable_result_log
+--exec $NDB_MGM -e "USER ALIAS DROP alice4f2"
+--exec $NDB_MGM -e "USER ALIAS DROP mary01ab"
+--exec $NDB_MGM -e "USER ALIAS DROP rosa9e1f"
+--exec $NDB_MGM -e "USER ALIAS DROP bob77"
+--exec $NDB_MGM -e "USER DROP team_rl"
+--exec $NDB_MGM -e "USER DROP clicks_rl"
+--exec $NDB_MGM -e "USER DROP big_rl"
+--enable_result_log
+DROP USER 'alice4f2'@'%';
+DROP USER 'mary01ab'@'%';
+DROP USER 'rosa9e1f'@'%';
+DROP USER 'bob77'@'%';
+DROP DATABASE marketing;
+DROP DATABASE sales;

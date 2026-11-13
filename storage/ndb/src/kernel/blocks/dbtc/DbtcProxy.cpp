@@ -1082,7 +1082,10 @@ DbtcProxy::execCONNECT_TABLE_DB_REQ(Signal* signal)
     (const ConnectTableDbReq*)signal->getDataPtr();
   Ss_CONNECT_TABLE_DB_REQ& ss = ssSeize<Ss_CONNECT_TABLE_DB_REQ>();
   ss.m_req = *req;
-  ndbrequire(signal->getLength() == ConnectTableDbReq::SignalLength);
+  ndbrequire(signal->getLength() ==
+             (req->requestType >= ConnectTableDbReq::ALIAS_ATTACH ?
+              ConnectTableDbReq::SignalLengthAlias :
+              ConnectTableDbReq::SignalLength));
   sendREQ(signal, ss);
 }
 
@@ -1099,7 +1102,11 @@ DbtcProxy::sendCONNECT_TABLE_DB_REQ(Signal* signal,
   req->senderRef = reference();
   req->senderData = ssId;
   sendSignalNoRelease(workerRef(ss.m_worker), GSN_CONNECT_TABLE_DB_REQ,
-                      signal, ConnectTableDbReq::SignalLength, JBB, handle);
+                      signal,
+                      req->requestType >= ConnectTableDbReq::ALIAS_ATTACH ?
+                        ConnectTableDbReq::SignalLengthAlias :
+                        ConnectTableDbReq::SignalLength,
+                      JBB, handle);
 }
 
 void

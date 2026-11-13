@@ -1658,11 +1658,14 @@ class Dbtc : public SimulatedBlock {
     TableRecord()
     {
       databaseRecord = RNIL64;
+      m_first_alias_attach = RNIL64;
       m_partition_hash_base_key_count = 0;
       m_partition_hash_detail_key_count = 0;
       m_partition_hash_fanout = 1;
     }
     Uint64 databaseRecord;
+    /* Head of this table's USER ALIAS attachments (RONDB-1158). */
+    Uint64 m_first_alias_attach;
     Uint32 currentSchemaVersion;
     Uint16 m_flags;
     Uint8 tableType;
@@ -2962,6 +2965,9 @@ class Dbtc : public SimulatedBlock {
       m_is_memory_quota_exceeded(false),
       m_is_disk_quota_exceeded(false),
       m_is_user(false),
+      m_is_alias(false),
+      m_alias_all_target_id(RNIL),
+      m_first_alias_attach(RNIL64),
       m_current_in_memory_size8k(0),
       m_current_disk_space_size32k(0),
       m_current_used_rate_us(0),
@@ -3001,6 +3007,18 @@ class Dbtc : public SimulatedBlock {
     bool m_is_memory_quota_exceeded;
     bool m_is_disk_quota_exceeded;
     bool m_is_user;
+    /**
+     * USER ALIAS (RONDB-1158): the record is an alias, never charged
+     * itself. m_alias_all_target_id is the database id of the
+     * matches-everything rule's target USER (RNIL without one); table and
+     * database rules live as AliasRuleRecords, linked from
+     * m_first_alias_attach for release when the alias drops. Targets are
+     * held by id and resolved at admission, so a dropped target can never
+     * dangle: it just stops matching.
+     */
+    bool m_is_alias;
+    Uint32 m_alias_all_target_id;
+    Uint64 m_first_alias_attach;
 
     NDB_TICKS m_last_rate_decrement;
 
@@ -3246,6 +3264,71 @@ class Dbtc : public SimulatedBlock {
   DatabaseRecord_pool m_databaseRecordPool;
   DatabaseRecord_hash m_databaseRecordHash;
   RSS_AP_SNAPSHOT(m_databaseRecordPool);
+
+  /**
+   * One USER ALIAS rule attachment (RONDB-1158): the winning target for
+   * (alias, table), installed by DBDICT through CONNECT_TABLE_DB_REQ
+   * ALIAS_ATTACH. Hashed on (alias record i-value, table id) for the
+   * admission lookup, and linked on two lists for teardown: the table's
+   * (head in TableRecord, released when the table drops) and the alias's
+   * (head in DatabaseRecord, released when the alias drops). The target is
+   * a database id resolved at admission, never a pointer.
+   */
+  struct AliasRuleRecord {
+    AliasRuleRecord() {
+      m_alias_record_i = RNIL64;
+      m_table_id = RNIL;
+      m_target_database_id = RNIL;
+      m_priority = 0;
+      m_next_in_table = RNIL64;
+      m_prev_in_table = RNIL64;
+      m_next_in_alias = RNIL64;
+      m_prev_in_alias = RNIL64;
+      prevHash = RNIL64;
+    }
+
+    Uint32 m_magic;
+    Uint32 m_table_id;
+    Uint32 m_target_database_id;
+    Uint32 m_priority;
+
+    Uint64 m_alias_record_i;
+    Uint64 prevHash;
+    union {
+      Uint64 nextPool;
+      Uint64 nextHash;
+    };
+    Uint64 m_next_in_table;
+    Uint64 m_prev_in_table;
+    Uint64 m_next_in_alias;
+    Uint64 m_prev_in_alias;
+
+    bool equal(const AliasRuleRecord &rec) const {
+      return m_alias_record_i == rec.m_alias_record_i &&
+             m_table_id == rec.m_table_id;
+    }
+    Uint32 hashValue() const {
+      return Uint32(m_alias_record_i * 31 + m_table_id);
+    }
+  };
+  typedef Ptr64<AliasRuleRecord> AliasRuleRecordPtr;
+  typedef RecordPool64<RWPool64<AliasRuleRecord> > AliasRuleRecord_pool;
+  typedef DL64HashTable<AliasRuleRecord_pool, AliasRuleRecord>
+    AliasRuleRecord_hash;
+  AliasRuleRecord_pool m_aliasRuleRecordPool;
+  AliasRuleRecord_hash m_aliasRuleRecordHash;
+  RSS_AP_SNAPSHOT(m_aliasRuleRecordPool);
+
+  AliasRuleRecord* findAliasRuleRecord(Uint64 alias_record_i, Uint32 tableId);
+  void upsertAliasRuleRecord(Uint64 alias_record_i, DatabaseRecord *aliasRec,
+                             Uint32 tableId, Uint32 targetDatabaseId,
+                             Uint32 priority, bool &ok);
+  void removeAliasRuleRecord(Uint64 alias_record_i, Uint32 tableId);
+  void releaseAliasRulesOfTable(Uint32 tableId);
+  void releaseAliasRulesOfAlias(DatabaseRecord *aliasRec);
+  void releaseAliasRuleRecord(AliasRuleRecordPtr rulePtr);
+  bool resolveAliasTarget(Uint64 alias_record_i, DatabaseRecord *aliasRec,
+                          Uint32 tableId, Ptr64<DatabaseRecord> &targetPtr);
   NDB_TICKS m_last_database_check_time;
   Uint32 m_max_database_id;
   bool m_rate_limit_supported;

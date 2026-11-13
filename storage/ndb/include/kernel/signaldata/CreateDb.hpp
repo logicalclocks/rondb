@@ -33,7 +33,7 @@
 
 struct CreateDbReq
 {
-  static constexpr Uint32 SignalLengthTC = 12;
+  static constexpr Uint32 SignalLengthTC = 14;
   static constexpr Uint32 SignalLengthLQH = 9;
 
   Uint32 senderRef;
@@ -48,6 +48,14 @@ struct CreateDbReq
   Uint32 maxTransactionSize;
   Uint32 maxParallelTransactions;
   Uint32 maxParallelComplexQueries;
+  /**
+   * USER ALIAS (RONDB-1158), TC only: isAlias flags the record, and
+   * aliasAllTargetId carries the database id of the matches-everything
+   * rule's target USER (RNIL without one). Table and database rules travel
+   * as ALIAS_ATTACH attachments instead.
+   */
+  Uint32 isAlias;
+  Uint32 aliasAllTargetId;
 
   friend bool printCREATE_DB_REQ(FILE *, const Uint32 *, Uint32, Uint16);
 };
@@ -78,18 +86,34 @@ struct CreateDbRef {
 
 struct ConnectTableDbReq {
   static constexpr Uint32 SignalLength = 5;
+  /* ALIAS_ATTACH carries the two extra words. */
+  static constexpr Uint32 SignalLengthAlias = 7;
 
   enum {
     CREATE_DB = 0,
     CONNECT_GLOBAL_INSTANCE = 1,
     CREATE_TABLE = 2,
-    RENAME_TABLE = 3
+    RENAME_TABLE = 3,
+    /**
+     * USER ALIAS rule attachment (RONDB-1158), DBTC only: databaseId is the
+     * alias, and (tableId, targetDatabaseId, priority) upserts the winning
+     * target for that table. Priority 0 is an explicit table rule and
+     * replaces a database-rule expansion (priority 1), never the reverse.
+     * DBTC treats both values the same; the _ALTER variant only routes the
+     * CONF/REF back to the alter operation instead of the create (DICT
+     * schema-op records are strictly typed, so the request must say which
+     * walk it belongs to).
+     */
+    ALIAS_ATTACH = 4,
+    ALIAS_ATTACH_ALTER = 5
   };
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 requestType;
   Uint32 databaseId;
   Uint32 tableId;
+  Uint32 targetDatabaseId;
+  Uint32 priority;
 
   friend bool printCONNECT_TABLE_DB_REQ(FILE *, const Uint32 *, Uint32, Uint16);
 };
@@ -127,7 +151,15 @@ struct DisconnectTableDbReq {
 
   enum {
     DROP_DB = 0,
-    RENAME_TABLE = 1
+    RENAME_TABLE = 1,
+    /**
+     * USER ALIAS detachments (RONDB-1158), DBTC only. ALIAS_DETACH removes
+     * the (alias, table) attachment; ALIAS_DETACH_TABLE removes every
+     * attachment of the table (databaseId is RNIL), used when a table is
+     * renamed before its new name is re-matched.
+     */
+    ALIAS_DETACH = 2,
+    ALIAS_DETACH_TABLE = 3
   };
   Uint32 senderRef;
   Uint32 senderData;
