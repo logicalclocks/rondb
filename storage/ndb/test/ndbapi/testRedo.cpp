@@ -1538,6 +1538,9 @@ static int runCheckLCPStartsAfterSR(NDBT_Context *ctx, NDBT_Step *step) {
   int upval = 0;
   while (ctx->getProperty("lcps_done", (Uint32)0) != 1 &&
          !ctx->isTestStopped()) {
+    // Keep the open transaction alive past TransactionInactiveTimeout
+    // (60 s by default), it must hold the redo log tail until 410 is seen
+    ops->refresh();
     NdbError err;
     run_write_ops(ctx, step, upval++, err, true);
 
@@ -1637,6 +1640,9 @@ static int runCheckLCPStartsAfterNR(NDBT_Context *ctx, NDBT_Step *step) {
   int retries = -1;
 
   while (!ctx->isTestStopped()) {
+    // Keep the open transaction alive past TransactionInactiveTimeout
+    // (60 s by default), it must hold the redo log tail until 410 is seen
+    ops->refresh();
     run_write_ops(ctx, step, upval++, err, true);
 
     if (err.code == 410 && retries == -1) {
@@ -1740,6 +1746,11 @@ static int runCheckOpenNextRedoLogFile(NDBT_Context *ctx, NDBT_Step *step) {
   g_err << "Filling redo logs" << endl;
 
   while (!ctx->isTestStopped()) {
+    if (!committed) {
+      // Keep the open transaction alive past TransactionInactiveTimeout
+      // (60 s by default), it must hold the redo log tail until 410 is seen
+      ops->refresh();
+    }
     run_write_ops(ctx, step, upval++, err, true);
 
     if (err.code == 410) {
