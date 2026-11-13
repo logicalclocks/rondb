@@ -1341,6 +1341,10 @@ private:
   void print_join_plan_ops(QueryScope& scope, const char* line_prefix);
   void print(struct ConditionalExpression* ce,
              LexString prefix);
+  // E-1: the arguments of GREATEST / LEAST, and a subquery by its table.
+  void print_arg_list(struct ConditionalExpression* list,
+                      LexString prefix, bool last);
+  void print_subquery_source(const SelectStatement* stmt);
 
 public:
   ~RonSQLPreparer();

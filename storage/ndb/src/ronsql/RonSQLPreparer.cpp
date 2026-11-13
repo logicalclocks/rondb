@@ -122,6 +122,7 @@ using std::endl;
                              "RonSQL feature not implemented: " description)
 
 static const char* interval_type_name(TokenKind interval_type);
+static const char* comparison_name(TokenKind op);
 
 DEFINE_FORMATTER(quoted_identifier, LexString, {
   os.put('`');
@@ -20217,8 +20218,16 @@ RonSQLPreparer::print()
             << quoted_identifier(column_idx_to_name(col_idx)) << '\n';
       }
       break;
+    case Outputs::Type::SUBQUERY_AGG:
+      // compile() rewrites a planned SELECT-list subquery into an
+      // AGGREGATE output; one that was not rewritten prints as written.
+      out << "SELECT-LIST ";
+      print_subquery_source(outputs->subquery_agg.stmt);
+      break;
     default:
-      abort();
+      // E-1: fail the statement, not the process.
+      require_bug(false, "EXPLAIN: an output of unknown type.");
+      break;
     }
     out_count++;
     outputs = outputs->next;
@@ -20662,9 +20671,78 @@ RonSQLPreparer::print(struct ConditionalExpression* ce,
       out << "DATETIME: " << to << '\n';
       return;
     }
+  /*
+   * E-1: EXPLAIN prints the WHERE of the parse tree and the planned
+   * conditions, so every operator the grammar and the rewrites put in a
+   * condition must be printed here.  Before, these reached the abort()
+   * below and EXPLAIN stopped RDRS or ronsql_cli.
+   */
+  case T_LIKE:
+    opstr = "LIKE";
+    break;
+  case T_GREATEST:
+  case T_LEAST:
+    out << (ce->op == T_GREATEST ? "GREATEST" : "LEAST") << '\n';
+    print_arg_list(ce->args.left, prefix, true);
+    return;
+  case T_NULL:
+    out << "NULL\n";
+    return;
+  case I_SUBQUERY:
+    out << "SCALAR ";
+    print_subquery_source(ce->subquery.stmt);
+    return;
+  case T_EXISTS:
+    out << "EXISTS ";
+    print_subquery_source(ce->subquery.stmt);
+    return;
+  case I_IN_SUBQUERY:
+    {
+      out << "IN\n"
+          << prefix << "├─ ";
+      LexString prefix_arg = prefix.concat(LexString{"│  ", 5}, m_amalloc);
+      print(ce->in_subquery.expr, prefix_arg);
+      out << prefix << "╰─ ";
+      print_subquery_source(ce->in_subquery.stmt);
+      return;
+    }
+  case I_CORR_SCALAR:
+    {
+      // A comparison with a correlated scalar subquery, decorrelated
+      // into a lookup of the inner result by the outer key.
+      const char* cmp = comparison_name(ce->corr_scalar.cmp_op);
+      require_bug(cmp != NULL,
+                  "EXPLAIN: a correlated comparison has no comparison "
+                  "operator.");
+      out << cmp << " CORRELATED\n"
+          << prefix << "├─ ";
+      LexString prefix_mid = prefix.concat(LexString{"│  ", 5}, m_amalloc);
+      print(ce->corr_scalar.cmp_expr, prefix_mid);
+      out << prefix << "├─ ";
+      print_subquery_source(ce->corr_scalar.stmt);
+      out << prefix << "╰─ KEY ";
+      LexString prefix_key = prefix.concat(LexString{"   ", 3}, m_amalloc);
+      print(ce->corr_scalar.key_expr, prefix_key);
+      return;
+    }
+  case T_SUM:
+  case T_MIN:
+  case T_MAX:
+  case T_COUNT:
+    // An aggregate of HAVING, a reference to an aggregate result.
+    out << (ce->op == T_SUM ? "SUM" : ce->op == T_MIN ? "MIN"
+            : ce->op == T_MAX ? "MAX" : "COUNT")
+        << ": aggregate result " << ce->having_agg.agg_index << '\n';
+    return;
+  case T_AVG:
+    out << "AVG: aggregate results " << ce->having_agg.agg_index << " / "
+        << ce->having_agg.agg_index2 << '\n';
+    return;
   default:
-    // Unknown operator
-    abort();
+    // Fail the statement, not the process.
+    require_bug(false, "EXPLAIN: a condition holds an operator it cannot "
+                       "print.");
+    return;
   }
   if (prefix_op)
   {
@@ -20682,6 +20760,53 @@ RonSQLPreparer::print(struct ConditionalExpression* ce,
     out << prefix << "╰─ ";
     LexString prefix_right = prefix.concat(LexString{"   ", 3}, m_amalloc);
     print(ce->args.right, prefix_right);
+  }
+}
+
+/*
+ * Print the arguments of GREATEST / LEAST, one per line, in the order
+ * written.  The grammar builds the list as T_COMMA nodes, newest first
+ * (args.left the argument, args.right the earlier ones), so the
+ * outermost node holds the last argument.
+ */
+void
+RonSQLPreparer::print_arg_list(struct ConditionalExpression* list,
+                               LexString prefix, bool last)
+{
+  require_bug(list != NULL && list->op == T_COMMA,
+              "EXPLAIN: GREATEST or LEAST without an argument list.");
+  if (list->args.right != NULL)
+    print_arg_list(list->args.right, prefix, false);
+  std::basic_ostream<char>& out = *m_conf.out_stream;
+  out << prefix << (last ? "╰─ " : "├─ ");
+  LexString prefix_arg = last
+      ? prefix.concat(LexString{"   ", 3}, m_amalloc)
+      : prefix.concat(LexString{"│  ", 5}, m_amalloc);
+  print(list->args.left, prefix_arg);
+}
+
+// One line naming a subquery by its table.  EXPLAIN runs no subquery.
+void
+RonSQLPreparer::print_subquery_source(const SelectStatement* stmt)
+{
+  std::basic_ostream<char>& out = *m_conf.out_stream;
+  out << "SUBQUERY";
+  if (stmt != NULL && stmt->table.str != NULL)
+    out << " FROM " << quoted_identifier(stmt->table.c_str());
+  out << '\n';
+}
+
+static const char* comparison_name(TokenKind op)
+{
+  switch (op)
+  {
+  case T_EQUALS: return "=";
+  case T_GE: return ">=";
+  case T_GT: return ">";
+  case T_LE: return "<=";
+  case T_LT: return "<";
+  case T_NOT_EQUALS: return "!=";
+  default: return NULL;
   }
 }
 

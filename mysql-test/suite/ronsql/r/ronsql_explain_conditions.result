@@ -1,0 +1,70 @@
+
+=== e1-1: LIKE ===
+WHERE
+  LIKE
+  ├─ `o_name`
+  ╰─ STRING: a%
+
+=== e1-2: GREATEST of three columns, in the order written ===
+WHERE
+  >
+  ├─ GREATEST
+  │  ├─ `o_total`
+  │  ├─ `o_custkey`
+  │  ╰─ `o_id`
+  ╰─ 400
+
+=== e1-3: LIKE and LEAST under NOT ===
+WHERE
+  AND
+  ├─ LIKE
+  │  ├─ `o_name`
+  │  ╰─ STRING: %a
+  ╰─ NOT
+     ╰─ <
+        ├─ LEAST
+        │  ├─ `o_total`
+        │  ╰─ `o_custkey`
+        ╰─ 150
+
+=== e1-4: scalar subquery ===
+WHERE
+  >
+  ├─ `o_total`
+  ╰─ SCALAR SUBQUERY FROM `e1_l`
+
+=== e1-5: IN subquery ===
+WHERE
+  IN
+  ├─ `o_id`
+  ╰─ SUBQUERY FROM `e1_l`
+
+=== e1-6: correlated EXISTS, decorrelated into an IN subquery ===
+WHERE
+  IN
+  ├─ `o_id`
+  ╰─ SUBQUERY FROM `e1_l`
+
+=== e1-7: correlated NOT EXISTS ===
+WHERE
+  NOT
+  ╰─ IN
+     ├─ `o_id`
+     ╰─ SUBQUERY FROM `e1_l`
+
+=== e1-8: correlated scalar comparison ===
+WHERE
+  > CORRELATED
+  ├─ `o_total`
+  ├─ SUBQUERY FROM `e1_l`
+  ╰─ KEY `o_id`
+
+=== e1-9: EXISTS without a connection (no decorrelation) ===
+WHERE
+  EXISTS SUBQUERY FROM `e1_l`
+
+=== e1-10: LIKE through RDRS ===
+WHERE
+  LIKE
+  ├─ `o_name`
+  ╰─ STRING: a%
