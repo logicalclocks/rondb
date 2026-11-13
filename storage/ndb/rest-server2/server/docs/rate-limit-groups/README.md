@@ -136,6 +136,8 @@ Hopsworks (`/Users/salman/code/hops/hopsworks`):
   predate the revision.
 - RonDB per-name metering (apikey mode in RDRS, mysqld account tagging): merged on 26.02-main.
 - RDRS username mode: parked on `origin/RONDB-978-Cont`, held back until Hopsworks provisions USER entries.
-- Everything else in the design doc (tables, admin page, RDRS match + sync loop, kernel `USER ALIAS`): not started.
-- Open decisions: section 14 of the design doc (eight items). Ask before resolving any of them.
+- Everything else in the design doc (tables, admin page, RDRS sync loop + username tagging, kernel `USER ALIAS`): not started.
+- Open decisions: section 14 of the design doc. Item 4 was decided on 2026-11-13: go
+  straight to the kernel alias (RonDB resolves); no REST-only intermediate step, the
+  section 5 per-request maps are not built. Ask before resolving the others.
 - Turning the design into tickets (Hopsworks tables + admin page, RDRS cache/match/sync, kernel alias) is the next piece of work.

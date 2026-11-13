@@ -113,7 +113,9 @@
   tables, commands and diagrams here use <code>group</code> throughout. Revised
   2026-11-13 after a re-verification against Hopsworks master <code>628ebc969</code> and
   RonDB 26.02.15 (<code>e38000a50df</code>): corrections are folded in place and line
-  references updated to those commits.</p>
+  references updated to those commits. The variant decision was taken the same day and
+  is recorded in place: RonDB resolves, no REST-only intermediate step (sections 6.4,
+  12 and 14), with the sync-loop coordination rules added to section 8.</p>
 </header>
 
 <nav aria-label="Contents">
@@ -526,7 +528,9 @@ become an optional first step rather than the mechanism. The whole flow:</p>
 <p><strong>Proposal: RonDB resolves.</strong> The Hopsworks tables, the admin page and
 the sync loop are identical in both columns, so shipping the left column first as a
 REST-only step wastes little, but the right column is the design. Whether to ship the
-left column at all is an open decision (section 14).</p>
+left column at all was an open decision (section 14); decided 2026-11-13: go straight
+to the right column. No REST-only intermediate step ships, the per-request maps of
+section 5 are not built, and RDRS tags the project-user account name from the start.</p>
 </section>
 
 <section id="kernel">
@@ -629,6 +633,12 @@ drops the whole alias. The management-server side mirrors the existing
   <li>The query-thread gap of 7.2: distribute user records to query threads (or route
   user-tagged reads to LDM threads), or group budgets under-charge every read a query
   thread executes.</li>
+  <li>Concurrent sync at fleet scale: tens of RDRS instances reconciling one cluster at
+  the same time (simultaneous and staggered starts, a group saved mid-run, one instance
+  holding a stale snapshot). The cluster must converge within one sync period with no
+  flapping <code>DROP</code>s and no refused-command loops, and the management server
+  must hold up under the combined <code>USER LIST</code> / <code>USER ALIAS LIST</code>
+  and command rate (section 8).</li>
 </ul>
 </section>
 
@@ -679,6 +689,29 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_marketing_rl --databa
   <li><strong>Idempotent.</strong> <code>USER SET</code> on an existing name followed by
   <code>USER ALTER</code> is harmless, so several RDRS instances on one cluster do not
   conflict, and the loop repairs entries lost to a restart or a manual drop.</li>
+  <li><strong>No leader election.</strong> Every sync-enabled RDRS runs the loop
+  independently against the same desired state. Whichever instance runs first after a
+  change applies it; the others read back a cluster that already matches and issue
+  nothing, so a change is applied once and then verified by each remaining instance. The
+  kernel refuses a <code>USER ALIAS SET</code> that names a different target for an
+  existing scope (7.3), so two instances with momentarily different views cannot
+  overwrite each other; the one holding the stale view converges on its next run. Where
+  the per-replica cost matters, a deployment flag may enable the loop on only a few
+  replicas per cluster; at least one sync-enabled replica per data cluster is
+  required, and a cluster with none shows its groups stuck in <em>pending</em>.</li>
+  <li><strong>Cheap in steady state.</strong> Hopsworks bumps a version counter on every
+  write to the three group tables. A run first reads that one counter and ends
+  immediately when it matches what the instance last applied, so in steady state each
+  instance costs one primary-key read per period. A full reconcile still runs every Nth
+  period, with per-instance jitter, so objects lost to a manual drop or an initial
+  start are repaired even while the counter is unchanged.</li>
+  <li><strong>Deletes are conservative.</strong> A <code>SET</code> or
+  <code>ALTER</code> may act on the current snapshot, but a <code>DROP</code> is issued
+  only for an object that has been absent from the instance's desired state for two
+  consecutive runs. An instance whose snapshot predates a just-saved group therefore
+  cannot flap it by dropping what another instance just installed. The loop also never
+  drops a name it cannot derive from the group rows: a <code>USER</code> an operator
+  created by hand is not its property.</li>
   <li><strong>Never drops on a failed read.</strong> An unreachable metadata connection
   skips the run; an empty result must not be mistaken for “no groups”.</li>
   <li><strong>Reports a state per group per cluster:</strong> pending, installed, refused
@@ -785,9 +818,9 @@ its limits), and never rely on a location column in Hopsworks to decide what to 
   <tbody>
     <tr><td>Hopsworks tables</td><td>new</td><td>Flyway migration with the three tables (appendix); JPA entities; the save rules of section 9 in the controller; re-check “no ties” in the project-membership path (<code>ProjectController</code>, where <code>createDatabaseUser</code> is already called on member add).</td></tr>
     <tr><td>Hopsworks admin page</td><td>new</td><td>Section 10, plus install state per cluster read back from RDRS. Decide who may create <code>ALL</code> vs <code>SELECTED</code> groups.</td></tr>
-    <tr><td>RDRS cache</td><td>new</td><td>Load the three tables in the same DAL style as the sharing tables, but as a new cluster-wide cache beside the existing per-key grant cache (which is keyed by API-key prefix and watches only <code>api_key</code>); expand data rows with <code>find_feature_group_int</code> / <code>find_feature_store_name_int</code>. The two maps of section 5 only if the REST-only first step is taken.</td></tr>
-    <tr><td>RDRS tagging</td><td>exists on a branch</td><td>Merge username mode from <code>RONDB-978-Cont</code> so REST transactions carry the project-user name; or, for the REST-only step, implement steps 5 to 7 of section 5 and tag the group name.</td></tr>
-    <tr><td>RDRS sync loop</td><td>new</td><td>Section 8: a timer in RDRS; expansion into accounts and scopes; the local-data filter on the data connection; thread count from the management server’s configuration; reconcile against <code>USER LIST</code> / <code>USER ALIAS LIST</code> through the existing mgm client; state reporting.</td></tr>
+    <tr><td>RDRS cache</td><td>new</td><td>Load the three tables in the same DAL style as the sharing tables, but as a new cluster-wide cache beside the existing per-key grant cache (which is keyed by API-key prefix and watches only <code>api_key</code>); expand data rows with <code>find_feature_group_int</code> / <code>find_feature_store_name_int</code>. The two maps of section 5 are not built (decision of 2026-11-13, section 14); this cache feeds only the sync loop.</td></tr>
+    <tr><td>RDRS tagging</td><td>exists on a branch</td><td>Merge username mode from <code>RONDB-978-Cont</code> so REST transactions carry the project-user name (the REST-only alternative of tagging the group name was rejected on 2026-11-13, section 14).</td></tr>
+    <tr><td>RDRS sync loop</td><td>new</td><td>Section 8: a timer in RDRS; expansion into accounts and scopes; the local-data filter on the data connection; thread count from the management server’s configuration; reconcile against <code>USER LIST</code> / <code>USER ALIAS LIST</code> through the existing mgm client; state reporting; the version-counter short-circuit, periodic full resync, conservative-delete rule and optional per-replica sync flag of section 8. The counter the short-circuit reads is a Hopsworks-side row bumped by the save path of section 9.</td></tr>
     <tr><td>RonDB kernel</td><td>new</td><td>Section 7: alias flag and rule list on the <code>$name</code> object in Dbdict (not budgeted, persisted, backed up); rule lookup at the three Dbtc admission points; <code>USER ALIAS SET/DROP/GET/LIST</code> in the mgm server (<code>Services.cpp</code>) and client; MTR tests in <code>suite/ndb_quota</code> including a <code>JOIN</code> across two aliased tables and a session under a table-scoped alias.</td></tr>
     <tr><td>MySQL server</td><td>exists</td><td>Nothing to code. Enable <code>ndb_user_rate_limits</code> through rondb-helm.</td></tr>
     <tr><td>Data nodes</td><td>exists</td><td><code>ActivateRateLimits=true</code> in the cluster configuration.</td></tr>
@@ -870,7 +903,11 @@ matching the right group and installing it on the cluster are both required.</p>
   <li><strong>A tie created by a membership change</strong> (section 9): refuse the
   change, or accept it and mark both groups conflicting.</li>
   <li><strong>REST-only first?</strong> (6.4): ship the section-5 maps in RDRS before the
-  alias lands in RonDB, or go straight to the alias.</li>
+  alias lands in RonDB, or go straight to the alias. <em>Decided 2026-11-13: go straight
+  to the alias.</em> Both entry points must be covered by one mechanism, so the
+  per-request maps of section 5 are not built; RDRS tags the project-user account name
+  (username mode) from the start and the alias resolves it. Section 5 stays in the
+  document as the record of the variant considered and rejected.</li>
   <li><strong>Unmetered online paths</strong> (section 12): RDRS enforces under the
   caller’s identity, so there is no RDRS superuser hole; the superuser execution path is
   Hopsworks’s ArrowFlight / offline query path, outside RonDB online reads. What is
