@@ -50,10 +50,22 @@ struct trp_node {
   bool m_connected = false;     // Transporter connected
   bool m_api_reg_conf = false;  // API_REGCONF has arrived
  public:
+  /**
+   * The writers of m_connected and m_api_reg_conf hold the ClusterMgr
+   * lock, but many readers do not: ClusterMgr::getNodeInfo() is lock-free
+   * and returns the live node, and some callers copy it. Such a reader
+   * can see one flag before and the other after a change.
+   */
   void set_connected(bool connected) {
     assert(defined);
-    if (!connected) m_api_reg_conf = false;
+    /**
+     * Clear m_connected before m_api_reg_conf, so that a lock-free
+     * reader that sees m_api_reg_conf cleared normally also sees the
+     * node disconnected (see the asserts after prepareSend() in
+     * TransporterFacade::sendSignal()).
+     */
     m_connected = connected;
+    if (!connected) m_api_reg_conf = false;
   }
   bool is_connected(void) const {
     const bool connected = m_connected;
@@ -67,11 +79,13 @@ struct trp_node {
     m_api_reg_conf = confirmed;
   }
 
-  bool is_confirmed(void) const {
-    const bool confirmed = m_api_reg_conf;
-    assert(!confirmed || (confirmed && is_connected()));
-    return confirmed;
-  }
+  /**
+   * A node that is not connected is never confirmed. Under the ClusterMgr
+   * lock m_api_reg_conf implies m_connected, but a lock-free reader can
+   * see m_api_reg_conf set and m_connected cleared while
+   * set_connected(false) runs, so check both instead of asserting it.
+   */
+  bool is_confirmed(void) const { return m_api_reg_conf && is_connected(); }
 
  private:
   friend NdbOut &operator<<(NdbOut &, const trp_node &);
