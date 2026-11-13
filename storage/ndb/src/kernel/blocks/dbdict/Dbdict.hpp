@@ -694,10 +694,46 @@ class Dbdict : public SimulatedBlock {
    */
   PageRecord c_indexPage;
 
+  /**
+   * One rule of a USER ALIAS (RONDB-1158). Rules are kept per alias as a
+   * singly linked list through m_next_rule in insertion order; evaluation
+   * order (table before database before all) is decided where the rules
+   * are used, not by the list order. Scope and target are stored by NAME,
+   * not id: a table dropped and recreated must keep matching, so table ids
+   * are resolved where the rule is attached to the data path, never here.
+   */
+  struct AliasRule {
+    AliasRule()
+    {
+      m_next_rule = RNIL;
+      m_target_id = RNIL;
+    }
+
+    static bool isCompatible(Uint32 type) { return DictTabInfo::isDatabase(type); }
+    Uint32 m_magic;
+
+    union {
+      Uint32 nextPool;
+      Uint32 nextList;
+    };
+
+    Uint32 m_scope_type;  // DictDatabaseInfo::AliasScopeType
+    Uint32 m_target_id;   // the target USER's object id, resolved at SET time
+    Uint32 m_next_rule;
+    char m_scope_name[MAX_TAB_NAME_SIZE];  // internal name; empty for ALL
+    char m_target_name[MAX_DB_NAME_SIZE];  // without the '$' prefix
+  };
+  typedef Ptr<AliasRule> AliasRulePtr;
+  typedef RecordPool<RWPool<AliasRule> > AliasRule_pool;
+  AliasRule_pool c_alias_rule_pool;
+
   struct Database {
     Database()
     {
       m_alter_db_ref = RNIL;
+      m_is_alias = false;
+      m_alias_rule_count = 0;
+      m_first_alias_rule = RNIL;
     }
 
     static bool isCompatible(Uint32 type) { return DictTabInfo::isDatabase(type); }
@@ -725,6 +761,14 @@ class Dbdict : public SimulatedBlock {
     Uint32 m_max_parallel_transactions;
     Uint32 m_max_parallel_complex_queries;
     bool m_is_user;
+    /**
+     * A USER ALIAS (RONDB-1158) is a user-kind object (m_is_user is also
+     * true, so every user-path check accepts it) with no budget of its own
+     * and an ordered rule list resolving (caller, table) to a target USER.
+     */
+    bool m_is_alias;
+    Uint32 m_alias_rule_count;
+    Uint32 m_first_alias_rule;  // head of AliasRule list, insertion order
   };
   typedef Ptr<Database> DatabasePtr;
   typedef RecordPool<RWPool<Database> > Database_pool;
@@ -4791,6 +4835,27 @@ class Dbdict : public SimulatedBlock {
 
   void packDatabaseIntoPages(SimpleProperties::Writer & w,
                              DatabasePtr db_ptr);
+
+  /**
+   * USER ALIAS rule-list helpers (RONDB-1158). They operate on a detached
+   * (first_rule, rule_count) list so a list can be built and thrown away
+   * before any dictionary object exists: a malformed client blob is then
+   * refused before anything needs unwinding.
+   */
+  Uint32 packAliasRules(Uint32 first_rule, char* buf, Uint32 bufSize);
+  bool unpackAliasRules(const char* buf, Uint32 len,
+                        Uint32& first_rule, Uint32& rule_count,
+                        bool is_restart, ErrorInfo& error,
+                        bool remove_rules = false);
+  bool addAliasRule(Uint32& first_rule, Uint32& rule_count,
+                    Uint32 scope_type, const char* scope_name,
+                    const char* target_name,
+                    bool is_restart, ErrorInfo& error);
+  void removeAliasRule(Uint32& first_rule, Uint32& rule_count,
+                       Uint32 scope_type, const char* scope_name);
+  bool copyAliasRules(Uint32 src_first, Uint32& dst_first,
+                      Uint32& dst_count);
+  void releaseAliasRules(Uint32& first_rule, Uint32& rule_count);
 
   void createDb_writeTableConf(Signal* signal,
                                Uint32 op_key,

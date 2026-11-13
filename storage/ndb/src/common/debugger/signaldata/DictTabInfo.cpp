@@ -259,6 +259,11 @@ DictDatabaseInfo::Mapping[] = {
   DDBI_MAP_INT64(Database, MaxParallelTransactions, MaxParallelTransactions),
   DDBI_MAP_INT64(Database, MaxParallelComplexQueries, MaxParallelComplexQueries),
   DDBI_MAP_INT(Database, IsUser, IsUser),
+  DDBI_MAP_INT(Database, IsAlias, IsAlias),
+  DDBI_MAP_INT(Database, AliasRuleCmd, AliasRuleCmd),
+  DDBI_MAP_INT(Database, AliasRulesLen, AliasRulesLen),
+  DDBI_MAP_BIN(Database, AliasRules, AliasRules,
+               DictDatabaseInfo::MaxAliasRulesBytes, AliasRulesLen),
 
   DDBIBREAK(ParameterEnd)
 };
@@ -278,6 +283,10 @@ DictDatabaseInfo::Database::init(){
   MaxParallelTransactions = 0;
   MaxParallelComplexQueries = 0;
   IsUser = false;
+  IsAlias = 0;
+  AliasRuleCmd = 0;
+  AliasRulesLen = 0;
+  std::memset(AliasRules, 0, sizeof(AliasRules));
 }
 
 //static 
