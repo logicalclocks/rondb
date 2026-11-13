@@ -110,7 +110,10 @@
   <p class="meta">Facts about existing code were verified on 2026-10-21 against Hopsworks
   <code>83963e2354</code> and RonDB 26.02-main (<code>ab1549d26ed</code>); file and line
   references are given where they matter. Earlier drafts called a group a “bucket”; the
-  tables, commands and diagrams here use <code>group</code> throughout.</p>
+  tables, commands and diagrams here use <code>group</code> throughout. Revised
+  2026-11-13 after a re-verification against Hopsworks master <code>628ebc969</code> and
+  RonDB 26.02.15 (<code>e38000a50df</code>): corrections are folded in place and line
+  references updated to those commits.</p>
 </header>
 
 <nav aria-label="Contents">
@@ -169,10 +172,10 @@ CPU per second on each data node, about 1% of one thread. A <code>USER</code> is
 dictionary object stored as <code>$name</code> in the same namespace as
 <code>DATABASE QUOTA</code> objects (<code>Dbdict.cpp:33182</code>). The client resolves
 the name to an object id once (<code>ClusterMgr::retrieveUserId</code>,
-<code>ClusterMgr.cpp:1512</code>, a cache filled from <code>LIST_DATABASE</code> and
+<code>ClusterMgr.cpp:1535</code>, a cache filled from <code>LIST_DATABASE</code> and
 refreshed every 60 s) and sends only the id; Dbtc admits or queues at
 <code>TCKEYREQ</code>, <code>SCAN_TABREQ</code> and <code>TCINDXREQ</code>; Dblqh charges
-per row operation (<code>update_rate_usage</code>, <code>DblqhMain.cpp:40517</code>). An
+per row operation (<code>update_rate_usage</code>, <code>DblqhMain.cpp:40541</code>). An
 unknown name runs unmetered. The full mechanics, the cost model and the 50% cap are in
 <a href="#reference">section 13</a>.</p>
 
@@ -198,7 +201,7 @@ the NDB transactions it starts:</p>
   a routine declared <code>SQL SECURITY DEFINER</code> it is the definer.</li>
   <li><strong>Off by default, and internal work is untagged.</strong> Both
   <code>ndb_user_rate_limits</code> (mysqld) and <code>ActivateRateLimits</code> (data
-  nodes, <code>ConfigInfo.cpp:640</code>) default to off. The binlog thread, schema
+  nodes, <code>common/mgmcommon/ConfigInfo.cpp:650</code>) default to off. The binlog thread, schema
   distribution and stored-grant replication never tag.</li>
 </ul>
 <p>Online ingestion (<code>onlinefs</code>) writes through ClusterJ and tags nothing today.
@@ -209,7 +212,7 @@ the NDB transactions it starts:</p>
 added, Hopsworks creates a MySQL account for each member
 (<code>OnlineFeaturestoreController.createDatabaseUser</code>). The name is the project
 name, an underscore, and the login user’s <code>username</code>, cut to 31 characters if
-longer than 32 (<code>onlineDbUsername</code>, lines 589-595;
+longer than 32 (<code>onlineDbUsername</code>, lines 694-700;
 <code>ONLINE_FEATURESTORE_USERNAME_MAX_LENGTH = 32</code>). The host part is
 <code>'%'</code>. A data owner gets <code>ALL</code> on the project’s database, a data
 scientist <code>SELECT</code>. A share grants <code>SELECT</code> on the owner’s database
@@ -231,9 +234,12 @@ always connects as their own project’s account.</p>
 (<code>RONDB-978-Cont</code> builds it with the same clip, byte for byte), so one person
 is one name on both entry points. <strong>It also decodes back to (project, user) without a
 lookup table:</strong> project names are at most 25 characters from
-<code>[A-Za-z0-9_]</code> with no double underscore and unique ignoring case
-(<code>FolderNameValidator.java:54-88</code>); generated usernames are exactly eight
-lowercase alphanumerics (<code>UsersController.java:517-552</code>); service usernames
+<code>[A-Za-z0-9_]</code> with no double underscore
+(<code>FolderNameValidator.java:57-67</code>, length at <code>:105-107</code>) and unique
+ignoring case (checked before insert in <code>ProjectController.java:740-747</code>; the
+database unique key is case-sensitive); generated usernames are exactly eight
+lowercase alphanumerics, derived from the email and padded or truncated
+(<code>UsersController.java:536-571</code>); service usernames
 (<code>onlinefs</code>, <code>srvmanager</code>) contain no underscore. The last
 underscore therefore always splits off the exact project name, and at least five
 characters of the username survive the clip; the resolver recomputes the clip over that
@@ -247,8 +253,12 @@ project’s members and compares.</p>
   limiting; document it as a limitation of the account scheme.</p>
   <p>Service accounts: <code>onlinefs</code> (data scientist) and <code>srvmanager</code>
   (data owner) are on every team and get accounts; <code>airflow</code> is on the team but
-  is filtered out before accounts are created (<code>ProjectUtils.java:376</code>) and has
-  none.</p>
+  is filtered out before accounts are created (<code>ProjectUtils.java:361-365</code>) and
+  has none. One timing caveat: account creation runs in the lazy online-feature-store
+  setup, which runs once and returns early afterwards
+  (<code>OnlineFeaturestoreController.java:134-136</code>), and adding a service user
+  later never calls <code>createDatabaseUser</code>; a service user only has an account if
+  it was already a member when that setup first ran.</p>
 </div>
 <p>Who uses these accounts: every user-facing SQL path, including the Hopsworks backend’s
 own preview and feature-group DDL on the caller’s behalf. Only administrative work (grants,
@@ -390,11 +400,17 @@ two budgets are separate.</p>
 
 <section id="rest">
 <h2>5. Matching on the REST path (RDRS)</h2>
-<p>RDRS keeps an in-memory copy of the Hopsworks tables it needs, kept fresh in the
-background: <code>api_key</code>, <code>users</code>, <code>project_team</code>,
-<code>feature_store</code>, <code>feature_group</code> and the sharing tables. The three
-group tables join that list. From the group rows RDRS can build two lookup maps and match
-each request itself:</p>
+<p>RDRS reads the Hopsworks tables it needs over its metadata connection:
+<code>api_key</code>, <code>users</code>, <code>project_team</code>, <code>project</code>,
+<code>feature_store</code>, <code>feature_group</code>, the sharing tables
+(<code>shared_feature_store</code>, <code>shared_feature_group</code>,
+<code>shared_feature</code>) and the restricted-access tables. What it caches is not the
+rows but the result: per API-key prefix, the resolved databases and grants
+(<code>api_key.hpp:175</code>), refreshed every <code>CacheRefreshIntervalMS</code>
+(default 180 s) with an NDB event watch on <code>api_key</code> only. The three group
+tables are read the same way, but their cache is cluster-wide, keyed by group rather
+than by key, since a group row concerns every request. From the group rows RDRS can
+build two lookup maps and match each request itself:</p>
 <figure class="erd"><img src="img/design/lookup-maps.png" alt="The two maps RDRS builds from the group rows, person to groups and data to groups by level, and Alice’s request passing through them to recommender_team_rl."><figcaption>The two maps RDRS builds from the group rows, and Alice’s request passing through them. Grey italic text is explanation, not a column.</figcaption></figure>
 <pre><code>POST /0.1.0/marketing/marketing_clicks_1/pk-read
 X-API-KEY: Qk3mZx8pL2vN7bRt.&lt;64-character secret&gt;</code></pre>
@@ -451,8 +467,8 @@ But a per-table group decision cannot be made there, for three reasons that foll
 <p>Both entry points tag the transaction with a name that identifies the caller, and the
 data nodes see the table next to that name at every point where they admit or charge
 work: <code>TCKEYREQ</code> (<code>DbtcMain.cpp:3726</code>, <code>localTabptr</code> in
-the same block as the user id), <code>SCAN_TABREQ</code> (<code>:16175</code>),
-<code>TCINDXREQ</code> (<code>:22396</code>), and the charging function itself,
+the same block as the user id), <code>SCAN_TABREQ</code> (<code>:16290</code>),
+<code>TCINDXREQ</code> (<code>:22518</code>), and the charging function itself,
 <code>Dblqh::update_rate_usage(tableId, userPtrI, ns)</code>. The kernel is the one
 place where (caller, table) → group can be decided for all paths at once. What is missing
 is an object that says “this name, on this data, charges that group’s <code>USER</code>”.
@@ -523,16 +539,21 @@ implementation:</p>
   by <code>CREATE/DROP_DATABASE_REP</code> and a full re-list every 60 seconds. Only a
   32-bit object id and version go on the wire (<code>TcKeyReq</code> bit 29,
   <code>ScanTabReq</code> bit 5). An unknown name returns <code>RNIL</code> and the
-  transaction runs unmetered.</li>
+  transaction runs unmetered, once the first list walk has completed; before that,
+  <code>setUserId</code> pays one blocking <code>GET_DATABASE_REQ</code> round trip
+  (<code>NdbTransaction.cpp:546-570</code>), and after a write-rate abort the client
+  refuses that name for one second (<code>ClusterMgr.cpp:1574-1578</code>).</li>
   <li>Dbdict stores a <code>USER</code> as <code>$name</code>, in the same namespace and
-  id space as <code>DATABASE QUOTA</code> objects; 127 usable characters.</li>
+  id space as <code>DATABASE QUOTA</code> objects; 126 usable characters (the
+  <code>$</code> takes one byte of <code>MAX_DB_NAME_SIZE</code>), and a name may not
+  itself begin with <code>$</code>.</li>
   <li>Dbtc keeps the first record a transaction touches in
-  <code>ApiConnectRecord::m_queuedDatabasePtrI</code> (<code>DbtcMain.cpp:28543</code>,
-  <code>:16205</code>) and forwards the user id to Dblqh only when that record is a user
+  <code>ApiConnectRecord::m_queuedDatabasePtrI</code> (<code>DbtcMain.cpp:28676</code>,
+  <code>:16330</code>) and forwards the user id to Dblqh only when that record is a user
   (<code>LQHKEYREQ</code> bit 9, <code>SCAN_FRAGREQ</code> bit 27). Dbspj copies it into
   every child operation.</li>
   <li>Dbdict already binds each table to a quota database when the table is created
-  (<code>CONNECT_TABLE_DB</code>, <code>Dbdict.cpp:8540</code>), so a “table → budget
+  (<code>CONNECT_TABLE_DB</code>, <code>Dbdict.cpp:8537</code>), so a “table → budget
   object” link is an existing pattern.</li>
 </ul>
 
@@ -550,7 +571,7 @@ runs unmetered, which is today’s unknown-name behavior.</p>
     <tr><td>Name cache</td><td>The <code>LIST_DATABASE</code> walk returns aliases alongside users, so mysqld, RDRS and ClusterJ resolve an alias name to its id with no NDB API change.</td></tr>
     <tr><td>Persistence</td><td>Stored in the schema file like quota objects, recreated on system restart, included in <code>USER BACKUP</code> / restore.</td></tr>
     <tr><td>Database rules</td><td>Dbtc needs the table’s database to match a database rule. Two options: Dbdict expands a database rule into that database’s tables and maintains it on <code>CREATE</code>/<code>DROP TABLE</code>; or the table record carries its database id for Dbtc to compare. Kernel team’s choice.</td></tr>
-    <tr><td>Name rules</td><td>Same as <code>USER</code>: at most 127 characters, exact case-sensitive match. An alias and a user may not share a name.</td></tr>
+    <tr><td>Name rules</td><td>Same as <code>USER</code>: at most 126 characters, no leading <code>$</code>, exact case-sensitive match. An alias and a user may not share a name.</td></tr>
   </tbody>
 </table></div>
 
@@ -558,9 +579,15 @@ runs unmetered, which is today’s unknown-name behavior.</p>
 <p>At each admission point, after the tagged id is resolved to a record: if the record is
 an alias, look up its rules against the request’s table; the resulting <code>USER</code>
 replaces the alias as the sticky record and in what Dbtc forwards to Dblqh and Dbspj.
-Dblqh and Dbspj are unchanged. Plain <code>USER</code>s pay nothing new. Query threads
-that lack the record locally already fall back to the table’s database record
-(<code>DblqhMain.cpp:9196</code>); the same fallback applies.</p>
+Dblqh and Dbspj are unchanged. Plain <code>USER</code>s pay nothing new. One existing gap
+to be aware of: query threads never hold user records at all, because
+<code>CREATE_DB_REQ</code> is routed only to the LDM workers
+(<code>DblqhProxy.cpp:2080</code>), so a user-tagged read that runs on a query thread
+falls back to the table’s database record or is not charged
+(<code>DblqhMain.cpp:9196</code>, <code>:40549-40556</code>). Per-user read metering
+therefore does not bind on query threads in 26.02; the alias resolves in Dbtc and does
+not change that. Closing this gap is on the verify list (7.5): without it, group budgets
+under-charge reads.</p>
 
 <h3>7.3 Management commands</h3>
 <pre><code>ndb_mgm&gt; USER ALIAS SET  Marketing_mary01ab    --target=marketing_clicks_rl       --table=marketing.marketing_clicks_1
@@ -569,9 +596,14 @@ ndb_mgm&gt; USER ALIAS SET  Recommender_alice4f2  --target=recommender_team_rl
 ndb_mgm&gt; USER ALIAS DROP Marketing_mary01ab [--table=… | --database=…]
 ndb_mgm&gt; USER ALIAS GET  Marketing_mary01ab
 ndb_mgm&gt; USER ALIAS LIST</code></pre>
-<p>Each <code>SET</code> adds or replaces one rule, creating the alias if needed;
-<code>DROP</code> without a scope drops the whole alias. The management-server side
-mirrors the existing <code>set user</code> family in <code>Services.cpp</code>.</p>
+<p>Each <code>SET</code> adds one rule, creating the alias if needed; a <code>SET</code>
+whose scope already has a rule with the same target is a no-op, and one naming a
+different target for an existing scope is refused, so moving an account between groups
+is an explicit <code>DROP</code> of the old rule followed by a <code>SET</code> (the sync
+computes that diff). With the sync’s group-id install order this makes a stale-cache tie
+land on the lower group id, matching sections 5 and 9. <code>DROP</code> without a scope
+drops the whole alias. The management-server side mirrors the existing
+<code>set user</code> family in <code>Services.cpp</code>.</p>
 
 <h3>7.4 What the other components do</h3>
 <div class="tablewrap"><table>
@@ -579,7 +611,7 @@ mirrors the existing <code>set user</code> family in <code>Services.cpp</code>.<
   <tbody>
     <tr><td>MySQL server</td><td>None. <code>ndb_user_rate_limits</code> must be on; it is read-only at runtime, so it is set in the server configuration by rondb-helm.</td></tr>
     <tr><td>Data nodes</td><td><code>ActivateRateLimits=true</code> in the cluster configuration.</td></tr>
-    <tr><td>RDRS</td><td>Tag REST transactions with the project-user string (username mode, <code>RONDB-978-Cont</code>). The project is the one that owns the target database, as that branch already does for shared stores.</td></tr>
+    <tr><td>RDRS</td><td>Tag REST transactions with the project-user string (username mode, <code>RONDB-978-Cont</code>). The project is the caller’s own: for data reached through a share, the branch bills the <em>recipient</em> project (commit <code>1bc7a4846ca</code>), the same project whose accounts Hopsworks grants the share to, so the REST tag stays byte-identical to the MySQL account the person connects as. Where one person receives shares of a store into several of their projects, the branch picks the lowest project id; the interaction of that rule with project-scoped groups is an open decision (section 14).</td></tr>
     <tr><td>ClusterJ / onlinefs</td><td>Optional: call <code>setUserId</code> with the service’s account name. Not in a first version.</td></tr>
     <tr><td>NDB API</td><td>None.</td></tr>
   </tbody>
@@ -588,12 +620,15 @@ mirrors the existing <code>set user</code> family in <code>Services.cpp</code>.<
 <h3>7.5 To verify before committing</h3>
 <ul>
   <li>Dictionary object limits: aliases scale as members × projects per member × data
-  rows. Six in the example; thousands in a large deployment.</li>
+  rows. Five in the example; thousands in a large deployment.</li>
   <li>Restart and backup paths for a new object flag.</li>
   <li>The cost of the rule lookup on the <code>TCKEYREQ</code> path, and sign-off on the
   new management syntax.</li>
   <li>The 60-second client re-list: a recreated alias is invisible to a connected mysqld
   for up to a minute.</li>
+  <li>The query-thread gap of 7.2: distribute user records to query threads (or route
+  user-tagged reads to LDM threads), or group budgets under-charge every read a query
+  thread executes.</li>
 </ul>
 </section>
 
@@ -672,9 +707,9 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_marketing_rl --databa
 create an overlap that did not exist at save time: the two <code>ALL</code> groups above
 are both valid until Alice joins Marketing. Hopsworks then has to either refuse the
 membership change with a message naming the two groups, or accept it and mark both groups
-as conflicting on the admin page. Refusing is simpler and is the proposal; the kernel’s
-rule order (and RDRS, in the section-5 variant) still picks the lower group id if a stale
-cache produces a tie. Whether all budgets <em>add up</em> under 50% is checked by RonDB
+as conflicting on the admin page. Refusing is simpler and is the proposal; the sync’s
+group-id install order with the <code>SET</code> conflict rule of 7.3 (and RDRS, in the
+section-5 variant) still picks the lower group id if a stale cache produces a tie. Whether all budgets <em>add up</em> under 50% is checked by RonDB
 when the entry is installed; Hopsworks can warn, and the sync surfaces a refusal.</p>
 <p>Who may create groups is a product decision. A natural split: administrators create
 <code>ALL</code> groups, while a data owner of a store or feature group may create
@@ -723,7 +758,7 @@ MySQL servers sit in front of it. Some deployments add a RonDB cluster per large
   <tbody>
     <tr><td>Where the <code>hopsworks</code> database lives</td><td>on the cluster</td><td>on the main cluster only</td></tr>
     <tr><td>Where a project’s online database lives</td><td>on the cluster</td><td>on the project’s satellite (or on main)</td></tr>
-    <tr><td>RDRS connections</td><td>one NDB connection for data and metadata</td><td>two: data to the local cluster, metadata to main (<code>externalMetadataCluster</code>); already the case for API keys</td></tr>
+    <tr><td>RDRS connections</td><td>one NDB connection for data and metadata</td><td>two: data to the local cluster, metadata to main (helm <code>rdrs.externalMetadataCluster</code>, rendered into the RDRS <code>RonDBMetadataCluster</code> setting); already the case for API keys</td></tr>
     <tr><td>The group tables</td><td>read locally</td><td>read over the metadata connection by every satellite’s RDRS</td></tr>
     <tr><td>Which groups an RDRS installs</td><td>all of them</td><td>only groups whose data its own cluster hosts (checked on its data connection), plus all <code>ALL</code> groups</td></tr>
     <tr><td>What a percentage means</td><td>% of this cluster’s data nodes</td><td>a data-scoped group: % of the cluster holding the data, automatically; an <code>ALL</code> group: N% of <em>each</em> cluster</td></tr>
@@ -750,13 +785,13 @@ its limits), and never rely on a location column in Hopsworks to decide what to 
   <tbody>
     <tr><td>Hopsworks tables</td><td>new</td><td>Flyway migration with the three tables (appendix); JPA entities; the save rules of section 9 in the controller; re-check “no ties” in the project-membership path (<code>ProjectController</code>, where <code>createDatabaseUser</code> is already called on member add).</td></tr>
     <tr><td>Hopsworks admin page</td><td>new</td><td>Section 10, plus install state per cluster read back from RDRS. Decide who may create <code>ALL</code> vs <code>SELECTED</code> groups.</td></tr>
-    <tr><td>RDRS cache</td><td>new</td><td>Load the three tables with the existing Hopsworks-metadata cache (same loader and refresh as <code>shared_feature_group</code>); expand data rows with <code>find_feature_group_int</code> / <code>find_feature_store_name_int</code>. The two maps of section 5 only if the REST-only first step is taken.</td></tr>
+    <tr><td>RDRS cache</td><td>new</td><td>Load the three tables in the same DAL style as the sharing tables, but as a new cluster-wide cache beside the existing per-key grant cache (which is keyed by API-key prefix and watches only <code>api_key</code>); expand data rows with <code>find_feature_group_int</code> / <code>find_feature_store_name_int</code>. The two maps of section 5 only if the REST-only first step is taken.</td></tr>
     <tr><td>RDRS tagging</td><td>exists on a branch</td><td>Merge username mode from <code>RONDB-978-Cont</code> so REST transactions carry the project-user name; or, for the REST-only step, implement steps 5 to 7 of section 5 and tag the group name.</td></tr>
     <tr><td>RDRS sync loop</td><td>new</td><td>Section 8: a timer in RDRS; expansion into accounts and scopes; the local-data filter on the data connection; thread count from the management server’s configuration; reconcile against <code>USER LIST</code> / <code>USER ALIAS LIST</code> through the existing mgm client; state reporting.</td></tr>
     <tr><td>RonDB kernel</td><td>new</td><td>Section 7: alias flag and rule list on the <code>$name</code> object in Dbdict (not budgeted, persisted, backed up); rule lookup at the three Dbtc admission points; <code>USER ALIAS SET/DROP/GET/LIST</code> in the mgm server (<code>Services.cpp</code>) and client; MTR tests in <code>suite/ndb_quota</code> including a <code>JOIN</code> across two aliased tables and a session under a table-scoped alias.</td></tr>
     <tr><td>MySQL server</td><td>exists</td><td>Nothing to code. Enable <code>ndb_user_rate_limits</code> through rondb-helm.</td></tr>
     <tr><td>Data nodes</td><td>exists</td><td><code>ActivateRateLimits=true</code> in the cluster configuration.</td></tr>
-    <tr><td>Superuser queries</td><td>open</td><td>Partially shared feature groups and restricted-role queries run as a superuser in RDRS today and bypass any caller-based limit. Decide: attribute them to the caller, or exempt explicitly.</td></tr>
+    <tr><td>Unmetered paths</td><td>open</td><td>RDRS itself has no superuser path: partially shared feature groups and restricted roles are allowed or denied under the caller’s own identity (<code>feature_store_ctrl.cpp:700-797</code>). The superuser execution that earlier drafts placed here is Hopsworks’s ArrowFlight / offline query path (<code>AccessController.requiresSuperUserExec</code>, <code>AccessController.java:402-406</code>), which does not read RonDB online tables. What does run unmetered on the online path today: Rondis traffic (never tagged) and RDRS’s own metadata reads. Decide whether either should ever be metered.</td></tr>
     <tr><td>Several clusters</td><td>new, small</td><td>Section 11: the local-data check in the sync; optionally the override table and <code>ClusterName</code>.</td></tr>
   </tbody>
 </table></div>
@@ -777,10 +812,16 @@ charges per operation (<code>Dblqh.hpp:4707</code>):</p>
     <tr><td>Data read / written</td><td>+ 6 ns / 12 ns per word; 12 ns per interpreter instruction</td></tr>
   </tbody>
 </table></div>
-<p>Usage is aggregated every 10 ms into Dbtc instance 1, which decays it by 10% of the
-allowance every 100 ms. Sustained excess first queues new transactions, then all
-operations, then aborts reads (error 2203) and finally writes (243); SQL reports 1297,
-RDRS answers 429. For a <code>USER</code> only <code>rate_per_sec</code> and
+<p>Failed operations charge reduced costs, scans also pay 6 ns per word they send, and
+any operation that is not a committed read is charged the write cost. Dblqh reports
+usage to the owning Dbtc instance, <code>(databaseId % number of TC threads) + 1</code>
+(<code>DbtcMain.cpp:26648</code>), when the local sum reaches the larger of the rate and
+256 µs, or after 50 ms; that instance decays usage by 10% of the allowance every 100 ms.
+Sustained excess escalates with the overload factor (used ÷ allowance,
+<code>set_queueing_environment</code>): at 1× new transactions queue, at 2× everything
+queues, at 30× reads are aborted and at 60× all operations are; scans are refused with
+error 2203, key operations with 243; SQL reports 1297, RDRS answers 429. For a
+<code>USER</code> only <code>rate_per_sec</code> and
 <code>max_transaction_size</code> are enforced; <code>max_parallel_transactions</code> is
 database-only and <code>max_parallel_complex_queries</code> is never enforced.</p>
 <h3>What a budget of 20% means</h3>
@@ -814,7 +855,7 @@ ndb_mgm&gt; USER ALTER etl_jobs --rate-per-sec=20000
 ndb_mgm&gt; USER GET   etl_jobs
 ndb_mgm&gt; USER LIST
 ndb_mgm&gt; USER DROP  etl_jobs</code></pre>
-<p>A name may be up to 127 characters. The NDB API attaches a name to a transaction with
+<p>A name may be up to 126 characters and may not begin with <code>$</code>. The NDB API attaches a name to a transaction with
 <code>NdbTransaction::setUserId</code>. A name with no configured limit runs unlimited:
 matching the right group and installing it on the cluster are both required.</p>
 </section>
@@ -830,38 +871,65 @@ matching the right group and installing it on the cluster are both required.</p>
   change, or accept it and mark both groups conflicting.</li>
   <li><strong>REST-only first?</strong> (6.4): ship the section-5 maps in RDRS before the
   alias lands in RonDB, or go straight to the alias.</li>
-  <li><strong>The superuser execution path</strong> in RDRS for partially shared feature
-  groups and restricted roles: attribute to the caller, or exempt explicitly.</li>
+  <li><strong>Unmetered online paths</strong> (section 12): RDRS enforces under the
+  caller’s identity, so there is no RDRS superuser hole; the superuser execution path is
+  Hopsworks’s ArrowFlight / offline query path, outside RonDB online reads. What is
+  unmetered today is Rondis traffic and RDRS’s own metadata reads. Meter either, or
+  exempt them explicitly.</li>
   <li><strong>Transactions over several tables</strong> (feature views): accept
   first-table-wins as the kernel does, or have RDRS pre-pick the most restrictive group
   and tag the group name directly.</li>
   <li><strong>Several clusters</strong> (section 11): whether <code>ClusterName</code> and
   the override table are in scope now.</li>
+  <li><strong>Shares received into several projects</strong> (sections 7.4 and 8): when
+  one person’s store share is received by more than one of their projects, the username
+  branch tags the lowest recipient project id, while a project-scoped group installs
+  aliases only on that project’s accounts; the two can miss each other and the read runs
+  unmetered. Options: expand a project Who row onto every account of every member, or
+  make the identity choice follow group membership.</li>
+  <li><strong>The query-thread metering gap</strong> (sections 7.2 and 7.5): query
+  threads hold no user records in 26.02, so user-tagged reads they execute are not
+  charged to the user. Fix in the kernel alongside the alias, or accept and document the
+  under-charging.</li>
   <li><strong>Tickets</strong>: Hopsworks (tables, page), RonDB kernel (alias), RDRS
-  (sync, tagging), deployment (settings). Three unrelated Hopsworks defects found while
-  scouting deserve their own tickets: the inverted <code>RONDB_QUOTAS_ENABLED</code> check
-  in <code>ProjectQuotasController</code> (lines 309 and 320), cross-satellite share
-  grants that silently do nothing, and <code>DatasetSharedWithFacade.java:169</code>
-  filtering on the dropped <code>accepted</code> column.</li>
+  (sync, tagging), deployment (settings). Unrelated defects found while scouting and
+  verifying deserve their own tickets. In Hopsworks: cross-satellite share grants that
+  silently do nothing, and <code>DatasetSharedWithFacade.java:169</code> filtering on the
+  dropped <code>accepted</code> column (the inverted <code>RONDB_QUOTAS_ENABLED</code>
+  check reported by earlier drafts was fixed on master by <code>9397fd822</code>). In
+  RonDB: <code>ClusterMgr::deleteUserId</code> unlocks <code>theUserIdMutex</code>
+  without locking it and edits the hash chain unlocked
+  (<code>ClusterMgr.cpp:1723-1772</code>); a 127-character <code>USER</code> name
+  overruns <code>DatabaseName</code>; an NDB API table whose name starts with
+  <code>$</code> can hit <code>ndbrequire(m_is_user == false)</code>
+  (<code>DbtcMain.cpp:27798</code>) and crash the node;
+  <code>execLIST_DATABASE_REQ</code> never increments its <code>loop_count</code>, so the
+  300-object break never fires; and the rate-decay timer computes a constant 99 ms
+  instead of the elapsed time (<code>DbtcMain.cpp:27573-27575</code>).</li>
 </ol>
 </section>
 
 <section id="appendix">
 <h2>15. Appendix: table definitions and commands</h2>
-<p>In the style of the existing Hopsworks Flyway migrations (next free number V96). Every
-id column matches the <code>int(11)</code> key it references. Names and constraints are
-open to review.</p>
+<p>In the style of the existing Hopsworks Flyway migrations (next free number V142 on
+master as of 2026-11-13). Every id column matches the <code>int(11)</code> key it
+references. Names and constraints are open to review. Two constraints on
+<code>name</code> come from the cluster: at most 126 characters, no leading
+<code>$</code>, and it must survive the management command line unquoted, so the save
+rules of section 9 should restrict it to something like
+<code>[A-Za-z0-9_]</code>. Check the unique keys over nullable columns against the
+RonDB migration limits before the migration is written.</p>
 <pre><code>CREATE TABLE `hopsworks`.`rate_limit_group` (
   `id`             int(11)      NOT NULL AUTO_INCREMENT,
   `name`           varchar(63)  COLLATE latin1_general_cs NOT NULL,
   `budget_percent` decimal(5,2) NOT NULL,
   `data_scope`     varchar(10)  NOT NULL DEFAULT 'SELECTED',   -- 'ALL' or 'SELECTED'
   `created`        timestamp    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `created_by`     int(11)      NOT NULL,
+  `created_by`     int(11)      DEFAULT NULL,   -- kept after the creator is deleted
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`),
   CONSTRAINT `rlg_created_by_fk` FOREIGN KEY (`created_by`) REFERENCES `users` (`uid`)
-    ON DELETE NO ACTION ON UPDATE NO ACTION
+    ON DELETE SET NULL ON UPDATE NO ACTION
 ) ENGINE = ndbcluster;
 
 CREATE TABLE `hopsworks`.`rate_limit_group_user` (
@@ -913,7 +981,7 @@ USER ALIAS LIST</code></pre>
 <footer>
   <p class="meta">Basis: the RonDB 26.02 rate-limit implementation (Dbdict, Dbtc, Dblqh,
   ClusterMgr, ha_ndbcluster), the RONDB-978 branches, the Hopsworks schema at migration
-  V95 and the Hopsworks online-feature-store account code
+  V95 (V141 at the 2026-11-13 revision) and the Hopsworks online-feature-store account code
   (<code>OnlineFeaturestoreController</code>, <code>OnlineFeaturestoreFacade</code>), and
   the rondb-helm and deploy.hopsworks.ai source reviews recorded with this design.
   Examples describe proposed behavior; they are not a claim that the feature has shipped.</p>

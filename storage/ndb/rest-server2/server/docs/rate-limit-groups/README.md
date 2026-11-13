@@ -129,6 +129,10 @@ Hopsworks (`/Users/salman/code/hops/hopsworks`):
 
 ## Status and next steps
 
+- The follow-up work is ticketed as RONDB-1158. The design doc was revised 2026-11-13
+  after a code re-verification (Hopsworks master `628ebc969`, RonDB 26.02.15); section 14
+  carries the new open decisions and the defect list, and some code pointers below
+  predate the revision.
 - RonDB per-name metering (apikey mode in RDRS, mysqld account tagging): merged on 26.02-main.
 - RDRS username mode: parked on `origin/RONDB-978-Cont`, held back until Hopsworks provisions USER entries.
 - Everything else in the design doc (tables, admin page, RDRS match + sync loop, kernel `USER ALIAS`): not started.
