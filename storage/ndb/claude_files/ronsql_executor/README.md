@@ -121,7 +121,7 @@ T-1 contains O-7; C-15 overlaps T-3. J-2 has the same root cause as C-1.
   - FLOAT columns compare as float in WHERE but as double in CASE.
   - A float subquery result is rounded to the DECIMAL column's scale.
   - Temporal literals are truncated to the column's fractional precision.
-- **X-2 (likely): the COUNT(\*) shortcut counts the hidden meta rows of ring-buffer tables.** mysqld skips the fast path for `isRingBuffer()`.
+- **X-2 (verified; fixed): the COUNT(\*) shortcut counts the hidden meta rows of ring-buffer tables.** mysqld skips the fast path for `isRingBuffer()`.
 - **X-4: subquery results go through text.**
   - `int_col > (SELECT AVG(…))` always fails.
   - BIGINT UNSIGNED above 2^63 fails.
@@ -325,7 +325,8 @@ Longest executor functions, with the suggested split (D section of `review_dupli
 Branches `RONDB-1124-lqh-fixes` (1.1-3.1, merged in #1230) and
 `RONDB-1124-lqh-fix2` (from 1.2, rebased onto `RONDB-1124-exec-fixes` and pushed there, #1231). One commit per fix, each with its regression
 test. Lanes: 1 = parse and aggregate compile, 2 = join planning and
-cross-table filters, 3 = CTE virtual tables and result metadata.
+cross-table filters, 3 = CTE virtual tables and result metadata,
+4 = execution paths and retries.
 
 | Lane.step | Finding | Status | Change | Test |
 |-----------|---------|--------|--------|------|
@@ -346,3 +347,4 @@ cross-table filters, 3 = CTE virtual tables and result metadata.
 | 1.8 | E-1 | fixed | `RonSQLPreparer::print(ConditionalExpression*)` prints LIKE, GREATEST and LEAST (arguments in the order written, `print_arg_list`), NULL, a scalar subquery, an IN subquery, EXISTS and a correlated comparison (subqueries by their table, `print_subquery_source`) and the HAVING aggregates; the EXPLAIN output list prints a `SUBQUERY_AGG` output. An operator or output without a case fails the statement instead of calling `abort()` | new `ronsql_explain_conditions`: EXPLAIN FORCE through ronsql_cli with a connection (LIKE, GREATEST of three columns, LIKE and LEAST under NOT, scalar, IN, correlated EXISTS and NOT EXISTS, correlated comparison), without one (EXISTS) and through RDRS (LIKE); prints the WHERE of the parse tree. No `ronsql_jit` mirror: EXPLAIN runs no program |
 | 3.5 | D-5 = J-4 = C-7 | fixed | The filtered scalar CTE root (also with a WHERE that is never TRUE, X-3) and the scalar cross-join child build their dummy lookupCte key with one helper, `scalar_cte_dummy_key`, which passes an empty value for a VARCHAR / LONGVARCHAR virtual primary key (the first output) as the child already did (sc-20); the root passed `getSizeInBytes()` zero bytes, which include the length prefix that the generic const operand adds itself, so lookupCte refused the key (QRY_CHAR_OPERAND_TRUNCATED) and the query failed with "Failed to create scalar lookupCte root." | new `ronsql_cte_dd_scalar_root_varchar` (+ `ronsql_cte_jit` and the four ng mirrors): MAX/MIN of VARCHAR(8) and VARCHAR(300) with a string filter that keeps or rejects the row, CHAR(4) control, a filter on a numeric second output, an aggregate over the root, a WHERE never TRUE after a NULL subquery |
 | 3.6 | O-2 | fixed | `print_passthrough_row` writes each output name through `print_string` with JSON escaping, as the aggregate printer (`PRINT_STR_JSON`) and the COUNT(\*) shortcut already did: a quote, a backslash or a control character in an alias no longer makes the JSON invalid or reads back as another name, and JSON_ASCII \u-escapes a non-ASCII name | new `ronsql_json_alias_escape` (new include `ronsql_json_check_file.inc`, every body parsed by JSON::PP): pass-through aliases with a quote, a backslash, both (several rows, ORDER BY) and a tab; plain alias, aggregate rows and the COUNT(\*) shortcut as controls; a non-ASCII alias under JSON and JSON_ASCII |
+| 4.1 | X-2 | fixed | `is_count_star_only_query` refuses a ring-buffer table, as mysqld does (`ha_ndbcluster::table_flags()` clears `HA_COUNT_ROWS_INSTANT` and `records()` scans when `isRingBuffer()`): the per-fragment ROW_COUNT includes the hidden meta row of each primary key prefix, which every scan skips, so the shortcut counted one row too many per prefix | new `ronsql_count_star_ring_buffer` (+ `ronsql_jit` mirror): COUNT(\*), COUNT(1) and two COUNTs over a ring of four prefixes, one wrapped (EXPLAIN pin: not the fragment-stats plan), the ring's COUNT(\*) as a scalar subquery; controls: GROUP BY id over the ring, a plain table still on the fragment-stats plan |

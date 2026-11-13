@@ -1,0 +1,142 @@
+# COUNT(*) over a ring-buffer table.
+#
+# README finding X-2: a single-table SELECT whose every output is COUNT
+# over a constant, without WHERE, GROUP BY or HAVING, is answered from
+# the ROW_COUNT statistic of each fragment instead of a scan. On a
+# ring-buffer table (MAX_ROWS_PER_PK) that statistic includes the hidden
+# meta row of each primary key prefix, which every scan skips, so RonSQL
+# counted one row too many per prefix. mysqld does not read the
+# statistic for a ring-buffer table (ha_ndbcluster::table_flags() clears
+# HA_COUNT_ROWS_INSTANT, ha_ndbcluster::records() counts with a scan),
+# and RonSQL now scans it too.
+#
+# rbc keeps 3 rows per id. It gets 5 rows for id 1 (the ring wraps), 3
+# for id 2, 1 for id 3 and 2 for id 4: 9 visible rows and 4 meta rows.
+# The shortcut returned 13. rbp is a plain table of 12 rows.
+#
+#   rb-1   COUNT(*), not the fragment-stats plan (EXPLAIN pin)
+#   rb-2   COUNT(1)
+#   rb-3   two COUNTs in one query
+#   rb-4   COUNT(*) of rbc as a scalar subquery: the inner query takes
+#          the same path (9 rows of rbp, 12 with the old count)
+#   rb-c1  control: COUNT(*) GROUP BY id scans, and skipped the meta
+#          rows already
+#   rb-c2  control: COUNT(*) of the plain table still uses the
+#          fragment-stats plan (EXPLAIN pin)
+#
+# Expected results come from mysqld (strict_diff).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE rbc (
+  id        INT NOT NULL,
+  ring_idx  INT NOT NULL DEFAULT 0,
+  ring_meta VARBINARY(64),
+  val       INT,
+  PRIMARY KEY (id, ring_idx)
+) ENGINE=NDB
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+CREATE TABLE rbp (
+  id  INT NOT NULL,
+  val INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+INSERT INTO rbc (id, val) VALUES (1, 11), (1, 12), (1, 13), (1, 14), (1, 15);
+INSERT INTO rbc (id, val) VALUES (2, 21), (2, 22), (2, 23);
+INSERT INTO rbc (id, val) VALUES (3, 31);
+INSERT INTO rbc (id, val) VALUES (4, 41), (4, 42);
+INSERT INTO rbp VALUES
+  (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6),
+  (7, 7), (8, 8), (9, 9), (10, 10), (11, 11), (12, 12);
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === rb-1: COUNT(*) of a ring-buffer table ===
+let $QUERY=
+SELECT COUNT(*) AS c FROM rbc;|
+--source suite/ronsql/include/ronsql_compare.inc
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_rb_1.out
+let $QUERY=
+SELECT COUNT(*) AS c FROM rbc;|
+--source suite/ronsql/include/ronsql_explain.inc
+--error 1
+--exec grep -qF 'fragment-stats COUNT(*)' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS c FROM rbc|
+
+--echo
+--echo === rb-2: COUNT(1) ===
+let $QUERY=
+SELECT COUNT(1) AS c FROM rbc;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(1) AS c FROM rbc|
+
+--echo
+--echo === rb-3: two COUNTs in one query ===
+let $QUERY=
+SELECT COUNT(*) AS a, COUNT(1) AS b FROM rbc;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS a, COUNT(1) AS b FROM rbc|
+
+--echo
+--echo === rb-4: COUNT(*) of the ring-buffer table as a scalar subquery ===
+let $QUERY=
+SELECT COUNT(*) AS c FROM rbp WHERE id <= (SELECT COUNT(*) FROM rbc);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS c FROM rbp WHERE id <= (SELECT COUNT(*) FROM rbc)|
+
+--echo
+--echo === rb-c1: control, COUNT(*) GROUP BY id scans ===
+let $QUERY=
+SELECT id, COUNT(*) AS c FROM rbc GROUP BY id;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, COUNT(*) AS c FROM rbc GROUP BY id|
+
+--echo
+--echo === rb-c2: control, COUNT(*) of a plain table uses the fragment stats ===
+let $QUERY=
+SELECT COUNT(*) AS c FROM rbp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_rb_c2.out
+let $QUERY=
+SELECT COUNT(*) AS c FROM rbp;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'fragment-stats COUNT(*)' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS c FROM rbp|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE rbp;
+DROP TABLE rbc;
+--enable_warnings
+--enable_query_log

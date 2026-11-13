@@ -10194,6 +10194,15 @@ RonSQLPreparer::is_count_star_only_query()
     AggregationAPICompiler_Expr* arg = o->aggregate.arg;
     if (arg == NULL || !arg->isLoadConstantInt()) return false;
   }
+  /*
+   * X-2: ROW_COUNT of a ring-buffer table includes the hidden meta row
+   * (ring_idx = 0) of each primary key prefix, which every scan skips.
+   * mysqld does not read the statistic for these tables either:
+   * ha_ndbcluster::table_flags() clears HA_COUNT_ROWS_INSTANT and
+   * ha_ndbcluster::records() counts with a scan when isRingBuffer().
+   */
+  if (m_main_scope.table == NULL ||
+      DBG(m_main_scope.table->isRingBuffer())) return false;
   return true;
 }
 
@@ -10203,7 +10212,8 @@ RonSQLPreparer::is_count_star_only_query()
  * then returns ONE pseudo-row per fragment — with a getValue of the
  * ROW_COUNT pseudo-column under LM_CommittedRead.  Summing the
  * per-fragment counts gives the committed COUNT(*), the same
- * statistic mysqld's fast path reads (parity by construction).
+ * statistic mysqld's fast path reads (parity by construction; neither
+ * reads it for a ring-buffer table, see is_count_star_only_query).
  */
 void
 RonSQLPreparer::execute_count_star_shortcut()
