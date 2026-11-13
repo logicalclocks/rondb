@@ -285,7 +285,7 @@ TimeBetweenWatchDogCheckInitial=60000
 [cluster_config.4node_2ng_8cpus]
 ndb_mgmd = CHOOSE_host1
 ndbd = CHOOSE_host2,CHOOSE_host3,CHOOSE_host4,CHOOSE_host5
-ndbapi= CHOOSE_host1,CHOOSE_host1,CHOOSE_host1
+ndbapi= CHOOSE_host1,CHOOSE_host1,CHOOSE_host1,
 
 NoOfReplicas = 2
 DataMemory = 500M
