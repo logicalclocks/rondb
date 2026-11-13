@@ -815,6 +815,24 @@ void Dbtc::execCONTINUEB(Signal *signal) {
       jam();
       ApiConnectRecordPtr apiConnectptr;
       apiConnectptr.i = Tdata0;
+#ifdef ERROR_INSERT
+      if (signal->getLength() == 5) {
+        /**
+         * Delayed by error insert 8133 or 8134 in complete010Lab(). Unlike
+         * the CONTINUEB of send_complete_loop() it is not queued ahead of a
+         * ZSEND_SETUP_FAIL_DATA, so if a node failed meanwhile, serial
+         * complete handling can already be completing the transaction, or
+         * have completed it and released its records.
+         */
+        if (!c_apiConnectRecordPool.getValidPtr(apiConnectptr) ||
+            apiConnectptr.p->transid[0] != Tdata2 ||
+            apiConnectptr.p->transid[1] != Tdata3 ||
+            apiConnectptr.p->apiConnectstate != CS_COMPLETING) {
+          jam();
+          return;
+        }
+      }
+#endif
       ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
       if (apiConnectptr.p->setup_fail_data)
       {
@@ -8559,7 +8577,9 @@ void Dbtc::complete010Lab(Signal *signal,
     signal->theData[0] = TcContinueB::ZSEND_COMPLETE_LOOP;
     signal->theData[1] = apiConnectptr.i;
     signal->theData[2] = tcConnectptr.i;
-    sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 10000, 3);
+    signal->theData[3] = apiConnectptr.p->transid[0];
+    signal->theData[4] = apiConnectptr.p->transid[1];
+    sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 10000, 5);
     return;
   }
 
@@ -8572,7 +8592,9 @@ void Dbtc::complete010Lab(Signal *signal,
     signal->theData[0] = TcContinueB::ZSEND_COMPLETE_LOOP;
     signal->theData[1] = apiConnectptr.i;
     signal->theData[2] = tcConnectptr.i;
-    sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 10000, 3);
+    signal->theData[3] = apiConnectptr.p->transid[0];
+    signal->theData[4] = apiConnectptr.p->transid[1];
+    sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 10000, 5);
     return;
   }
 #endif
