@@ -1070,6 +1070,11 @@ private:
   void rewrite_select_subqueries_as_joins();
   void decorrelate_exists();
   void decorrelate_scalar();
+  // The correlation predicate decorrelate_scalar() rewrites: an equality
+  // between a column of the inner table and one of the outer query.
+  bool has_correlation_predicate(const SelectStatement* inner_stmt);
+  // S-2: refuses a correlated scalar subquery used as a condition.
+  void reject_correlated_scalar_conditions(const ConditionalExpression* ce);
   void compile();
   void register_condition_linked_projections(
       QueryScope& scope, const ConditionalExpression* ce);
@@ -1093,8 +1098,15 @@ private:
   void substitute_subquery_results();
   // polarity: 1 under an even number of NOTs, -1 under an odd number, and
   // 0 where the exact truth value matters (XOR, IS, comparisons).
+  // is_condition: ce is the whole WHERE or an operand of AND, OR, XOR or
+  // NOT, so a scalar subquery there is a condition, not a value (S-2).
   void substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
-                                      int polarity = 1);
+                                      int polarity = 1,
+                                      bool is_condition = false);
+  // S-2: replaces a scalar subquery used as a condition by TRUE, FALSE or
+  // UNKNOWN, in the forms fold_where_after_substitution() folds.
+  void substitute_condition_result(ConditionalExpression* ce,
+                                   const SubqueryResult& result);
   // X-3: what a WHERE condition is once the constants that scalar
   // subqueries substituted are folded into it.  A comparison with NULL
   // is UNKNOWN, and WHERE keeps only the rows where it is TRUE: UNKNOWN

@@ -1859,6 +1859,7 @@ RonSQLPreparer::load()
 
   // Transform correlated scalar subqueries (may set m_has_subqueries)
   decorrelate_scalar();
+  reject_correlated_scalar_conditions(m_context.ast_root.where_expression);
 
   // Phase I.17h: optional FROM clause at top-level SELECT.  When the
   // parser produced a NULL root_table, synthesise one from the
@@ -6639,6 +6640,109 @@ next_subquery_output_line(char** pos, char* end)
   return NULL;
 }
 
+/*
+ * True when the WHERE of a scalar subquery holds the correlation
+ * predicate that decorrelate_scalar() looks for: an equality between a
+ * column of the inner table and a column of the outer query.  A
+ * qualified column is inner when its qualifier is the inner alias, an
+ * unqualified one when the inner table has it, as MySQL resolves a name
+ * in the innermost query first.
+ */
+bool
+RonSQLPreparer::has_correlation_predicate(const SelectStatement* inner_stmt)
+{
+  if (inner_stmt == NULL || inner_stmt->joins != NULL) return false;
+  if (inner_stmt->table.c_str() == NULL) return false;
+  if (inner_stmt->where_expression == NULL) return false;
+
+  const NdbDictionary::Table* inner_table =
+      m_dict->getTable(inner_stmt->table.c_str());
+  if (inner_table == NULL) return false;
+
+  // Flatten inner WHERE
+  ConditionalExpression* inner_conjuncts[MAX_WHERE_CONJUNCTS];
+  Uint32 num_inner = 0;
+  flatten_and_conjuncts(inner_stmt->where_expression,
+                        inner_conjuncts, &num_inner);
+
+  const LexCString inner_alias = inner_stmt->root_table != NULL
+      ? inner_stmt->root_table->alias
+      : inner_stmt->table;
+
+  // Look for a correlation predicate
+  for (Uint32 j = 0; j < num_inner; j++)
+  {
+    const ConditionalExpression* ic = inner_conjuncts[j];
+    if (ic->op == T_EQUALS &&
+        ic->args.left != NULL && ic->args.left->op == T_IDENTIFIER &&
+        ic->args.right != NULL && ic->args.right->op == T_IDENTIFIER)
+    {
+      Uint32 left_idx = ic->args.left->col_idx;
+      Uint32 right_idx = ic->args.right->col_idx;
+      const char* left_name = m_columns[left_idx].c_str();
+      const char* right_name = m_columns[right_idx].c_str();
+
+      LexCString left_qual = m_column_qualifiers[left_idx];
+      LexCString right_qual = m_column_qualifiers[right_idx];
+
+      bool left_is_inner;
+      bool right_is_inner;
+
+      if (left_qual.c_str() != NULL)
+        left_is_inner = (left_qual == inner_alias);
+      else
+        left_is_inner = (inner_table->getColumn(left_name) != NULL);
+
+      if (right_qual.c_str() != NULL)
+        right_is_inner = (right_qual == inner_alias);
+      else
+        right_is_inner = (inner_table->getColumn(right_name) != NULL);
+
+      if (left_is_inner != right_is_inner)
+        return true;
+    }
+  }
+  return false;
+}
+
+/*
+ * S-2: a scalar subquery used as a condition, the whole WHERE or an
+ * operand of AND, OR, XOR or NOT, is run first and its result made TRUE,
+ * FALSE or NULL (substitute_subquery_results_ce).  decorrelate_scalar()
+ * rewrites a correlated subquery only in a comparison, so one used as a
+ * condition would run alone, with the outer column taken as a column of
+ * the inner table or not found.  Refuse it.
+ */
+void
+RonSQLPreparer::reject_correlated_scalar_conditions(
+    const ConditionalExpression* ce)
+{
+  if (ce == NULL) return;
+  switch (ce->op)
+  {
+  case T_AND:
+  case T_OR:
+  case T_XOR:
+    reject_correlated_scalar_conditions(ce->args.left);
+    reject_correlated_scalar_conditions(ce->args.right);
+    return;
+  case T_NOT:
+  case T_EXCLAMATION:
+    reject_correlated_scalar_conditions(ce->args.left);
+    return;
+  case I_SUBQUERY:
+    require_unsupported(
+        !has_correlation_predicate(ce->subquery.stmt),
+        "A correlated scalar subquery used as a condition, as in"
+        " WHERE (SELECT ...) or NOT (SELECT ...), is not supported;"
+        " compare a column with it, as in WHERE col > (SELECT ...).");
+    return;
+  default:
+    // A comparison, IS, IN or arithmetic takes the subquery as a value.
+    return;
+  }
+}
+
 void
 RonSQLPreparer::decorrelate_scalar()
 {
@@ -6663,64 +6767,10 @@ RonSQLPreparer::decorrelate_scalar()
         (right != NULL && right->op == I_SUBQUERY))
     {
       // Check if the inner query has a correlated WHERE
-      SelectStatement* inner_stmt = (left != NULL && left->op == I_SUBQUERY)
+      const SelectStatement* inner_stmt =
+          (left != NULL && left->op == I_SUBQUERY)
           ? left->subquery.stmt : right->subquery.stmt;
-      if (inner_stmt == NULL || inner_stmt->joins != NULL) continue;
-      if (inner_stmt->table.c_str() == NULL) continue;
-      if (inner_stmt->where_expression == NULL) continue;
-
-      const NdbDictionary::Table* inner_table =
-          m_dict->getTable(inner_stmt->table.c_str());
-      if (inner_table == NULL) continue;
-
-      // Flatten inner WHERE
-      ConditionalExpression* inner_conjuncts[MAX_WHERE_CONJUNCTS];
-      Uint32 num_inner = 0;
-      flatten_and_conjuncts(inner_stmt->where_expression,
-                            inner_conjuncts, &num_inner);
-
-      // Look for a correlation predicate
-      bool found_correlation = false;
-      for (Uint32 j = 0; j < num_inner; j++)
-      {
-        ConditionalExpression* ic = inner_conjuncts[j];
-        if (ic->op == T_EQUALS &&
-            ic->args.left != NULL && ic->args.left->op == T_IDENTIFIER &&
-            ic->args.right != NULL && ic->args.right->op == T_IDENTIFIER)
-        {
-          Uint32 left_idx = ic->args.left->col_idx;
-          Uint32 right_idx = ic->args.right->col_idx;
-          const char* left_name = m_columns[left_idx].c_str();
-          const char* right_name = m_columns[right_idx].c_str();
-
-          LexCString left_qual = m_column_qualifiers[left_idx];
-          LexCString right_qual = m_column_qualifiers[right_idx];
-
-          LexCString inner_alias = inner_stmt->root_table != NULL
-              ? inner_stmt->root_table->alias
-              : inner_stmt->table;
-
-          bool left_is_inner;
-          bool right_is_inner;
-
-          if (left_qual.c_str() != NULL)
-            left_is_inner = (left_qual == inner_alias);
-          else
-            left_is_inner = (inner_table->getColumn(left_name) != NULL);
-
-          if (right_qual.c_str() != NULL)
-            right_is_inner = (right_qual == inner_alias);
-          else
-            right_is_inner = (inner_table->getColumn(right_name) != NULL);
-
-          if (left_is_inner != right_is_inner)
-          {
-            found_correlation = true;
-            break;
-          }
-        }
-      }
-      if (found_correlation)
+      if (has_correlation_predicate(inner_stmt))
       {
         has_corr_scalar = true;
         break;
@@ -9267,13 +9317,16 @@ RonSQLPreparer::execute_subqueries()
 void
 RonSQLPreparer::substitute_subquery_results()
 {
-  substitute_subquery_results_ce(&m_context.ast_root.where_expression);
+  substitute_subquery_results_ce(&m_context.ast_root.where_expression, 1,
+                                 /*is_condition=*/true);
+  // HAVING refuses a subquery used as a condition (validate_having_support).
   substitute_subquery_results_ce(&m_context.ast_root.having_expression);
 }
 
 void
 RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
-                                               int polarity)
+                                               int polarity,
+                                               bool is_condition)
 {
   ConditionalExpression* ce = *ce_ptr;
   if (ce == NULL) return;
@@ -9562,6 +9615,11 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
       if (m_subquery_infos[i].ce_node == ce)
       {
         SubqueryResult& result = m_subquery_infos[i].result;
+        if (is_condition)
+        {
+          substitute_condition_result(ce, result);
+          return;
+        }
         if (result.is_null)
         {
           ce->op = T_NULL;
@@ -9598,12 +9656,18 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
     return;
   case T_NOT:
   case T_EXCLAMATION:
-    substitute_subquery_results_ce(&ce->args.left, -polarity);
+    substitute_subquery_results_ce(&ce->args.left, -polarity, is_condition);
     return;
   case T_AND:
   case T_OR:
-    substitute_subquery_results_ce(&ce->args.left, polarity);
-    substitute_subquery_results_ce(&ce->args.right, polarity);
+    substitute_subquery_results_ce(&ce->args.left, polarity, is_condition);
+    substitute_subquery_results_ce(&ce->args.right, polarity, is_condition);
+    return;
+  case T_XOR:
+    // The exact truth of each operand matters, as in the default below,
+    // but an operand is still a condition.
+    substitute_subquery_results_ce(&ce->args.left, 0, is_condition);
+    substitute_subquery_results_ce(&ce->args.right, 0, is_condition);
     return;
   case T_MINUS:
     substitute_subquery_results_ce(&ce->args.left, 0);
@@ -9642,12 +9706,54 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
   case T_NULL:
     return;
   default:
-    // Other binary/unary operators (XOR, comparisons, arithmetic) need the
+    // Other binary/unary operators (comparisons, arithmetic) need the
     // exact value of an operand: recurse into both sides
     substitute_subquery_results_ce(&ce->args.left, 0);
     substitute_subquery_results_ce(&ce->args.right, 0);
     return;
   }
+}
+
+/*
+ * S-2: a scalar subquery used as a condition, the whole WHERE or an
+ * operand of AND, OR, XOR or NOT.  MySQL takes a value there as
+ * (0 <> value) (make_condition() in item_cmpfunc.cc): TRUE when the
+ * result is not zero (0.4 included), FALSE when it is zero (0.00
+ * included), and NULL, which WHERE treats as UNKNOWN, for a NULL result
+ * or no row.  The node gets the forms of a constant condition that
+ * fold_where_after_substitution() folds: UNKNOWN stays the comparison
+ * 0 <> NULL, and TRUE and FALSE become NULL IS NULL and NULL IS NOT
+ * NULL.  The fold then removes it from every WHERE structure the plan
+ * holds, so no filter is built from it.  The node is changed in place,
+ * since the plan shares it.  A result that is not a number failed in
+ * execute_subqueries().
+ */
+void
+RonSQLPreparer::substitute_condition_result(ConditionalExpression* ce,
+                                            const SubqueryResult& result)
+{
+  ConditionalExpression* null_const =
+      m_amalloc->alloc_exc<ConditionalExpression>(1);
+  null_const->conjunct_sql = LexString{NULL, 0};
+  null_const->op = T_NULL;
+  if (result.is_null)
+  {
+    ConditionalExpression* zero =
+        m_amalloc->alloc_exc<ConditionalExpression>(1);
+    zero->conjunct_sql = LexString{NULL, 0};
+    zero->op = T_INT;
+    zero->constant_integer = 0;
+    ce->op = T_NOT_EQUALS;
+    ce->args.left = zero;
+    ce->args.right = null_const;
+    return;
+  }
+  const bool is_true = result.is_float ? (result.float_val != 0.0)
+                                       : (result.int_val != 0);
+  ce->op = T_IS;
+  ce->is.arg = null_const;
+  // NULL IS NULL is TRUE, NULL IS NOT NULL is FALSE.
+  ce->is.null = is_true;
 }
 
 // X-3: true when ce is NULL in every row: a NULL scalar subquery result,
