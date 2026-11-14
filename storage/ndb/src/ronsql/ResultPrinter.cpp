@@ -1175,8 +1175,13 @@ ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
     DEB_TRACE();
     StoredRow row = store_record(record);
     // Cross-table filter semantics: suppress groups where no rows passed
-    // the filter (sentinel COUNT == 0).
-    if (m_query->sentinel_agg_slot >= 0) {
+    // the filter (sentinel COUNT == 0). The kernel creates a group before
+    // the filter stops the row, so such a group exists only because of
+    // rows the WHERE rejected. Without GROUP BY the one row is the
+    // aggregate over the whole WHERE result, which SQL returns also when
+    // no row passed (COUNT 0, the others NULL), so it is never
+    // suppressed (F-6).
+    if (m_query->sentinel_agg_slot >= 0 && m_num_groupby_cols > 0) {
       NdbAggregator::Result sentinel =
           row.results[m_query->sentinel_agg_slot];
       if (sentinel.data_int64() == 0) continue;

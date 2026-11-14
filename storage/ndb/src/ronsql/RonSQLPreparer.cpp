@@ -18544,8 +18544,9 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
   // Each failed filter stops this row's aggregation program before any
   // aggregate update.  Branch/comparison semantics stay in the normal
   // interpreter; the aggregation interpreter only consumes the stop result.
-  // A hidden sentinel COUNT accumulator is appended so that groups where
-  // no rows passed the filter can be suppressed at result time.
+  // A hidden sentinel COUNT accumulator is appended so that GROUP BY groups
+  // where no rows passed the filter can be suppressed at result time (the
+  // one row of an aggregate without GROUP BY is always kept, F-6).
   bool has_embedded_filter = false;
   if (scope.cross_table_where_filters.size() > 0)
   {
@@ -18743,7 +18744,7 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
   }
 
   // Emit hidden sentinel COUNT: counts rows that passed cross-table filters.
-  // Groups where sentinel is 0 are suppressed at result time.
+  // GROUP BY groups where sentinel is 0 are suppressed at result time.
   if (has_embedded_filter) {
     // Sentinel slot = next slot after all user-visible aggregate slots
     Uint32 sentinel_slot = 0;
