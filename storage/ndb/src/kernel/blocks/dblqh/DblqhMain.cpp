@@ -17861,9 +17861,13 @@ void Dblqh::lqhTransNextLab(Signal *signal, TcNodeFailRecordPtr tcNodeFailPtr) {
         }
 
         if (ERROR_INSERTED(5050)) {
+          /* CLEAR_ERROR_INSERT_VALUE also clears c_error_insert_extra, the
+           * master node id that DUMP 5050 saved, so read it first.
+           */
+          const Uint32 masterNodeId = c_error_insert_extra;
           g_eventLogger->info(
               "send ZSCAN_MARKERS with 5s delay and killing master: %u",
-              c_master_node_id);
+              masterNodeId);
           CLEAR_ERROR_INSERT_VALUE;
           signal->theData[0] = ZSCAN_MARKERS;
           signal->theData[1] = tcNodeFailPtr.i;
@@ -17871,8 +17875,8 @@ void Dblqh::lqhTransNextLab(Signal *signal, TcNodeFailRecordPtr tcNodeFailPtr) {
           sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 5000, 3);
 
           signal->theData[0] = 9999;
-          sendSignal(numberToRef(CMVMI, c_error_insert_extra), GSN_NDB_TAMPER,
-                     signal, 1, JBB);
+          sendSignal(numberToRef(CMVMI, masterNodeId), GSN_NDB_TAMPER, signal,
+                     1, JBB);
           return;
         }
 #endif
