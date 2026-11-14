@@ -253,6 +253,9 @@ private:
                             std::basic_ostream<char>* out_stream);
   void print_float_or_double(std::ostream& out, double value,
                               bool float_display = false);
+  // A DECIMAL result carried as a double, at its scale, the way mysqld
+  // prints a DECIMAL: rounded HALF_UP, no negative zero (O-5, O-6).
+  void print_fixed_scale(std::ostream& out, double value, int scale);
   void print_avg_result(std::ostream& out,
                         NdbAggregator::Result sum,
                         NdbAggregator::Result count,

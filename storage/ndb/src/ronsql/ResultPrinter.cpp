@@ -34,6 +34,7 @@
 #include "RonSQLPreparer.hpp"
 #include "mysql/strings/dtoa.h"
 #include <sql_string.h>
+#include "decimal.h"
 #include <decimal_utils.hpp>
 #include "my_time.h"
 #include "my_byteorder.h"
@@ -133,6 +134,7 @@ static void print_string(std::ostream& output_stream,
                          bool utf8_output,
                          bool trim_space_suffix);
 static double convert_result_to_double(NdbAggregator::Result result);
+static size_t format_fixed_scale(double value, int scale, char* to);
 static void print_base64(std::ostream& out, const unsigned char* bytes,
                          size_t len);
 static void print_binary_tsv(std::ostream& out, const unsigned char* bytes,
@@ -792,14 +794,13 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
           // display scale metadata (an AVG or DECIMAL-widened CTE
           // output) prints with fixed scale like MySQL, gated on the
           // DOUBLE-exact precision range like print_passthrough_value.
+          // It is a DECIMAL in MySQL: rounded HALF_UP, never "-0.00"
+          // (print_fixed_scale, O-5/O-6).
           {
             int sc = cmd.print_group_by_column.scale;
             int pr = cmd.print_group_by_column.precision;
             if (sc > 0 && pr > 0 && pr <= 15) {
-              char fbuf[FLOATING_POINT_BUFFER];
-              snprintf(fbuf, sizeof(fbuf), "%.*f", sc,
-                       column.data_double());
-              out << fbuf;
+              print_fixed_scale(out, column.data_double(), sc);
             } else {
               print_float_or_double(out, column.data_double(),
                                     cmd.print_group_by_column.float_display);
@@ -1150,9 +1151,8 @@ ResultPrinter::avg_sort_key(NdbAggregator::Result sum,
     return result;
   ndbrequire(scale <= 30);
   char buffer[FLOATING_POINT_BUFFER];
-  bool error;
-  const size_t len = my_fcvt(result, scale, buffer, &error);
-  if (error)
+  const size_t len = format_fixed_scale(result, scale, buffer);
+  if (len == 0)
     return std::numeric_limits<double>::quiet_NaN();
   const char* end = buffer + len;
   int conv_error;
@@ -1457,14 +1457,14 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
       // D15: a DECIMAL-derived value carried as DOUBLE prints with its source
       // scale (set on the virt column via setScale) to match MySQL — but only
       // within DOUBLE's exact range (precision <= 15).  True DOUBLE columns
-      // have scale 0; wider DECIMALs keep the compact formatting.
+      // have scale 0; wider DECIMALs keep the compact formatting.  The
+      // value is a DECIMAL in MySQL (SUM/MIN/MAX of a DECIMAL, AVG of an
+      // exact type): rounded HALF_UP, never "-0.00" (O-5/O-6).
       const NdbDictionary::Column* col = attr->getColumn();
       int sc = (col != nullptr) ? col->getScale() : 0;
       int pr = (col != nullptr) ? col->getPrecision() : 0;
       if (sc > 0 && pr > 0 && pr <= 15) {
-        char buf[FLOATING_POINT_BUFFER];
-        snprintf(buf, sizeof(buf), "%.*f", sc, attr->double_value());
-        out << buf;
+        print_fixed_scale(out, attr->double_value(), sc);
       } else {
         print_float_or_double(out, attr->double_value(),
                               meta != NULL && meta->float_display);
@@ -2043,10 +2043,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
             int sc = cmd.print_group_by_column.scale;
             int pr = cmd.print_group_by_column.precision;
             if (sc > 0 && pr > 0 && pr <= 15) {
-              char fbuf[FLOATING_POINT_BUFFER];
-              snprintf(fbuf, sizeof(fbuf), "%.*f", sc,
-                       column.data_double());
-              out << fbuf;
+              print_fixed_scale(out, column.data_double(), sc);
             } else {
               print_float_or_double(out, column.data_double(),
                                     cmd.print_group_by_column.float_display);
@@ -2649,6 +2646,60 @@ ResultPrinter::print_float_or_double(std::ostream& out, double value,
   return;
 }
 
+/*
+ * O-5, O-6: SUM, MIN and MAX over a DECIMAL with a scale and AVG over an
+ * exact type are DECIMAL results in MySQL, but here they are doubles (the
+ * kernel accumulates and widens them as DOUBLE), also as CTE outputs.
+ * Format such a value at its scale the way mysqld prints the double result
+ * of a pushed SUM or AVG (Item_sum_sum/Item_sum_avg::val_decimal):
+ * double2my_decimal() takes the shortest digits of the double, and
+ * Item::val_string_from_decimal() rounds them HALF_UP to the scale with
+ * decimal_round().  my_fcvt() and snprintf("%.*f") rounded the binary
+ * value instead: an exact tie went to even (AVG 1/32 = 0.03125 printed
+ * 0.0312, mysqld 0.0313), and a value that rounds to zero kept its sign
+ * (a DECIMAL sum of -2.8e-17 printed -0.00).  decimal_round() clears the
+ * sign of a zero.
+ *
+ * The decimal holds 81 digits in 9 words, as a my_decimal.  A value whose
+ * integer and scale words do not fit (from 1e45 at scale 30, from 1e72 at
+ * scale 9 or less; no caller comes near) keeps the rounding of my_fcvt().
+ * 'to' holds FLOATING_POINT_BUFFER bytes.  Returns the length, or 0 for
+ * Inf and NaN.
+ */
+static size_t
+format_fixed_scale(double value, int scale, char* to)
+{
+  ndbrequire(scale >= 0 && scale <= 30);
+  if (!std::isfinite(value))
+    return 0;
+  decimal_digit_t digits[9];
+  decimal_t dec;
+  dec.len = 9;
+  dec.buf = digits;
+  int len = FLOATING_POINT_BUFFER;
+  // double2decimal() returns E_DEC_TRUNCATED when it drops digits beyond
+  // the 81st decimal, which the rounding below drops anyway.
+  if (double2decimal(value, &dec) <= E_DEC_TRUNCATED &&
+      decimal_round(&dec, &dec, scale, HALF_UP) == E_DEC_OK &&
+      decimal2string(&dec, to, &len) == E_DEC_OK)
+    return static_cast<size_t>(len);
+  bool error;
+  return my_fcvt(value, scale, to, &error);
+}
+
+void
+ResultPrinter::print_fixed_scale(std::ostream& out, double value, int scale)
+{
+  char buffer[FLOATING_POINT_BUFFER];
+  if (format_fixed_scale(value, scale, buffer) == 0)
+  {
+    // value is Inf, -Inf or NaN, as in print_float_or_double().
+    out << m_null_representation;
+    return;
+  }
+  out << buffer;
+}
+
 void
 ResultPrinter::print_avg_result(std::ostream& out,
                                 NdbAggregator::Result sum,
@@ -2670,14 +2721,9 @@ ResultPrinter::print_avg_result(std::ostream& out,
     return;
   }
 
+  // AVG over an exact type is a DECIMAL in MySQL (O-6).
   ndbrequire(scale <= 30);
-  char buffer[FLOATING_POINT_BUFFER];
-  bool error;
-  my_fcvt(result, scale, buffer, &error);
-  if (error)
-    out << m_null_representation;
-  else
-    out << buffer;
+  print_fixed_scale(out, result, scale);
 }
 
 int
@@ -2902,10 +2948,11 @@ ResultPrinter::print_aggregate_result(std::ostream& out,
       // MIN/MAX over a DECIMAL(_, scale) is widened to DOUBLE in the kernel,
       // but MySQL prints it with the source scale (e.g. 20055.00).  Format
       // with fixed scale so the output matches; floating results pass
-      // scale == 0 and use their source-type display below.
-      char buf[FLOATING_POINT_BUFFER];
-      snprintf(buf, sizeof(buf), "%.*f", scale, result.data_double());
-      out << buf;
+      // scale == 0 and use their source-type display below.  SUM over
+      // such a DECIMAL is accumulated as DOUBLE and may come out as a
+      // tiny negative value; like a DECIMAL it prints 0.00, not -0.00
+      // (O-5).
+      print_fixed_scale(out, result.data_double(), scale);
     }
     else
     {
