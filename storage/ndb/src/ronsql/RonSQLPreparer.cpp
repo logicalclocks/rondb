@@ -17174,6 +17174,88 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
   throw RonSQLPermanentError("Bug in RonSQLPreparer::encode_constant");
 }
 
+static bool
+is_minmax_node(const ConditionalExpression* ce)
+{
+  return ce != NULL && (ce->op == T_GREATEST || ce->op == T_LEAST);
+}
+
+// F-5: true when ce, as parsed, compares a GREATEST or LEAST with a value,
+// or is a NOT, AND, OR or XOR with such a comparison below it.  These are
+// the comparisons simplify_ce hands to rewrite_minmax_comparison.
+static bool
+has_minmax_comparison(const ConditionalExpression* ce)
+{
+  if (ce == NULL) return false;
+  switch (ce->op)
+  {
+  case T_EQUALS:
+  case T_NOT_EQUALS:
+  case T_LT:
+  case T_LE:
+  case T_GT:
+  case T_GE:
+    return is_minmax_node(ce->args.left) || is_minmax_node(ce->args.right);
+  case T_NOT:
+    return has_minmax_comparison(ce->args.left);
+  case T_AND:
+  case T_OR:
+  case T_XOR:
+    return has_minmax_comparison(ce->args.left) ||
+           has_minmax_comparison(ce->args.right);
+  default:
+    return false;
+  }
+}
+
+// F-5: rewrite_minmax_comparison is FALSE in some rows where the
+// comparison is UNKNOWN (a NULL argument), so it is right only where no
+// NOT is above the comparison: NOT FALSE keeps the rows that NOT UNKNOWN
+// drops.  simplify_ce therefore moves a NOT above such a comparison down
+// to it, one level per call, and the comparison is then rewritten with
+// its operator inverted.  Each step holds in SQL's three-valued logic:
+// NOT (x < c) is x >= c (both UNKNOWN for a NULL x), NOT NOT x is x,
+// De Morgan for AND and OR, and NOT (x XOR y) is x XOR NOT y.  ce is
+// not simplified yet, and the new nodes are left to simplify_ce.
+struct ConditionalExpression*
+RonSQLPreparer::negate_minmax_condition(struct ConditionalExpression* ce)
+{
+  switch (ce->op)
+  {
+  case T_EQUALS:
+    return new_condition_node(m_amalloc, T_NOT_EQUALS,
+                              ce->args.left, ce->args.right);
+  case T_NOT_EQUALS:
+    return new_condition_node(m_amalloc, T_EQUALS,
+                              ce->args.left, ce->args.right);
+  case T_LT:
+    return new_condition_node(m_amalloc, T_GE, ce->args.left, ce->args.right);
+  case T_LE:
+    return new_condition_node(m_amalloc, T_GT, ce->args.left, ce->args.right);
+  case T_GT:
+    return new_condition_node(m_amalloc, T_LE, ce->args.left, ce->args.right);
+  case T_GE:
+    return new_condition_node(m_amalloc, T_LT, ce->args.left, ce->args.right);
+  case T_NOT:
+    return ce->args.left;
+  case T_AND:
+  case T_OR:
+    return new_condition_node(
+        m_amalloc, (ce->op == T_AND) ? T_OR : T_AND,
+        new_condition_node(m_amalloc, T_NOT, ce->args.left, NULL),
+        new_condition_node(m_amalloc, T_NOT, ce->args.right, NULL));
+  case T_XOR:
+    return new_condition_node(
+        m_amalloc, T_XOR, ce->args.left,
+        new_condition_node(m_amalloc, T_NOT, ce->args.right, NULL));
+  default:
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::INTERNAL,
+        "Negating a GREATEST/LEAST condition met an unexpected operator. "
+        "Please report a bug.");
+  }
+}
+
 struct ConditionalExpression*
 RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
 {
@@ -17346,9 +17428,19 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
       r[4].args.left = y;
       r[3].op = T_NOT;
       r[3].args.left = x;
-      r[2].args.left = simplify_ce(&r[3], 1);
+      // F-5: NOT over an operand with a GREATEST / LEAST comparison is
+      // moved down to the comparison before it is rewritten, as in T_NOT.
+      r[2].args.left =
+          has_minmax_comparison(ce->args.left)
+              ? simplify_ce(negate_minmax_condition(ce->args.left),
+                            maxdepth - 1)
+              : simplify_ce(&r[3], 1);
       r[2].op = T_OR;
-      r[2].args.right = simplify_ce(&r[4], 1);
+      r[2].args.right =
+          has_minmax_comparison(ce->args.right)
+              ? simplify_ce(negate_minmax_condition(ce->args.right),
+                            maxdepth - 1)
+              : simplify_ce(&r[4], 1);
       r[1].args.left = x;
       r[1].op = T_OR;
       r[1].args.right = y;
@@ -17359,6 +17451,12 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
     }
   case T_NOT:
     {
+      // F-5: a GREATEST / LEAST comparison below is rewritten only once
+      // the NOT is down at it (see negate_minmax_condition).
+      if (has_minmax_comparison(ce->args.left)) {
+        return simplify_ce(negate_minmax_condition(ce->args.left),
+                           maxdepth - 1);
+      }
       ConditionalExpression* l = simplify_ce(ce->args.left, maxdepth - 1);
       if (l->op == T_NOT) {
         // Simplify NOT NOT x -> x
@@ -17488,6 +17586,15 @@ static bool ronsql_eval_int_cmp(TokenKind op, Int64 a, Int64 b) {
 // comparands are rejected (the latter would otherwise yield an unsupported
 // column-vs-column CTE-body filter).
 //
+// The result is TRUE exactly where the comparison is TRUE, but it can be
+// FALSE where the comparison is UNKNOWN (the IS NOT NULL guards, and
+// `a < c AND b < c` with a NULL a and b >= c).  That drops the same rows
+// only where no NOT is above the comparison, so simplify_ce first moves
+// every NOT down to it (F-5, negate_minmax_condition).  For the same
+// reason an AND direction with a FALSE constant arm, as in
+// `GREATEST(a, 20) < 10`, which is FALSE or UNKNOWN in every row, becomes
+// `a IS NULL AND a IS NOT NULL`, FALSE in every row.
+//
 // Node allocation uses ArenaMalloc::alloc_exc; on out-of-memory it throws
 // std::bad_alloc, which RonSQL's exception handler turns into a clean
 // permanent "out of memory" failure of the whole query.  Semantic rejections
@@ -17533,7 +17640,9 @@ RonSQLPreparer::rewrite_minmax_comparison(TokenKind cmp_op,
 
   struct ConditionalExpression* combined = NULL;  // OR/AND of column arms
   struct ConditionalExpression* guards = NULL;    // AND of `col IS NOT NULL`
+  struct ConditionalExpression* first_col = NULL; // first column argument
   bool forced_true = false;                       // OR forced true by a const
+  bool forced_false = false;                      // AND forced false by a const
   Uint32 n_col_args = 0;
 
   for (struct ConditionalExpression* node = mm->args.left; node != NULL;
@@ -17545,9 +17654,7 @@ RonSQLPreparer::rewrite_minmax_comparison(TokenKind cmp_op,
       if (or_dir) {
         if (arm) forced_true = true;     // false arm: drop
       } else if (!arm) {
-        throw RonSQLPermanentError(
-            "GREATEST/LEAST WHERE predicate is a constant contradiction; "
-            "not supported.");
+        forced_false = true;             // F-5: never TRUE, see below
       }                                  // true AND-arm: drop
       continue;
     }
@@ -17556,6 +17663,7 @@ RonSQLPreparer::rewrite_minmax_comparison(TokenKind cmp_op,
           "GREATEST/LEAST in a WHERE clause supports only column and integer "
           "constant arguments.");
     }
+    if (first_col == NULL) first_col = elem;
     n_col_args++;
     struct ConditionalExpression* cmp = m_amalloc->alloc_exc<ConditionalExpression>(1);
     cmp->op = op;
@@ -17591,6 +17699,23 @@ RonSQLPreparer::rewrite_minmax_comparison(TokenKind cmp_op,
     throw RonSQLPermanentError(
         "GREATEST/LEAST in a WHERE clause requires at least one column "
         "argument.");
+  }
+  if (forced_false) {
+    // F-5: FALSE, or UNKNOWN for a NULL argument, in every row.  This was
+    // refused as a "constant contradiction" while NOT could be above it.
+    struct ConditionalExpression* col_is_null =
+        m_amalloc->alloc_exc<ConditionalExpression>(1);
+    col_is_null->conjunct_sql = LexString{NULL, 0};
+    col_is_null->op = T_IS;
+    col_is_null->is.arg = first_col;
+    col_is_null->is.null = true;
+    struct ConditionalExpression* col_is_not_null =
+        m_amalloc->alloc_exc<ConditionalExpression>(1);
+    col_is_not_null->conjunct_sql = LexString{NULL, 0};
+    col_is_not_null->op = T_IS;
+    col_is_not_null->is.arg = first_col;
+    col_is_not_null->is.null = false;
+    return new_condition_node(m_amalloc, T_AND, col_is_null, col_is_not_null);
   }
   if (!or_dir) {
     return combined;  // AND of per-arg comparisons (NULL-safe as-is)

@@ -1242,10 +1242,16 @@ private:
   // gets none.  INT64_MIN fails the statement, as in MySQL.
   bool negate_numeric_constant(const struct ConditionalExpression* n,
                                struct ConditionalExpression* out);
+  // F-5: NOT ce with the NOT moved one level down, for a ce that has a
+  // GREATEST / LEAST comparison below NOT, AND, OR and XOR (see the
+  // definition).  simplify_ce simplifies the result.
+  struct ConditionalExpression* negate_minmax_condition(
+      struct ConditionalExpression* ce);
   // D11: lower a `GREATEST(...) <cmp> const` / `LEAST(...) <cmp> const`
   // comparison (either operand may be the min/max node) into a boolean
   // OR/AND of per-argument column-vs-constant comparisons (with IS NOT NULL
-  // guards on the OR direction).  Called from simplify_ce.
+  // guards on the OR direction).  Called from simplify_ce, only where no
+  // NOT is above the comparison (F-5).
   struct ConditionalExpression* rewrite_minmax_comparison(
       TokenKind cmp_op,
       struct ConditionalExpression* left,
