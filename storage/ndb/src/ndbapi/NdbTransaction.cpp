@@ -400,10 +400,11 @@ int NdbTransaction::init() {
    * identity string on the rate overflow reporting path.
    *
    * Untagged transactions are not an edge case. Every endpoint computes an
-   * identity only inside its useHopsworksAPIKeys branch, RDRS's own
-   * metadata reads (the api key cache, feature store metadata) set none at
-   * all, and Rondis traffic is never tagged - yet all of them draw from the
-   * same pool as tagged REST requests.
+   * identity only inside its useHopsworksAPIKeys branch, some requests are
+   * unmetered by design (e.g. shared stores in RDRS username mode), RDRS's
+   * own metadata reads (the api key cache, feature store metadata) set none
+   * at all, and Rondis traffic is never tagged - yet all of them draw from
+   * the same pool as tagged REST requests.
    */
   m_user_id               = RNIL;
   m_user_id_version       = 0;

@@ -59,5 +59,5 @@ func TestRateLimit(t *testing.T) {
 			config.RONSQL_HTTP_VERB, url, reqBody, "",
 			http.StatusOK, http.StatusTooManyRequests)
 		return code
-	})
+	}, testdbs.DB029)
 }

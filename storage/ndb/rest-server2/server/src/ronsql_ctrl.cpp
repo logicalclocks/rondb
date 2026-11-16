@@ -138,6 +138,7 @@ void RonSQLCtrl::ronsql(
      * subset. A parse failure is reported like an execution-time parse
      * failure; the schema is never touched before authorization succeeds.
      */
+    RateLimitIdentities rlIdentities;
     try {
       RonSQLPreparer parser(params, RonSQLPreparer::ParseOnly{});
       LexCString table = parser.get_table_name();
@@ -154,7 +155,8 @@ void RonSQLCtrl::ronsql(
       accessReq.table = std::string_view(table.str, table.len);
       accessReq.columns = &columns;
       status = authenticate(api_key,
-                            std::vector<TableAccessRequest>{accessReq});
+                            std::vector<TableAccessRequest>{accessReq},
+                            &rlIdentities);
     }
     catch (std::exception& e) {
       err_stream << "Caught exception: " << e.what() << "\n";
@@ -176,7 +178,7 @@ void RonSQLCtrl::ronsql(
     }
     // Tag the executor's transactions with the rate limit identity
     // (RONDB-978). rl_identity outlives ronsql_dal below.
-    rl_identity = get_rate_limit_identity(api_key);
+    rl_identity = get_rate_limit_identity(api_key, rlIdentities, database);
     if (!rl_identity.empty()) {
       params.rate_limit_identity = rl_identity.c_str();
       params.rate_limit_identity_len = (Uint32)rl_identity.size();

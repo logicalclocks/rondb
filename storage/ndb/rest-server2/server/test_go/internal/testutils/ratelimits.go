@@ -36,6 +36,16 @@ import (
 // Rate limit tests lower it temporarily with SetOrAlterRateLimitUser.
 const HIGH_RATE_LIMIT = 1000000
 
+// HOPSWORKS_TEST_USERNAME is users.username of the fixture user (uid
+// 10000) that owns HOPSWORKS_TEST_API_KEY.
+const HOPSWORKS_TEST_USERNAME = "macho"
+
+// rateLimitIdentityMaxLen mirrors RDRS's RATE_LIMIT_IDENTITY_MAX_LEN,
+// reproducing Hopsworks' online-FS MySQL account name clip
+// (OnlineFeaturestoreController.onlineDbUsername): names longer than 32
+// are cut to 31; a 32-char name is kept as is.
+const rateLimitIdentityMaxLen = 32
+
 // APIKeyPrefix returns the public prefix of a Hopsworks API key (the part
 // before the '.'). With .RateLimit.Identity=apikey and .RateLimit.FullAPIKey
 // false (the defaults), this is the rate limit identity RDRS tags
@@ -100,9 +110,12 @@ func SetOrAlterRateLimitUser(identity string, ratePerSec uint32) error {
 
 // ProvisionDefaultRateLimitUsers gives the default test API key a high
 // rate limit so that every test tags its transactions with a resolvable
-// identity. Idempotent; called from InitialiseTesting. Like setRateLimit it
-// only returns once the limit reads back, so a slow cluster at startup
-// cannot leave the provisioning in flight under the first tests.
+// identity (apikey mode; in username mode identities are per project and
+// only provisioned by the rate limit tests themselves - unprovisioned
+// identities run unmetered). Idempotent; called from InitialiseTesting.
+// Like setRateLimit it only returns once the limit reads back, so a slow
+// cluster at startup cannot leave the provisioning in flight under the
+// first tests.
 func ProvisionDefaultRateLimitUsers() error {
 	identity := APIKeyPrefix(HOPSWORKS_TEST_API_KEY)
 	changeErr := SetOrAlterRateLimitUser(identity, HIGH_RATE_LIMIT)
@@ -238,20 +251,40 @@ const (
 // phase of a test starts from a known state.
 const rateLimitSettleTime = 2500 * time.Millisecond
 
-func rateLimitIdentity() string {
+// rateLimitIdentity returns the identity the server under test tags the
+// test API key's transactions with when they are billed to billingDb -
+// the API key prefix in apikey mode, or the project-user of the fixture
+// user acting in billingDb's project in username mode (matching RDRS's
+// rate_limit.hpp and the online-FS MySQL account convention; billingDb
+// is the project name, which equals both the online database name and
+// the feature store name). NOTE: the server builds the identity from
+// project.projectname with its ORIGINAL case, so billingDb must be the
+// project name as spelled in the fixture - a test billing to an
+// upper-case project (e.g. FSDB003) must pass "FSDB003", not the
+// lowercased database name, or the provisioned entity will not match.
+func rateLimitIdentity(billingDb string) string {
+	if config.GetAll().RateLimit.Identity == "username" {
+		identity := billingDb + "_" + HOPSWORKS_TEST_USERNAME
+		if len(identity) > rateLimitIdentityMaxLen {
+			identity = identity[:rateLimitIdentityMaxLen-1]
+		}
+		return identity
+	}
 	return APIKeyPrefix(HOPSWORKS_TEST_API_KEY)
 }
 
-// SkipIfRateLimitsDisabled skips t unless the server has API key rate limits
-// enabled and a RonDB backend to enforce them.
+// SkipIfRateLimitsDisabled skips t unless the server has user rate limits
+// enabled (in either identity mode) and a RonDB backend to enforce them.
 func SkipIfRateLimitsDisabled(t *testing.T) {
 	t.Helper()
 	conf := config.GetAll()
 	if !conf.REST.Enable {
 		t.Skip("Skipping test as REST is disabled")
 	}
-	if !conf.RateLimit.Enable || conf.RateLimit.Identity != "apikey" {
-		t.Skip("Skipping test as API key rate limits are disabled")
+	if !conf.RateLimit.Enable ||
+		(conf.RateLimit.Identity != "apikey" &&
+			conf.RateLimit.Identity != "username") {
+		t.Skip("Skipping test as user rate limits are disabled")
 	}
 	if !*WithRonDB {
 		t.Skip("Skipping test as it requires a running RonDB instance")
@@ -277,17 +310,16 @@ func SkipIfRateLimitsDisabled(t *testing.T) {
 // server's 120 s lock wait, a timed-out command has by then either been
 // applied or abandoned unless its execution phase alone took over a minute,
 // which the polling window then absorbs.
-func setRateLimit(t *testing.T, ratePerSec uint32) {
+func setRateLimit(t *testing.T, identity string, ratePerSec uint32) {
 	t.Helper()
-	identity := rateLimitIdentity()
 	changeErr := SetOrAlterRateLimitUser(identity, ratePerSec)
 	if changeErr != nil {
-		t.Logf("rate limit change to %d returned %v; waiting for it to land",
-			ratePerSec, changeErr)
+		t.Logf("rate limit change of %q to %d returned %v; waiting for it to land",
+			identity, ratePerSec, changeErr)
 	}
 	if err := waitForRateLimit(identity, ratePerSec); err != nil {
-		t.Fatalf("failed to set rate limit to %d: %v", ratePerSec,
-			errors.Join(changeErr, err))
+		t.Fatalf("failed to set rate limit of %q to %d: %v", identity,
+			ratePerSec, errors.Join(changeErr, err))
 	}
 }
 
@@ -347,16 +379,20 @@ func rateLimitBurst(client *http.Client, sendOne func(*http.Client) int,
 
 // restoreHighRateLimit raises the limit back to HIGH_RATE_LIMIT and waits out
 // the throttled window so later tests in the same package run unthrottled.
-func restoreHighRateLimit(t *testing.T) {
-	setRateLimit(t, HIGH_RATE_LIMIT)
+func restoreHighRateLimit(t *testing.T, identity string) {
+	setRateLimit(t, identity, HIGH_RATE_LIMIT)
 	time.Sleep(rateLimitSettleTime)
 }
 
 // RunEndpointRateLimitTest verifies that the endpoint driven by sendOne is
-// subject to API key rate limiting: under a low limit a concurrent burst is
+// subject to user rate limiting: under a low limit a concurrent burst is
 // throttled with HTTP 429, and raising the limit restores service. sendOne
 // performs one request with the supplied client and returns its HTTP status,
-// which must be http.StatusOK or http.StatusTooManyRequests.
+// which must be http.StatusOK or http.StatusTooManyRequests. billingDb is
+// the database the endpoint's requests are billed to (the pk-read/scan URL
+// db, the batch's first operation db, or the feature store name); it
+// selects the identity to throttle in username mode and is ignored in
+// apikey mode.
 //
 // Rejection is deliberately not instantaneous in the kernel: per-operation
 // code only consults per-user queueing/abort flags, which the data nodes
@@ -366,24 +402,36 @@ func restoreHighRateLimit(t *testing.T) {
 // read-abort threshold and the first 429 arrives (see
 // rateLimitBurstMaxDuration); from the first kernel rejection the
 // client-side backoff cascades 429s anyway.
-func RunEndpointRateLimitTest(t *testing.T, sendOne func(*http.Client) int) {
+func RunEndpointRateLimitTest(t *testing.T, sendOne func(*http.Client) int,
+	billingDb string) {
+	t.Helper()
+	RunRateLimitTestForIdentity(t, sendOne, rateLimitIdentity(billingDb))
+}
+
+// RunRateLimitTestForIdentity is RunEndpointRateLimitTest with the identity
+// given explicitly rather than derived from the billing database. Needed
+// wherever the two differ: a database reached through a store share is billed
+// to the project that RECEIVED the share, so the identity names the reader's
+// own project while the request names the producer's database (RONDB-978).
+func RunRateLimitTestForIdentity(t *testing.T, sendOne func(*http.Client) int,
+	identity string) {
 	t.Helper()
 	client := setupBurstHttpClient(t)
-	defer restoreHighRateLimit(t)
+	defer restoreHighRateLimit(t, identity)
 
-	setRateLimit(t, rateLimitLowRate)
+	setRateLimit(t, identity, rateLimitLowRate)
 	time.Sleep(rateLimitSettleTime) // start from a fresh window
 
 	numOk, numRateLimited := rateLimitBurst(client, sendOne, true,
 		rateLimitBurstMaxDuration)
-	t.Logf("sustained burst at rate %d/sec -> %d ok, %d rate limited",
-		rateLimitLowRate, numOk, numRateLimited)
+	t.Logf("sustained burst of %q at rate %d/sec -> %d ok, %d rate limited",
+		identity, rateLimitLowRate, numOk, numRateLimited)
 	if numRateLimited == 0 {
 		t.Fatalf("expected some requests rejected with 429, all %d succeeded", numOk)
 	}
 
 	// Recovery: raising the limit collapses the overload immediately.
-	setRateLimit(t, HIGH_RATE_LIMIT)
+	setRateLimit(t, identity, HIGH_RATE_LIMIT)
 	time.Sleep(rateLimitSettleTime)
 	if code := sendOne(client); code != http.StatusOK {
 		t.Fatalf("expected recovery to 200 after raising limit, got %d", code)
@@ -395,12 +443,14 @@ func RunEndpointRateLimitTest(t *testing.T, sendOne func(*http.Client) int) {
 // so even a large concurrent burst is never throttled. sendOne is as in
 // RunEndpointRateLimitTest. This is kernel behaviour independent of the
 // endpoint, so it is exercised once (via pk-read).
-func RunZeroRateIsUnlimitedTest(t *testing.T, sendOne func(*http.Client) int) {
+func RunZeroRateIsUnlimitedTest(t *testing.T, sendOne func(*http.Client) int,
+	billingDb string) {
 	t.Helper()
 	client := setupBurstHttpClient(t)
-	defer restoreHighRateLimit(t)
+	identity := rateLimitIdentity(billingDb)
+	defer restoreHighRateLimit(t, identity)
 
-	setRateLimit(t, 0)
+	setRateLimit(t, identity, 0)
 	time.Sleep(rateLimitSettleTime)
 
 	numOk, numRateLimited := rateLimitBurst(client, sendOne, false,
@@ -423,16 +473,16 @@ func RunZeroRateIsUnlimitedTest(t *testing.T, sendOne func(*http.Client) int) {
 // throttled well before the re-LIST backstop could have healed a missed
 // announcement (see rateLimitPushBurstMaxDuration).
 func RunUserCreatedAfterStartRateLimitTest(t *testing.T,
-	sendOne func(*http.Client) int) {
+	sendOne func(*http.Client) int, billingDb string) {
 	t.Helper()
 	client := setupBurstHttpClient(t)
-	defer restoreHighRateLimit(t)
+	identity := rateLimitIdentity(billingDb)
+	defer restoreHighRateLimit(t, identity)
 
 	// As in setRateLimit, each mgm command is confirmed through "get user"
 	// before the test goes on: a command that hits the client deadline is
 	// still applied later by the management server, and only the confirmed
 	// state can be reasoned about.
-	identity := rateLimitIdentity()
 	dropErr := withMgmd(func(mgm *mgmclient.Client) error {
 		return mgm.DropUser(identity)
 	})
