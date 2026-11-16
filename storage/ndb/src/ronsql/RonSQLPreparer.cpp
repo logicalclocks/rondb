@@ -12116,13 +12116,12 @@ RonSQLPreparer::execute_join()
         if (cs.join_where_ce[0] != NULL) {
           ConditionalExpression* root_ce =
               simplify_ce(cs.join_where_ce[0], -1);
-          NdbScanFilter filter(&rootCode);
-          filter.setSqlCmpSemantics();
-          filter.begin(NdbScanFilter::AND);
-          apply_filter(&filter, cs, root_ce);
-          filter.end();
-          rootCode.finalise();
-          rootOpts.setInterpretedCode(rootCode);
+          build_where_filter(rootCode, cs, root_ce,
+                             "Failed to build the WHERE filter of the CTE "
+                             "body scan root.");
+          set_where_filter(rootOpts, rootCode,
+                           "Failed to set interpreted code on CTE body "
+                           "scan root.");
         }
         require_run(rootOpts.setAggregation(*cteAgg) == 0,
                     "Failed to attach aggregator to CTE body scan root.");
@@ -12947,13 +12946,11 @@ RonSQLPreparer::emit_index_scan_root(NdbQueryBuilder* qb,
     has_residual = true;
   }
   if (has_residual) {
-    NdbScanFilter filter(&rootCode);
-    filter.setSqlCmpSemantics();
-    filter.begin(NdbScanFilter::AND);
-    apply_filter(&filter, scope, residual_root);
-    filter.end();
-    rootCode.finalise();
-    rootOpts.setInterpretedCode(rootCode);
+    build_where_filter(rootCode, scope, residual_root,
+                       "Failed to build the WHERE filter of the "
+                       "index-scan root.");
+    set_where_filter(rootOpts, rootCode,
+                     "Failed to set interpreted code on index-scan root.");
   }
 
   const NdbQueryOperationDef* def = NULL;
@@ -13047,12 +13044,9 @@ RonSQLPreparer::emit_pk_equality_index_scan_root(
     // Phase 0a: residual conjuncts (not consumed as equality bounds) go
     // through an InterpretedCode filter, mirroring emit_index_scan_root.
     NdbInterpretedCode code(root_table);
-    NdbScanFilter filter(&code);
-    filter.setSqlCmpSemantics();
-    filter.begin(NdbScanFilter::AND);
-    apply_filter(&filter, scope, residual);
-    filter.end();
-    code.finalise();
+    build_where_filter(code, scope, residual,
+                       "Failed to build the WHERE filter of the root PK "
+                       "index scan.");
     require_run(rootOpts.setInterpretedCode(code) == 0,
                 "Failed to set interpreted code on root PK index scan.");
   }
@@ -13629,12 +13623,9 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     bool residual_fits = true;
     if (root_residual != NULL)
     {
-      NdbScanFilter filter(&residual_code);
-      filter.setSqlCmpSemantics();
-      filter.begin(NdbScanFilter::AND);
-      apply_filter(&filter, scope, root_residual);
-      filter.end();
-      residual_code.finalise();
+      build_where_filter(residual_code, scope, root_residual,
+                         "Failed to build the WHERE filter of the root PK "
+                         "lookup.");
       residual_fits =
           (residual_code.getWordsUsed() <= LOOKUP_FILTER_MAX_WORDS);
     }
@@ -13684,13 +13675,10 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
   NdbInterpretedCode code(root_table);
   if (where_ce != NULL)
   {
-    NdbScanFilter filter(&code);
-    filter.setSqlCmpSemantics();
-    filter.begin(NdbScanFilter::AND);
-    apply_filter(&filter, scope, where_ce);
-    filter.end();
-    code.finalise();
-    rootOpts.setInterpretedCode(code);
+    build_where_filter(code, scope, where_ce,
+                       "Failed to build the WHERE filter of the root scan.");
+    set_where_filter(rootOpts, code,
+                     "Failed to set interpreted code on root scan.");
   }
   opDefs[0] = qb->scanTable(root_table, &rootOpts);
   require_run(opDefs[0] != NULL, "Failed to create root scan.");
@@ -15702,13 +15690,11 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
     {
       ConditionalExpression* child_ce = simplify_ce(scope.join_where_ce[i],
                                                     -1);
-      NdbScanFilter filter(&child_code_storage);
-      filter.setSqlCmpSemantics();
-      filter.begin(NdbScanFilter::AND);
-      apply_filter(&filter, scope, child_ce);
-      filter.end();
-      child_code_storage.finalise();
-      opts.setInterpretedCode(child_code_storage);
+      build_where_filter(child_code_storage, scope, child_ce,
+                         "Failed to build the WHERE filter of a joined "
+                         "table.");
+      set_where_filter(opts, child_code_storage,
+                       "Failed to set interpreted code on child operation.");
     }
     else if (op.type == JoinOp::CTE_LOOKUP && scope.join_where_ce[i] != NULL)
     {
@@ -15722,7 +15708,9 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
                   "in emit context.");
       emit_cte_lookup_filter(cte_filter_code_storage, scope, i,
                              cteVirtualTables[i], scope.join_where_ce[i]);
-      opts.setInterpretedCode(cte_filter_code_storage);
+      set_where_filter(opts, cte_filter_code_storage,
+                       "Failed to set interpreted code on CTE_LOOKUP "
+                       "child.");
     }
 
     // Attach aggregator. Multi-leaf path (leafAggs[i]) is for merged
@@ -16634,6 +16622,52 @@ RonSQLPreparer::apply_reject_all_filter(NdbScanFilter* filter)
   require_run(DBG(filter->begin(NdbScanFilter::AND)) >= 0, filter_fail);
   require_run(DBG(filter->isfalse()) >= 0, filter_fail);
   require_sch(DBG(filter->end()) >= 0, filter_fail);
+}
+
+/*
+ * J-5: build the WHERE filter `ce` of a join or CTE operation into `code`
+ * as one AND group and finalise it, checking each step as the
+ * single-table filters do.  NdbScanFilter keeps its first error and fails
+ * every later call, and the last end() writes the program's closing words
+ * and finalises it.  A WHERE whose comparisons fit the program buffer
+ * (NDB_MAX_SCANFILTER_SIZE_IN_WORDS) while the closing words do not fails
+ * only in that end() (4294, FilterTooLarge).  Unchecked, the program
+ * stayed unfinalised, setInterpretedCode refused it, and the operation ran
+ * without its filter, returning the rows the WHERE removes.  A failed step
+ * throws the error of the filter or the program.
+ */
+void
+RonSQLPreparer::build_where_filter(NdbInterpretedCode& code,
+                                   QueryScope& scope,
+                                   struct ConditionalExpression* ce,
+                                   const char* what)
+{
+  NdbScanFilter filter(&code);
+  DBGV(filter.setSqlCmpSemantics());
+  if (DBG(filter.begin(NdbScanFilter::AND)) < 0) {
+    throw_classified_ndb_error(filter.getNdbError(), what, "WHERE filter");
+  }
+  apply_filter(&filter, scope, ce);
+  if (DBG(filter.end()) < 0) {
+    throw_classified_ndb_error(filter.getNdbError(), what, "WHERE filter");
+  }
+  if (DBG(code.finalise()) != 0) {
+    throw_classified_ndb_error(code.getNdbError(), what, "WHERE filter");
+  }
+}
+
+// J-5: attach a finalised filter program to an operation's options;
+// setInterpretedCode copies it and refuses an unfinalised one (4519).
+void
+RonSQLPreparer::set_where_filter(NdbQueryOptions& opts,
+                                 const NdbInterpretedCode& code,
+                                 const char* what)
+{
+  const int ret = DBG(opts.setInterpretedCode(code));
+  if (ret != 0) {
+    throw_classified_ndb_error(m_conf.ndb->getNdbError(ret), what,
+                               "WHERE filter");
+  }
 }
 
 void

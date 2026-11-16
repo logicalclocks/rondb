@@ -1220,6 +1220,14 @@ private:
   void apply_filter_top_level(NdbScanFilter* filter);
   // X-3: the whole filter, rejecting every row (m_where_never_true).
   void apply_reject_all_filter(NdbScanFilter* filter);
+  // J-5: the WHERE filter of a join or CTE operation, built into `code`
+  // and finalised, and its attachment to the operation's options; a
+  // failed step throws its NDB error with the message `what`.
+  void build_where_filter(NdbInterpretedCode& code, QueryScope& scope,
+                          struct ConditionalExpression* ce,
+                          const char* what);
+  void set_where_filter(NdbQueryOptions& opts,
+                        const NdbInterpretedCode& code, const char* what);
   void apply_filter(NdbScanFilter* filter, QueryScope& scope,
                     struct ConditionalExpression* ce);
   void apply_filter_cmp(NdbScanFilter* filter, QueryScope& scope,
