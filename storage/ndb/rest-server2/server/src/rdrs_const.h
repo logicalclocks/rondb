@@ -111,6 +111,7 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define API_KEY_SECRET_SIZE                512 + 2   /* +2 for ndb len or '\0'*/
 #define API_KEY_SALT_SIZE                  256 + 2   /* +2 for ndb len or '\0'*/
 #define USERS_EMAIL_SIZE                   150 + 1   /* +1 for ndb len or '\0'*/
+#define USERS_USERNAME_SIZE                10 + 1    /* +1 for ndb len or '\0'*/
 #define PROJECT_TEAM_TEAM_MEMBER_SIZE      150 + 1   /* +1 for ndb len or '\0'*/
 #define PROJECT_TEAM_TEAM_ROLE_SIZE        32 + 1    /* +1 for ndb len or '\0'*/
 #define SHARED_FEATURE_NAME_SIZE           63 + 1    /* +1 for ndb len or '\0'*/

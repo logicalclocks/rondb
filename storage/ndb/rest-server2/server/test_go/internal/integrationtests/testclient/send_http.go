@@ -68,6 +68,23 @@ func SendHttpRequestWithClient(
 		httpVerb, url, body, expectedErrMsg, expectedStatus...)
 }
 
+// SendHttpRequestWithClientAndKey is SendHttpRequestWithClient under a
+// caller-chosen API key. Needed by rate limit tests that must drive a burst
+// as a specific Hopsworks user rather than the default test key.
+func SendHttpRequestWithClientAndKey(
+	t testing.TB,
+	client *http.Client,
+	apiKey string,
+	httpVerb string,
+	url string,
+	body string,
+	expectedErrMsg string,
+	expectedStatus ...int,
+) (int, []byte) {
+	return sendHttpRequestWithClientAndAPIKey(t, client, apiKey,
+		httpVerb, url, body, expectedErrMsg, expectedStatus...)
+}
+
 func sendHttpRequestWithClientAndAPIKey(
 	t testing.TB,
 	client *http.Client,

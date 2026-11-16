@@ -47,5 +47,5 @@ func TestRateLimit(t *testing.T) {
 			config.FEATURE_STORE_HTTP_VERB, url, reqBody, "",
 			http.StatusOK, http.StatusTooManyRequests)
 		return code
-	})
+	}, testdbs.FSDB001)
 }

@@ -53,6 +53,7 @@ file(GLOB_RECURSE SRC
         probe_server.cpp
         process_setup.cc
         prometheus_ctrl.cpp
+        rate_limit.cpp
         rdrs_dal.cpp
         rdrs_hopsworks_dal.cpp
         rdrs_rondb_connection.cpp
