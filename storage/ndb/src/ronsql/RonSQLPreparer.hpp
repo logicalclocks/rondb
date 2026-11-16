@@ -76,8 +76,12 @@ struct RonSQLListBuilder
 
   void append(Node* node)
   {
-    ndbrequire((head == NULL) == (tail == NULL));
-    ndbrequire(node != NULL && node->next == NULL);
+    ronsql_require_bug((head == NULL) == (tail == NULL),
+                       "A parse tree list has a head without a tail or a "
+                       "tail without a head.");
+    ronsql_require_bug(node != NULL && node->next == NULL,
+                       "A parse tree list got a NULL node or a node that "
+                       "is already linked.");
     if (tail == NULL)
       head = node;
     else
