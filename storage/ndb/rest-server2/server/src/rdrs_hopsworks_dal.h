@@ -150,6 +150,57 @@ RS_Status find_all_api_keys(std::vector<HopsworksAPIKeyEntry> *keys);
 // PK read by integer id — returns prefix, secret, salt, user_id
 RS_Status find_api_key_by_id(int id, HopsworksAPIKeyEntry *entry);
 
+class Ndb;
+
+// ---- Rate limit groups (RONDB-1158) ---------------------------------------
+// Desired state for the sync loop, expanded from the three
+// hopsworks.rate_limit_group* tables. Who rows become the online-FS MySQL
+// account names (one per project_team membership of a uid row, one per
+// member of a project row, clip31(ProjectName_username) as in
+// make_rate_limit_identity); What rows become table or database scopes.
+
+// One alias rule scope: a single online table or a whole database. The
+// default-constructed scope (an empty db) is the ALL rule / "no scope".
+struct RateLimitScope {
+  bool is_table = false;  // true: --table=<db>.<table>; false: --database=<db>
+  std::string db;         // the feature store's database name
+  std::string table;      // "<fg_name>_<version>"; empty for a database scope
+  bool operator==(const RateLimitScope &o) const {
+    return is_table == o.is_table && db == o.db && table == o.table;
+  }
+};
+
+struct RateLimitDesiredGroup {
+  int group_id;
+  std::string name;
+  // budget_percent in hundredths (decimal(5,2): "20.00" -> 2000), so the
+  // percent -> rate-per-sec conversion stays exact integer math.
+  int budget_percent_hundredths;
+  bool all_scope;                      // data_scope = 'ALL'
+  std::vector<std::string> accounts;   // sorted, deduplicated alias names
+  std::vector<RateLimitScope> scopes;  // sorted; empty for ALL and for inert
+};
+
+/*
+ * Read the version counter hopsworks bumps on every group-table write.
+ * *found is false when the table or the row does not exist (the Hopsworks
+ * migration has not run or no group was ever saved): the caller treats that
+ * as "no groups", not as an error.
+ */
+RS_Status read_rate_limit_group_version(Ndb *ndb_object,
+                                        unsigned long long *version,
+                                        bool *found);
+
+/*
+ * Expand the group tables into the desired state, sorted by group id (the
+ * order the sync applies them in). Who/What rows whose referenced user,
+ * project, feature group or store vanished mid-read (FK-cascade race) are
+ * skipped; a failed table read is an error so the caller skips the run
+ * rather than mistaking it for an empty desired state.
+ */
+RS_Status expand_rate_limit_groups(Ndb *ndb_object,
+                                   std::vector<RateLimitDesiredGroup> *groups);
+
 #endif  // __cplusplus
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_HOPSWORKS_DAL_H_

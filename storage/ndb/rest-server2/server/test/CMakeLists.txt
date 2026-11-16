@@ -34,6 +34,10 @@ NDB_ADD_EXECUTABLE(
   STATIC_NDBCLIENT
 )
 
+# RONDB-1158: rate limit group DAL + expansion (needs a running cluster).
+NDB_ADD_EXECUTABLE(rate_limit_groups_test rate_limit_groups_test.cpp
+                   STATIC_NDBCLIENT)
+
 # Probe-listener tests. probe_server_http_test is cluster-free (pure HTTP
 # conformance of the dedicated probe port); probe_server_cluster_test needs
 # a running cluster like the other tests here.
@@ -118,6 +122,14 @@ TARGET_LINK_LIBRARIES(
 TARGET_LINK_LIBRARIES(
 	error_handling_test
 	gtest_main
+	rdrs2_lib
+	${GTEST_LIBRARIES}
+)
+
+TARGET_LINK_LIBRARIES(
+	rate_limit_groups_test
+	gtest_main
+	ndbgeneral
 	rdrs2_lib
 	${GTEST_LIBRARIES}
 )
