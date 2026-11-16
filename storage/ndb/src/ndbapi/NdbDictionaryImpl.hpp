@@ -1571,8 +1571,18 @@ inline NdbIndexImpl *NdbDictionaryImpl::getIndex(const char *index_name,
   const BaseString internal_indexname(
       NdbIndexImpl::internal_index_name(&prim, index_name));
 
-  Ndb_local_table_info *info = m_localHash.get(internal_indexname);
+  /**
+   * An index that does not match prim (see below) is fetched once more
+   * before 241 is reported, as getIndexGlobal() does. An index cached
+   * before an ALTER TABLE of prim still records the old table version;
+   * fetched again from DBDICT, it records the current one.
+   */
+  int refetches = 1;
+  Ndb_local_table_info *info;
   NdbTableImpl *tab;
+
+fetch:
+  info = m_localHash.get(internal_indexname);
   if (info != nullptr) {
     // Honor a DROP/ALTER invalidation on a local hit so the stale index entry
     // is refetched instead of reused. The release is parked, not inline -
@@ -1612,8 +1622,9 @@ inline NdbIndexImpl *NdbDictionaryImpl::getIndex(const char *index_name,
      * (currently valid) index and silently return the wrong table's rows with
      * no error. Validate -- as getIndexGlobal() already does -- that the
      * resolved index still belongs to this base-table incarnation; otherwise
-     * drop the stale entry and report a schema-version error (241) so the
-     * caller refreshes its dictionary cache and retries.
+     * drop the stale entry, fetch the index again, and if that does not
+     * match either, report a schema-version error (241) so the caller
+     * refreshes its dictionary cache and retries.
      */
     if (idx->m_table_id == (unsigned)prim.getObjectId() &&
         idx->m_table_version == (unsigned)prim.getObjectVersion()) {
@@ -1624,6 +1635,7 @@ inline NdbIndexImpl *NdbDictionaryImpl::getIndex(const char *index_name,
     // inline - earlier pointers from this Ndb may still be in use.
     tab->m_status = NdbDictionary::Object::Invalid;
     park_stale_object(internal_indexname);
+    if (refetches-- > 0) goto fetch;
     m_error.code = 241;  // Invalid schema object version
     return nullptr;
   }
@@ -1632,7 +1644,9 @@ retry:
   // Index not found, try old format
   const BaseString old_internal_indexname(
       NdbIndexImpl::old_internal_index_name(&prim, index_name));
+  refetches = 1;
 
+fetch_old:
   info = m_localHash.get(old_internal_indexname);
   if (info != nullptr) {
     // Honor a DROP/ALTER invalidation on a local hit; the release is parked,
@@ -1671,6 +1685,7 @@ retry:
     // Same wrong-incarnation handling as for the new name format above.
     tab->m_status = NdbDictionary::Object::Invalid;
     park_stale_object(old_internal_indexname);
+    if (refetches-- > 0) goto fetch_old;
     m_error.code = 241;  // Invalid schema object version
     return nullptr;
   }
