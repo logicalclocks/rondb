@@ -1566,16 +1566,34 @@ inline NdbIndexImpl *NdbDictionaryImpl::getIndex(const char *index_name,
   return getIndex(index_name, *prim);
 }
 
+/**
+ * Whether an index object that does not match prim was built for the same
+ * incarnation of the table: same table id and same major version, so it
+ * differs only by online ALTER TABLEs of prim.
+ *
+ * An index object takes its table id and version from the table it is
+ * built for (NdbDictInterface::create_index_obj_from_table), not from
+ * DBDICT. Fetched again for a stale prim, the index of a table created
+ * later with the same id would match it, which is what RONDB-1075 must
+ * prevent. A dropped and created table gets a new major version, so only
+ * an index of the same incarnation may be fetched again.
+ */
+static inline bool index_built_for_same_incarnation(const NdbIndexImpl &idx,
+                                                    const NdbTableImpl &prim) {
+  return idx.m_table_id == (unsigned)prim.getObjectId() &&
+         table_version_major(idx.m_table_version) ==
+             table_version_major((Uint32)prim.getObjectVersion());
+}
+
 inline NdbIndexImpl *NdbDictionaryImpl::getIndex(const char *index_name,
                                                  const NdbTableImpl &prim) {
   const BaseString internal_indexname(
       NdbIndexImpl::internal_index_name(&prim, index_name));
 
   /**
-   * An index that does not match prim (see below) is fetched once more
-   * before 241 is reported, as getIndexGlobal() does. An index cached
-   * before an ALTER TABLE of prim still records the old table version;
-   * fetched again from DBDICT, it records the current one.
+   * An index cached before an online ALTER TABLE of prim records the
+   * table version from before the ALTER. Such an index is fetched once
+   * more instead of reporting 241, see index_built_for_same_incarnation().
    */
   int refetches = 1;
   Ndb_local_table_info *info;
@@ -1622,9 +1640,9 @@ fetch:
      * (currently valid) index and silently return the wrong table's rows with
      * no error. Validate -- as getIndexGlobal() already does -- that the
      * resolved index still belongs to this base-table incarnation; otherwise
-     * drop the stale entry, fetch the index again, and if that does not
-     * match either, report a schema-version error (241) so the caller
-     * refreshes its dictionary cache and retries.
+     * drop the stale entry and report a schema-version error (241) so the
+     * caller refreshes its dictionary cache and retries. An entry cached
+     * before an ALTER of this incarnation is fetched once more instead.
      */
     if (idx->m_table_id == (unsigned)prim.getObjectId() &&
         idx->m_table_version == (unsigned)prim.getObjectVersion()) {
@@ -1635,7 +1653,8 @@ fetch:
     // inline - earlier pointers from this Ndb may still be in use.
     tab->m_status = NdbDictionary::Object::Invalid;
     park_stale_object(internal_indexname);
-    if (refetches-- > 0) goto fetch;
+    if (refetches-- > 0 && index_built_for_same_incarnation(*idx, prim))
+      goto fetch;
     m_error.code = 241;  // Invalid schema object version
     return nullptr;
   }
@@ -1685,7 +1704,8 @@ fetch_old:
     // Same wrong-incarnation handling as for the new name format above.
     tab->m_status = NdbDictionary::Object::Invalid;
     park_stale_object(old_internal_indexname);
-    if (refetches-- > 0) goto fetch_old;
+    if (refetches-- > 0 && index_built_for_same_incarnation(*idx, prim))
+      goto fetch_old;
     m_error.code = 241;  // Invalid schema object version
     return nullptr;
   }
