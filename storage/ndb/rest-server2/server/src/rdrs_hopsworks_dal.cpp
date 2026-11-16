@@ -18,6 +18,8 @@
  */
 
 #include "rdrs_hopsworks_dal.h"
+
+#include <unordered_map>
 #include "rdrs_dal.hpp"
 #include "error_strings.h"
 #include "logger.hpp"
@@ -27,8 +29,13 @@
 #include "retry_handler.hpp"
 #include "ndb_api_helper.hpp"
 
-#include <my_time.h>
+#include "api_key.hpp"  // make_rate_limit_identity (RONDB-1158)
 
+#include <my_time.h>
+#include <decimal_utils.hpp>
+
+#include <algorithm>
+#include <array>
 #include <cstring>
 #include <map>
 #include <set>
@@ -570,6 +577,12 @@ RS_Status find_user_int(Ndb *ndb_object,
   }
   assert(USERS_EMAIL_SIZE ==
          (Uint32)table_dict->getColumn("email")->getSizeInBytes());
+  NdbRecAttr *username = scanOp->getValue("username");
+  if (unlikely(username == nullptr)) {
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  assert(USERS_USERNAME_SIZE ==
+         (Uint32)table_dict->getColumn("username")->getSizeInBytes());
 
   if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
     err = tx->getNdbError();
@@ -592,6 +605,19 @@ RS_Status find_user_int(Ndb *ndb_object,
       }
       memcpy(users->email, email_data_start, email_attr_bytes);
       users->email[email_attr_bytes] = 0;
+      Uint32 username_attr_bytes;
+      const char *username_data_start = nullptr;
+      if (unlikely(GetByteArray(
+                     username, &username_data_start, &username_attr_bytes) != 0)) {
+        ndb_object->closeTransaction(tx);
+        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+      }
+      if (unlikely(sizeof(users->username) < username_attr_bytes)) {
+        ndb_object->closeTransaction(tx);
+        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUFFER_TOO_SMALL)));
+      }
+      memcpy(users->username, username_data_start, username_attr_bytes);
+      users->username[username_attr_bytes] = 0;
     } while ((check = scanOp->nextResult(false)) == 0);
   }
   // check for errors happened during the reading process
@@ -790,6 +816,17 @@ RS_Status find_projects_int(
   }
   assert(PROJECT_PROJECTNAME_SIZE ==
          (Uint32)table_dict->getColumn("projectname")->getSizeInBytes());
+  /*
+   * The rows come back in scan order, not in the order of project_team_vec,
+   * so the id has to be read to pair a project with its name. Shared-store
+   * rate limit identities (RONDB-978) need that mapping to turn
+   * shared_feature_store.shared_with_project into a project name.
+   */
+  NdbRecAttr *project_id = scanOp->getValue("id");
+  if (unlikely(project_id == nullptr)) {
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
 
   if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
     err = tx->getNdbError();
@@ -818,6 +855,7 @@ RS_Status find_projects_int(
              projectname_data_start,
              projectname_attr_bytes);
       project.projectname[projectname_attr_bytes] = '\0';
+      project.id = project_id->int32_value();
       project_vec->push_back(project);
 
     } while ((check = scanOp->nextResult(false)) == 0);
@@ -857,8 +895,8 @@ RS_Status find_projects_vec(
 RS_Status find_shared_feature_store_ids_int(
   Ndb *ndb_object,
   std::vector<HopsworksProjectTeam> *project_team_vec,
-  std::vector<int> *shared_store_ids,
-  std::vector<int> *placeholder_store_ids) {
+  std::vector<SharedStoreRef> *shared_store_ids,
+  std::vector<SharedStoreRef> *placeholder_store_ids) {
 
   if (project_team_vec->empty()) {
     return RS_OK;
@@ -915,7 +953,15 @@ RS_Status find_shared_feature_store_ids_int(
   }
   NdbRecAttr *feature_store_id = scanOp->getValue("feature_store");
   NdbRecAttr *shared_entirely = scanOp->getValue("shared_entirely");
-  if (unlikely(feature_store_id == nullptr || shared_entirely == nullptr)) {
+  /*
+   * RONDB-978: which of the caller's own projects received the share. MySQL
+   * grants the share to <RecipientProject>_<username> and bills reads of the
+   * shared database to that account, so RDRS must resolve the same identity
+   * instead of leaving shared-store traffic unmetered.
+   */
+  NdbRecAttr *shared_with = scanOp->getValue("shared_with_project");
+  if (unlikely(feature_store_id == nullptr || shared_entirely == nullptr ||
+               shared_with == nullptr)) {
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
   }
@@ -927,10 +973,13 @@ RS_Status find_shared_feature_store_ids_int(
   bool check;
   while ((check = scanOp->nextResult(true)) == 0) {
     do {
+      SharedStoreRef ref;
+      ref.store_id = feature_store_id->int32_value();
+      ref.recipient_project_id = shared_with->int32_value();
       if (shared_entirely->int8_value() == 1) {
-        shared_store_ids->push_back(feature_store_id->int32_value());
+        shared_store_ids->push_back(ref);
       } else {
-        placeholder_store_ids->push_back(feature_store_id->int32_value());
+        placeholder_store_ids->push_back(ref);
       }
     } while ((check = scanOp->nextResult(false)) == 0);
   }
@@ -1032,14 +1081,15 @@ RS_Status find_feature_store_name_int(Ndb *ndb_object,
  */
 static RS_Status append_store_names_int(
   Ndb *ndb_object,
-  std::vector<int> *store_ids,
-  std::vector<std::string> *db_names) {
+  std::vector<SharedStoreRef> *store_ids,
+  std::vector<std::string> *db_names,
+  std::vector<std::pair<std::string, int>> *resolved) {
 
   for (Uint32 i = 0; i < store_ids->size(); i++) {
     HopsworksProject store_db;
     bool found = false;
     RS_Status status = find_feature_store_name_int(ndb_object,
-                                                   (*store_ids)[i],
+                                                   (*store_ids)[i].store_id,
                                                    &store_db,
                                                    &found);
     if (unlikely(status.http_code != SUCCESS)) {
@@ -1047,6 +1097,12 @@ static RS_Status append_store_names_int(
     }
     if (found) {
       db_names->push_back(store_db.projectname);
+      if (resolved != nullptr) {
+        // Keep the db name paired with the project that received the share
+        // so the caller can build the rate limit identity (RONDB-978).
+        resolved->emplace_back(store_db.projectname,
+                               (*store_ids)[i].recipient_project_id);
+      }
     }
   }
   return RS_OK;
@@ -1704,11 +1760,12 @@ RS_Status find_user_databases_int(
   int uid,
   HopsworksUserGrants *grants) {
 
-  HopsworksUsers user;
+  HopsworksUsers user = {};
   RS_Status status = find_user(ndb_object, (Uint32)uid, &user);
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
+  grants->username = user.username;
   std::vector<HopsworksProjectTeam> team_vec;
   status = find_project_team(ndb_object, &user, &team_vec);
   if (unlikely(status.http_code != SUCCESS)) {
@@ -1724,6 +1781,9 @@ RS_Status find_user_databases_int(
     }
   }
   std::vector<HopsworksProject> project_vec;
+  // id -> original-case name of every project the owner is a member of, used
+  // to name the project that received a store share (RONDB-978).
+  std::unordered_map<int, std::string> member_project_names;
   if (!member_vec.empty()) {
     status = find_projects_vec(ndb_object, &member_vec, &project_vec);
     if (unlikely(status.http_code != SUCCESS)) {
@@ -1731,6 +1791,8 @@ RS_Status find_user_databases_int(
     }
     for (const HopsworksProject &project : project_vec) {
       grants->full_dbs.push_back(project.projectname);
+      grants->member_projects.push_back(project.projectname);
+      member_project_names.emplace(project.id, project.projectname);
     }
   }
   if (!restricted_vec.empty()) {
@@ -1741,10 +1803,16 @@ RS_Status find_user_databases_int(
     }
     for (const HopsworksProject &project : project_vec) {
       grants->visible_dbs.push_back(project.projectname);
+      // Restricted members get no member data access, but Hopsworks
+      // still creates their online-FS MySQL account
+      // (setupOnlineFeatureStore runs createDatabaseUser for every
+      // project_team row; the role only selects the grants), so their
+      // membership carries a rate limit identity too.
+      grants->member_projects.push_back(project.projectname);
     }
   }
-  std::vector<int> shared_store_ids;
-  std::vector<int> placeholder_store_ids;
+  std::vector<SharedStoreRef> shared_store_ids;
+  std::vector<SharedStoreRef> placeholder_store_ids;
   status = find_shared_feature_store_ids_int(ndb_object,
                                              &member_vec,
                                              &shared_store_ids,
@@ -1752,17 +1820,48 @@ RS_Status find_user_databases_int(
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
+  std::vector<std::pair<std::string, int>> shared_dbs;
   status = append_store_names_int(ndb_object,
                                   &shared_store_ids,
-                                  &grants->full_dbs);
+                                  &grants->full_dbs,
+                                  &shared_dbs);
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
   status = append_store_names_int(ndb_object,
                                   &placeholder_store_ids,
-                                  &grants->visible_dbs);
+                                  &grants->visible_dbs,
+                                  &shared_dbs);
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
+  }
+  /*
+   * RONDB-978: turn each share into the rate limit identity MySQL would use.
+   * The recipient project is one of the owner's own memberships, so its name
+   * comes from the project rows already fetched above. A store shared with
+   * several of the owner's projects is ambiguous - REST has no equivalent of
+   * the MySQL client picking credentials - so resolve it deterministically to
+   * the lowest project id, which keeps a given (key, database) on one bucket
+   * across cache reloads and servers.
+   */
+  std::unordered_map<std::string, std::pair<std::string, int>> billing;
+  for (const std::pair<std::string, int> &shared : shared_dbs) {
+    auto name_it = member_project_names.find(shared.second);
+    if (name_it == member_project_names.end()) {
+      // Share to a project that is not a membership of this user: cannot
+      // happen, the scan filtered on the owner's project ids.
+      continue;
+    }
+    auto existing = billing.find(shared.first);
+    if (existing == billing.end() || shared.second < existing->second.second) {
+      billing[shared.first] = std::make_pair(name_it->second, shared.second);
+    }
+  }
+  for (const auto &kvp : billing) {
+    HopsworksSharedDbBilling entry;
+    entry.db = kvp.first;
+    entry.recipient_project = kvp.second.first;
+    grants->shared_db_billing.push_back(std::move(entry));
   }
   return find_fine_grained_grants_int(ndb_object, uid, &member_vec, grants);
 }
@@ -1778,6 +1877,9 @@ RS_Status find_user_databases(int uid, HopsworksUserGrants *grants) {
     grants->full_dbs.clear();
     grants->visible_dbs.clear();
     grants->fine_grants.clear();
+    grants->username.clear();
+    grants->member_projects.clear();
+    grants->shared_db_billing.clear();
     status = find_user_databases_int(ndb_object, uid, grants);
     HandleSchemaErrors(ndb_object, status, {
       std::make_tuple(HOPSWORKS, USERS),
@@ -1793,4 +1895,666 @@ RS_Status find_user_databases(int uid, HopsworksUserGrants *grants) {
   )
   rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
   return status;
+}
+
+/* ---- Rate limit groups (RONDB-1158) ------------------------------------- */
+
+// Raw rows of the three group tables, before expansion.
+struct RateLimitGroupRow {
+  int id;
+  std::string name;
+  int budget_percent_hundredths;
+  bool all_scope;
+};
+struct RateLimitWhoRow {
+  int group_id;
+  int uid;         // -1 = NULL
+  int project_id;  // -1 = NULL
+};
+struct RateLimitWhatRow {
+  int group_id;
+  int feature_group_id;  // -1 = NULL
+  int feature_store_id;  // -1 = NULL
+};
+
+// Parse decimal_bin2str output ("20.00", "0.50") into hundredths of a
+// percent. budget_percent is decimal(5,2), so the string always carries two
+// decimals; a negative value cannot be stored but is handled for symmetry.
+static int decimal_str_to_hundredths(const char *s) {
+  int sign = 1;
+  long long whole = 0;
+  int frac = 0;
+  if (*s == '-') {
+    sign = -1;
+    s++;
+  }
+  for (; *s != '\0' && *s != '.'; s++) {
+    whole = whole * 10 + (*s - '0');
+  }
+  if (*s == '.') {
+    s++;
+    if (s[0] != '\0') {
+      frac = (s[0] - '0') * 10;
+      if (s[1] != '\0') {
+        frac += s[1] - '0';
+      }
+    }
+  }
+  return sign * (int)(whole * 100 + frac);
+}
+
+// Read a nullable int column from a scan row (-1 = NULL).
+static int nullable_int32(const NdbRecAttr *attr) {
+  return attr->isNULL() ? -1 : attr->int32_value();
+}
+
+RS_Status read_rate_limit_group_version(Ndb *ndb_object,
+                                        unsigned long long *version,
+                                        bool *found) {
+  *found = false;
+  *version = 0;
+  NdbError err;
+  NdbTransaction *tx;
+  NdbOperation *ndb_op;
+
+  if (unlikely(ndb_object->setCatalogName(HOPSWORKS) != 0)) {
+    return RS_SERVER_ERROR(
+      std::string(rdrsErrorMessage(ERROR_DB_TABLE_NOT_EXIST)) +
+      std::string(" Database: ") + std::string(HOPSWORKS));
+  }
+  const NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
+  ndb_dict_clear_error(dict);
+  const NdbDictionary::Table *table_dict =
+    dict->getTable(RATE_LIMIT_GROUP_VERSION);
+  if (table_dict == nullptr) {
+    if (likely(ndb_dict_object_missing(dict->getNdbError().code))) {
+      // The Hopsworks migration has not created the group tables: the
+      // feature is not deployed, which is not an error.
+      return RS_OK;
+    }
+    return RS_RONDB_SERVER_ERROR(dict->getNdbError(),
+      std::string(rdrsErrorMessage(ERROR_TABLE_METADATA_READ_FAILED)) +
+      std::string(" Table: ") + std::string(RATE_LIMIT_GROUP_VERSION));
+  }
+  RS_Status status = start_transaction(ndb_object, &tx);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  status = get_op(ndb_object, tx, RATE_LIMIT_GROUP_VERSION, &ndb_op);
+  if (unlikely(status.http_code != SUCCESS)) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+  status = read_tuple(ndb_object, ndb_op);
+  if (unlikely(status.http_code != SUCCESS)) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+  if (unlikely(ndb_op->equal("id", 1) != 0)) {
+    err = ndb_op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_SET_EQUAL_FAILED)));
+  }
+  NdbRecAttr *version_attr = ndb_op->getValue("version");
+  if (unlikely(version_attr == nullptr)) {
+    err = ndb_op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  if (unlikely(tx->execute(NdbTransaction::Commit) != 0)) {
+    err = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+  }
+  if (ndb_op->getNdbError().classification == NdbError::NoDataFound) {
+    // Table exists but no group was ever saved.
+    ndb_object->closeTransaction(tx);
+    return RS_OK;
+  }
+  *version = version_attr->u_64_value();
+  *found = true;
+  ndb_object->closeTransaction(tx);
+  return RS_OK;
+}
+
+// Scan hopsworks.rate_limit_group.
+static RS_Status find_rate_limit_group_rows_int(
+  Ndb *ndb_object,
+  std::vector<RateLimitGroupRow> *rows) {
+  NdbError err;
+  const NdbDictionary::Table *table_dict;
+  NdbTransaction *tx;
+  NdbScanOperation *scanOp;
+
+  RS_Status status = select_table(ndb_object,
+                                  HOPSWORKS,
+                                  RATE_LIMIT_GROUP,
+                                  &table_dict);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  status = start_transaction(ndb_object, &tx);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  status = get_scan_op(ndb_object, tx, RATE_LIMIT_GROUP, &scanOp);
+  if (unlikely(status.http_code != SUCCESS)) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+  status = read_tuples(ndb_object, scanOp);
+  if (unlikely(status.http_code != SUCCESS)) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+  NdbRecAttr *id_attr = scanOp->getValue("id");
+  NdbRecAttr *name_attr = scanOp->getValue("name");
+  NdbRecAttr *budget_attr = scanOp->getValue("budget_percent");
+  NdbRecAttr *scope_attr = scanOp->getValue("data_scope");
+  if (unlikely(id_attr == nullptr || name_attr == nullptr ||
+               budget_attr == nullptr || scope_attr == nullptr)) {
+    err = scanOp->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  assert(RATE_LIMIT_GROUP_NAME_SIZE ==
+         (Uint32)table_dict->getColumn("name")->getSizeInBytes());
+  assert(RATE_LIMIT_GROUP_SCOPE_SIZE ==
+         (Uint32)table_dict->getColumn("data_scope")->getSizeInBytes());
+  const int budget_precision =
+    table_dict->getColumn("budget_percent")->getPrecision();
+  const int budget_scale = table_dict->getColumn("budget_percent")->getScale();
+  const int budget_bin_len =
+    table_dict->getColumn("budget_percent")->getSizeInBytesForRecord();
+  if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
+    err = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+  }
+  bool check;
+  while ((check = scanOp->nextResult(true)) == 0) {
+    do {
+      RateLimitGroupRow row;
+      row.id = id_attr->int32_value();
+
+      Uint32 name_bytes;
+      const char *name_start = nullptr;
+      if (unlikely(GetByteArray(name_attr, &name_start, &name_bytes) != 0)) {
+        ndb_object->closeTransaction(tx);
+        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+      }
+      row.name.assign(name_start, name_bytes);
+
+      char dec_str[DECIMAL_MAX_STR_LEN_IN_BYTES];
+      decimal_bin2str((void *)budget_attr->aRef(), budget_bin_len,
+                      budget_precision, budget_scale, dec_str,
+                      DECIMAL_MAX_STR_LEN_IN_BYTES);
+      row.budget_percent_hundredths = decimal_str_to_hundredths(dec_str);
+
+      Uint32 scope_bytes;
+      const char *scope_start = nullptr;
+      if (unlikely(GetByteArray(scope_attr, &scope_start, &scope_bytes) != 0)) {
+        ndb_object->closeTransaction(tx);
+        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+      }
+      row.all_scope = (scope_bytes == 3 && memcmp(scope_start, "ALL", 3) == 0);
+      rows->push_back(std::move(row));
+    } while ((check = scanOp->nextResult(false)) == 0);
+  }
+  NdbError error = scanOp->getNdbError();
+  ndb_object->closeTransaction(tx);
+  if (unlikely(error.code != 4120 /*Scan already complete*/)) {
+    return RS_RONDB_SERVER_ERROR(
+      error, "Failed reading rate limit groups. Fn find_rate_limit_group_rows_int");
+  }
+  return RS_OK;
+}
+
+// Scan hopsworks.rate_limit_group_user or _data: both are (group_id +
+// two nullable int references), so one reader serves both.
+static RS_Status find_rate_limit_ref_rows_int(
+  Ndb *ndb_object,
+  const char *table_name,
+  const char *col_a,
+  const char *col_b,
+  std::vector<std::array<int, 3>> *rows) {
+  NdbError err;
+  const NdbDictionary::Table *table_dict;
+  NdbTransaction *tx;
+  NdbScanOperation *scanOp;
+
+  RS_Status status = select_table(ndb_object,
+                                  HOPSWORKS,
+                                  table_name,
+                                  &table_dict);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  status = start_transaction(ndb_object, &tx);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  status = get_scan_op(ndb_object, tx, table_name, &scanOp);
+  if (unlikely(status.http_code != SUCCESS)) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+  status = read_tuples(ndb_object, scanOp);
+  if (unlikely(status.http_code != SUCCESS)) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+  NdbRecAttr *group_attr = scanOp->getValue("group_id");
+  NdbRecAttr *a_attr = scanOp->getValue(col_a);
+  NdbRecAttr *b_attr = scanOp->getValue(col_b);
+  if (unlikely(group_attr == nullptr || a_attr == nullptr ||
+               b_attr == nullptr)) {
+    err = scanOp->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
+    err = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+  }
+  bool check;
+  while ((check = scanOp->nextResult(true)) == 0) {
+    do {
+      rows->push_back({group_attr->int32_value(),
+                       nullable_int32(a_attr),
+                       nullable_int32(b_attr)});
+    } while ((check = scanOp->nextResult(false)) == 0);
+  }
+  NdbError error = scanOp->getNdbError();
+  ndb_object->closeTransaction(tx);
+  if (unlikely(error.code != 4120 /*Scan already complete*/)) {
+    return RS_RONDB_SERVER_ERROR(
+      error, "Failed reading rate limit group rows. Fn find_rate_limit_ref_rows_int");
+  }
+  return RS_OK;
+}
+
+// Scan hopsworks.project_team into (project_id, team_member email) pairs.
+// The expansion needs the memberships both by project (project Who rows)
+// and by member (uid Who rows), so one unfiltered scan serves both.
+static RS_Status find_all_project_team_rows_int(
+  Ndb *ndb_object,
+  std::vector<std::pair<int, std::string>> *rows) {
+  NdbError err;
+  const NdbDictionary::Table *table_dict;
+  NdbTransaction *tx;
+  NdbScanOperation *scanOp;
+
+  RS_Status status = select_table(ndb_object,
+                                  HOPSWORKS,
+                                  PROJECT_TEAM,
+                                  &table_dict);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  status = start_transaction(ndb_object, &tx);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  status = get_scan_op(ndb_object, tx, PROJECT_TEAM, &scanOp);
+  if (unlikely(status.http_code != SUCCESS)) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+  status = read_tuples(ndb_object, scanOp);
+  if (unlikely(status.http_code != SUCCESS)) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+  NdbRecAttr *project_id_attr = scanOp->getValue("project_id");
+  NdbRecAttr *member_attr = scanOp->getValue("team_member");
+  if (unlikely(project_id_attr == nullptr || member_attr == nullptr)) {
+    err = scanOp->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
+    err = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+  }
+  bool check;
+  while ((check = scanOp->nextResult(true)) == 0) {
+    do {
+      Uint32 member_bytes;
+      const char *member_start = nullptr;
+      if (unlikely(GetByteArray(member_attr, &member_start,
+                                &member_bytes) != 0)) {
+        ndb_object->closeTransaction(tx);
+        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+      }
+      rows->emplace_back(project_id_attr->int32_value(),
+                         std::string(member_start, member_bytes));
+    } while ((check = scanOp->nextResult(false)) == 0);
+  }
+  NdbError error = scanOp->getNdbError();
+  ndb_object->closeTransaction(tx);
+  if (unlikely(error.code != 4120 /*Scan already complete*/)) {
+    return RS_RONDB_SERVER_ERROR(
+      error, "Failed reading project team. Fn find_all_project_team_rows_int");
+  }
+  return RS_OK;
+}
+
+// Scan hopsworks.users into uid -> (email, username) and
+// email -> username maps.
+static RS_Status find_all_users_int(
+  Ndb *ndb_object,
+  std::map<int, std::pair<std::string, std::string>> *by_uid,
+  std::map<std::string, std::string> *username_by_email) {
+  NdbError err;
+  const NdbDictionary::Table *table_dict;
+  NdbTransaction *tx;
+  NdbScanOperation *scanOp;
+
+  RS_Status status = select_table(ndb_object, HOPSWORKS, USERS, &table_dict);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  status = start_transaction(ndb_object, &tx);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  status = get_scan_op(ndb_object, tx, USERS, &scanOp);
+  if (unlikely(status.http_code != SUCCESS)) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+  status = read_tuples(ndb_object, scanOp);
+  if (unlikely(status.http_code != SUCCESS)) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+  NdbRecAttr *uid_attr = scanOp->getValue("uid");
+  NdbRecAttr *email_attr = scanOp->getValue("email");
+  NdbRecAttr *username_attr = scanOp->getValue("username");
+  if (unlikely(uid_attr == nullptr || email_attr == nullptr ||
+               username_attr == nullptr)) {
+    err = scanOp->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
+    err = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+  }
+  bool check;
+  while ((check = scanOp->nextResult(true)) == 0) {
+    do {
+      Uint32 username_bytes;
+      const char *username_start = nullptr;
+      if (unlikely(GetByteArray(username_attr, &username_start,
+                                &username_bytes) != 0)) {
+        ndb_object->closeTransaction(tx);
+        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+      }
+      std::string username(username_start, username_bytes);
+      std::string email;
+      if (!email_attr->isNULL()) {
+        Uint32 email_bytes;
+        const char *email_start = nullptr;
+        if (unlikely(GetByteArray(email_attr, &email_start,
+                                  &email_bytes) != 0)) {
+          ndb_object->closeTransaction(tx);
+          return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+        }
+        email.assign(email_start, email_bytes);
+      }
+      if (!email.empty()) {
+        (*username_by_email)[email] = username;
+      }
+      (*by_uid)[uid_attr->int32_value()] = {std::move(email),
+                                            std::move(username)};
+    } while ((check = scanOp->nextResult(false)) == 0);
+  }
+  NdbError error = scanOp->getNdbError();
+  ndb_object->closeTransaction(tx);
+  if (unlikely(error.code != 4120 /*Scan already complete*/)) {
+    return RS_RONDB_SERVER_ERROR(
+      error, "Failed reading users. Fn find_all_users_int");
+  }
+  return RS_OK;
+}
+
+// Scan hopsworks.project into id -> projectname (original case).
+static RS_Status find_all_projects_int(
+  Ndb *ndb_object,
+  std::map<int, std::string> *name_by_id) {
+  NdbError err;
+  const NdbDictionary::Table *table_dict;
+  NdbTransaction *tx;
+  NdbScanOperation *scanOp;
+
+  RS_Status status = select_table(ndb_object, HOPSWORKS, PROJECT, &table_dict);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  status = start_transaction(ndb_object, &tx);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  status = get_scan_op(ndb_object, tx, PROJECT, &scanOp);
+  if (unlikely(status.http_code != SUCCESS)) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+  status = read_tuples(ndb_object, scanOp);
+  if (unlikely(status.http_code != SUCCESS)) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+  NdbRecAttr *id_attr = scanOp->getValue("id");
+  NdbRecAttr *name_attr = scanOp->getValue("projectname");
+  if (unlikely(id_attr == nullptr || name_attr == nullptr)) {
+    err = scanOp->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
+    err = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+  }
+  bool check;
+  while ((check = scanOp->nextResult(true)) == 0) {
+    do {
+      Uint32 name_bytes;
+      const char *name_start = nullptr;
+      if (unlikely(GetByteArray(name_attr, &name_start, &name_bytes) != 0)) {
+        ndb_object->closeTransaction(tx);
+        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+      }
+      (*name_by_id)[id_attr->int32_value()] =
+        std::string(name_start, name_bytes);
+    } while ((check = scanOp->nextResult(false)) == 0);
+  }
+  NdbError error = scanOp->getNdbError();
+  ndb_object->closeTransaction(tx);
+  if (unlikely(error.code != 4120 /*Scan already complete*/)) {
+    return RS_RONDB_SERVER_ERROR(
+      error, "Failed reading projects. Fn find_all_projects_int");
+  }
+  return RS_OK;
+}
+
+RS_Status expand_rate_limit_groups(Ndb *ndb_object,
+                                   std::vector<RateLimitDesiredGroup> *groups) {
+  groups->clear();
+
+  std::vector<RateLimitGroupRow> group_rows;
+  RS_Status status = find_rate_limit_group_rows_int(ndb_object, &group_rows);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  if (group_rows.empty()) {
+    return RS_OK;
+  }
+  std::vector<std::array<int, 3>> who_raw;   // group_id, uid, project_id
+  std::vector<std::array<int, 3>> what_raw;  // group_id, fg_id, fs_id
+  status = find_rate_limit_ref_rows_int(ndb_object, RATE_LIMIT_GROUP_USER,
+                                        "uid", "project_id", &who_raw);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  status = find_rate_limit_ref_rows_int(ndb_object, RATE_LIMIT_GROUP_DATA,
+                                        "feature_group_id",
+                                        "feature_store_id", &what_raw);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+
+  // The joined tables, read once: memberships (both directions), user
+  // names and project names. The group tables are small and the sync runs
+  // only when the version counter moved (or on the periodic full resync),
+  // so three straight scans beat per-row lookups.
+  std::map<int, std::pair<std::string, std::string>> user_by_uid;
+  std::map<std::string, std::string> username_by_email;
+  status = find_all_users_int(ndb_object, &user_by_uid, &username_by_email);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  std::vector<std::pair<int, std::string>> team_rows;
+  status = find_all_project_team_rows_int(ndb_object, &team_rows);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  std::map<int, std::string> project_name_by_id;
+  status = find_all_projects_int(ndb_object, &project_name_by_id);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+
+  std::sort(group_rows.begin(), group_rows.end(),
+            [](const RateLimitGroupRow &a, const RateLimitGroupRow &b) {
+              return a.id < b.id;
+            });
+
+  for (const RateLimitGroupRow &row : group_rows) {
+    RateLimitDesiredGroup group;
+    group.group_id = row.id;
+    group.name = row.name;
+    group.budget_percent_hundredths = row.budget_percent_hundredths;
+    group.all_scope = row.all_scope;
+
+    // Who -> accounts. A row whose user or project vanished mid-read
+    // (FK-cascade race) expands to nothing.
+    std::set<std::string> accounts;
+    for (const auto &who : who_raw) {
+      if (who[0] != row.id) {
+        continue;
+      }
+      int who_uid = who[1];
+      int who_project = who[2];
+      if (who_uid != -1) {
+        auto user_it = user_by_uid.find(who_uid);
+        if (user_it == user_by_uid.end() || user_it->second.first.empty()) {
+          continue;
+        }
+        const std::string &email = user_it->second.first;
+        const std::string &username = user_it->second.second;
+        for (const auto &team : team_rows) {
+          if (team.second != email) {
+            continue;
+          }
+          auto project_it = project_name_by_id.find(team.first);
+          if (project_it == project_name_by_id.end()) {
+            continue;
+          }
+          accounts.insert(
+            make_rate_limit_identity(project_it->second, username));
+        }
+      } else if (who_project != -1) {
+        auto project_it = project_name_by_id.find(who_project);
+        if (project_it == project_name_by_id.end()) {
+          continue;
+        }
+        for (const auto &team : team_rows) {
+          if (team.first != who_project) {
+            continue;
+          }
+          auto member_it = username_by_email.find(team.second);
+          if (member_it == username_by_email.end()) {
+            continue;
+          }
+          accounts.insert(
+            make_rate_limit_identity(project_it->second, member_it->second));
+        }
+      }
+    }
+    group.accounts.assign(accounts.begin(), accounts.end());
+
+    // What -> scopes. An ALL group carries none by definition; rows a
+    // half-applied save might have left behind are ignored, not an error.
+    if (!row.all_scope) {
+      for (const auto &what : what_raw) {
+        if (what[0] != row.id) {
+          continue;
+        }
+        int what_fg = what[1];
+        int what_fs = what[2];
+        RateLimitScope scope;
+        if (what_fg != -1) {
+          char fg_name[FEATURE_GROUP_NAME_SIZE];
+          int fg_version = 0;
+          int fg_store_id = 0;
+          bool found = false;
+          status = find_feature_group_int(ndb_object, what_fg, fg_name,
+                                          &fg_version, &fg_store_id, &found);
+          if (unlikely(status.http_code != SUCCESS)) {
+            return status;
+          }
+          if (!found) {
+            continue;
+          }
+          HopsworksProject store_db;
+          status = find_feature_store_name_int(ndb_object, fg_store_id,
+                                               &store_db, &found);
+          if (unlikely(status.http_code != SUCCESS)) {
+            return status;
+          }
+          if (!found) {
+            continue;
+          }
+          scope.is_table = true;
+          scope.db = store_db.projectname;
+          scope.table =
+            std::string(fg_name) + "_" + std::to_string(fg_version);
+        } else if (what_fs != -1) {
+          HopsworksProject store_db;
+          bool found = false;
+          status = find_feature_store_name_int(ndb_object, what_fs,
+                                               &store_db, &found);
+          if (unlikely(status.http_code != SUCCESS)) {
+            return status;
+          }
+          if (!found) {
+            continue;
+          }
+          scope.is_table = false;
+          scope.db = store_db.projectname;
+        } else {
+          continue;
+        }
+        group.scopes.push_back(std::move(scope));
+      }
+      std::sort(group.scopes.begin(), group.scopes.end(),
+                [](const RateLimitScope &a, const RateLimitScope &b) {
+                  if (a.db != b.db) {
+                    return a.db < b.db;
+                  }
+                  return a.table < b.table;
+                });
+      group.scopes.erase(std::unique(group.scopes.begin(), group.scopes.end()),
+                         group.scopes.end());
+    }
+    groups->push_back(std::move(group));
+  }
+  return RS_OK;
 }

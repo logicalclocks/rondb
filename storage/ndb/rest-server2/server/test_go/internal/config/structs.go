@@ -71,9 +71,9 @@ type REST struct {
 }
 
 // RateLimit mirrors the server's top-level .RateLimit section (RONDB-978):
-// USER rate limiting policy for this server's NDB traffic. The identity
-// derives from the request's Hopsworks API key, so the server rejects
-// Enable without .Security.APIKey.UseHopsworksAPIKeys.
+// USER rate limiting policy for this server's NDB traffic. Identity is
+// "apikey" or "username"; both derive from the request's Hopsworks API key,
+// so the server rejects Enable without .Security.APIKey.UseHopsworksAPIKeys.
 type RateLimit struct {
 	Enable     bool
 	Identity   string
@@ -81,8 +81,11 @@ type RateLimit struct {
 }
 
 func (r *RateLimit) Validate() error {
-	if r.Identity != "apikey" {
-		return errors.New("RateLimit.Identity only supports 'apikey'")
+	if r.Identity != "apikey" && r.Identity != "username" {
+		return errors.New("RateLimit.Identity must be 'apikey' or 'username'")
+	}
+	if r.Identity == "username" && r.FullAPIKey {
+		return errors.New("RateLimit.FullAPIKey requires RateLimit.Identity 'apikey'")
 	}
 	return nil
 }

@@ -723,8 +723,45 @@ struct DictDatabaseInfo {
     MaxParallelTransactions = 104,
     MaxParallelComplexQueries = 105,
     IsUser = 106,
+    IsAlias = 107,
+    AliasRules = 108,
+    AliasRuleCmd = 109,
+    /**
+     * The blob's byte length travels as its own key: unpack copies a
+     * BinaryValue's bytes but fills no length field (Length_Offset is
+     * pack-only), so the receiver reads the length from this key. Its
+     * mapping entry sits before AliasRules so it arrives first.
+     */
+    AliasRulesLen = 110,
     ParameterEnd = 199,
   };
+  /**
+   * AliasRuleCmd on ALTER_DATABASE: 0 means the AliasRules blob is the
+   * whole list (master re-pack, restart replay), 1 adds the blob's one
+   * rule, 2 removes the rule with the blob's scope (its target is
+   * ignored, and removing an absent rule is a no-op).
+   */
+  enum AliasRuleCmdValues {
+    AliasRuleReplace = 0,
+    AliasRuleAdd = 1,
+    AliasRuleRemove = 2,
+  };
+  /**
+   * AliasRules is a packed rule list: one Uint32 rule count, then per rule
+   * three Uint32 words (scope type, scope name bytes incl. NUL, target name
+   * bytes incl. NUL) followed by the two NUL-terminated names, each padded
+   * to a word boundary. Scope type values are AliasScopeType below. An ALL
+   * rule has scope name length 0. A USER ALIAS SET/DROP command carries one
+   * rule; the master re-pack and the schema file carry the full list.
+   */
+  enum AliasScopeType {
+    AliasScopeTable = 0,
+    AliasScopeDatabase = 1,
+    AliasScopeAll = 2,
+  };
+  static constexpr Uint32 MaxAliasRuleCount = 32;
+  static constexpr Uint32 MaxAliasRulesBytes =
+    4 + MaxAliasRuleCount * (12 + MAX_TAB_NAME_SIZE + MAX_DB_NAME_SIZE);
   struct Database {
     char DatabaseName[MAX_DB_NAME_SIZE];
     Uint32 DatabaseType;
@@ -738,6 +775,10 @@ struct DictDatabaseInfo {
     Uint64 MaxParallelTransactions;
     Uint64 MaxParallelComplexQueries;
     bool IsUser;
+    Uint32 IsAlias;
+    Uint32 AliasRuleCmd;
+    Uint32 AliasRulesLen;
+    char AliasRules[MaxAliasRulesBytes];
     Database() {}
     void init();
   };

@@ -1,0 +1,94 @@
+CREATE DATABASE marketing;
+CREATE DATABASE sales;
+CREATE TABLE marketing.clicks (a INT PRIMARY KEY, b INT NOT NULL,
+c INT NOT NULL,
+UNIQUE KEY ub (b), KEY oc (c)) ENGINE ndb;
+CREATE TABLE marketing.other (a INT PRIMARY KEY, b INT) ENGINE ndb;
+CREATE TABLE sales.orders (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO marketing.clicks VALUES
+(1,1,1),(2,2,1),(3,3,1),(4,4,2),(5,5,2),(6,6,2),(7,7,3),(8,8,3),(9,9,3),
+(10,10,4);
+INSERT INTO marketing.other VALUES (1,0),(2,0),(3,0),(4,0),(5,0);
+INSERT INTO sales.orders VALUES (1,0),(2,0),(3,0),(4,0),(5,0);
+CREATE USER 'alice4f2'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'mary01ab'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'rosa9e1f'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'bob77'@'%' IDENTIFIED BY 'pw';
+GRANT ALL PRIVILEGES ON marketing.* TO 'alice4f2'@'%';
+GRANT ALL PRIVILEGES ON sales.* TO 'alice4f2'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'mary01ab'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'rosa9e1f'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'bob77'@'%';
+#
+# 1. ALL rule: alice is throttled on a table in another database.
+#
+alice: throttled on sales.orders as expected (ALL rule)
+#
+# 2. Table rule: mary is throttled on marketing.clicks only.
+#
+mary: throttled on marketing.clicks as expected (table rule)
+mary: not throttled on marketing.other as expected
+#
+# 3. Precedence: rosa's table rule to a big target beats her
+#    database rule to a tiny one.
+#
+rosa: not throttled on marketing.clicks as expected (table rule wins)
+rosa: throttled on marketing.other as expected (database rule)
+#
+# 4. Index access resolves through the base table: mary throttled
+#    via unique-index lookups and ordered-index range scans too.
+#
+mary: throttled via unique index as expected
+mary: throttled via ordered index scan as expected
+#
+# 5. A rule whose target USER is gone runs unmetered (fail generous).
+#
+bob: not throttled with a dropped target as expected
+#
+# 6. Dropping a rule releases the budget: mary unthrottled after
+#    USER ALIAS DROP of her table rule.
+#
+mary: unthrottled after dropping the rule as expected
+#
+# 7. A table created AFTER the SET is matched: rick's rule names
+#    marketing.late before it exists; the create attaches it.
+#
+CREATE USER 'rick55'@'%' IDENTIFIED BY 'pw';
+GRANT ALL PRIVILEGES ON marketing.* TO 'rick55'@'%';
+GRANT ALL PRIVILEGES ON sales.* TO 'rick55'@'%';
+CREATE TABLE marketing.late (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO marketing.late VALUES (1,0),(2,0),(3,0),(4,0),(5,0);
+rick: throttled on the late-created table as expected
+#
+# 8. Dropping and recreating the table re-attaches the rule.
+#
+DROP TABLE marketing.late;
+CREATE TABLE marketing.late (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO marketing.late VALUES (1,0),(2,0),(3,0),(4,0),(5,0);
+rick: throttled after drop and recreate as expected
+#
+# 9. A rename out of a database rule's scope detaches: rosa's
+#    marketing rule stops charging a table renamed into sales.
+#
+GRANT ALL PRIVILEGES ON sales.* TO 'rosa9e1f'@'%';
+CREATE TABLE marketing.moving (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO marketing.moving VALUES (1,0),(2,0),(3,0),(4,0),(5,0);
+rosa: throttled on marketing.moving as expected (database rule)
+RENAME TABLE marketing.moving TO sales.moved;
+rosa: unthrottled after the rename out of marketing as expected
+#
+# 10. A rename INTO a table rule's scope attaches: rick's rule
+#     catches a table renamed to marketing.late.
+#
+DROP TABLE marketing.late;
+CREATE TABLE marketing.incoming (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO marketing.incoming VALUES (1,0),(2,0),(3,0),(4,0),(5,0);
+RENAME TABLE marketing.incoming TO marketing.late;
+rick: throttled after the rename into the rule as expected
+DROP USER 'alice4f2'@'%';
+DROP USER 'mary01ab'@'%';
+DROP USER 'rosa9e1f'@'%';
+DROP USER 'bob77'@'%';
+DROP USER 'rick55'@'%';
+DROP DATABASE marketing;
+DROP DATABASE sales;

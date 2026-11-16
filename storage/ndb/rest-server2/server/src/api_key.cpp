@@ -19,6 +19,7 @@
 
 #include "api_key.hpp"
 #include "config_structs.hpp"
+#include "rate_limit.hpp"
 #include "metadata.hpp"
 #include "ndb_event_utils.hpp"
 #include "pk_data_structs.hpp"
@@ -203,7 +204,8 @@ void APIKeyCache::cleanup() {
   DEB_AUTH("Cleanup finished");
 }
 
-RS_Status authenticate(const std::string &apiKey, PKReadParams &params) {
+RS_Status authenticate(const std::string &apiKey, PKReadParams &params,
+                       RateLimitIdentities *rlIdentities) {
   std::vector<std::string_view> columns;
   TableAccessRequest accessReq;
   accessReq.db = params.path.db;
@@ -224,7 +226,7 @@ RS_Status authenticate(const std::string &apiKey, PKReadParams &params) {
     accessReq.columns = &columns;
   }
   return apiKeyCache->validate_api_key(apiKey,
-    std::vector<TableAccessRequest>{accessReq});
+    std::vector<TableAccessRequest>{accessReq}, rlIdentities);
 }
 
 RS_Status authenticate_empty(const std::string &apiKey) {
@@ -243,8 +245,9 @@ RS_Status authenticate(const std::string &apiKey,
 }
 
 RS_Status authenticate(const std::string &apiKey,
-                       const std::vector<TableAccessRequest> &accessReqs) {
-  return apiKeyCache->validate_api_key(apiKey, accessReqs);
+                       const std::vector<TableAccessRequest> &accessReqs,
+                       RateLimitIdentities *rlIdentities) {
+  return apiKeyCache->validate_api_key(apiKey, accessReqs, rlIdentities);
 }
 
 /*
@@ -255,7 +258,8 @@ the features the FV serves. Spine feature groups have no online table -
 their store only needs visibility.
 */
 RS_Status authenticate(const std::string &apiKey,
-                       const metadata::FeatureViewMetadata &fvMetadata) {
+                       const metadata::FeatureViewMetadata &fvMetadata,
+                       RateLimitIdentities *rlIdentities) {
   const auto &fgFeatures = fvMetadata.featureGroupFeatures;
   // owners of the table-name strings and column lists the requests point at
   std::vector<std::string> tableNames;
@@ -288,7 +292,7 @@ RS_Status authenticate(const std::string &apiKey,
     accessReq.columns = &columnLists.back();
     accessReqs.push_back(accessReq);
   }
-  return apiKeyCache->validate_api_key(apiKey, accessReqs);
+  return apiKeyCache->validate_api_key(apiKey, accessReqs, rlIdentities);
 }
 
 /*
@@ -307,7 +311,8 @@ RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
 }
 
 RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
-                                        const std::vector<TableAccessRequest> &accessReqs) {
+                                        const std::vector<TableAccessRequest> &accessReqs,
+                                        RateLimitIdentities *rlIdentities) {
 #ifdef DEBUG_AUTH
   DEB_AUTH("authenticate apiKey: %s", apiKey.c_str());
   for (const auto &accessReq : accessReqs) {
@@ -345,7 +350,8 @@ RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
                                        allowedAccess,
                                        accessReqs,
                                        hash,
-                                       false);
+                                       false,
+                                       rlIdentities);
 
   if (keyFoundInCache) {
     if (allowedAccess) {
@@ -372,7 +378,8 @@ RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
                              allowedAccess,
                              accessReqs,
                              hash,
-                             true);
+                             true,
+                             rlIdentities);
   return status;
 }
 
@@ -517,7 +524,8 @@ RS_Status APIKeyCache::find_and_validate(const std::string &prefix,
                                          bool &allowedAccess,
                                          const std::vector<TableAccessRequest> &accessReqs,
                                          Uint32 hash,
-                                         bool inc_refcount_done) {
+                                         bool inc_refcount_done,
+                                         RateLimitIdentities *rlIdentities) {
   Uint32 key_cache_id = hash & (NUM_API_KEY_CACHES - 1);
   m_rwLock[key_cache_id].lock_shared();
   if (m_stopped) {
@@ -599,6 +607,25 @@ RS_Status APIKeyCache::find_and_validate(const std::string &prefix,
       DEB_AUTH("API Key not authorized for db: %s, Line: %u",
                std::string(accessReq.db).c_str(), __LINE__);
       break;
+    }
+  }
+  // Copy out the project-user rate limit identities for the requested
+  // databases while we still hold the lock (username mode; the map is
+  // empty otherwise). Databases without an identity - shared stores,
+  // system dbs - are simply absent and run unmetered.
+  if (rlIdentities != nullptr && db_access_ok &&
+      !userDBs->rlIdentities.empty()) {
+    for (const TableAccessRequest &accessReq : accessReqs) {
+      std::string lower_db = std::string(accessReq.db);
+      if (contains_upper(lower_db)) {
+        std::transform(lower_db.begin(), lower_db.end(), lower_db.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+      }
+      auto identity_it = userDBs->rlIdentities.find(lower_db);
+      if (identity_it != userDBs->rlIdentities.end()) {
+        rlIdentities->per_db.emplace(std::move(lower_db),
+                                     identity_it->second);
+      }
     }
   }
   // Release the per-entry lock before SHA256 computation
@@ -728,9 +755,46 @@ static void to_lower(std::string &str) {
   }
 }
 
+std::string make_rate_limit_identity(const std::string &project,
+                                     const std::string &username) {
+  std::string identity = project + "_" + username;
+  if (identity.size() > RATE_LIMIT_IDENTITY_MAX_LEN) {
+    identity.resize(RATE_LIMIT_IDENTITY_MAX_LEN - 1);
+  }
+  return identity;
+}
+
 RS_Status APIKeyCache::update_record(HopsworksUserGrants &grants,
                                      UserDBs *userDBs) {
   NDB_TICKS lastUpdated = NdbTick_getCurrentTicks();
+  // Project-user rate limit identities (RONDB-978, username mode): one
+  // entry per member project of this key's owner, keyed by the project's
+  // lowercased name - which is both its online database name and its
+  // feature store name (FeaturestoreController.setName lowercases the
+  // project name), so every endpoint resolves with the same lookup.
+  userDBs->rlIdentities.clear();
+  if (!grants.username.empty()) {
+    for (const std::string &project : grants.member_projects) {
+      std::string identity =
+        make_rate_limit_identity(project, grants.username);
+      std::string db = project;
+      to_lower(db);
+      userDBs->rlIdentities.emplace(std::move(db), std::move(identity));
+    }
+    // Databases reached only through a store share are billed to the owner's
+    // project that received the share - the same MySQL account Hopsworks
+    // grants the share to, so shared-store reads land in the bucket their SQL
+    // equivalent already uses instead of running unmetered. emplace() keeps
+    // the membership entry above when a database is both, which is the
+    // stronger relationship.
+    for (const HopsworksSharedDbBilling &shared : grants.shared_db_billing) {
+      std::string identity =
+        make_rate_limit_identity(shared.recipient_project, grants.username);
+      std::string db = shared.db;
+      to_lower(db);
+      userDBs->rlIdentities.emplace(std::move(db), std::move(identity));
+    }
+  }
   userDBs->userDBs.clear();
   for (std::string &db : grants.full_dbs) {
     to_lower(db);
@@ -758,6 +822,34 @@ RS_Status APIKeyCache::update_record(HopsworksUserGrants &grants,
     for (std::string &column : grant.columns) {
       to_lower(column);
       table_it->second.insert(std::move(column));
+    }
+  }
+  /*
+  RONDB-978: a database this key can reach but has no identity for runs
+  unmetered. Detected here rather than per request: everything needed is a
+  set difference over data this function just built, so request handling
+  pays nothing, and the condition is reported before any request is even
+  made. Only meaningful in username mode - the apikey identity is derived
+  from the key itself and never misses.
+  */
+  if (globalConfigs.rest.enable &&
+      globalConfigs.rateLimit.enable &&
+      globalConfigs.rateLimit.identity == "username") {
+    for (const std::string &db : userDBs->userDBs) {
+      if (userDBs->rlIdentities.find(db) == userDBs->rlIdentities.end()) {
+        report_unmetered_database(db);
+      }
+    }
+    for (const std::string &db : userDBs->visibleDBs) {
+      if (userDBs->rlIdentities.find(db) == userDBs->rlIdentities.end()) {
+        report_unmetered_database(db);
+      }
+    }
+    for (const auto &kvp : userDBs->fineGrants) {
+      if (userDBs->rlIdentities.find(kvp.first) ==
+            userDBs->rlIdentities.end()) {
+        report_unmetered_database(kvp.first);
+      }
     }
   }
   userDBs->m_lastUpdated = lastUpdated;

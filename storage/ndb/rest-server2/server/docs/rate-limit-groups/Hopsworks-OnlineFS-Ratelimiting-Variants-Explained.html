@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rate Limit Groups: The Two Variants, Explained</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f8fa; --paper: #fff; --text: #202a33; --muted: #566574;
+    --accent: #096b67; --line: #d7e0e5; --soft: #edf4f4; --code: #eef1f4;
+    --note: #fff7e7; --note-line: #b67a12;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141a1f; --paper: #1b232a; --text: #e6edf2; --muted: #afbec9;
+      --accent: #75d5c9; --line: #3b4a56; --soft: #203634; --code: #27323c;
+      --note: #342c1d; --note-line: #e1b45c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141a1f; --paper: #1b232a; --text: #e6edf2; --muted: #afbec9;
+    --accent: #75d5c9; --line: #3b4a56; --soft: #203634; --code: #27323c;
+    --note: #342c1d; --note-line: #e1b45c;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-padding-top: 1.5rem; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 58rem; margin: auto; padding: 3.5rem 2rem 5rem; }
+  header { border-bottom: 2px solid var(--accent); padding-bottom: 1.8rem; }
+  .eyebrow { color: var(--accent); font-size: .8rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  h1 { max-width: 24ch; margin: .6rem 0 1rem; font-size: clamp(2rem, 5vw, 2.8rem); line-height: 1.15; letter-spacing: -.025em; }
+  h2 { margin: 3rem 0 1rem; font-size: 1.5rem; line-height: 1.3; letter-spacing: -.015em; }
+  h3 { margin: 1.8rem 0 .65rem; font-size: 1.08rem; line-height: 1.4; }
+  p, ul, ol, dl { max-width: 72ch; margin: 0 0 1rem; }
+  li { margin-bottom: .55rem; }
+  strong { font-weight: 650; }
+  a { color: var(--accent); text-underline-offset: .18em; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+  .lead { font-size: 1.18rem; line-height: 1.6; max-width: 64ch; }
+  .meta, figcaption, caption { color: var(--muted); font-size: .88rem; }
+  nav { padding: 1.2rem 0; border-bottom: 1px solid var(--line); }
+  nav ol { display: grid; grid-template-columns: 1fr 1fr; gap: .35rem 2rem; padding-left: 1.3rem; margin: 0; font-size: .92rem; }
+  nav li { margin: 0; }
+  code, pre { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: .87em; }
+  code { background: var(--code); border-radius: 3px; padding: .12em .3em; overflow-wrap: anywhere; }
+  pre { background: var(--code); border: 1px solid var(--line); border-radius: 6px; padding: 1rem; overflow-x: auto; line-height: 1.55; margin: 1rem 0; }
+  pre code { padding: 0; background: none; overflow-wrap: normal; }
+  .tablewrap { overflow-x: auto; margin: 1rem 0 1.4rem; }
+  table { width: 100%; border-collapse: collapse; background: var(--paper); font-size: .9rem; }
+  caption { text-align: left; padding: 0 0 .6rem; }
+  th, td { padding: .7rem .8rem; text-align: left; vertical-align: top; border: 1px solid var(--line); }
+  th { background: var(--soft); font-weight: 650; }
+  td p:last-child { margin: 0; }
+  .note, .example { padding: 1rem 1.2rem; margin: 1.3rem 0; border-radius: 5px; }
+  .note { background: var(--note); border-left: 3px solid var(--note-line); }
+  .example { background: var(--soft); border-left: 3px solid var(--accent); }
+  .note p:last-child, .example p:last-child, .example ol:last-child, .example ul:last-child { margin-bottom: 0; }
+  figure { margin: 1.3rem 0; }
+  figure.erd { margin: 1.4rem 0 1.8rem; }
+  figure.erd svg { display: block; width: 100%; height: auto; background: #fff; border: 1px solid var(--line); border-radius: 6px; }
+  footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+  @media (max-width: 640px) {
+    main { padding: 2rem 1rem 3rem; }
+    nav ol { grid-template-columns: 1fr; }
+    th, td { padding: .55rem; }
+    .tablewrap table { min-width: 35rem; }
+  }
+  @media print {
+    :root { color-scheme: light; --bg: #fff; --paper: #fff; --text: #111; --muted: #444; --accent: #075651; --line: #bbb; --soft: #f0f5f4; --code: #f3f3f3; --note: #faf7ef; --note-line: #886020; }
+    body { font-size: 10pt; }
+    main { max-width: none; padding: 0; }
+    nav { display: none; }
+    h2, h3 { break-after: avoid; }
+    h2 { margin-top: 1.8rem; }
+    tr, .note, .example, figure { break-inside: avoid; }
+    .tablewrap { overflow: visible; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <p class="eyebrow">Hopsworks · RonDB · Internal explainer · November 2026</p>
+  <h1>Rate Limit Groups: The Two Variants, Explained</h1>
+  <p class="lead">A plain-words companion to the design document
+  <em>Hopsworks OnlineFS Ratelimiting: Design v1.0</em>. It explains the two possible
+  ways to decide which rate limit group a request belongs to: <strong>Variant A</strong>,
+  where the REST server (RDRS) works it out, and <strong>Variant B</strong>, where RonDB
+  works it out. All precise semantics, line references and edge cases live in the design
+  document (sections 5 to 8); this page only explains the idea.</p>
+</header>
+
+<nav aria-label="Contents">
+  <ol>
+    <li><a href="#problem">The problem in one minute</a></li>
+    <li><a href="#shared">What both variants share</a></li>
+    <li><a href="#variant-a">Variant A: RDRS works out the group</a></li>
+    <li><a href="#variant-b">Variant B: RonDB works out the group</a></li>
+    <li><a href="#misconception">Does RonDB read the Hopsworks tables? No.</a></li>
+    <li><a href="#compare">Side by side</a></li>
+    <li><a href="#proposal">Which one the design proposes</a></li>
+  </ol>
+</nav>
+
+<section id="problem">
+<h2>1. The problem in one minute</h2>
+<p>A <strong>rate limit group</strong> is a shared budget. An admin says: these people
+(or these whole projects), reading this data (or all data), may together use this much
+of the RonDB cluster. For example: Mary and Mike, on the feature group
+<code>marketing_clicks</code> version 1, get 2% of the cluster.</p>
+<p>RonDB already knows how to enforce one budget per <em>name</em>: a kernel
+<code>USER</code> object holds a rate, and every transaction tagged with that name is
+charged against it. So one group simply becomes one <code>USER</code> on the cluster.</p>
+<figure class="erd">
+<svg viewBox="0 0 960 330" role="img" aria-label="A rate limit group combines who, what and a budget, and becomes one USER object with a rate in RonDB.">
+  <rect x="0" y="0" width="960" height="330" fill="#ffffff"/>
+  <!-- group box -->
+  <rect x="25" y="25" width="570" height="280" rx="10" fill="#edf4f4" stroke="#096b67" stroke-width="2"/>
+  <text x="310" y="58" text-anchor="middle" font-family="system-ui,sans-serif" font-size="19" font-weight="700" fill="#096b67">Rate limit group: marketing_clicks_rl</text>
+  <!-- WHO -->
+  <rect x="50" y="85" width="250" height="100" rx="8" fill="#ffffff" stroke="#7aa6a3"/>
+  <text x="175" y="112" text-anchor="middle" font-family="system-ui,sans-serif" font-size="14" font-weight="700" fill="#202a33">WHO</text>
+  <text x="175" y="136" text-anchor="middle" font-family="system-ui,sans-serif" font-size="14" fill="#202a33">Mary and Mike</text>
+  <text x="175" y="158" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#566574">people, or whole projects</text>
+  <!-- WHAT -->
+  <rect x="320" y="85" width="250" height="100" rx="8" fill="#ffffff" stroke="#7aa6a3"/>
+  <text x="445" y="112" text-anchor="middle" font-family="system-ui,sans-serif" font-size="14" font-weight="700" fill="#202a33">WHAT</text>
+  <text x="445" y="136" text-anchor="middle" font-family="system-ui,sans-serif" font-size="14" fill="#202a33">feature group marketing_clicks v1</text>
+  <text x="445" y="158" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#566574">feature groups, stores, or ALL</text>
+  <!-- BUDGET -->
+  <rect x="50" y="205" width="520" height="75" rx="8" fill="#ffffff" stroke="#7aa6a3"/>
+  <text x="310" y="235" text-anchor="middle" font-family="system-ui,sans-serif" font-size="14" font-weight="700" fill="#202a33">BUDGET</text>
+  <text x="310" y="260" text-anchor="middle" font-family="system-ui,sans-serif" font-size="14" fill="#202a33">2% of the cluster</text>
+  <!-- arrow -->
+  <line x1="595" y1="165" x2="680" y2="165" stroke="#202a33" stroke-width="2"/>
+  <polygon points="680,165 668,159 668,171" fill="#202a33"/>
+  <text x="638" y="150" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#566574">becomes</text>
+  <!-- rondb box -->
+  <rect x="690" y="85" width="245" height="160" rx="10" fill="#ffffff" stroke="#202a33" stroke-width="2"/>
+  <text x="812" y="115" text-anchor="middle" font-family="system-ui,sans-serif" font-size="15" font-weight="700" fill="#202a33">RonDB cluster</text>
+  <rect x="710" y="130" width="205" height="90" rx="6" fill="#edf4f4" stroke="#096b67"/>
+  <text x="812" y="158" text-anchor="middle" font-family="ui-monospace,monospace" font-size="13" fill="#202a33">USER marketing_clicks_rl</text>
+  <text x="812" y="180" text-anchor="middle" font-family="ui-monospace,monospace" font-size="13" fill="#202a33">rate = 400,000</text>
+  <text x="812" y="206" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#566574">one budget meter per group</text>
+</svg>
+<figcaption>A group ties WHO and WHAT to a budget. On the cluster it is one plain
+<code>USER</code> object with a rate; RonDB already knows how to charge those.</figcaption>
+</figure>
+<p>The hard part is the moment a request arrives. Something, somewhere, has to answer:
+<strong>which group does this request belong to?</strong> The answer depends on two
+things at once: who is asking, and what data they are touching. The two variants differ
+only in <em>where</em> that question is answered.</p>
+</section>
+
+<section id="shared">
+<h2>2. What both variants share</h2>
+<p>Most of the feature is the same in both variants:</p>
+<ul>
+  <li><strong>The Hopsworks tables.</strong> Groups are stored in three new tables in the
+  <code>hopsworks</code> database: the group itself, its people, its data.</li>
+  <li><strong>The admin page.</strong> Where groups are created and edited.</li>
+  <li><strong>The sync loop.</strong> A timer in RDRS that reads the group tables and
+  turns them into objects on every RonDB cluster.</li>
+  <li><strong>One kernel <code>USER</code> per group</strong>, holding the budget.</li>
+</ul>
+<figure class="erd">
+<svg viewBox="0 0 960 340" role="img" aria-label="The sync loop: RDRS reads the Hopsworks tables on a timer and installs USER and alias objects on the RonDB cluster through management commands.">
+  <rect x="0" y="0" width="960" height="340" fill="#ffffff"/>
+  <!-- hopsworks db -->
+  <rect x="25" y="55" width="265" height="210" rx="10" fill="#fff" stroke="#202a33" stroke-width="2"/>
+  <text x="157" y="85" text-anchor="middle" font-family="system-ui,sans-serif" font-size="15" font-weight="700" fill="#202a33">Hopsworks database</text>
+  <rect x="45" y="100" width="225" height="100" rx="6" fill="#edf4f4" stroke="#7aa6a3"/>
+  <text x="157" y="124" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12.5" fill="#202a33">rate_limit_group</text>
+  <text x="157" y="146" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12.5" fill="#202a33">rate_limit_group_user</text>
+  <text x="157" y="168" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12.5" fill="#202a33">rate_limit_group_data</text>
+  <text x="157" y="190" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#566574">+ project_team, feature_group …</text>
+  <text x="157" y="240" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#566574">lives only in the Hopsworks</text>
+  <text x="157" y="256" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#566574">metadata cluster</text>
+  <!-- arrow read -->
+  <line x1="290" y1="140" x2="370" y2="140" stroke="#096b67" stroke-width="2.5"/>
+  <polygon points="370,140 358,134 358,146" fill="#096b67"/>
+  <text x="330" y="124" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#096b67">RDRS reads</text>
+  <!-- rdrs -->
+  <rect x="375" y="55" width="265" height="210" rx="10" fill="#edf4f4" stroke="#096b67" stroke-width="2"/>
+  <text x="507" y="85" text-anchor="middle" font-family="system-ui,sans-serif" font-size="15" font-weight="700" fill="#096b67">RDRS: the sync loop</text>
+  <text x="395" y="115" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">• runs on a timer</text>
+  <text x="395" y="140" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">• people → account names</text>
+  <text x="395" y="165" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">• data → table / database names</text>
+  <text x="395" y="190" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">• % budget → a rate number</text>
+  <text x="395" y="215" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">• compares with what is installed</text>
+  <text x="395" y="240" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">• fixes the differences</text>
+  <!-- arrow commands -->
+  <line x1="640" y1="140" x2="720" y2="140" stroke="#096b67" stroke-width="2.5"/>
+  <polygon points="720,140 708,134 708,146" fill="#096b67"/>
+  <text x="680" y="128" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#096b67">mgm commands</text>
+  <!-- rondb -->
+  <rect x="725" y="55" width="210" height="210" rx="10" fill="#fff" stroke="#202a33" stroke-width="2"/>
+  <text x="830" y="85" text-anchor="middle" font-family="system-ui,sans-serif" font-size="15" font-weight="700" fill="#202a33">RonDB cluster</text>
+  <rect x="742" y="100" width="176" height="60" rx="6" fill="#edf4f4" stroke="#7aa6a3"/>
+  <text x="830" y="125" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12.5" fill="#202a33">USER objects</text>
+  <text x="830" y="146" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#566574">one per group, with a rate</text>
+  <rect x="742" y="172" width="176" height="60" rx="6" fill="#edf4f4" stroke="#7aa6a3"/>
+  <text x="830" y="197" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12.5" fill="#202a33">USER ALIAS objects</text>
+  <text x="830" y="218" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#566574">Variant B only</text>
+  <!-- bottom note -->
+  <text x="480" y="305" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13.5" font-weight="650" fill="#8a2c2c">The arrows point one way. Nothing on the RonDB side ever reads the Hopsworks tables.</text>
+</svg>
+<figcaption>The sync loop (design doc section 8). RDRS already reads the Hopsworks
+tables for API keys, so it reads the group tables the same way, and it installs the
+result on the cluster as plain dictionary objects.</figcaption>
+</figure>
+<p>In other words, the whole pipeline from "admin saves a group" to "the cluster has a
+budget meter" is identical. The variants only disagree on the last step: at request
+time, who matches the request to the right meter.</p>
+</section>
+
+<section id="variant-a">
+<h2>3. Variant A: RDRS works out the group</h2>
+<p>In Variant A, RDRS answers the question itself, on every REST request, before the
+request reaches RonDB. From the group rows it builds two maps: person → groups and
+data → groups. For each request it looks the caller up in one map, the data up in the
+other, and takes the first level where the two agree (exact feature group first, then
+feature store, then ALL). It then tags the transaction with the <strong>group
+name</strong> directly.</p>
+<div class="example">
+<ol>
+  <li>Alice's application sends a read with her API key.</li>
+  <li>RDRS: who is this? The key belongs to Alice, of project Recommender.</li>
+  <li>RDRS: what data? The URL names <code>marketing.marketing_clicks_1</code>.</li>
+  <li>RDRS: which group contains both Alice and this data? <code>recommender_team_rl</code>.</li>
+  <li>RDRS tags the transaction <code>recommender_team_rl</code> and sends it.</li>
+  <li>The data node sees a tag that names an existing <code>USER</code> and charges it.
+  Nothing new happens in RonDB at all.</li>
+</ol>
+</div>
+<figure class="erd">
+<svg viewBox="0 0 960 540" role="img" aria-label="Variant A: RDRS resolves the group and tags the transaction with the group name; the SQL path through the MySQL server is not covered.">
+  <rect x="0" y="0" width="960" height="540" fill="#ffffff"/>
+  <!-- REST lane -->
+  <text x="30" y="40" font-family="system-ui,sans-serif" font-size="14" font-weight="700" fill="#096b67">REST path: covered</text>
+  <rect x="25" y="60" width="150" height="90" rx="8" fill="#fff" stroke="#202a33" stroke-width="1.5"/>
+  <text x="100" y="98" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13.5" fill="#202a33">Alice's app</text>
+  <text x="100" y="120" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#566574">API key</text>
+  <line x1="175" y1="105" x2="235" y2="105" stroke="#202a33" stroke-width="2"/>
+  <polygon points="235,105 223,99 223,111" fill="#202a33"/>
+  <rect x="240" y="60" width="400" height="230" rx="10" fill="#edf4f4" stroke="#096b67" stroke-width="2"/>
+  <text x="440" y="90" text-anchor="middle" font-family="system-ui,sans-serif" font-size="15" font-weight="700" fill="#096b67">RDRS works it all out</text>
+  <text x="262" y="122" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">1. Who is calling?  API key → Alice</text>
+  <text x="262" y="150" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">2. What data?  marketing.marketing_clicks_1</text>
+  <text x="262" y="178" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">3. Which group covers both?</text>
+  <text x="282" y="200" font-family="ui-monospace,monospace" font-size="12.5" fill="#096b67">recommender_team_rl</text>
+  <text x="262" y="230" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">4. Tag the transaction with the</text>
+  <text x="282" y="252" font-family="system-ui,sans-serif" font-size="13" font-weight="650" fill="#202a33">group name</text>
+  <line x1="640" y1="150" x2="700" y2="150" stroke="#202a33" stroke-width="2"/>
+  <polygon points="700,150 688,144 688,156" fill="#202a33"/>
+  <text x="672" y="172" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#566574">group tag</text>
+  <rect x="705" y="60" width="230" height="190" rx="10" fill="#fff" stroke="#202a33" stroke-width="2"/>
+  <text x="820" y="90" text-anchor="middle" font-family="system-ui,sans-serif" font-size="15" font-weight="700" fill="#202a33">RonDB data node</text>
+  <text x="820" y="122" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">tag names an existing</text>
+  <text x="820" y="144" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12.5" fill="#202a33">USER recommender_team_rl</text>
+  <text x="820" y="172" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">charge it, done</text>
+  <text x="820" y="206" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12.5" font-weight="650" fill="#096b67">no kernel change needed</text>
+  <!-- divider -->
+  <line x1="25" y1="330" x2="935" y2="330" stroke="#d7e0e5" stroke-dasharray="6 5"/>
+  <!-- SQL lane -->
+  <text x="30" y="365" font-family="system-ui,sans-serif" font-size="14" font-weight="700" fill="#8a2c2c">SQL path: not covered</text>
+  <rect x="25" y="385" width="150" height="90" rx="8" fill="#fff" stroke="#202a33" stroke-width="1.5"/>
+  <text x="100" y="423" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13.5" fill="#202a33">Alice's SQL</text>
+  <text x="100" y="445" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#566574">mysql client</text>
+  <line x1="175" y1="430" x2="235" y2="430" stroke="#202a33" stroke-width="2"/>
+  <polygon points="235,430 223,424 223,436" fill="#202a33"/>
+  <rect x="240" y="385" width="400" height="120" rx="10" fill="#fff" stroke="#8a2c2c" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="440" y="415" text-anchor="middle" font-family="system-ui,sans-serif" font-size="15" font-weight="700" fill="#8a2c2c">MySQL server</text>
+  <text x="440" y="445" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">tags the account name, before any table is known</text>
+  <text x="440" y="470" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" fill="#8a2c2c">cannot do the group lookup (design doc 6.1)</text>
+  <line x1="640" y1="430" x2="700" y2="430" stroke="#8a2c2c" stroke-width="2" stroke-dasharray="7 5"/>
+  <polygon points="700,430 688,424 688,436" fill="#8a2c2c"/>
+  <rect x="705" y="385" width="230" height="120" rx="10" fill="#fff" stroke="#8a2c2c" stroke-width="2" stroke-dasharray="7 5"/>
+  <text x="820" y="420" text-anchor="middle" font-family="system-ui,sans-serif" font-size="14" font-weight="700" fill="#8a2c2c">RonDB data node</text>
+  <text x="820" y="450" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">no USER has the account's name</text>
+  <text x="820" y="478" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" font-weight="650" fill="#8a2c2c">runs with no limit</text>
+</svg>
+<figcaption>Variant A (design doc section 5). The REST path is fully handled inside
+RDRS. The SQL path never passes through RDRS, so it stays outside every group.</figcaption>
+</figure>
+<h3>Why Variant A is attractive</h3>
+<ul>
+  <li>RonDB does not change at all. Only RDRS code is written.</li>
+  <li>The matching logic sits where the Hopsworks metadata already is.</li>
+</ul>
+<h3>Why Variant A is not enough</h3>
+<p>Its weakness is its location. Only traffic that passes through RDRS can be matched.
+SQL through the MySQL server goes straight to the data nodes, and the MySQL server
+cannot run this lookup itself: it tags a transaction once, before it knows which tables
+the statement will touch, and teaching it the lookup would mean rebuilding RDRS's whole
+Hopsworks-metadata cache inside <code>mysqld</code> (and a third copy in ClusterJ). So
+under Variant A, a user who connects with their database account bypasses the group
+budget entirely.</p>
+</section>
+
+<section id="variant-b">
+<h2>4. Variant B: RonDB works out the group</h2>
+<p>In Variant B, nobody at the edge needs to know about groups. Both entry points tag
+the transaction with the <strong>caller's account name</strong>, the same
+<code>Project_username</code> string the person uses to log in to MySQL. The MySQL
+server already does this today; RDRS tags the identical string. The data node then
+answers the group question itself, using small rule objects called
+<strong>aliases</strong> that the sync loop installed beforehand.</p>
+<p>An alias is a dictionary object named after one account. It has no budget of its own,
+just an ordered list of rules: on this exact table, charge that group; on this database,
+charge that group; on everything, charge that group. When a tagged request arrives, the
+data node checks the rules in that order and the first match names the
+<code>USER</code> to charge. No match means the request runs unmetered, exactly as an
+unknown name does today.</p>
+<div class="example">
+<ol>
+  <li>Alice reads <code>marketing.marketing_clicks_1</code>, through REST or through SQL.
+  Either way the transaction is tagged <code>Recommender_alice4f2</code>.</li>
+  <li>The data node sees the tag and the table together. The tag resolves to the alias
+  <code>Recommender_alice4f2</code>, installed earlier by the sync loop.</li>
+  <li>Rules in order: a rule for this exact table? none. A rule for this database? none.
+  A rule for everything? yes, it points at <code>recommender_team_rl</code>.</li>
+  <li>The transaction is charged to <code>USER recommender_team_rl</code>. Her REST reads
+  and her SQL reads land on the same meter.</li>
+</ol>
+</div>
+<figure class="erd">
+<svg viewBox="0 0 960 560" role="img" aria-label="Variant B: both entry points tag the account name; the data node resolves the tag and table through alias rules to the group USER.">
+  <rect x="0" y="0" width="960" height="560" fill="#ffffff"/>
+  <!-- REST lane -->
+  <rect x="25" y="55" width="150" height="85" rx="8" fill="#fff" stroke="#202a33" stroke-width="1.5"/>
+  <text x="100" y="90" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13.5" fill="#202a33">Alice's app</text>
+  <text x="100" y="112" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#566574">API key</text>
+  <line x1="175" y1="97" x2="235" y2="97" stroke="#202a33" stroke-width="2"/>
+  <polygon points="235,97 223,91 223,103" fill="#202a33"/>
+  <rect x="240" y="55" width="270" height="85" rx="8" fill="#edf4f4" stroke="#096b67" stroke-width="1.5"/>
+  <text x="375" y="85" text-anchor="middle" font-family="system-ui,sans-serif" font-size="14" font-weight="700" fill="#096b67">RDRS</text>
+  <text x="375" y="110" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12.5" fill="#202a33">tags the account name, no group lookup</text>
+  <!-- SQL lane -->
+  <rect x="25" y="185" width="150" height="85" rx="8" fill="#fff" stroke="#202a33" stroke-width="1.5"/>
+  <text x="100" y="220" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13.5" fill="#202a33">Alice's SQL</text>
+  <text x="100" y="242" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#566574">mysql client</text>
+  <line x1="175" y1="227" x2="235" y2="227" stroke="#202a33" stroke-width="2"/>
+  <polygon points="235,227 223,221 223,233" fill="#202a33"/>
+  <rect x="240" y="185" width="270" height="85" rx="8" fill="#edf4f4" stroke="#096b67" stroke-width="1.5"/>
+  <text x="375" y="215" text-anchor="middle" font-family="system-ui,sans-serif" font-size="14" font-weight="700" fill="#096b67">MySQL server</text>
+  <text x="375" y="240" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12.5" fill="#202a33">tags the account name, as it already does</text>
+  <!-- converge arrows -->
+  <line x1="510" y1="97" x2="575" y2="150" stroke="#202a33" stroke-width="2"/>
+  <line x1="510" y1="227" x2="575" y2="175" stroke="#202a33" stroke-width="2"/>
+  <polygon points="580,155 566,152 572,142" fill="#202a33"/>
+  <polygon points="580,170 572,182 566,172" fill="#202a33"/>
+  <text x="527" y="166" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11" fill="#566574">same tag</text>
+  <!-- data node box -->
+  <rect x="585" y="40" width="350" height="420" rx="10" fill="#fff" stroke="#202a33" stroke-width="2"/>
+  <text x="760" y="72" text-anchor="middle" font-family="system-ui,sans-serif" font-size="15" font-weight="700" fill="#202a33">RonDB data node</text>
+  <text x="760" y="96" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12.5" fill="#566574">sees the tag and the table together</text>
+  <!-- alias card -->
+  <rect x="610" y="115" width="300" height="200" rx="8" fill="#edf4f4" stroke="#096b67" stroke-width="1.5"/>
+  <text x="760" y="142" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12.5" font-weight="700" fill="#096b67">USER ALIAS Recommender_alice4f2</text>
+  <text x="760" y="162" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11.5" fill="#566574">installed earlier by the sync loop; no budget of its own</text>
+  <text x="632" y="196" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">1. rule for this exact table?  none</text>
+  <text x="632" y="226" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">2. rule for this database?  none</text>
+  <text x="632" y="256" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">3. rule for everything?  yes →</text>
+  <text x="652" y="280" font-family="ui-monospace,monospace" font-size="12.5" font-weight="700" fill="#096b67">recommender_team_rl</text>
+  <!-- arrow down -->
+  <line x1="760" y1="315" x2="760" y2="355" stroke="#202a33" stroke-width="2"/>
+  <polygon points="760,360 754,348 766,348" fill="#202a33"/>
+  <text x="787" y="342" font-family="system-ui,sans-serif" font-size="12" fill="#566574">first match wins</text>
+  <!-- user card -->
+  <rect x="640" y="365" width="240" height="70" rx="8" fill="#edf4f4" stroke="#096b67" stroke-width="1.5"/>
+  <text x="760" y="393" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12.5" fill="#202a33">USER recommender_team_rl</text>
+  <text x="760" y="417" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12.5" fill="#202a33">the group's budget is charged</text>
+  <!-- bottom note -->
+  <text x="300" y="340" font-family="system-ui,sans-serif" font-size="13" font-weight="650" fill="#096b67">One mechanism, every entry point:</text>
+  <text x="300" y="365" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">REST, SQL, and ClusterJ if it ever tags,</text>
+  <text x="300" y="390" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">all land on the same rules and the</text>
+  <text x="300" y="415" font-family="system-ui,sans-serif" font-size="13" fill="#202a33">same budget meter.</text>
+</svg>
+<figcaption>Variant B (design doc sections 6 and 7). The edges only tag who is calling.
+The data node, which is the one place that sees the caller and the table together on
+every path, picks the group by walking the alias's ordered rules.</figcaption>
+</figure>
+<h3>Why Variant B is the proposal</h3>
+<ul>
+  <li>Every entry point is covered with one mechanism. SQL needs no change at all; the
+  MySQL server keeps doing exactly what it does today.</li>
+  <li>The decision is made at the only place that always has both facts, the caller and
+  the table, at the same time.</li>
+  <li>Per request the new cost is one rule walk, and only for names that are aliases.</li>
+</ul>
+<h3>What Variant B costs</h3>
+<ul>
+  <li>RonDB gains a new dictionary object type (the alias), with its restart, backup and
+  management-command plumbing.</li>
+  <li>One alias per member account: a big deployment can carry thousands of small
+  objects. They hold no budget, so they cost the rate pool nothing, but the object count
+  needs verifying (design doc 7.5).</li>
+  <li>A change becomes live at the next sync run plus, at worst, the clients' 60-second
+  name-cache refresh.</li>
+</ul>
+</section>
+
+<section id="misconception">
+<h2>5. Does RonDB read the Hopsworks tables? No.</h2>
+<p>"RonDB resolves" can sound as if the data nodes would query the
+<code>hopsworks</code> database to find out who Alice is and which project owns a
+feature group. They never do, in either variant. The work happens at two different
+times, done by two different components:</p>
+<figure class="erd">
+<svg viewBox="0 0 960 420" role="img" aria-label="Sync time versus request time: RDRS reads Hopsworks tables and installs rules ahead of time; at request time the data node only looks at rules already in its own memory.">
+  <rect x="0" y="0" width="960" height="420" fill="#ffffff"/>
+  <!-- sync lane -->
+  <text x="30" y="42" font-family="system-ui,sans-serif" font-size="14" font-weight="700" fill="#096b67">SYNC TIME · on a timer, in RDRS</text>
+  <rect x="25" y="60" width="215" height="90" rx="8" fill="#fff" stroke="#202a33" stroke-width="1.5"/>
+  <text x="132" y="95" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13.5" fill="#202a33">Hopsworks tables</text>
+  <text x="132" y="118" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#566574">groups, members, data</text>
+  <line x1="240" y1="105" x2="300" y2="105" stroke="#096b67" stroke-width="2.5"/>
+  <polygon points="300,105 288,99 288,111" fill="#096b67"/>
+  <text x="270" y="90" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11.5" fill="#096b67">reads</text>
+  <rect x="305" y="60" width="215" height="90" rx="8" fill="#edf4f4" stroke="#096b67" stroke-width="1.5"/>
+  <text x="412" y="95" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13.5" font-weight="700" fill="#096b67">RDRS sync loop</text>
+  <text x="412" y="118" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#566574">expands rows into commands</text>
+  <line x1="520" y1="105" x2="580" y2="105" stroke="#096b67" stroke-width="2.5"/>
+  <polygon points="580,105 568,99 568,111" fill="#096b67"/>
+  <text x="550" y="90" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11.5" fill="#096b67">installs</text>
+  <rect x="585" y="60" width="350" height="90" rx="8" fill="#fff" stroke="#202a33" stroke-width="1.5"/>
+  <text x="760" y="95" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13.5" fill="#202a33">USER and alias rules, kept in the</text>
+  <text x="760" y="118" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13.5" font-weight="650" fill="#202a33">data node's own memory</text>
+  <!-- divider -->
+  <line x1="25" y1="195" x2="935" y2="195" stroke="#d7e0e5" stroke-dasharray="6 5"/>
+  <!-- request lane -->
+  <text x="30" y="232" font-family="system-ui,sans-serif" font-size="14" font-weight="700" fill="#202a33">REQUEST TIME · every request</text>
+  <rect x="25" y="250" width="215" height="90" rx="8" fill="#fff" stroke="#202a33" stroke-width="1.5"/>
+  <text x="132" y="285" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13.5" fill="#202a33">tagged request arrives</text>
+  <text x="132" y="308" text-anchor="middle" font-family="ui-monospace,monospace" font-size="11.5" fill="#566574">tag + table id</text>
+  <line x1="240" y1="295" x2="300" y2="295" stroke="#202a33" stroke-width="2.5"/>
+  <polygon points="300,295 288,289 288,301" fill="#202a33"/>
+  <rect x="305" y="250" width="320" height="90" rx="8" fill="#edf4f4" stroke="#096b67" stroke-width="1.5"/>
+  <text x="465" y="285" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13.5" fill="#202a33">data node checks the rules it</text>
+  <text x="465" y="308" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13.5" font-weight="650" fill="#202a33">already holds in memory</text>
+  <line x1="625" y1="295" x2="685" y2="295" stroke="#202a33" stroke-width="2.5"/>
+  <polygon points="685,295 673,289 673,301" fill="#202a33"/>
+  <rect x="690" y="250" width="245" height="90" rx="8" fill="#fff" stroke="#202a33" stroke-width="1.5"/>
+  <text x="812" y="285" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13.5" fill="#202a33">the matched group's</text>
+  <text x="812" y="308" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13.5" fill="#202a33">budget is charged</text>
+  <!-- forbidden arrow -->
+  <line x1="465" y1="250" x2="150" y2="160" stroke="#8a2c2c" stroke-width="2" stroke-dasharray="6 5"/>
+  <line x1="290" y1="185" x2="320" y2="218" stroke="#8a2c2c" stroke-width="3"/>
+  <line x1="320" y1="185" x2="290" y2="218" stroke="#8a2c2c" stroke-width="3"/>
+  <text x="430" y="385" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13.5" font-weight="650" fill="#8a2c2c">A data node never queries the Hopsworks tables. All Hopsworks knowledge stays in RDRS, at sync time.</text>
+</svg>
+<figcaption>Two different clocks. Reading and understanding the Hopsworks tables
+happens in RDRS, ahead of time. At request time the data node only evaluates rules it
+already holds, the same way it already treats a plain <code>USER</code>.</figcaption>
+</figure>
+<p>So "RonDB resolves" means: RonDB evaluates a few pre-installed rules. It does not
+mean RonDB understands projects, members, shares or feature groups. All of that is
+expanded away in RDRS before anything reaches the cluster, and what arrives is as plain
+as it gets: a name, a scope, and which budget to charge.</p>
+</section>
+
+<section id="compare">
+<h2>6. Side by side</h2>
+<div class="tablewrap"><table>
+  <thead><tr><th scope="col">Question</th><th scope="col">Variant A: RDRS resolves</th><th scope="col">Variant B: RonDB resolves</th></tr></thead>
+  <tbody>
+    <tr><td>Who answers "which group?"</td><td>RDRS, on every REST request</td><td>the data node, from pre-installed alias rules</td></tr>
+    <tr><td>The transaction is tagged with</td><td>the group name</td><td>the caller's account name, same as a MySQL login</td></tr>
+    <tr><td>REST covered</td><td>yes</td><td>yes</td></tr>
+    <tr><td>SQL covered</td><td>no</td><td>yes, with zero MySQL server change</td></tr>
+    <tr><td>RonDB change</td><td>none</td><td>the alias object, one rule lookup in Dbtc, new management commands</td></tr>
+    <tr><td>RDRS per-request work</td><td>two map lookups and an intersection</td><td>nothing beyond tagging the name</td></tr>
+    <tr><td>Objects on the cluster</td><td>one <code>USER</code> per group</td><td>one <code>USER</code> per group, plus one budget-free alias per member account</td></tr>
+    <tr><td>A membership change is live</td><td>at the next RDRS cache refresh</td><td>at the next sync run, plus up to 60 s of client name cache</td></tr>
+    <tr><td>Reads Hopsworks tables at request time</td><td>no (RDRS uses its existing cache)</td><td>no (the data node uses installed rules)</td></tr>
+  </tbody>
+</table></div>
+</section>
+
+<section id="proposal">
+<h2>7. Which one the design proposes</h2>
+<p>The design proposes <strong>Variant B</strong>, because a budget that a user can step
+around by opening a SQL connection is not a budget. Variant A remains interesting for
+one reason: the Hopsworks tables, the admin page and the sync loop are the same work in
+both variants, so Variant A could ship first as a REST-only stepping stone while the
+kernel alias is built. Whether to ship that intermediate step at all was an open
+decision (design doc, section 14). <strong>Decided 2026-11-13: Variant B, with no
+REST-only intermediate step.</strong> The per-request matching of section 3 above is not
+built; RDRS tags the account name from the start.</p>
+<p class="meta">For precise semantics see the design document: section 5 (Variant A's
+matching), 6.1 (why the MySQL server cannot do it), 6.2 to 6.4 (why the kernel can, and
+the full comparison), 7 (the alias object), 8 (the sync loop).</p>
+</section>
+
+<footer>
+  <p class="meta">Rate Limit Groups: The Two Variants, Explained · November 2026 ·
+  companion to <em>Hopsworks-OnlineFS-Ratelimiting-Design-v1.0.html</em> · RONDB-1158</p>
+</footer>
+</main>
+</body>
+</html>

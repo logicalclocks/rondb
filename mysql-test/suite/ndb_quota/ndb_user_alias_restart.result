@@ -1,0 +1,44 @@
+CREATE DATABASE marketing;
+CREATE TABLE marketing.clicks (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO marketing.clicks VALUES (1,0),(2,0),(3,0),(4,0),(5,0);
+CREATE USER 'mary01ab'@'%' IDENTIFIED BY 'pw';
+GRANT ALL PRIVILEGES ON marketing.* TO 'mary01ab'@'%';
+# The alias before the restart
+User alias rules for mary01ab
+aliasId = <id>
+numRules = 3
+  --table=marketing.clicks --target=clicks_rl
+  --database=marketing --target=team_rl
+  --target=team_rl
+# Cluster restart
+# The alias survived the restart with its rules in order
+User alias rules for mary01ab
+aliasId = <id>
+numRules = 3
+  --table=marketing.clicks --target=clicks_rl
+  --database=marketing --target=team_rl
+  --target=team_rl
+# The attachments were rebuilt: mary is throttled again
+mary: throttled after the restart as expected
+# USER BACKUP writes users first, then replayable alias lines
+USER SET team_rl --rate-per-sec = 100000 --max-transaction-size = 0 --max-parallel-transactions = 0 --max-parallel-complex-queries = 0
+USER SET clicks_rl --rate-per-sec = 1 --max-transaction-size = 0 --max-parallel-transactions = 0 --max-parallel-complex-queries = 0
+USER ALIAS SET mary01ab --target = clicks_rl --table = marketing.clicks
+USER ALIAS SET mary01ab --target = team_rl --database = marketing
+USER ALIAS SET mary01ab --target = team_rl
+# Drop everything, restore, and the alias is back, rules in order
+User alias rules for mary01ab
+aliasId = <id>
+numRules = 3
+  --table=marketing.clicks --target=clicks_rl
+  --database=marketing --target=team_rl
+  --target=team_rl
+User rate limits for clicks_rl
+userId = <id>
+userVersion = <id>
+RatePerSec = 1
+MaxTransactionSize = 0
+MaxParallelTransactions = 0
+DROP USER 'mary01ab'@'%';
+DROP DATABASE marketing;
+USER ALIAS restart and backup completed

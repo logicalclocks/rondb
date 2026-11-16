@@ -122,12 +122,22 @@ my @cpp_tests = ('process_setup_test',        # RONDB-1144 THP opt-out,
                  'json_parser_test',          # RONDB-1152 bodies rejected
                                               # before a document exists
                                               # (cluster-free)
+                 'rate_limit_sync_test',      # RONDB-1158 reconcile engine
+                                              # (cluster-free)
                  'probe_server_http_test',    # probe-port HTTP conformance
                                               # (cluster-free, fast)
                  'error_handling_test',       # pure error-classification tests
                  'reconnect_test',            # RONDB-1104 reconnection cycle
                  'api_key_test',
                  'feature_store_test',
+                 'rate_limit_groups_test',   # RONDB-1158 group DAL +
+                                             # expansion for the sync loop
+                 'rate_limit_sync_cluster_test', # RONDB-1158 one sync run:
+                                             # install, short-circuit,
+                                             # repair a manual drop
+                 'rate_limit_sync_fleet_test', # RONDB-1158 ten concurrent
+                                             # loops, save mid-run,
+                                             # conservative deletes
                  'probe_server_cluster_test'  # probe-port startup contract +
                                               # /health under contention
                 );

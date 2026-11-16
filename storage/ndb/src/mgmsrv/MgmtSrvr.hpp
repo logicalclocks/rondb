@@ -618,6 +618,19 @@ private:
   void list_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out);
   void backup_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out);
 
+  /* USER ALIAS commands (RONDB-1158) */
+  int set_user_alias(const char *alias_name, Uint32 scope_type,
+                     const char *scope_name, const char *target_name,
+                     NdbOut& out);
+  int drop_user_alias(const char *alias_name, bool whole_alias,
+                      Uint32 scope_type, const char *scope_name, NdbOut& out);
+  void get_user_alias(const char *alias_name, NdbOut& out);
+  void list_user_aliases(Uint32 nextAliasId, NdbOut& out);
+  void backup_user_aliases(Uint32 nextAliasId, NdbOut& out);
+  int alias_schema_op(Uint32 req_gsn, const char *alias_name,
+                      Uint32 rule_cmd, const Uint32 *rule_blob,
+                      Uint32 rule_blob_bytes);
+
   void release_local_nodeid_reservation(NodeId nodeid);
   void release_failed_nodeid_reservation(NodeId nodeid);
   struct PossibleNode {

@@ -1,0 +1,177 @@
+--source include/have_ndb.inc
+
+# RONDB-1158: full lifecycle of USER ALIAS objects through ndb_mgm.
+#
+# An alias is a user-kind object with no budget of its own and an ordered
+# rule list (scope -> target user). This exercises the whole management
+# surface and the Dbdict semantics behind it:
+#   - SET with a table scope, a database scope and no scope (matches all),
+#     creating the alias on first SET and adding rules after that
+#   - idempotency: repeating a SET with the same scope and target is a no-op
+#   - refusals: same scope with another target (1247), missing target user
+#     (1246), a '$'-prefixed target, the 32-rule cap (1248)
+#   - kind separation: USER commands do not see aliases and USER ALIAS
+#     commands do not see users, although they share the name space
+#   - GET/LIST print the rules in insertion order; USER LIST excludes
+#     aliases and USER ALIAS LIST excludes users
+#   - scoped DROP removes one rule (absent rule is a no-op), plain DROP
+#     removes the whole alias
+#
+# Object ids vary between runs, so every id is masked; the mgm connection
+# banner is masked too. Rule rows and error texts are asserted verbatim.
+
+--echo # Target users must exist before aliases reference them
+--disable_result_log
+--exec $NDB_MGM -e "USER SET team_rl --rate-per-sec=100000"
+--exec $NDB_MGM -e "USER SET clicks_rl --rate-per-sec=50000"
+--enable_result_log
+
+--echo # SET: all three scope kinds, alias created on first SET
+--disable_result_log
+--exec $NDB_MGM -e "USER ALIAS SET alice4f2 --target=team_rl"
+--exec $NDB_MGM -e "USER ALIAS SET mary01ab --target=clicks_rl --table=marketing.clicks_1"
+--exec $NDB_MGM -e "USER ALIAS SET mary01ab --target=team_rl --database=marketing"
+--exec $NDB_MGM -e "USER ALIAS SET mary01ab --target=team_rl"
+--enable_result_log
+
+--echo # Repeating a SET with the same scope and target is a no-op
+--disable_result_log
+--exec $NDB_MGM -e "USER ALIAS SET mary01ab --target=clicks_rl --table=marketing.clicks_1"
+--enable_result_log
+
+--echo # GET shows the rules in insertion order
+--replace_regex /at: [^ ]+/at: <addr>/ /aliasId = [0-9]+/aliasId = <id>/
+--exec $NDB_MGM -e "USER ALIAS GET mary01ab"
+
+--echo # A second SET on an existing scope with another target is refused
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET mary01ab --target=team_rl --table=marketing.clicks_1"
+
+--echo # A missing target user is refused
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET bob77 --target=no_such_rl"
+
+--echo # A '$'-prefixed target is refused
+# mysqltest passes the backslash through verbatim (it only suppresses its
+# own $-interpolation), so the shell sees \$ inside the double quotes and
+# ndb_mgm the literal "$team_rl": the kernel's leading-$ validation refuses
+# it with 703, not the missing-target lookup.
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET bob77 --target=\$team_rl"
+
+--echo # The refused SETs created nothing
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS GET bob77"
+
+--echo # Kind separation: USER commands do not see aliases
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER GET mary01ab"
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER DROP mary01ab"
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER ALTER mary01ab --rate-per-sec=1"
+
+--echo # Kind separation: USER ALIAS commands do not see users
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS GET team_rl"
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS DROP team_rl"
+
+--echo # A USER SET on an existing alias name is refused (name space shared)
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER SET mary01ab --rate-per-sec=1"
+
+--echo # A USER ALIAS SET on an existing plain user name is refused
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET team_rl --target=clicks_rl"
+
+--echo # USER LIST shows the users and not the aliases
+--replace_regex /at: [^ ]+/at: <addr>/ /userId = [0-9]+/userId = <id>/ /userVersion = [0-9]+/userVersion = <id>/
+--exec $NDB_MGM -e "USER LIST"
+
+--echo # USER ALIAS LIST shows the aliases and not the users
+--replace_regex /at: [^ ]+/at: <addr>/ /aliasId = [0-9]+/aliasId = <id>/
+--exec $NDB_MGM -e "USER ALIAS LIST"
+
+--echo # Scoped DROP removes one rule; dropping it again is a no-op
+--disable_result_log
+--exec $NDB_MGM -e "USER ALIAS DROP mary01ab --database=marketing"
+--exec $NDB_MGM -e "USER ALIAS DROP mary01ab --database=marketing"
+--exec $NDB_MGM -e "USER ALIAS DROP mary01ab --all"
+--enable_result_log
+--replace_regex /at: [^ ]+/at: <addr>/ /aliasId = [0-9]+/aliasId = <id>/
+--exec $NDB_MGM -e "USER ALIAS GET mary01ab"
+
+--echo # Client-side option validation
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET bob77 --table=a.b"
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET bob77 --target=team_rl --table=a.b --database=c"
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS DROP mary01ab --all --table=a.b"
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS DROP mary01ab --target=team_rl"
+
+--echo # A table scope needs the db.table form
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET bob77 --target=team_rl --table=no_dot"
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET bob77 --target=team_rl --database=has.dot"
+
+--echo # The 32-rule cap: rule 33 is refused
+--disable_result_log
+--disable_query_log
+let $i = 1;
+while ($i <= 31)
+{
+  --exec $NDB_MGM -e "USER ALIAS SET cap_test --target=team_rl --database=capdb$i"
+  inc $i;
+}
+# Rule 32 fills the alias (31 database rules + this all rule).
+--exec $NDB_MGM -e "USER ALIAS SET cap_test --target=team_rl"
+--enable_query_log
+--enable_result_log
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET cap_test --target=team_rl --database=capdb_overflow"
+
+--echo # Whole-alias DROP removes it entirely
+--disable_result_log
+--exec $NDB_MGM -e "USER ALIAS DROP cap_test"
+--exec $NDB_MGM -e "USER ALIAS DROP mary01ab"
+--exec $NDB_MGM -e "USER ALIAS DROP alice4f2"
+--enable_result_log
+--replace_regex /at: [^ ]+/at: <addr>/
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS GET alice4f2"
+
+--echo # A target in use by no alias can be dropped; cleanup
+--disable_result_log
+--exec $NDB_MGM -e "USER DROP team_rl"
+--exec $NDB_MGM -e "USER DROP clicks_rl"
+--enable_result_log
+
+--echo # Nothing of either kind is left
+--replace_regex /at: [^ ]+/at: <addr>/
+--exec $NDB_MGM -e "USER LIST"
+--replace_regex /at: [^ ]+/at: <addr>/
+--exec $NDB_MGM -e "USER ALIAS LIST"
+
+--echo USER ALIAS lifecycle completed

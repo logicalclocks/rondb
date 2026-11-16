@@ -492,7 +492,8 @@ Dbtc::Dbtc(Block_context& ctx, Uint32 instanceNo):
   c_fk_hash(c_fk_pool),
   c_currentApiConTimers(NULL),
   m_commitAckMarkerHash(m_commitAckMarkerPool),
-  m_databaseRecordHash(m_databaseRecordPool)
+  m_databaseRecordHash(m_databaseRecordPool),
+  m_aliasRuleRecordHash(m_aliasRuleRecordPool)
 {
   BLOCK_CONSTRUCTOR(Dbtc);
 

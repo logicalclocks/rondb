@@ -1,0 +1,4 @@
+node_modules/
+.npmcache/
+blocks*.json
+*.docx

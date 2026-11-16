@@ -33,7 +33,7 @@
 
 struct AlterDbReq
 {
-  static constexpr Uint32 SignalLength = 12;
+  static constexpr Uint32 SignalLength = 14;
   static constexpr Uint32 SignalLengthLQH = 9;
 
   Uint32 senderRef;
@@ -48,6 +48,9 @@ struct AlterDbReq
   Uint32 maxTransactionSize;
   Uint32 maxParallelTransactions;
   Uint32 maxParallelComplexQueries;
+  /* USER ALIAS (RONDB-1158), TC only; see CreateDbReq. */
+  Uint32 isAlias;
+  Uint32 aliasAllTargetId;
 
   friend bool printALTER_DATABASE_REQ(FILE *, const Uint32 *, Uint32, Uint16);
 };

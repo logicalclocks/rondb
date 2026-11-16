@@ -154,6 +154,27 @@ const ParserRow<MgmApiSession> commands[] = {
     MGM_CMD("backup user", &MgmApiSession::backupUsers, "", &Basic),
     MGM_ARG("nextUserId", Int, Mandatory, "next User Id"),
 
+    MGM_CMD("set user alias", &MgmApiSession::setUserAlias, "", &Basic),
+    MGM_ARG("aliasname", String, Mandatory, "Alias name"),
+    MGM_ARG("target", String, Mandatory, "Target user name"),
+    MGM_ARG("scopetype", Int, Mandatory, "0 table, 1 database, 2 all"),
+    MGM_ARG("scopename", String, Optional, "db.table or database name"),
+
+    MGM_CMD("drop user alias", &MgmApiSession::dropUserAlias, "", &Basic),
+    MGM_ARG("aliasname", String, Mandatory, "Alias name"),
+    MGM_ARG("scopetype", Int, Optional, "0 table, 1 database, 2 all"),
+    MGM_ARG("scopename", String, Optional, "db.table or database name"),
+
+    MGM_CMD("get user alias", &MgmApiSession::getUserAlias, "", &Basic),
+    MGM_ARG("aliasname", String, Mandatory, "Alias name"),
+
+    MGM_CMD("list user alias", &MgmApiSession::listUserAliases, "", &Basic),
+    MGM_ARG("nextAliasId", Int, Mandatory, "next Alias Id"),
+
+    MGM_CMD("backup user alias", &MgmApiSession::backupUserAliases, "",
+            &Basic),
+    MGM_ARG("nextAliasId", Int, Mandatory, "next Alias Id"),
+
     MGM_CMD("set quotas", &MgmApiSession::setQuotas, "", &Basic),
     MGM_ARG("database", String, Mandatory, "Database name"),
     MGM_ARG("in_memory_size", Int, Mandatory, "Max in-memory size"),
@@ -1153,6 +1174,100 @@ MgmApiSession::backupUsers(Parser_t::Context &,
   m_output->println("backup user reply");
   NdbOut socket_out(*m_output);
   m_mgmsrv.backup_quotas(nextUserId, true, socket_out);
+}
+
+void
+MgmApiSession::setUserAlias(Parser_t::Context &,
+                            const class Properties &args) {
+  const char *alias_name = nullptr;
+  const char *target = nullptr;
+  const char *scope_name = nullptr;
+  Uint32 scope_type = 0;
+
+  args.get("aliasname", &alias_name);
+  args.get("target", &target);
+  args.get("scopetype", &scope_type);
+  args.get("scopename", &scope_name);
+
+  g_eventLogger->info("MgmApiSession::setUserAlias");
+  int error_code;
+  NdbOut socket_out(*m_output);
+  if ((error_code = m_mgmsrv.set_user_alias(alias_name, scope_type,
+                                            scope_name, target,
+                                            socket_out))) {
+    if (error_code == -1) return;
+    m_output->println("set user alias reply");
+    m_output->println("result: %s", "Set User Alias failed");
+    m_output->println("error_code: %d", error_code);
+    m_output->println("%s", "");
+    return;
+  }
+
+  m_output->println("set user alias reply");
+  m_output->println("result: Ok");
+  m_output->println("%s", "");
+}
+
+void
+MgmApiSession::dropUserAlias(Parser_t::Context &,
+                             const class Properties &args) {
+  const char *alias_name = nullptr;
+  const char *scope_name = nullptr;
+  Uint32 scope_type = 0;
+
+  args.get("aliasname", &alias_name);
+  /* No scopetype argument means the whole alias is dropped. */
+  bool whole_alias = !args.get("scopetype", &scope_type);
+  args.get("scopename", &scope_name);
+
+  g_eventLogger->info("MgmApiSession::dropUserAlias");
+  int error_code;
+  NdbOut socket_out(*m_output);
+  if ((error_code = m_mgmsrv.drop_user_alias(alias_name, whole_alias,
+                                             scope_type, scope_name,
+                                             socket_out))) {
+    if (error_code == -1) return;
+    m_output->println("drop user alias reply");
+    m_output->println("result: %s", "Drop User Alias failed");
+    m_output->println("error_code: %d", error_code);
+    m_output->println("%s", "");
+    return;
+  }
+
+  m_output->println("drop user alias reply");
+  m_output->println("result: Ok");
+  m_output->println("%s", "");
+}
+
+void
+MgmApiSession::getUserAlias(Parser_t::Context &,
+                            const class Properties &args) {
+  const char *alias_name = nullptr;
+  args.get("aliasname", &alias_name);
+
+  m_output->println("get user alias reply");
+  NdbOut socket_out(*m_output);
+  m_mgmsrv.get_user_alias(alias_name, socket_out);
+}
+
+void
+MgmApiSession::listUserAliases(Parser_t::Context &,
+                               const class Properties &args) {
+  Uint32 nextAliasId = 0;
+  args.get("nextAliasId", &nextAliasId);
+  m_output->println("list user alias reply");
+  NdbOut socket_out(*m_output);
+  m_mgmsrv.list_user_aliases(nextAliasId, socket_out);
+}
+
+void
+MgmApiSession::backupUserAliases(Parser_t::Context &,
+                                 const class Properties &args) {
+  Uint32 nextAliasId = 0;
+  args.get("nextAliasId", &nextAliasId);
+  m_output->println("backup user alias reply");
+  NdbOut socket_out(*m_output);
+  m_mgmsrv.backup_user_aliases(nextAliasId, socket_out);
 }
 
 void MgmApiSession::getConfig_v1(Parser_t::Context &ctx,

@@ -298,6 +298,15 @@ var V82 string
 //go:embed fixed/hopsworks-ddl/V83-HWORKS-2878-google_sheets_connector.sql
 var V83 string
 
+//go:embed fixed/hopsworks-ddl/V84-RONDB-1158-rate_limit_groups.sql
+var V84 string
+
+// Rate limit group fixture (RONDB-1158): groups, Who/What rows and the
+// version counter the C++ expansion tests assert against. Self-contained
+// users/projects; loaded after HopsworksData.
+//go:embed fixed/hopsworks-data/rate_limit_groups_data.sql
+var RateLimitGroupsData string
+
 var HopsworksScheme string = HopsworksSchema +
 	V5 + V6 + V7 + V8 + V9 + V10 +
 	V11 + V12 + V13 + V14 + V15 + V16 + V17 + V18 + V19 + V20 +
@@ -307,9 +316,10 @@ var HopsworksScheme string = HopsworksSchema +
 	V51 + V52 + V53 + V54 + V55 + V56 + V57 + V58 + V59 + V60 +
 	V61 + V62 + V63 + V64 + V65 + V66 + V67 + V68 + V69 + V70 +
 	V71 + V72 + V73 + V74 + V75 + V76 + V77 + V78 + V79 + V80 +
-	V81 + V82 + V83 +
+	V81 + V82 + V83 + V84 +
 	HopsworksData +
-	FineGrainedSharingData
+	FineGrainedSharingData +
+	RateLimitGroupsData
 
 const HOPSWORKS_DB_NAME = "hopsworks"
 

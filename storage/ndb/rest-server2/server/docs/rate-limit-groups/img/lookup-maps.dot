@@ -1,0 +1,47 @@
+digraph maps {
+  rankdir=LR;
+  graph [fontname="Helvetica", fontsize=11, pad=0.3, nodesep=0.8, ranksep=1.0, bgcolor="white"];
+  node  [shape=plaintext, fontname="Helvetica", fontsize=11];
+  edge  [fontname="Helvetica", fontsize=9, color="#096b67", arrowsize=0.7, penwidth=1.1];
+
+  person [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#8aa5a3">
+ <TR><TD COLSPAN="3" BGCOLOR="#096b67"><FONT COLOR="white"><B>person → buckets</B> (in RDRS memory)</FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4"><B>uid</B></TD><TD BGCOLOR="#edf4f4"><B>buckets</B></TD><TD BORDER="0" BGCOLOR="white" ALIGN="LEFT"><FONT COLOR="#566574"><I>because</I></FONT><BR ALIGN="LEFT"/><FONT POINT-SIZE="8" COLOR="#8a97a0"><I>not a column, explanation only</I></FONT></TD></TR>
+ <TR><TD>1001 Mary</TD><TD>{2}</TD><TD BORDER="0" ALIGN="LEFT"><FONT COLOR="#566574"><I>own row in bucket 2</I></FONT></TD></TR>
+ <TR><TD>1002 Mike</TD><TD>{2}</TD><TD BORDER="0" ALIGN="LEFT"><FONT COLOR="#566574"><I>own row in bucket 2</I></FONT></TD></TR>
+ <TR><TD>1003 Sam</TD><TD>{}</TD><TD BORDER="0" ALIGN="LEFT"><FONT COLOR="#566574"><I>—</I></FONT></TD></TR>
+ <TR><TD PORT="alice">1004 Alice</TD><TD>{1}</TD><TD BORDER="0" ALIGN="LEFT"><FONT COLOR="#566574"><I>project 13 is in bucket 1</I></FONT></TD></TR>
+ <TR><TD>1005 Ava</TD><TD>{1}</TD><TD BORDER="0" ALIGN="LEFT"><FONT COLOR="#566574"><I>project 13 is in bucket 1</I></FONT></TD></TR>
+ <TR><TD>1006 Rosa</TD><TD>{3}</TD><TD BORDER="0" ALIGN="LEFT"><FONT COLOR="#566574"><I>project 14 is in bucket 3</I></FONT></TD></TR>
+ <TR><TD COLSPAN="3" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#566574">project rows expanded through project_team</FONT></TD></TR>
+</TABLE>>];
+
+  data [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#8aa5a3">
+ <TR><TD COLSPAN="3" BGCOLOR="#096b67"><FONT COLOR="white"><B>data → buckets</B> (in RDRS memory)</FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4"><B>level</B></TD><TD BGCOLOR="#edf4f4"><B>key</B></TD><TD BGCOLOR="#edf4f4"><B>buckets</B></TD></TR>
+ <TR><TD>1. feature group</TD><TD>31 marketing_clicks</TD><TD>{2}</TD></TR>
+ <TR><TD>2. feature store</TD><TD>21 marketing</TD><TD>{3}</TD></TR>
+ <TR><TD PORT="all">3. all data</TD><TD>(any)</TD><TD>{1}</TD></TR>
+ <TR><TD COLSPAN="3" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#566574">checked most specific first</FONT></TD></TR>
+</TABLE>>];
+
+  req [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#fff7e7" ALIGN="LEFT"><B>Alice's request</B><BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="9">POST /0.1.0/marketing/marketing_clicks_1/pk-read<BR ALIGN="LEFT"/>X-API-KEY: Qk3mZx8pL2vN7bRt.…</FONT><BR ALIGN="LEFT"/></TD></TR>
+ <TR><TD ALIGN="LEFT">key prefix → user 1004<BR ALIGN="LEFT"/>database → store 21, table → feature group 31<BR ALIGN="LEFT"/></TD></TR>
+</TABLE>>];
+
+  result [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><B>intersection, by level</B><BR ALIGN="LEFT"/>feature group: {2} ∩ {1} = {}<BR ALIGN="LEFT"/>feature store: {3} ∩ {1} = {}<BR ALIGN="LEFT"/>all data: {1} ∩ {1} = <B>{1}</B><BR ALIGN="LEFT"/></TD></TR>
+ <TR><TD ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="10">setUserId("recommender")</FONT></TD></TR>
+</TABLE>>];
+
+  req -> person:alice:w [label="uid 1004"];
+  req -> data [label="fg 31, store 21"];
+  person -> result;
+  data -> result;
+  { rank=same; person; data; }
+}

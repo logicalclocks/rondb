@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1060" viewBox="0 0 1800 1060" font-family="Helvetica, Arial, sans-serif" font-size="15">
+  <defs>
+    <style>
+      .h { fill:#202a33; font-weight:700; }
+      .t { fill:#202a33; }
+      .m { fill:#566574; font-size:13px; }
+      .c { fill:#566574; font-size:13px; font-family: Menlo, Consolas, monospace; }
+      .mono { font-family: Menlo, Consolas, monospace; font-size:14px; fill:#202a33; }
+      .white { fill:#fff; }
+      .teal { fill:#096b67; }
+      .chip { fill:#edf4f4; stroke:#8aa5a3; }
+      .box { fill:#fff; stroke:#b9c7cc; }
+      .input { fill:#fff; stroke:#8aa5a3; }
+      .panel { fill:#fff; stroke:#d7e0e5; }
+      .ok { fill:#1d7a3a; font-size:13px; }
+      .pend { fill:#b67a12; font-size:13px; }
+      .call { stroke:#566574; stroke-dasharray:4 4; fill:none; }
+    </style>
+  </defs>
+  <rect width="1800" height="1060" fill="#f7f8fa"/>
+
+  <!-- top bar -->
+  <rect x="0" y="0" width="1800" height="54" fill="#096b67"/>
+  <text x="28" y="34" class="white" font-size="17" font-weight="700">Hopsworks</text>
+  <text x="140" y="34" class="white" font-size="15" opacity="0.85">Admin  ›  Rate limit groups</text>
+
+  <!-- LEFT: group list -->
+  <rect x="28" y="84" width="770" height="590" rx="8" class="panel"/>
+  <text x="52" y="122" class="h" font-size="19">Rate limit groups</text>
+  <rect x="650" y="100" width="124" height="34" rx="6" class="teal"/>
+  <text x="712" y="123" class="white" text-anchor="middle" font-weight="700">+ New group</text>
+
+  <!-- list header -->
+  <rect x="52" y="150" width="722" height="34" fill="#edf4f4"/>
+  <text x="64" y="173" class="h">Name</text>
+  <text x="296" y="173" class="h">Budget</text>
+  <text x="356" y="173" class="h">Who</text>
+  <text x="560" y="173" class="h">What</text>
+  <text x="690" y="173" class="h">Cluster</text>
+  <line x1="52" y1="184" x2="774" y2="184" stroke="#d7e0e5"/>
+
+  <!-- row 1 -->
+  <text x="64" y="213" class="mono">recommender_team_rl</text>
+  <text x="296" y="213" class="t">20%</text>
+  <text x="356" y="213" class="t" font-size="13">Project Recommender</text>
+  <text x="560" y="213" class="t" font-size="13" font-style="italic">All accessible data</text>
+  <text x="690" y="213" class="ok">● installed</text>
+  <line x1="52" y1="228" x2="774" y2="228" stroke="#e6ecef"/>
+  <!-- row 2 -->
+  <text x="64" y="258" class="mono">marketing_clicks_rl</text>
+  <text x="296" y="258" class="t">2%</text>
+  <text x="356" y="258" class="t" font-size="13">Mary, Mike</text>
+  <text x="560" y="258" class="t" font-size="13">FG marketing_clicks</text>
+  <text x="690" y="258" class="ok">● installed</text>
+  <line x1="52" y1="273" x2="774" y2="273" stroke="#e6ecef"/>
+  <!-- row 3 (selected) -->
+  <rect x="52" y="276" width="722" height="44" fill="#edf4f4"/>
+  <rect x="52" y="276" width="4" height="44" fill="#096b67"/>
+  <text x="64" y="303" class="mono" font-weight="700">recommender2_marketing_rl</text>
+  <text x="296" y="303" class="t">5%</text>
+  <text x="356" y="303" class="t" font-size="13">Project Recommender2</text>
+  <text x="560" y="303" class="t" font-size="13">FS marketing</text>
+  <text x="690" y="303" class="pend">● pending</text>
+  <line x1="52" y1="320" x2="774" y2="320" stroke="#e6ecef"/>
+
+  <!-- allocation summary -->
+  <text x="52" y="372" class="h">Allocated on this cluster</text>
+  <rect x="52" y="384" width="722" height="14" rx="7" fill="#e6ecef"/>
+  <rect x="52" y="384" width="390" height="14" rx="7" fill="#096b67"/>
+  <text x="52" y="420" class="m">27% of the 50% RonDB allows for configured limits (20 + 2 + 5). 23% remains.</text>
+
+  <!-- legend -->
+  <text x="52" y="470" class="h">Cluster column</text>
+  <text x="52" y="496" class="ok">● installed</text><text x="150" y="496" class="m">RDRS has run USER SET for this name; the limit is live.</text>
+  <text x="52" y="520" class="pend">● pending</text><text x="150" y="520" class="m">Saved in Hopsworks; RDRS has not installed it yet. Traffic runs unlimited until it does.</text>
+  <text x="52" y="544" fill="#b3261e" font-size="13">● refused</text><text x="150" y="544" class="m">RonDB rejected USER SET (the 50% cap is full). Lower another budget.</text>
+  <text x="52" y="568" class="m" font-style="italic">○ inert</text><text x="150" y="568" class="m">SELECTED group with no data rows left (its feature group was deleted). Matches nothing.</text>
+
+  <!-- RIGHT: edit form -->
+  <rect x="826" y="84" width="600" height="940" rx="8" class="panel"/>
+  <text x="850" y="122" class="h" font-size="19">Edit rate limit group</text>
+
+  <!-- Name -->
+  <text x="850" y="170" class="h">Name</text>
+  <text x="850" y="190" class="m">The RonDB identity. Cannot be changed after saving.</text>
+  <rect x="850" y="200" width="552" height="40" rx="6" fill="#f1f3f5" stroke="#d7e0e5"/>
+  <text x="864" y="226" class="mono" fill="#566574">recommender2_marketing_rl</text>
+
+  <!-- Budget -->
+  <text x="850" y="282" class="h">Budget</text>
+  <text x="850" y="302" class="m">Percent of the cluster's database-work capacity. 1 to 50.</text>
+  <rect x="850" y="312" width="110" height="40" rx="6" class="input"/>
+  <text x="864" y="338" class="t">5</text>
+  <text x="970" y="338" class="t">%</text>
+  <text x="1000" y="338" class="m">≈ 1,000,000 rate-per-sec on 20-thread data nodes</text>
+
+  <!-- Who -->
+  <text x="850" y="394" class="h">Who shares this budget</text>
+  <text x="850" y="414" class="m">Login users and/or whole projects. A project means its current members.</text>
+  <rect x="850" y="424" width="552" height="52" rx="6" class="input"/>
+  <rect x="860" y="434" width="236" height="32" rx="16" class="chip"/>
+  <text x="876" y="455" class="t">Project · Recommender2</text>
+  <text x="1082" y="456" class="m">×</text>
+  <text x="1110" y="455" class="m">+ add user or project</text>
+
+  <!-- What -->
+  <text x="850" y="520" class="h">What data it applies to</text>
+  <circle cx="860" cy="548" r="8" fill="#fff" stroke="#8aa5a3"/>
+  <text x="878" y="553" class="t">All accessible data</text>
+  <text x="878" y="572" class="m">Whatever the members read, including other projects' shared data.</text>
+  <circle cx="860" cy="604" r="8" fill="#fff" stroke="#096b67" stroke-width="2"/>
+  <circle cx="860" cy="604" r="4" fill="#096b67"/>
+  <text x="878" y="609" class="t">Selected data only</text>
+  <rect x="878" y="622" width="524" height="52" rx="6" class="input"/>
+  <rect x="888" y="632" width="300" height="32" rx="16" class="chip"/>
+  <text x="904" y="653" class="t">Feature store · marketing</text>
+  <text x="1174" y="654" class="m">×</text>
+  <text x="1200" y="653" class="m">+ add feature group or store</text>
+
+  <!-- preview -->
+  <rect x="850" y="712" width="552" height="74" rx="6" fill="#edf4f4"/>
+  <rect x="850" y="712" width="4" height="74" fill="#096b67"/>
+  <text x="866" y="738" class="h">Read it as a sentence</text>
+  <text x="866" y="762" class="t">Members of Recommender2 (today: Rosa) share a 5% budget</text>
+  <text x="866" y="780" class="t">when they read any feature group in marketing.</text>
+
+  <!-- status -->
+  <text x="850" y="826" class="h">Status</text>
+  <text x="850" y="850" class="pend">● pending</text>
+  <text x="934" y="850" class="m">saved 12 s ago; RDRS installs on its next sync.</text>
+  <text x="850" y="874" class="m">Does not grant access. Rosa must already be allowed to read Marketing's data.</text>
+
+  <!-- buttons -->
+  <rect x="1206" y="950" width="90" height="38" rx="6" fill="#fff" stroke="#8aa5a3"/>
+  <text x="1251" y="975" class="t" text-anchor="middle">Cancel</text>
+  <rect x="1312" y="950" width="90" height="38" rx="6" class="teal"/>
+  <text x="1357" y="975" class="white" text-anchor="middle" font-weight="700">Save</text>
+
+  <!-- CALLOUTS: what each field writes -->
+  <text x="1454" y="122" class="h" font-size="15">Writes to</text>
+  <line x1="1402" y1="220" x2="1454" y2="220" class="call"/>
+  <text x="1462" y="216" class="c">rate_limit_group</text>
+  <text x="1462" y="234" class="c">  .name = 'recommender2_marketing_rl'</text>
+
+  <line x1="1402" y1="332" x2="1454" y2="332" class="call"/>
+  <text x="1462" y="328" class="c">rate_limit_group</text>
+  <text x="1462" y="346" class="c">  .budget_percent = 5.00</text>
+
+  <line x1="1402" y1="450" x2="1454" y2="450" class="call"/>
+  <text x="1462" y="446" class="c">rate_limit_group_user</text>
+  <text x="1462" y="464" class="c">  (uid NULL, project_id 14)</text>
+
+  <line x1="1402" y1="604" x2="1454" y2="604" class="call"/>
+  <text x="1462" y="600" class="c">rate_limit_group</text>
+  <text x="1462" y="618" class="c">  .data_scope = 'SELECTED'</text>
+
+  <line x1="1402" y1="648" x2="1454" y2="648" class="call"/>
+  <text x="1462" y="662" class="c">rate_limit_group_data</text>
+  <text x="1462" y="680" class="c">  (feature_group_id NULL,</text>
+  <text x="1462" y="698" class="c">   feature_store_id 21)</text>
+
+  <line x1="1402" y1="850" x2="1454" y2="850" class="call"/>
+  <text x="1462" y="846" class="c">read back from RDRS:</text>
+  <text x="1462" y="864" class="c">  USER LIST on the cluster</text>
+</svg>

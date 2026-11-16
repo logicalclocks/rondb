@@ -1,0 +1,42 @@
+digraph multicluster {
+  rankdir=TB;
+  graph [fontname="Helvetica", fontsize=11, pad=0.3, nodesep=0.7, ranksep=0.9, bgcolor="white"];
+  node  [shape=plaintext, fontname="Helvetica", fontsize=11];
+  edge  [fontname="Helvetica", fontsize=9, color="#566574", arrowsize=0.7, penwidth=1.1];
+
+  hw [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="8" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>Hopsworks</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5">one set of group tables, no cluster column</TD></TR>
+</TABLE>>];
+
+  subgraph cluster_M {
+    label=<<B>Cluster M</B> (Marketing's data)>; fontcolor="#566574"; color="#8aa5a3"; style="rounded"; margin=16;
+    m [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#096b67">
+ <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>installs</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="10">recommender_marketing_rl  20%</FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="10">recommender2_marketing_rl 30%</FONT></TD></TR>
+</TABLE>>];
+  }
+  subgraph cluster_S {
+    label=<<B>Cluster S</B> (Sales' data)>; fontcolor="#566574"; color="#8aa5a3"; style="rounded"; margin=16;
+    s [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#096b67">
+ <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>installs</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="10">recommender_sales_rl      20%</FONT></TD></TR>
+</TABLE>>];
+  }
+  subgraph cluster_R {
+    label=<<B>Cluster R</B> (Recommender's data)>; fontcolor="#566574"; color="#8aa5a3"; style="rounded"; margin=16;
+    r [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#096b67">
+ <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>installs</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><FONT POINT-SIZE="10" COLOR="#566574"><I>(none: no group names its data)</I></FONT></TD></TR>
+</TABLE>>];
+  }
+
+  hw -> m [label="each cluster installs only\nthe groups whose data it holds"];
+  hw -> s;
+  hw -> r;
+}

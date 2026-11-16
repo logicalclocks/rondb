@@ -1,0 +1,109 @@
+--source include/have_ndb.inc
+
+# RONDB-1158: aliases and their rules survive a cluster restart (the rule
+# list lives in the packed schema-file properties and the restart create
+# walk rebuilds the DBTC attachments for existing tables), and the
+# USER BACKUP / USER RESTORE pair round-trips aliases as replayable
+# "USER ALIAS SET" lines after the user lines, so targets exist before the
+# rules that reference them.
+#
+# As in ndb_user_alias_lifecycle.test, ids are masked and the rule rows
+# and error texts are asserted verbatim.
+
+CREATE DATABASE marketing;
+CREATE TABLE marketing.clicks (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO marketing.clicks VALUES (1,0),(2,0),(3,0),(4,0),(5,0);
+
+CREATE USER 'mary01ab'@'%' IDENTIFIED BY 'pw';
+GRANT ALL PRIVILEGES ON marketing.* TO 'mary01ab'@'%';
+
+--disable_result_log
+--exec $NDB_MGM -e "USER SET team_rl --rate-per-sec=100000"
+--exec $NDB_MGM -e "USER SET clicks_rl --rate-per-sec=1"
+--exec $NDB_MGM -e "USER ALIAS SET mary01ab --target=clicks_rl --table=marketing.clicks"
+--exec $NDB_MGM -e "USER ALIAS SET mary01ab --target=team_rl --database=marketing"
+--exec $NDB_MGM -e "USER ALIAS SET mary01ab --target=team_rl"
+--enable_result_log
+
+--echo # The alias before the restart
+--replace_regex /at: [^ ]+/at: <addr>/ /aliasId = [0-9]+/aliasId = <id>/
+--exec $NDB_MGM -e "USER ALIAS GET mary01ab"
+
+--echo # Cluster restart
+--disable_result_log
+--exec $NDB_MGM -e "ALL RESTART -N"
+--exec $NDB_WAITER --not-started
+--exec $NDB_MGM -e "ALL START"
+--exec $NDB_WAITER
+# The SQL below needs mysqld's binlog/schema setup reconnected, not just
+# the data nodes started.
+--disable_query_log
+--source include/ndb_not_readonly.inc
+--enable_query_log
+--enable_result_log
+
+--echo # The alias survived the restart with its rules in order
+--replace_regex /at: [^ ]+/at: <addr>/ /aliasId = [0-9]+/aliasId = <id>/
+--exec $NDB_MGM -e "USER ALIAS GET mary01ab"
+
+--echo # The attachments were rebuilt: mary is throttled again
+connect (mary, 127.0.0.1, mary01ab, pw, marketing, $MASTER_MYPORT);
+connection mary;
+--disable_query_log
+--disable_result_log
+let $throttled = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a, b FROM marketing.clicks;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $throttled;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($throttled)
+{
+  --echo mary: throttled after the restart as expected
+}
+if (!$throttled)
+{
+  --echo mary: NOT THROTTLED - the restart lost the attachments
+}
+connection default;
+disconnect mary;
+
+--echo # USER BACKUP writes users first, then replayable alias lines
+--disable_result_log
+--exec $NDB_MGM -e "USER BACKUP $MYSQLTEST_VARDIR/tmp/alias_backup.txt"
+--enable_result_log
+--replace_regex /at: [^ ]+/at: <addr>/
+--exec grep "^USER" $MYSQLTEST_VARDIR/tmp/alias_backup.txt
+
+--echo # Drop everything, restore, and the alias is back, rules in order
+--disable_result_log
+--exec $NDB_MGM -e "USER ALIAS DROP mary01ab"
+--exec $NDB_MGM -e "USER DROP team_rl"
+--exec $NDB_MGM -e "USER DROP clicks_rl"
+--exec $NDB_MGM -e "USER RESTORE $MYSQLTEST_VARDIR/tmp/alias_backup.txt"
+--enable_result_log
+--replace_regex /at: [^ ]+/at: <addr>/ /aliasId = [0-9]+/aliasId = <id>/
+--exec $NDB_MGM -e "USER ALIAS GET mary01ab"
+--replace_regex /at: [^ ]+/at: <addr>/ /userId = [0-9]+/userId = <id>/ /userVersion = [0-9]+/userVersion = <id>/
+--exec $NDB_MGM -e "USER GET clicks_rl"
+
+# Cleanup
+--disable_result_log
+--exec $NDB_MGM -e "USER ALIAS DROP mary01ab"
+--exec $NDB_MGM -e "USER DROP team_rl"
+--exec $NDB_MGM -e "USER DROP clicks_rl"
+--enable_result_log
+DROP USER 'mary01ab'@'%';
+DROP DATABASE marketing;
+--remove_file $MYSQLTEST_VARDIR/tmp/alias_backup.txt
+
+--echo USER ALIAS restart and backup completed

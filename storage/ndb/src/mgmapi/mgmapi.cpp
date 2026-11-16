@@ -4773,6 +4773,380 @@ int ndb_mgm_drop_user(NdbMgmHandle handle,
   DBUG_RETURN(0);
 }
 
+/**
+ * USER ALIAS commands (RONDB-1158).
+ *
+ * Read exactly total_num_rows newline-terminated rows off the socket, the
+ * counted-read protocol of the user get/list replies. Returns a buffer
+ * allocated with new[] (the caller owns it and frees it with delete[]),
+ * or nullptr with the handle error set.
+ */
+static char *mgm_read_alias_rows(NdbMgmHandle handle,
+                                 Uint32 total_num_rows,
+                                 const char *what) {
+  const Uint32 len = 4096;
+  char *buf = new char[len + 1];
+  int read = 0;
+  size_t start = 0;
+  Uint32 num_rows = 0;
+  bool new_row_started = true;
+  do {
+    if ((read = handle->socket.read(handle->timeout,
+                                    &buf[start], (int)(len - start))) < 1) {
+      delete[] buf;
+      if (read == 0) {
+        SET_ERROR(handle, ETIMEDOUT, what);
+      } else {
+        SET_ERROR(handle, errno, what);
+      }
+      return nullptr;
+    }
+    for (Uint32 i = start; i < (start + read); i++) {
+      if (buf[i] == '\n') {
+        new_row_started = false;
+        num_rows++;
+      } else {
+        new_row_started = true;
+      }
+    }
+    if (num_rows > total_num_rows ||
+        (num_rows == total_num_rows && new_row_started)) {
+      delete[] buf;
+      SET_ERROR(handle, 1, what);
+      return nullptr;
+    } else if (num_rows == total_num_rows) {
+      buf[start + read] = 0;
+      return buf;
+    }
+    start += read;
+  } while (start < len);
+  delete[] buf;
+  SET_ERROR(handle, 1, what);
+  return nullptr;
+}
+
+int ndb_mgm_set_user_alias(NdbMgmHandle handle,
+                           const char *alias_name,
+                           const char *target_name,
+                           int scope_type,
+                           const char *scope_name) {
+  DBUG_ENTER("ndb_mgm_set_user_alias");
+  DBUG_PRINT("enter", ("aliasname: %s, target: %s, scope_type: %d"
+             ", scopename: %s",
+             alias_name, target_name, scope_type,
+             scope_name ? scope_name : ""));
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_set_user_alias");
+  CHECK_CONNECTED(handle, -1);
+
+  Properties args;
+  args.put("aliasname", alias_name);
+  args.put("target", target_name);
+  args.put("scopetype", (Uint32)scope_type);
+  if (scope_name != nullptr && scope_name[0] != 0) {
+    args.put("scopename", scope_name);
+  }
+
+  const ParserRow<ParserDummy> set_user_alias_reply[] = {
+    MGM_CMD("set user alias reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         set_user_alias_reply,
+                                         "set user alias",
+                                         &args);
+
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to set user alias, internal error");
+    DBUG_RETURN(-1);
+  }
+
+  // Check the result for Ok or error
+  const char * result;
+  Uint32 error_code = 0;
+  reply->get("result", &result);
+  if (strcmp(result, "Ok") != 0) {
+    reply->get("error_code", &error_code);
+    if (error_code) {
+      SET_ERROR(handle, error_code, result);
+    } else {
+      SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    }
+    delete reply;
+    DBUG_RETURN(-1);
+  }
+
+  delete reply;
+  DBUG_RETURN(0);
+}
+
+int ndb_mgm_drop_user_alias(NdbMgmHandle handle,
+                            const char *alias_name,
+                            int scope_type,
+                            const char *scope_name) {
+  DBUG_ENTER("ndb_mgm_drop_user_alias");
+  DBUG_PRINT("enter", ("aliasname: %s, scope_type: %d, scopename: %s",
+             alias_name, scope_type, scope_name ? scope_name : ""));
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_drop_user_alias");
+  CHECK_CONNECTED(handle, -1);
+
+  Properties args;
+  args.put("aliasname", alias_name);
+  /* A negative scope type drops the whole alias: no scope is sent. */
+  if (scope_type >= 0) {
+    args.put("scopetype", (Uint32)scope_type);
+    if (scope_name != nullptr && scope_name[0] != 0) {
+      args.put("scopename", scope_name);
+    }
+  }
+
+  const ParserRow<ParserDummy> drop_user_alias_reply[] = {
+    MGM_CMD("drop user alias reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         drop_user_alias_reply,
+                                         "drop user alias",
+                                         &args);
+
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to drop user alias, internal error");
+    DBUG_RETURN(-1);
+  }
+
+  // Check the result for Ok or error
+  const char * result;
+  Uint32 error_code = 0;
+  reply->get("result", &result);
+  if (strcmp(result, "Ok") != 0) {
+    reply->get("error_code", &error_code);
+    if (error_code) {
+      SET_ERROR(handle, error_code, result);
+    } else {
+      SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    }
+    delete reply;
+    DBUG_RETURN(-1);
+  }
+
+  delete reply;
+  DBUG_RETURN(0);
+}
+
+int ndb_mgm_get_user_alias(NdbMgmHandle handle,
+                           const char *alias_name,
+                           char **result_buf) {
+  DBUG_ENTER("ndb_mgm_get_user_alias");
+  DBUG_PRINT("enter", ("aliasname: %s", alias_name));
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_get_user_alias");
+  CHECK_CONNECTED(handle, -1);
+
+  Properties args;
+  args.put("aliasname", alias_name);
+
+  const ParserRow<ParserDummy> get_user_alias_reply[] = {
+    MGM_CMD("get user alias reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_ARG("num_rows", Int, Optional, "Number of rows in result"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         get_user_alias_reply,
+                                         "get user alias",
+                                         &args);
+
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to get user alias, internal error");
+    DBUG_RETURN(-1);
+  }
+
+  // Check the result for Ok or error
+  const char * result;
+  Uint32 error_code = 0;
+  reply->get("result", &result);
+  if (strcmp(result, "Ok") != 0) {
+    reply->get("error_code", &error_code);
+    if (error_code) {
+      SET_ERROR(handle, error_code, result);
+    } else {
+      SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    }
+    delete reply;
+    DBUG_RETURN(-1);
+  }
+  Uint32 total_num_rows = 0;
+  if (!reply->get("num_rows", &total_num_rows)) {
+    fprintf(handle->errstream, "Invalid response, expected num_rows\n\n");
+    delete reply;
+    ndb_mgm_disconnect_quiet(handle);
+    DBUG_RETURN(-1);
+  }
+  delete reply;
+  char *buf = mgm_read_alias_rows(handle, total_num_rows,
+                                  "Error reading Get user alias");
+  if (buf == nullptr) {
+    ndb_mgm_disconnect_quiet(handle);
+    DBUG_RETURN(-1);
+  }
+  *result_buf = buf;
+  DBUG_RETURN(0);
+}
+
+int ndb_mgm_list_user_aliases(NdbMgmHandle handle,
+                              Uint32 *nextAliasId,
+                              char **result_buf) {
+  DBUG_ENTER("ndb_mgm_list_user_aliases");
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR,
+            "Executing: ndb_mgm_list_user_aliases");
+  CHECK_CONNECTED(handle, -1);
+
+  Properties args;
+  args.put("nextAliasId", *nextAliasId);
+
+  const ParserRow<ParserDummy> list_user_alias_reply[] = {
+    MGM_CMD("list user alias reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("num_rows", Int, Optional, "Number of result rows"),
+    MGM_ARG("nextAliasId", Int, Optional, "next Alias Id"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         list_user_alias_reply,
+                                         "list user alias",
+                                         &args);
+
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to list user aliases, internal error");
+    DBUG_RETURN(-1);
+  }
+
+  // Check the result for Ok or error
+  const char * result;
+  Uint32 error_code = 0;
+  reply->get("result", &result);
+  if (strcmp(result, "Ok") != 0) {
+    reply->get("error_code", &error_code);
+    if (error_code) {
+      SET_ERROR(handle, error_code, result);
+    } else {
+      SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    }
+    delete reply;
+    DBUG_RETURN(-1);
+  }
+  Uint32 total_num_rows = 0;
+  if (!reply->get("num_rows", &total_num_rows)) {
+    fprintf(handle->errstream, "Invalid response, expected num_rows\n\n");
+    delete reply;
+    ndb_mgm_disconnect_quiet(handle);
+    DBUG_RETURN(-1);
+  }
+  if (total_num_rows == 0) {
+    /* List command completed */
+    *nextAliasId = RNIL;
+    delete reply;
+    DBUG_RETURN(0);
+  }
+  if (!reply->get("nextAliasId", nextAliasId)) {
+    fprintf(handle->errstream, "Invalid response, expected nextAliasId\n\n");
+    delete reply;
+    ndb_mgm_disconnect_quiet(handle);
+    DBUG_RETURN(-1);
+  }
+  delete reply;
+  char *buf = mgm_read_alias_rows(handle, total_num_rows,
+                                  "Error reading List user alias");
+  if (buf == nullptr) {
+    ndb_mgm_disconnect_quiet(handle);
+    DBUG_RETURN(-1);
+  }
+  *result_buf = buf;
+  DBUG_RETURN(0);
+}
+
+int ndb_mgm_backup_user_aliases(NdbMgmHandle handle,
+                                Uint32 *nextAliasId,
+                                char **result_buf) {
+  DBUG_ENTER("ndb_mgm_backup_user_aliases");
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR,
+            "Executing: ndb_mgm_backup_user_aliases");
+  CHECK_CONNECTED(handle, -1);
+
+  Properties args;
+  args.put("nextAliasId", *nextAliasId);
+
+  const ParserRow<ParserDummy> backup_user_alias_reply[] = {
+    MGM_CMD("backup user alias reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("num_rows", Int, Optional, "Number of result rows"),
+    MGM_ARG("nextAliasId", Int, Optional, "next Alias Id"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         backup_user_alias_reply,
+                                         "backup user alias",
+                                         &args);
+
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to backup user aliases, internal error");
+    DBUG_RETURN(-1);
+  }
+
+  // Check the result for Ok or error
+  const char * result;
+  Uint32 error_code = 0;
+  reply->get("result", &result);
+  if (strcmp(result, "Ok") != 0) {
+    reply->get("error_code", &error_code);
+    if (error_code) {
+      SET_ERROR(handle, error_code, result);
+    } else {
+      SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    }
+    delete reply;
+    DBUG_RETURN(-1);
+  }
+  Uint32 total_num_rows = 0;
+  if (!reply->get("num_rows", &total_num_rows)) {
+    fprintf(handle->errstream, "Invalid response, expected num_rows\n\n");
+    delete reply;
+    ndb_mgm_disconnect_quiet(handle);
+    DBUG_RETURN(-1);
+  }
+  if (total_num_rows == 0) {
+    /* Backup command completed */
+    *nextAliasId = RNIL;
+    delete reply;
+    DBUG_RETURN(0);
+  }
+  if (!reply->get("nextAliasId", nextAliasId)) {
+    fprintf(handle->errstream, "Invalid response, expected nextAliasId\n\n");
+    delete reply;
+    ndb_mgm_disconnect_quiet(handle);
+    DBUG_RETURN(-1);
+  }
+  delete reply;
+  char *buf = mgm_read_alias_rows(handle, total_num_rows,
+                                  "Error reading Backup user alias");
+  if (buf == nullptr) {
+    ndb_mgm_disconnect_quiet(handle);
+    DBUG_RETURN(-1);
+  }
+  *result_buf = buf;
+  DBUG_RETURN(0);
+}
+
 int ndb_mgm_get_quotas(NdbMgmHandle handle,
                        const char *database_name,
                        char **result_buf) {

@@ -1,0 +1,35 @@
+digraph coverage {
+  rankdir=LR;
+  graph [fontname="Helvetica", fontsize=11, pad=0.3, nodesep=0.35, ranksep=1.1, bgcolor="white"];
+  node  [shape=plaintext, fontname="Helvetica", fontsize=11];
+  edge  [fontname="Helvetica", fontsize=9, color="#566574", arrowsize=0.7, penwidth=1.1];
+
+  subgraph cluster_clients {
+    label=<<B>Clients</B>>; fontcolor="#566574"; color="#d7e0e5"; style="rounded"; margin=14;
+    rest    [label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3"><TR><TD BGCOLOR="#f1f3f5">Python / hsfs REST client<BR/><FONT POINT-SIZE="9" COLOR="#566574">API key</FONT></TD></TR></TABLE>>];
+    spark   [label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3"><TR><TD BGCOLOR="#f1f3f5">Spark or Flink job</TD></TR></TABLE>>];
+    jupyter [label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3"><TR><TD BGCOLOR="#f1f3f5">Jupyter notebook</TD></TR></TABLE>>];
+    superset[label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3"><TR><TD BGCOLOR="#f1f3f5">Superset dashboard</TD></TR></TABLE>>];
+    serving [label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3"><TR><TD BGCOLOR="#f1f3f5">Model serving pod</TD></TR></TABLE>>];
+  }
+
+  subgraph cluster_servers {
+    label=<<B>Servers</B>>; fontcolor="#566574"; color="#d7e0e5"; style="rounded"; margin=14;
+    rdrs  [label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="7" COLOR="#8aa5a3"><TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>RonDB REST server (RDRS)</B></FONT></TD></TR><TR><TD BGCOLOR="#f1f3f5">identity: the API key's owner</TD></TR></TABLE>>];
+    mysql [label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="7" COLOR="#8aa5a3"><TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>MySQL server</B></FONT></TD></TR><TR><TD BGCOLOR="#f1f3f5">identity: the project-member account</TD></TR></TABLE>>];
+  }
+
+  subgraph cluster_rondb {
+    label=<<B>RonDB data nodes</B>>; fontcolor="#566574"; color="#d7e0e5"; style="rounded"; margin=14;
+    group [label=<<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="8" COLOR="#096b67"><TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>group recommender_team_rl</B></FONT></TD></TR><TR><TD BGCOLOR="#edf4f4"><B>20%</B> — one budget for all paths</TD></TR></TABLE>>];
+  }
+
+  rest -> rdrs;
+  serving -> rdrs;
+  spark -> mysql;
+  jupyter -> mysql;
+  superset -> mysql;
+  serving -> mysql;
+  rdrs -> group  [color="#096b67", penwidth=1.5];
+  mysql -> group [color="#096b67", penwidth=1.5];
+}

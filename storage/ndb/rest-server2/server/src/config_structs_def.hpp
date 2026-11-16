@@ -586,13 +586,43 @@ CLASS
     " entity runs unmetered. Currently applies to REST requests only;"
     " Rondis traffic is never tagged.")
  CM(std::string, identity, Identity, "apikey",
-    "Identity type used for rate limiting."
-    " Currently only 'apikey' (the API key of the request) is supported.")
+    "Identity type used for rate limiting: 'apikey' (the API key of the"
+    " request) or 'username' (the Hopsworks project-user of the key's"
+    " owner in the request's target project, matching the online feature"
+    " store MySQL account names).")
  CM(bool, fullApiKey, FullAPIKey, false,
     "Set to true to use the full API key as the rate limit identity."
     " By default only the API key prefix is used.")
- PROBLEM(identity != "apikey",
-         ".RateLimit.Identity only supports 'apikey'")
+ CM(bool, enableSync, EnableRateLimitSync, false,
+    "Set to true to run the rate limit group sync loop on this replica"
+    " (RONDB-1158): the hopsworks.rate_limit_group tables are expanded"
+    " into USER / USER ALIAS entities on this server's data cluster. At"
+    " least one sync-enabled replica per data cluster is required for"
+    " groups to install; a cluster with none shows its groups stuck in"
+    " pending. Several sync-enabled replicas converge without"
+    " coordination.")
+ CM(unsigned, syncPeriodS, RateLimitSyncPeriodS, 30,
+    "Seconds between sync loop runs. Each run first reads the one-row"
+    " version counter Hopsworks bumps on every group save and ends"
+    " immediately when nothing changed, so the steady-state cost is one"
+    " primary-key read per period. A per-instance jitter of up to 20% is"
+    " added so a fleet does not stampede the management server.")
+ CM(unsigned, syncFullResyncRuns, RateLimitSyncFullResyncRuns, 10,
+    "Run a full reconcile every Nth run even when the version counter is"
+    " unchanged, so entities lost to a manual drop or missed at a restart"
+    " are repaired. 0 disables the periodic full resync.")
+ CM(std::string, syncClusterName, RateLimitSyncClusterName, "default",
+    "The name this cluster's per-group install states are reported under"
+    " in hopsworks.rate_limit_group_cluster_state, which the admin page"
+    " reads back. Give every data cluster of a multi-cluster deployment"
+    " its own name.")
+ PROBLEM(identity != "apikey" && identity != "username",
+         ".RateLimit.Identity must be 'apikey' or 'username'")
+ PROBLEM(identity == "username" && fullApiKey,
+         ".RateLimit.FullAPIKey requires .RateLimit.Identity 'apikey'")
+ PROBLEM(enableSync && syncPeriodS == 0,
+         ".RateLimit.RateLimitSyncPeriodS cannot be zero when"
+         " .RateLimit.EnableRateLimitSync is set")
 )
 
 CLASS
@@ -629,15 +659,17 @@ CLASS
          "Combining .Security.InsecureAllowAll and"
          " .REST.PingRequiresAuth is not allowed")
  /*
- The identity is derived from the request's Hopsworks API key, and every
- endpoint only computes one inside its useHopsworksAPIKeys branch. Without
- API keys no identity is ever produced, so rate limiting would silently do
- nothing rather than fail.
+ Both identity modes are derived from the request's Hopsworks API key -
+ 'apikey' from the key itself, 'username' from the key's owner - and every
+ endpoint only computes an identity inside its
+ useHopsworksAPIKeys branch. Without API keys no identity is ever produced,
+ so rate limiting would silently do nothing rather than fail.
  */
  PROBLEM(rateLimit.enable && !security.apiKey.useHopsworksAPIKeys,
          ".RateLimit.Enable requires .Security.APIKey.UseHopsworksAPIKeys:"
-         " the identity is derived from the request's API key, so without"
-         " API keys no request would be rate limited")
+         " both .RateLimit.Identity modes derive the identity from the"
+         " request's API key ('apikey' from the key, 'username' from its"
+         " owner), so without API keys no request would be rate limited")
  PROBLEM(rest.probeEnable && rondis.enable &&
          rest.probePort == rondis.serverPort,
          ".REST.ProbePort must differ from .Rondis.ServerPort")

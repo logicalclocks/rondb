@@ -1,0 +1,63 @@
+digraph multi {
+  rankdir=LR;
+  graph [fontname="Helvetica", fontsize=11, pad=0.3, nodesep=0.5, ranksep=1.0, bgcolor="white", compound=true];
+  node  [shape=plaintext, fontname="Helvetica", fontsize=11];
+  edge  [fontname="Helvetica", fontsize=9, color="#096b67", arrowsize=0.7, penwidth=1.1];
+
+  groups [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#8aa5a3">
+ <TR><TD COLSPAN="4" BGCOLOR="#096b67"><FONT COLOR="white"><B>the three new tables, joined</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4"><B>name</B></TD><TD BGCOLOR="#edf4f4"><B>budget_percent</B></TD><TD BGCOLOR="#edf4f4"><B>who</B> (project_id)</TD><TD BGCOLOR="#edf4f4"><B>what</B> (feature_store_id)</TD></TR>
+ <TR><TD><FONT FACE="Menlo" POINT-SIZE="9">recommender_marketing_rl</FONT></TD><TD>20.00</TD><TD>13 Recommender</TD><TD PORT="r1">21</TD></TR>
+ <TR><TD><FONT FACE="Menlo" POINT-SIZE="9">recommender2_marketing_rl</FONT></TD><TD>30.00</TD><TD>14 Recommender2</TD><TD PORT="r2">21</TD></TR>
+ <TR><TD><FONT FACE="Menlo" POINT-SIZE="9">recommender_sales_rl</FONT></TD><TD>20.00</TD><TD>13 Recommender</TD><TD PORT="r3">22</TD></TR>
+ <TR><TD COLSPAN="4" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#566574">no row names a cluster</FONT></TD></TR>
+</TABLE>>];
+
+  subgraph cluster_M {
+    label="cluster M (Marketing)"; style="rounded,filled"; fillcolor="#f4f7f7"; color="#8aa5a3"; fontname="Helvetica"; fontsize=11;
+    fsM [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#8aa5a3">
+ <TR><TD COLSPAN="2" BGCOLOR="#566574"><FONT COLOR="white">database here</FONT></TD></TR>
+ <TR><TD PORT="fs21">21</TD><TD>marketing</TD></TR>
+</TABLE>>];
+    userM [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><B>USER entries installed by M's RDRS</B></TD></TR>
+ <TR><TD ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9">recommender_marketing_rl  = 20% of M<BR ALIGN="LEFT"/>recommender2_marketing_rl = 30% of M</FONT><BR ALIGN="LEFT"/></TD></TR>
+</TABLE>>];
+  }
+  subgraph cluster_S {
+    label="cluster S (Sales)"; style="rounded,filled"; fillcolor="#f4f7f7"; color="#8aa5a3"; fontname="Helvetica"; fontsize=11;
+    fsS [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#8aa5a3">
+ <TR><TD COLSPAN="2" BGCOLOR="#566574"><FONT COLOR="white">database here</FONT></TD></TR>
+ <TR><TD PORT="fs22">22</TD><TD>sales</TD></TR>
+</TABLE>>];
+    userS [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><B>USER entries installed by S's RDRS</B></TD></TR>
+ <TR><TD ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9">recommender_sales_rl = 20% of S</FONT></TD></TR>
+</TABLE>>];
+  }
+  subgraph cluster_R {
+    label="cluster R (Recommender)"; style="rounded,filled"; fillcolor="#f4f7f7"; color="#8aa5a3"; fontname="Helvetica"; fontsize=11;
+    fsR [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#8aa5a3">
+ <TR><TD COLSPAN="2" BGCOLOR="#566574"><FONT COLOR="white">database here</FONT></TD></TR>
+ <TR><TD>23</TD><TD>recommender</TD></TR>
+</TABLE>>];
+    userR [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><B>USER entries installed by R's RDRS</B></TD></TR>
+ <TR><TD ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#566574">none — no group's data lives here</FONT></TD></TR>
+</TABLE>>];
+  }
+
+  groups:r1:e -> fsM:fs21:w [label="data lives on M"];
+  groups:r2:e -> fsM:fs21:w;
+  groups:r3:e -> fsS:fs22:w [label="data lives on S"];
+  fsM -> userM [style=dashed, arrowhead=none];
+  fsS -> userS [style=dashed, arrowhead=none];
+  fsR -> userR [style=dashed, arrowhead=none];
+}

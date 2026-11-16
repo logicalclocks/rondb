@@ -21,8 +21,12 @@
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_RATE_LIMIT_HPP_
 
 #include "config_structs.hpp"
+#include "api_key.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <string>
+#include <string_view>
 
 /**
  * RONDB-978: Compute the rate limit identity for a request. The identity
@@ -32,13 +36,52 @@
  * an identity without a matching entity runs without rate limits.
  *
  * An empty result means rate limit tagging is disabled for this request.
- * By default the identity is the API key prefix (the part before the '.'),
- * NEVER the secret; the full key is only used when .RateLimit.FullAPIKey is
- * configured.
+ *
+ * .RateLimit.Identity selects what the identity is:
+ * - "apikey": the API key prefix (the part before the '.'), NEVER the
+ *   secret; the full key only when .RateLimit.FullAPIKey is configured.
+ * - "username": the Hopsworks project-user of the key's owner acting in
+ *   the project that owns target_db, using the online-FS MySQL account
+ *   convention clip31(ProjectName + "_" + username) so REST and MySQL
+ *   traffic of the same (project, member) share one bucket. rlIdentities
+ *   is filled during authenticate(); target_db is the database the
+ *   request is billed to - the URL database or the feature view's own
+ *   feature store name, which are both the lowercased project name. A db
+ *   the key's user is no member of (shared stores, system dbs) yields an
+ *   empty identity: unmetered.
  */
-inline std::string get_rate_limit_identity(const std::string &api_key) {
+/**
+ * Report that a database the API key can reach has no rate limit identity, so
+ * requests to it run unmetered. This is the one rate limit misconfiguration
+ * the server can see for itself: every other way of getting it wrong (an
+ * unprovisioned USER entity, a wrong-case project name) is indistinguishable
+ * from "no limit configured".
+ *
+ * Called from the api key cache load, NEVER from request handling - the
+ * detection is a set difference over data the cache already has, so it costs
+ * a request nothing. Logged once per database per process.
+ */
+void report_unmetered_database(const std::string &db);
+
+inline std::string get_rate_limit_identity(
+  const std::string &api_key,
+  const RateLimitIdentities &rlIdentities,
+  std::string_view target_db) {
   if (!globalConfigs.rateLimit.enable || api_key.empty()) {
     return {};
+  }
+  if (globalConfigs.rateLimit.identity == "username") {
+    std::string lower_db(target_db);
+    std::transform(lower_db.begin(), lower_db.end(), lower_db.begin(),
+               [](unsigned char c) { return std::tolower(c); });
+    auto it = rlIdentities.per_db.find(lower_db);
+    if (it == rlIdentities.per_db.end()) {
+      // Unmetered. Deliberately silent: this is the request hot path and the
+      // condition is reported once at cache load instead
+      // (report_unmetered_database).
+      return {};
+    }
+    return it->second;
   }
   if (globalConfigs.rateLimit.fullApiKey) {
     return api_key;

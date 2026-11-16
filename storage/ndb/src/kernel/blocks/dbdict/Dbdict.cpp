@@ -837,6 +837,48 @@ void Dbdict::execCONTINUEB(Signal *signal) {
                                 false);
     return;
   }
+  case ZDICT_ALIAS_ATTACH_LOOP:
+  {
+    SchemaOpPtr op_ptr;
+    CreateDatabaseRecPtr createDbPtr;
+    AlterDatabaseRecPtr alterDbPtr;
+    DatabasePtr db_ptr;
+    Uint32 next_table_id = signal->theData[2];
+    bool is_alter = (signal->theData[3] != 0);
+    if (!is_alter) {
+      jam();
+      ndbrequire(findSchemaOp(op_ptr, createDbPtr, signal->theData[1]));
+      ndbrequire(find_object(db_ptr, createDbPtr.p->m_request.databaseId));
+    } else {
+      jam();
+      ndbrequire(findSchemaOp(op_ptr, alterDbPtr, signal->theData[1]));
+      ndbrequire(find_object(db_ptr, alterDbPtr.p->m_request.databaseId));
+    }
+    sendAliasAttachLoop(signal, op_ptr.p->op_key, db_ptr,
+                        next_table_id, is_alter);
+    return;
+  }
+  case ZDICT_ALIAS_TABLE_SCAN_LOOP:
+  {
+    SchemaOpPtr op_ptr;
+    Uint32 next_alias_id = signal->theData[2];
+    bool is_rename = (signal->theData[3] != 0);
+    Uint32 tableId;
+    if (!is_rename) {
+      jam();
+      CreateTableRecPtr createTabPtr;
+      ndbrequire(findSchemaOp(op_ptr, createTabPtr, signal->theData[1]));
+      tableId = createTabPtr.p->m_request.tableId;
+    } else {
+      jam();
+      AlterTableRecPtr alterTabPtr;
+      ndbrequire(findSchemaOp(op_ptr, alterTabPtr, signal->theData[1]));
+      tableId = alterTabPtr.p->m_request.tableId;
+    }
+    sendAliasTableScanLoop(signal, op_ptr.p->op_key, tableId,
+                           next_alias_id, is_rename);
+    return;
+  }
   case ZDICT_DISCONNECT_LOOP:
   {
     SchemaOpPtr op_ptr;
@@ -3277,6 +3319,7 @@ void Dbdict::execREAD_CONFIG_REQ(Signal *signal) {
 
   c_fk_pool.init(RT_DBDICT_FILE, pc);  // TODO
   c_database_pool.init(RT_DBDICT_FILE, pc);
+  c_alias_rule_pool.init(RT_DBDICT_FILE, pc);
 
   // new OpRec pools
   /**
@@ -8565,9 +8608,9 @@ Dbdict::createTab_activate(Signal* signal, SchemaOpPtr op_ptr,
     sendSignal(DBLQH_REF, GSN_CONNECT_TABLE_DB_REQ, signal,
                ConnectTableDbReq::SignalLength, JBB);
     return;
- 
+
   }
-  createTab_activate_next(signal, op_ptr);
+  createTab_aliasScan(signal, op_ptr);
 }
 
 void
@@ -11928,6 +11971,32 @@ void Dbdict::alterTable_contComplete(Signal *signal, SchemaOpPtr op_ptr) {
 
 void
 Dbdict::alterTable_handleDatabaseChange(Signal *signal, SchemaOpPtr op_ptr) {
+  jam();
+
+  /**
+   * A rename invalidates the table's USER ALIAS attachments (RONDB-1158):
+   * drop them all in DBTC first; the CONF starts a re-scan of the aliases
+   * against the new name, and the scan's completion continues with the
+   * database-connection change below.
+   */
+  {
+    AlterTableRecPtr alterTabPtr;
+    getOpRec(op_ptr, alterTabPtr);
+    DisconnectTableDbReq* req =
+      (DisconnectTableDbReq*)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = op_ptr.p->op_key;
+    req->requestType = DisconnectTableDbReq::ALIAS_DETACH_TABLE;
+    req->databaseId = RNIL;
+    req->tableId = alterTabPtr.p->m_request.tableId;
+    sendSignal(DBTC_REF, GSN_DISCONNECT_TABLE_DB_REQ, signal,
+               DisconnectTableDbReq::SignalLength, JBB);
+  }
+}
+
+void
+Dbdict::alterTable_handleDatabaseChange_continue(Signal *signal,
+                                                 SchemaOpPtr op_ptr) {
   jam();
 
   AlterTableRecPtr alterTabPtr;
@@ -33043,6 +33112,332 @@ void Dbdict::execCREATE_DATABASE_REQ(Signal* signal) {
 	     CreateDatabaseRef::SignalLength, JBB);
 }
 
+/**
+ * USER ALIAS rule-list helpers (RONDB-1158).
+ *
+ * The packed blob layout is defined at DictDatabaseInfo::AliasRules: one
+ * Uint32 rule count, then per rule three Uint32 words (scope type, scope
+ * name bytes incl. NUL, target name bytes incl. NUL) followed by the two
+ * names, each padded to a word boundary. The blob only travels inside one
+ * cluster (op sections and the schema file), so native byte order is fine.
+ */
+static inline Uint32 aliasNamePadded(Uint32 len) {
+  return (len + 3) & ~Uint32(3);
+}
+
+Uint32
+Dbdict::packAliasRules(Uint32 first_rule, char* buf, Uint32 bufSize) {
+  Uint32* words = (Uint32*)buf;
+  Uint32 used_bytes = 4;
+  Uint32 count = 0;
+  Uint32 rule_i = first_rule;
+  while (rule_i != RNIL) {
+    jam();
+    AliasRulePtr rulePtr;
+    rulePtr.i = rule_i;
+    c_alias_rule_pool.getPtr(rulePtr);
+    const bool is_all =
+      (rulePtr.p->m_scope_type == DictDatabaseInfo::AliasScopeAll);
+    const Uint32 scope_len = is_all ? 0 :
+      Uint32(strnlen(rulePtr.p->m_scope_name,
+                     sizeof(rulePtr.p->m_scope_name)) + 1);
+    const Uint32 target_len =
+      Uint32(strnlen(rulePtr.p->m_target_name,
+                     sizeof(rulePtr.p->m_target_name)) + 1);
+    const Uint32 need =
+      12 + aliasNamePadded(scope_len) + aliasNamePadded(target_len);
+    ndbrequire(used_bytes + need <= bufSize);
+    Uint32* w = words + (used_bytes / 4);
+    w[0] = rulePtr.p->m_scope_type;
+    w[1] = scope_len;
+    w[2] = target_len;
+    char* names = (char*)(w + 3);
+    memset(names, 0, need - 12);
+    if (scope_len > 0) {
+      memcpy(names, rulePtr.p->m_scope_name, scope_len);
+    }
+    memcpy(names + aliasNamePadded(scope_len),
+           rulePtr.p->m_target_name, target_len);
+    used_bytes += need;
+    count++;
+    rule_i = rulePtr.p->m_next_rule;
+  }
+  words[0] = count;
+  return used_bytes;
+}
+
+bool
+Dbdict::addAliasRule(Uint32& first_rule, Uint32& rule_count,
+                     Uint32 scope_type,
+                     const char* scope_name, const char* target_name,
+                     bool is_restart, ErrorInfo& error) {
+  if (scope_type > DictDatabaseInfo::AliasScopeAll) {
+    jam();
+    setError(error, CreateTableRef::InvalidFormat, __LINE__);
+    return false;
+  }
+  const bool is_all = (scope_type == DictDatabaseInfo::AliasScopeAll);
+  const Uint32 scope_len = Uint32(strnlen(scope_name, MAX_TAB_NAME_SIZE));
+  const Uint32 target_len = Uint32(strnlen(target_name, MAX_DB_NAME_SIZE));
+  if ((is_all && scope_len != 0) ||
+      (!is_all && scope_len == 0) ||
+      scope_len >= MAX_TAB_NAME_SIZE ||
+      target_len == 0 ||
+      /* the '$' prefix and the NUL must both still fit */
+      target_len >= MAX_DB_NAME_SIZE - 1 ||
+      target_name[0] == '$') {
+    jam();
+    setError(error, CreateTableRef::InvalidFormat, __LINE__);
+    return false;
+  }
+
+  /**
+   * One rule per scope: a second SET with the same target is a no-op, one
+   * with a different target is refused, so moving an account between
+   * groups is an explicit DROP of the old rule followed by a SET.
+   */
+  Uint32 rule_i = first_rule;
+  Uint32 last_i = RNIL;
+  while (rule_i != RNIL) {
+    jam();
+    AliasRulePtr rulePtr;
+    rulePtr.i = rule_i;
+    c_alias_rule_pool.getPtr(rulePtr);
+    if (rulePtr.p->m_scope_type == scope_type &&
+        (is_all ||
+         strncmp(rulePtr.p->m_scope_name, scope_name,
+                 MAX_TAB_NAME_SIZE) == 0)) {
+      jam();
+      if (strncmp(rulePtr.p->m_target_name, target_name,
+                  MAX_DB_NAME_SIZE) == 0) {
+        jam();
+        return true;
+      }
+      setError(error, CreateTableRef::AliasRuleConflict, __LINE__);
+      return false;
+    }
+    last_i = rule_i;
+    rule_i = rulePtr.p->m_next_rule;
+  }
+  if (rule_count >= DictDatabaseInfo::MaxAliasRuleCount) {
+    jam();
+    setError(error, CreateTableRef::TooManyAliasRules, __LINE__);
+    return false;
+  }
+
+  /**
+   * Resolve the target USER through its stored "$name". A missing or
+   * wrong-kind target is refused, except on restart: the schema file may
+   * replay an alias whose target is gone, and failing the restart over it
+   * would be worse than an unmetered rule the sync loop repairs.
+   */
+  Uint32 target_id = RNIL;
+  {
+    char prefixed[MAX_DB_NAME_SIZE];
+    prefixed[0] = '$';
+    memcpy(&prefixed[1], target_name, target_len + 1);
+    Uint32 len = target_len + 2;
+    Uint32 hash = LcLocalRope::hash(prefixed, len);
+    DictObject* target_obj = get_object(prefixed, len, hash);
+    if (target_obj != nullptr) {
+      DatabasePtr target_ptr;
+      if (find_object(target_ptr, target_obj->m_id) &&
+          target_ptr.p->m_is_user && !target_ptr.p->m_is_alias) {
+        jam();
+        target_id = target_obj->m_id;
+      }
+    }
+    if (target_id == RNIL && !is_restart) {
+      jam();
+      setError(error, CreateTableRef::AliasTargetNoSuchUser, __LINE__);
+      return false;
+    }
+  }
+
+  AliasRulePtr rulePtr;
+  if (!c_alias_rule_pool.seize(rulePtr)) {
+    jam();
+    setError(error, CreateTableRef::NoMoreTableRecords, __LINE__);
+    return false;
+  }
+  new (rulePtr.p) AliasRule();
+  rulePtr.p->m_scope_type = scope_type;
+  rulePtr.p->m_target_id = target_id;
+  memset(rulePtr.p->m_scope_name, 0, sizeof(rulePtr.p->m_scope_name));
+  memset(rulePtr.p->m_target_name, 0, sizeof(rulePtr.p->m_target_name));
+  if (!is_all) {
+    memcpy(rulePtr.p->m_scope_name, scope_name, scope_len);
+  }
+  memcpy(rulePtr.p->m_target_name, target_name, target_len);
+
+  if (last_i == RNIL) {
+    jam();
+    first_rule = rulePtr.i;
+  } else {
+    jam();
+    AliasRulePtr lastPtr;
+    lastPtr.i = last_i;
+    c_alias_rule_pool.getPtr(lastPtr);
+    lastPtr.p->m_next_rule = rulePtr.i;
+  }
+  rule_count++;
+  return true;
+}
+
+void
+Dbdict::removeAliasRule(Uint32& first_rule, Uint32& rule_count,
+                        Uint32 scope_type, const char* scope_name) {
+  const bool is_all = (scope_type == DictDatabaseInfo::AliasScopeAll);
+  Uint32 rule_i = first_rule;
+  Uint32 prev_i = RNIL;
+  while (rule_i != RNIL) {
+    jam();
+    AliasRulePtr rulePtr;
+    rulePtr.i = rule_i;
+    c_alias_rule_pool.getPtr(rulePtr);
+    if (rulePtr.p->m_scope_type == scope_type &&
+        (is_all ||
+         strncmp(rulePtr.p->m_scope_name, scope_name,
+                 MAX_TAB_NAME_SIZE) == 0)) {
+      jam();
+      if (prev_i == RNIL) {
+        jam();
+        first_rule = rulePtr.p->m_next_rule;
+      } else {
+        jam();
+        AliasRulePtr prevPtr;
+        prevPtr.i = prev_i;
+        c_alias_rule_pool.getPtr(prevPtr);
+        prevPtr.p->m_next_rule = rulePtr.p->m_next_rule;
+      }
+      ndbrequire(rule_count > 0);
+      rule_count--;
+      c_alias_rule_pool.release(rulePtr);
+      return;
+    }
+    prev_i = rule_i;
+    rule_i = rulePtr.p->m_next_rule;
+  }
+  /* Removing an absent rule is a no-op: the sync loop replays diffs. */
+}
+
+bool
+Dbdict::copyAliasRules(Uint32 src_first, Uint32& dst_first,
+                       Uint32& dst_count) {
+  ndbrequire(dst_first == RNIL);
+  Uint32 rule_i = src_first;
+  Uint32 last_i = RNIL;
+  while (rule_i != RNIL) {
+    jam();
+    AliasRulePtr srcPtr;
+    srcPtr.i = rule_i;
+    c_alias_rule_pool.getPtr(srcPtr);
+    AliasRulePtr dstPtr;
+    if (!c_alias_rule_pool.seize(dstPtr)) {
+      jam();
+      releaseAliasRules(dst_first, dst_count);
+      return false;
+    }
+    new (dstPtr.p) AliasRule();
+    dstPtr.p->m_scope_type = srcPtr.p->m_scope_type;
+    dstPtr.p->m_target_id = srcPtr.p->m_target_id;
+    memcpy(dstPtr.p->m_scope_name, srcPtr.p->m_scope_name,
+           sizeof(dstPtr.p->m_scope_name));
+    memcpy(dstPtr.p->m_target_name, srcPtr.p->m_target_name,
+           sizeof(dstPtr.p->m_target_name));
+    if (last_i == RNIL) {
+      jam();
+      dst_first = dstPtr.i;
+    } else {
+      jam();
+      AliasRulePtr lastPtr;
+      lastPtr.i = last_i;
+      c_alias_rule_pool.getPtr(lastPtr);
+      lastPtr.p->m_next_rule = dstPtr.i;
+    }
+    dst_count++;
+    last_i = dstPtr.i;
+    rule_i = srcPtr.p->m_next_rule;
+  }
+  return true;
+}
+
+bool
+Dbdict::unpackAliasRules(const char* buf, Uint32 len,
+                         Uint32& first_rule, Uint32& rule_count,
+                         bool is_restart, ErrorInfo& error,
+                         bool remove_rules) {
+  if (len < 4 || (len & 3) != 0) {
+    jam();
+    setError(error, CreateTableRef::InvalidFormat, __LINE__);
+    return false;
+  }
+  const Uint32* words = (const Uint32*)buf;
+  const Uint32 count = words[0];
+  if (count > DictDatabaseInfo::MaxAliasRuleCount) {
+    jam();
+    setError(error, CreateTableRef::TooManyAliasRules, __LINE__);
+    return false;
+  }
+  Uint32 off = 4;
+  for (Uint32 i = 0; i < count; i++) {
+    jam();
+    if (off + 12 > len) {
+      jam();
+      setError(error, CreateTableRef::InvalidFormat, __LINE__);
+      return false;
+    }
+    const Uint32* w = words + (off / 4);
+    const Uint32 scope_type = w[0];
+    const Uint32 scope_len = w[1];
+    const Uint32 target_len = w[2];
+    if (scope_len > MAX_TAB_NAME_SIZE ||
+        target_len == 0 ||
+        target_len > MAX_DB_NAME_SIZE ||
+        off + 12 + aliasNamePadded(scope_len) +
+          aliasNamePadded(target_len) > len) {
+      jam();
+      setError(error, CreateTableRef::InvalidFormat, __LINE__);
+      return false;
+    }
+    const char* scope_name = (const char*)(w + 3);
+    const char* target_name = scope_name + aliasNamePadded(scope_len);
+    if ((scope_len > 0 && scope_name[scope_len - 1] != 0) ||
+        target_name[target_len - 1] != 0) {
+      jam();
+      setError(error, CreateTableRef::InvalidFormat, __LINE__);
+      return false;
+    }
+    if (remove_rules) {
+      jam();
+      removeAliasRule(first_rule, rule_count, scope_type,
+                      scope_len == 0 ? "" : scope_name);
+    } else if (!addAliasRule(first_rule, rule_count, scope_type,
+                             scope_len == 0 ? "" : scope_name,
+                             target_name, is_restart, error)) {
+      jam();
+      return false;
+    }
+    off += 12 + aliasNamePadded(scope_len) + aliasNamePadded(target_len);
+  }
+  return true;
+}
+
+void
+Dbdict::releaseAliasRules(Uint32& first_rule, Uint32& rule_count) {
+  Uint32 rule_i = first_rule;
+  while (rule_i != RNIL) {
+    jam();
+    AliasRulePtr rulePtr;
+    rulePtr.i = rule_i;
+    c_alias_rule_pool.getPtr(rulePtr);
+    rule_i = rulePtr.p->m_next_rule;
+    c_alias_rule_pool.release(rulePtr);
+  }
+  first_rule = RNIL;
+  rule_count = 0;
+}
+
 void
 Dbdict::packDatabaseIntoPages(SimpleProperties::Writer & w,
                               DatabasePtr db_ptr) {
@@ -33063,6 +33458,12 @@ Dbdict::packDatabaseIntoPages(SimpleProperties::Writer & w,
     db.DiskSpaceSize = db_ptr.p->m_disk_space_size;
   }
   db.IsUser = db_ptr.p->m_is_user;
+  db.IsAlias = db_ptr.p->m_is_alias ? 1 : 0;
+  if (db_ptr.p->m_is_alias) {
+    jam();
+    db.AliasRulesLen = packAliasRules(db_ptr.p->m_first_alias_rule,
+                                      db.AliasRules, sizeof(db.AliasRules));
+  }
   db.RatePerSec = db_ptr.p->m_rate_per_sec;
   db.MaxTransactionSize = db_ptr.p->m_max_transaction_size;
   db.MaxParallelTransactions = db_ptr.p->m_max_parallel_transactions;
@@ -33102,6 +33503,8 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
   obj_ptr.setNull();
   DatabasePtr db_ptr;
   db_ptr.setNull();
+  Uint32 alias_rules_head = RNIL;
+  Uint32 alias_rules_count = 0;
 
   DictDatabaseInfo::Database db;
   db.init();
@@ -33122,6 +33525,18 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
    * recreates databases from packed pages where IsUser is stored.
    */
   bool is_user = db.IsUser;
+  const bool is_alias = (db.IsAlias != 0);
+  if (is_alias &&
+      (!is_user || db.RatePerSec != 0 || db.InMemorySize != 0 ||
+       db.DiskSpaceSize != 0 || db.MaxTransactionSize != 0 ||
+       db.MaxParallelTransactions != 0 ||
+       db.MaxParallelComplexQueries != 0)) {
+    jam();
+    /* An alias is a user-kind object carrying only rules; it never has a
+     * budget of its own, so every quota field must be absent. */
+    setError(error, CreateTableRef::InvalidFormat, __LINE__);
+    return;
+  }
 
   Uint32 available_rate_limit =
     m_allocated_create_rate_limit - m_current_allocated_rate;
@@ -33203,6 +33618,22 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
     return;
   }
 
+  if (is_alias) {
+    jam();
+    /**
+     * Build the rule list before anything is seized: a malformed blob, a
+     * missing target or rule-pool exhaustion is refused here with nothing
+     * else to unwind.
+     */
+    if (!unpackAliasRules(db.AliasRules, db.AliasRulesLen,
+                          alias_rules_head, alias_rules_count,
+                          op_ptr.p->m_restart, error)) {
+      jam();
+      releaseAliasRules(alias_rules_head, alias_rules_count);
+      return;
+    }
+  }
+
   if(!c_obj_pool.seize(obj_ptr)) {
     jam();
     setError(error, CreateTableRef::NoMoreTableRecords, __LINE__);
@@ -33216,6 +33647,12 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
     goto error;
   }
   new (db_ptr.p) Database();
+  db_ptr.p->m_is_alias = is_alias;
+  /* The record takes ownership of the detached rule list. */
+  db_ptr.p->m_first_alias_rule = alias_rules_head;
+  db_ptr.p->m_alias_rule_count = alias_rules_count;
+  alias_rules_head = RNIL;
+  alias_rules_count = 0;
 
   {
     LcLocalRope name(obj_ptr.p->m_name);
@@ -33318,8 +33755,11 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
 
 error:
   jam();
+  releaseAliasRules(alias_rules_head, alias_rules_count);
   if (!db_ptr.isNull()) {
     jam();
+    releaseAliasRules(db_ptr.p->m_first_alias_rule,
+                      db_ptr.p->m_alias_rule_count);
     c_database_pool.release(db_ptr);
   }
   if (!obj_ptr.isNull()) {
@@ -33504,6 +33944,8 @@ Dbdict::execCREATE_DB_CONF(Signal *signal) {
       db_ptr.p->m_max_parallel_transactions;
     req->maxParallelComplexQueries =
       db_ptr.p->m_max_parallel_complex_queries;
+    req->isAlias = db_ptr.p->m_is_alias ? 1 : 0;
+    req->aliasAllTargetId = getAliasAllTargetId(db_ptr);
     sendSignal(DBTC_REF, GSN_CREATE_DB_REQ, signal,
                CreateDbReq::SignalLengthTC, JBB);
     return;
@@ -33519,6 +33961,12 @@ Dbdict::execCREATE_DB_CONF(Signal *signal) {
                                 db_ptr,
                                 0,
                                 true);
+    return;
+  }
+  if (db_ptr.p->m_is_alias) {
+    jam();
+    /* Attach every existing table the rules match (also on restart). */
+    sendAliasAttachLoop(signal, op_ptr.p->op_key, db_ptr, 0, false);
     return;
   }
   jam();
@@ -33687,6 +34135,289 @@ Dbdict::send_connect_table_database(Signal *signal,
   execute(signal, createDbPtr.p->m_callback, db_ptr.p->key);
 }
 
+/**
+ * USER ALIAS attachments (RONDB-1158). An alias's table and database rules
+ * become (alias, table) -> target attachments in DBTC. The walk below runs
+ * when an alias is created (attach every existing table the rules match,
+ * also the restart path) and when it is altered (diff the old rule list,
+ * still held by the alter shadow record, against the new one, sending only
+ * the differences). One signal is in flight at a time, like
+ * send_connect_table_database, and the signals go to DBTC only: DBLQH
+ * charges whatever user id DBTC forwards and needs no alias knowledge.
+ */
+
+Uint32 Dbdict::getAliasAllTargetId(DatabasePtr db_ptr) {
+  Uint32 rule_i = db_ptr.p->m_first_alias_rule;
+  while (rule_i != RNIL) {
+    jam();
+    AliasRulePtr rulePtr;
+    rulePtr.i = rule_i;
+    c_alias_rule_pool.getPtr(rulePtr);
+    if (rulePtr.p->m_scope_type == DictDatabaseInfo::AliasScopeAll) {
+      jam();
+      return rulePtr.p->m_target_id;
+    }
+    rule_i = rulePtr.p->m_next_rule;
+  }
+  return RNIL;
+}
+
+bool Dbdict::computeAliasRuleMatch(Uint32 first_rule,
+                                   const char* table_name,
+                                   Uint32& target_id,
+                                   Uint32& priority) {
+  /**
+   * A table rule matches the full internal name; a database rule matches
+   * the name's first path segment. Table rules win over database rules,
+   * and among database rules the first in stored order wins, matching the
+   * evaluation order of the design (table, then database, then all; the
+   * all rule travels on the record itself, not as an attachment).
+   */
+  const char* sep = strstr(table_name, "/");
+  const size_t db_len = (sep != nullptr) ? size_t(sep - table_name) : 0;
+  bool found = false;
+  Uint32 rule_i = first_rule;
+  while (rule_i != RNIL) {
+    jam();
+    AliasRulePtr rulePtr;
+    rulePtr.i = rule_i;
+    c_alias_rule_pool.getPtr(rulePtr);
+    if (rulePtr.p->m_scope_type == DictDatabaseInfo::AliasScopeTable) {
+      if (strncmp(rulePtr.p->m_scope_name, table_name,
+                  MAX_TAB_NAME_SIZE) == 0) {
+        jam();
+        target_id = rulePtr.p->m_target_id;
+        priority = 0;
+        return true;
+      }
+    } else if (rulePtr.p->m_scope_type ==
+               DictDatabaseInfo::AliasScopeDatabase) {
+      if (!found && db_len > 0 &&
+          strlen(rulePtr.p->m_scope_name) == db_len &&
+          strncmp(rulePtr.p->m_scope_name, table_name, db_len) == 0) {
+        jam();
+        target_id = rulePtr.p->m_target_id;
+        priority = 1;
+        found = true;
+      }
+    }
+    rule_i = rulePtr.p->m_next_rule;
+  }
+  return found;
+}
+
+void Dbdict::sendAliasAttachLoop(Signal *signal,
+                                 Uint32 op_key,
+                                 DatabasePtr alias_ptr,
+                                 Uint32 next_table_id,
+                                 bool is_alter) {
+  Uint32 old_first_rule = RNIL;
+  if (is_alter) {
+    jam();
+    /* The shadow record still holds the OLD rule list for the diff. */
+    DatabasePtr alter_db_ptr;
+    ndbrequire(alias_ptr.p->m_alter_db_ref != RNIL);
+    alter_db_ptr.i = alias_ptr.p->m_alter_db_ref;
+    c_database_pool.getPtr(alter_db_ptr);
+    old_first_rule = alter_db_ptr.p->m_first_alias_rule;
+  }
+  const Uint32 start_table_id = next_table_id;
+  while (next_table_id < m_max_schema_objects) {
+    DictObjectPtr obj_ptr;
+    if (find_object(obj_ptr, next_table_id) &&
+        obj_ptr.p->m_type == DictTabInfo::UserTable) {
+      char tableNameBuf[MAX_TAB_NAME_SIZE + 1];
+      get_table_name(&tableNameBuf[0], obj_ptr.p);
+      Uint32 new_target = RNIL;
+      Uint32 new_priority = 0;
+      const bool new_match =
+        computeAliasRuleMatch(alias_ptr.p->m_first_alias_rule,
+                              tableNameBuf, new_target, new_priority);
+      bool send_detach = false;
+      if (!new_match && is_alter) {
+        jam();
+        Uint32 old_target = RNIL;
+        Uint32 old_priority = 0;
+        send_detach = computeAliasRuleMatch(old_first_rule, tableNameBuf,
+                                            old_target, old_priority);
+      }
+      if (new_match) {
+        jam();
+        alias_ptr.p->m_table_id_check = next_table_id;
+        ConnectTableDbReq* req = (ConnectTableDbReq*)signal->getDataPtrSend();
+        req->senderRef = reference();
+        req->senderData = op_key;
+        req->requestType = is_alter ? ConnectTableDbReq::ALIAS_ATTACH_ALTER
+                                    : ConnectTableDbReq::ALIAS_ATTACH;
+        req->databaseId = alias_ptr.p->key;
+        req->tableId = next_table_id;
+        req->targetDatabaseId = new_target;
+        req->priority = new_priority;
+        DEB_QUOTAS(("Send ALIAS_ATTACH for table %u, alias %u, target %u",
+                    next_table_id, alias_ptr.p->key, new_target));
+        sendSignal(DBTC_REF, GSN_CONNECT_TABLE_DB_REQ, signal,
+                   ConnectTableDbReq::SignalLengthAlias, JBB);
+        return;
+      }
+      if (send_detach) {
+        jam();
+        alias_ptr.p->m_table_id_check = next_table_id;
+        DisconnectTableDbReq* req =
+          (DisconnectTableDbReq*)signal->getDataPtrSend();
+        req->senderRef = reference();
+        req->senderData = op_key;
+        req->requestType = DisconnectTableDbReq::ALIAS_DETACH;
+        req->databaseId = alias_ptr.p->key;
+        req->tableId = next_table_id;
+        DEB_QUOTAS(("Send ALIAS_DETACH for table %u, alias %u",
+                    next_table_id, alias_ptr.p->key));
+        sendSignal(DBTC_REF, GSN_DISCONNECT_TABLE_DB_REQ, signal,
+                   DisconnectTableDbReq::SignalLength, JBB);
+        return;
+      }
+    }
+    if ((next_table_id - start_table_id) > 300) {
+      jam();
+      signal->theData[0] = ZDICT_ALIAS_ATTACH_LOOP;
+      signal->theData[1] = op_key;
+      signal->theData[2] = next_table_id + 1;
+      signal->theData[3] = is_alter ? 1 : 0;
+      sendSignal(reference(), GSN_CONTINUEB, signal, 4, JBB);
+      return;
+    }
+    next_table_id++;
+  }
+  aliasAttachLoopDone(signal, op_key, is_alter);
+}
+
+void Dbdict::aliasAttachLoopDone(Signal *signal,
+                                 Uint32 op_key,
+                                 bool is_alter) {
+  SchemaOpPtr op_ptr;
+  if (!is_alter) {
+    jam();
+    CreateDatabaseRecPtr createDbPtr;
+    ndbrequire(findSchemaOp(op_ptr, createDbPtr, op_key));
+    DEB_QUOTAS(("createDbPtr.i = %u, finished alias attach walk",
+                createDbPtr.i));
+    execute(signal, createDbPtr.p->m_callback,
+            createDbPtr.p->m_request.databaseId);
+    return;
+  }
+  jam();
+  AlterDatabaseRecPtr alterDbPtr;
+  ndbrequire(findSchemaOp(op_ptr, alterDbPtr, op_key));
+  DatabasePtr db_ptr;
+  ndbrequire(find_object(db_ptr, alterDbPtr.p->m_request.databaseId));
+  /* The diff is applied: free the old rule list and the shadow record. */
+  ndbrequire(db_ptr.p->m_alter_db_ref != RNIL);
+  DatabasePtr alter_db_ptr;
+  alter_db_ptr.i = db_ptr.p->m_alter_db_ref;
+  c_database_pool.getPtr(alter_db_ptr);
+  releaseAliasRules(alter_db_ptr.p->m_first_alias_rule,
+                    alter_db_ptr.p->m_alias_rule_count);
+  c_database_pool.release(alter_db_ptr);
+  db_ptr.p->m_alter_db_ref = RNIL;
+  execute(signal, alterDbPtr.p->m_callback, db_ptr.p->key);
+}
+
+/**
+ * The inverse walk (RONDB-1158): one table against every alias, run when a
+ * table is created (also an index, which is skipped) or renamed, so rules
+ * written before their table exists still take effect. Sends one
+ * ALIAS_ATTACH_TABLE or ALIAS_ATTACH_RENAME per matching alias, cursor in
+ * the operation record's m_alias_scan_id.
+ */
+void Dbdict::sendAliasTableScanLoop(Signal *signal,
+                                    Uint32 op_key,
+                                    Uint32 tableId,
+                                    Uint32 next_alias_id,
+                                    bool is_rename) {
+  char tableNameBuf[MAX_TAB_NAME_SIZE + 1];
+  tableNameBuf[0] = 0;
+  {
+    DictObjectPtr tab_obj_ptr;
+    if (!find_object(tab_obj_ptr, tableId) ||
+        tab_obj_ptr.p->m_type != DictTabInfo::UserTable) {
+      jam();
+      /* Indexes resolve through their base table in DBTC. */
+      next_alias_id = m_max_schema_objects;
+    } else {
+      jam();
+      get_table_name(&tableNameBuf[0], tab_obj_ptr.p);
+    }
+  }
+  const Uint32 start_alias_id = next_alias_id;
+  while (next_alias_id < m_max_schema_objects) {
+    DatabasePtr alias_ptr;
+    if (find_object(alias_ptr, next_alias_id) && alias_ptr.p->m_is_alias) {
+      Uint32 target_id = RNIL;
+      Uint32 priority = 0;
+      if (computeAliasRuleMatch(alias_ptr.p->m_first_alias_rule,
+                                tableNameBuf, target_id, priority)) {
+        jam();
+        /* Save the cursor so the CONF can resume behind this alias. */
+        SchemaOpPtr cur_op_ptr;
+        if (is_rename) {
+          jam();
+          AlterTableRecPtr alterTabPtr;
+          ndbrequire(findSchemaOp(cur_op_ptr, alterTabPtr, op_key));
+          alterTabPtr.p->m_alias_scan_id = next_alias_id;
+        } else {
+          jam();
+          CreateTableRecPtr createTabPtr;
+          ndbrequire(findSchemaOp(cur_op_ptr, createTabPtr, op_key));
+          createTabPtr.p->m_alias_scan_id = next_alias_id;
+        }
+        ConnectTableDbReq* req = (ConnectTableDbReq*)signal->getDataPtrSend();
+        req->senderRef = reference();
+        req->senderData = op_key;
+        req->requestType = is_rename ? ConnectTableDbReq::ALIAS_ATTACH_RENAME
+                                     : ConnectTableDbReq::ALIAS_ATTACH_TABLE;
+        req->databaseId = alias_ptr.p->key;
+        req->tableId = tableId;
+        req->targetDatabaseId = target_id;
+        req->priority = priority;
+        DEB_QUOTAS(("Send ALIAS_ATTACH for new table %u, alias %u, target %u",
+                    tableId, alias_ptr.p->key, target_id));
+        sendSignal(DBTC_REF, GSN_CONNECT_TABLE_DB_REQ, signal,
+                   ConnectTableDbReq::SignalLengthAlias, JBB);
+        return;
+      }
+    }
+    if ((next_alias_id - start_alias_id) > 300) {
+      jam();
+      signal->theData[0] = ZDICT_ALIAS_TABLE_SCAN_LOOP;
+      signal->theData[1] = op_key;
+      signal->theData[2] = next_alias_id + 1;
+      signal->theData[3] = is_rename ? 1 : 0;
+      sendSignal(reference(), GSN_CONTINUEB, signal, 4, JBB);
+      return;
+    }
+    next_alias_id++;
+  }
+  SchemaOpPtr op_ptr;
+  if (!is_rename) {
+    jam();
+    CreateTableRecPtr createTabPtr;
+    ndbrequire(findSchemaOp(op_ptr, createTabPtr, op_key));
+    createTab_activate_next(signal, op_ptr);
+    return;
+  }
+  jam();
+  AlterTableRecPtr alterTabPtr;
+  ndbrequire(findSchemaOp(op_ptr, alterTabPtr, op_key));
+  alterTable_handleDatabaseChange_continue(signal, op_ptr);
+}
+
+void Dbdict::createTab_aliasScan(Signal *signal, SchemaOpPtr op_ptr) {
+  CreateTableRecPtr createTabPtr;
+  getOpRec(op_ptr, createTabPtr);
+  createTabPtr.p->m_alias_scan_id = 0;
+  sendAliasTableScanLoop(signal, op_ptr.p->op_key,
+                         createTabPtr.p->m_request.tableId, 0, false);
+}
+
 void Dbdict::execCONNECT_TABLE_DB_CONF(Signal *signal) {
   jamEntry();
 
@@ -33741,12 +34472,42 @@ void Dbdict::execCONNECT_TABLE_DB_CONF(Signal *signal) {
     DEB_QUOTAS(("CONNECT_TABLE_DB_CONF from DBTC, CreateTable"));
     CreateTableRecPtr createTabPtr;
     ndbrequire(findSchemaOp(op_ptr, createTabPtr, conf.senderData));
-    createTab_activate_next(signal, op_ptr);
+    createTab_aliasScan(signal, op_ptr);
   } else if (conf.requestType == ConnectTableDbReq::RENAME_TABLE) {
     DEB_QUOTAS(("CONNECT_TABLE_DB_CONF from DBTC, RenameTable"));
     AlterTableRecPtr alterTabPtr;
     ndbrequire(findSchemaOp(op_ptr, alterTabPtr, conf.senderData));
     alterTable_contComplete(signal, op_ptr);
+  } else if (conf.requestType == ConnectTableDbReq::ALIAS_ATTACH) {
+    DEB_QUOTAS(("CONNECT_TABLE_DB_CONF from DBTC, AliasAttach"));
+    CreateDatabaseRecPtr createDbPtr;
+    DatabasePtr db_ptr;
+    ndbrequire(findSchemaOp(op_ptr, createDbPtr, conf.senderData));
+    ndbrequire(find_object(db_ptr, createDbPtr.p->m_request.databaseId));
+    sendAliasAttachLoop(signal, op_ptr.p->op_key, db_ptr,
+                        db_ptr.p->m_table_id_check + 1, false);
+  } else if (conf.requestType == ConnectTableDbReq::ALIAS_ATTACH_ALTER) {
+    DEB_QUOTAS(("CONNECT_TABLE_DB_CONF from DBTC, AliasAttachAlter"));
+    AlterDatabaseRecPtr alterDbPtr;
+    DatabasePtr db_ptr;
+    ndbrequire(findSchemaOp(op_ptr, alterDbPtr, conf.senderData));
+    ndbrequire(find_object(db_ptr, alterDbPtr.p->m_request.databaseId));
+    sendAliasAttachLoop(signal, op_ptr.p->op_key, db_ptr,
+                        db_ptr.p->m_table_id_check + 1, true);
+  } else if (conf.requestType == ConnectTableDbReq::ALIAS_ATTACH_TABLE) {
+    DEB_QUOTAS(("CONNECT_TABLE_DB_CONF from DBTC, AliasAttachTable"));
+    CreateTableRecPtr createTabPtr;
+    ndbrequire(findSchemaOp(op_ptr, createTabPtr, conf.senderData));
+    sendAliasTableScanLoop(signal, op_ptr.p->op_key,
+                           createTabPtr.p->m_request.tableId,
+                           createTabPtr.p->m_alias_scan_id + 1, false);
+  } else if (conf.requestType == ConnectTableDbReq::ALIAS_ATTACH_RENAME) {
+    DEB_QUOTAS(("CONNECT_TABLE_DB_CONF from DBTC, AliasAttachRename"));
+    AlterTableRecPtr alterTabPtr;
+    ndbrequire(findSchemaOp(op_ptr, alterTabPtr, conf.senderData));
+    sendAliasTableScanLoop(signal, op_ptr.p->op_key,
+                           alterTabPtr.p->m_request.tableId,
+                           alterTabPtr.p->m_alias_scan_id + 1, true);
   } else {
     ndbabort();
   }
@@ -33775,6 +34536,48 @@ void Dbdict::execCONNECT_TABLE_DB_REF(Signal *signal) {
   } else if (ref.requestType == ConnectTableDbReq::RENAME_TABLE) {
     DEB_QUOTAS(("CONNECT_TABLE_DB_REF from DBTC, RenameTable"));
     ndbabort();
+  } else if (ref.requestType == ConnectTableDbReq::ALIAS_ATTACH) {
+    DEB_QUOTAS(("CONNECT_TABLE_DB_REF from DBTC, AliasAttach"));
+    /* An alias CREATE can still fail cleanly. */
+    CreateDatabaseRecPtr createDbPtr;
+    ndbrequire(findSchemaOp(op_ptr, createDbPtr, ref.senderData));
+    setError(op_ptr, ref.errorCode, __LINE__);
+    execute(signal, createDbPtr.p->m_callback, 0);
+  } else if (ref.requestType == ConnectTableDbReq::ALIAS_ATTACH_ALTER) {
+    DEB_QUOTAS(("CONNECT_TABLE_DB_REF from DBTC, AliasAttachAlter"));
+    /**
+     * The alias ALTER is already committed, so a failed attachment (DBTC
+     * attachment pool exhausted) cannot abort it. Log and walk on: the
+     * kernel then under-attaches, which runs unmetered until the sync
+     * loop replays the rule, never over-charges.
+     */
+    AlterDatabaseRecPtr alterDbPtr;
+    ndbrequire(findSchemaOp(op_ptr, alterDbPtr, ref.senderData));
+    g_eventLogger->info("DICT: USER ALIAS attach failed with error %u"
+                        " for alias %u table %u, continuing",
+                        ref.errorCode, ref.databaseId, ref.tableId);
+    DatabasePtr db_ptr;
+    ndbrequire(find_object(db_ptr, alterDbPtr.p->m_request.databaseId));
+    sendAliasAttachLoop(signal, op_ptr.p->op_key, db_ptr,
+                        db_ptr.p->m_table_id_check + 1, true);
+  } else if (ref.requestType == ConnectTableDbReq::ALIAS_ATTACH_TABLE) {
+    DEB_QUOTAS(("CONNECT_TABLE_DB_REF from DBTC, AliasAttachTable"));
+    /* A table CREATE can still fail cleanly. */
+    CreateTableRecPtr createTabPtr;
+    ndbrequire(findSchemaOp(op_ptr, createTabPtr, ref.senderData));
+    setError(op_ptr, ref.errorCode, __LINE__);
+    execute(signal, createTabPtr.p->m_callback, 0);
+  } else if (ref.requestType == ConnectTableDbReq::ALIAS_ATTACH_RENAME) {
+    DEB_QUOTAS(("CONNECT_TABLE_DB_REF from DBTC, AliasAttachRename"));
+    /* The rename is already committed: log and scan on (fail generous). */
+    AlterTableRecPtr alterTabPtr;
+    ndbrequire(findSchemaOp(op_ptr, alterTabPtr, ref.senderData));
+    g_eventLogger->info("DICT: USER ALIAS rename attach failed with error %u"
+                        " for alias %u table %u, continuing",
+                        ref.errorCode, ref.databaseId, ref.tableId);
+    sendAliasTableScanLoop(signal, op_ptr.p->op_key,
+                           alterTabPtr.p->m_request.tableId,
+                           alterTabPtr.p->m_alias_scan_id + 1, true);
   }
   else
   {
@@ -34165,6 +34968,13 @@ Dbdict::dropDatabase_parse(Signal* signal, bool master,
     setError(error, GetTabInfoRef::TableNotDefined, __LINE__);
     return;
   }
+  if (db_ptr.p->m_is_alias != (db.IsAlias != 0)) {
+    jam();
+    /* USER commands do not touch aliases and USER ALIAS commands do not
+     * touch plain users, although the two share the name space. */
+    setError(error, GetTabInfoRef::TableNotDefined, __LINE__);
+    return;
+  }
   impl_req->databaseVersion = db_ptr.p->m_version;
   if (check_write_obj(impl_req->databaseId,
                       trans_ptr.p->m_transId,
@@ -34361,6 +35171,24 @@ void Dbdict::execDISCONNECT_TABLE_DB_CONF(Signal *signal) {
   } else if (conf.requestType == DisconnectTableDbReq::RENAME_TABLE) {
     jam();
     alterTable_tableDisconnectedDatabase(signal, conf.senderData);
+  } else if (conf.requestType == DisconnectTableDbReq::ALIAS_DETACH) {
+    jam();
+    /* Only the alias ALTER diff walk sends single detaches. */
+    SchemaOpPtr op_ptr;
+    AlterDatabaseRecPtr alterDbPtr;
+    ndbrequire(findSchemaOp(op_ptr, alterDbPtr, conf.senderData));
+    DatabasePtr db_ptr;
+    ndbrequire(find_object(db_ptr, alterDbPtr.p->m_request.databaseId));
+    sendAliasAttachLoop(signal, op_ptr.p->op_key, db_ptr,
+                        db_ptr.p->m_table_id_check + 1, true);
+  } else if (conf.requestType == DisconnectTableDbReq::ALIAS_DETACH_TABLE) {
+    jam();
+    /* A rename dropped the table's attachments; re-scan the new name. */
+    SchemaOpPtr op_ptr;
+    AlterTableRecPtr alterTabPtr;
+    ndbrequire(findSchemaOp(op_ptr, alterTabPtr, conf.senderData));
+    sendAliasTableScanLoop(signal, op_ptr.p->op_key,
+                           alterTabPtr.p->m_request.tableId, 0, true);
   } else {
     ndbabort();
   }
@@ -34563,6 +35391,8 @@ void Dbdict::dropDatabase_complete(Signal* signal, SchemaOpPtr op_ptr) {
               ", m_current_allocated_disk_quota_mb = %u MBytes",
     m_current_allocated_memory_quota_mb,
     m_current_allocated_disk_quota_mb));
+  releaseAliasRules(db_ptr.p->m_first_alias_rule,
+                    db_ptr.p->m_alias_rule_count);
   c_database_pool.release(db_ptr);
   sendTransConf(signal, op_ptr);
 }
@@ -34787,6 +35617,13 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
     setError(error, GetTabInfoRef::TableNotDefined, __LINE__);
     return;
   }
+  if (db_ptr.p->m_is_alias != (db.IsAlias != 0)) {
+    jam();
+    /* USER commands do not touch aliases and USER ALIAS commands do not
+     * touch plain users, although the two share the name space. */
+    setError(error, GetTabInfoRef::TableNotDefined, __LINE__);
+    return;
+  }
   impl_req->databaseVersion = db_ptr.p->m_version;
   if (check_write_obj(impl_req->databaseId,
                       trans_ptr.p->m_transId,
@@ -34908,6 +35745,46 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
     alter_db_ptr.p->m_name = db_ptr.p->m_name;
     alter_db_ptr.p->key = db_ptr.p->key;
     alter_db_ptr.p->m_version = db_ptr.p->m_version;
+    alter_db_ptr.p->m_is_alias = db_ptr.p->m_is_alias;
+    if (db_ptr.p->m_is_alias) {
+      jam();
+      /**
+       * The shadow record carries the alias's NEW rule list. A client SET
+       * or scoped DROP sends one rule with AliasRuleCmd add/remove, applied
+       * to a clone of the live list; the master then re-packs the full new
+       * list with AliasRuleCmd 0 (replace), which is what the participants
+       * and the restart path parse.
+       */
+      bool rules_ok = true;
+      if (db.AliasRuleCmd == DictDatabaseInfo::AliasRuleReplace) {
+        jam();
+        rules_ok = unpackAliasRules(db.AliasRules, db.AliasRulesLen,
+                                    alter_db_ptr.p->m_first_alias_rule,
+                                    alter_db_ptr.p->m_alias_rule_count,
+                                    op_ptr.p->m_restart, error);
+      } else if (!copyAliasRules(db_ptr.p->m_first_alias_rule,
+                                 alter_db_ptr.p->m_first_alias_rule,
+                                 alter_db_ptr.p->m_alias_rule_count)) {
+        jam();
+        rules_ok = false;
+        setError(error, CreateTableRef::NoMoreTableRecords, __LINE__);
+      } else {
+        jam();
+        rules_ok = unpackAliasRules(
+          db.AliasRules, db.AliasRulesLen,
+          alter_db_ptr.p->m_first_alias_rule,
+          alter_db_ptr.p->m_alias_rule_count, false, error,
+          db.AliasRuleCmd == DictDatabaseInfo::AliasRuleRemove);
+      }
+      if (!rules_ok) {
+        jam();
+        db_ptr.p->m_alter_db_ref = RNIL;
+        releaseAliasRules(alter_db_ptr.p->m_first_alias_rule,
+                          alter_db_ptr.p->m_alias_rule_count);
+        c_database_pool.release(alter_db_ptr);
+        return;
+      }
+    }
     if (master) {
       jam();
       releaseSections(handle);
@@ -34928,6 +35805,8 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
       if (err) {
         jam();
         db_ptr.p->m_alter_db_ref = RNIL;
+        releaseAliasRules(alter_db_ptr.p->m_first_alias_rule,
+                          alter_db_ptr.p->m_alias_rule_count);
         c_database_pool.release(alter_db_ptr);
         setError(error, err, __LINE__);
         return;
@@ -35085,6 +35964,9 @@ Dbdict::alterDatabase_commit(Signal* signal, SchemaOpPtr op_ptr)
     alter_db_ptr.p->m_max_parallel_transactions;
   req->maxParallelComplexQueries =
     alter_db_ptr.p->m_max_parallel_complex_queries;
+  req->isAlias = alter_db_ptr.p->m_is_alias ? 1 : 0;
+  /* The shadow holds the NEW rule list until the attach walk is done. */
+  req->aliasAllTargetId = getAliasAllTargetId(alter_db_ptr);
   sendSignal(DBTC_REF, GSN_ALTER_DB_REQ, signal,
              AlterDbReq::SignalLength, JBB);
 }
@@ -35157,6 +36039,22 @@ Dbdict::execALTER_DB_CONF(Signal *signal)
     alter_db_ptr.p->m_max_parallel_transactions;
   db_ptr.p->m_max_parallel_complex_queries =
     alter_db_ptr.p->m_max_parallel_complex_queries;
+  if (db_ptr.p->m_is_alias) {
+    jam();
+    /**
+     * The live record takes the shadow's rule list and the shadow keeps
+     * the OLD list: the attach walk diffs the two to update DBTC and
+     * frees the shadow when it is done (aliasAttachLoopDone).
+     */
+    const Uint32 old_head = db_ptr.p->m_first_alias_rule;
+    const Uint32 old_count = db_ptr.p->m_alias_rule_count;
+    db_ptr.p->m_first_alias_rule = alter_db_ptr.p->m_first_alias_rule;
+    db_ptr.p->m_alias_rule_count = alter_db_ptr.p->m_alias_rule_count;
+    alter_db_ptr.p->m_first_alias_rule = old_head;
+    alter_db_ptr.p->m_alias_rule_count = old_count;
+    sendAliasAttachLoop(signal, op_ptr.p->op_key, db_ptr, 0, true);
+    return;
+  }
 
   c_database_pool.release(alter_db_ptr);
   db_ptr.p->m_alter_db_ref = RNIL;
@@ -35239,6 +36137,8 @@ Dbdict::alterDatabase_abortParse(Signal* signal, SchemaOpPtr op_ptr)
       DatabasePtr alter_db_ptr;
       alter_db_ptr.i = db_ptr.p->m_alter_db_ref;
       c_database_pool.getPtr(alter_db_ptr);
+      releaseAliasRules(alter_db_ptr.p->m_first_alias_rule,
+                        alter_db_ptr.p->m_alias_rule_count);
       c_database_pool.release(alter_db_ptr);
       db_ptr.p->m_alter_db_ref = RNIL;
     }
@@ -35357,6 +36257,15 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
       errorLine = __LINE__;
       break;
     }
+    if (((req->requestInfo & QueryDatabaseFilter::AliasOnly) &&
+         !db_ptr.p->m_is_alias) ||
+        ((req->requestInfo & QueryDatabaseFilter::ExcludeAlias) &&
+         db_ptr.p->m_is_alias)) {
+      jam();
+      error = GetTabInfoRef::TableNotDefined;
+      errorLine = __LINE__;
+      break;
+    }
   } while (false);
   if (error != 0) {
     jam();
@@ -35387,6 +36296,19 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
     db_ptr.p->m_max_parallel_transactions;
   conf->MaxParallelComplexQueries =
     db_ptr.p->m_max_parallel_complex_queries;
+  if ((req->requestInfo & QueryDatabaseFilter::AliasOnly) &&
+      db_ptr.p->m_is_alias) {
+    jam();
+    Uint32 rules[DictDatabaseInfo::MaxAliasRulesBytes / 4];
+    Uint32 used = packAliasRules(db_ptr.p->m_first_alias_rule,
+                                 (char*)rules, sizeof(rules));
+    LinearSectionPtr lsPtr[3];
+    lsPtr[0].p = rules;
+    lsPtr[0].sz = used / 4;
+    sendSignal(req->senderRef, GSN_GET_DATABASE_CONF, signal,
+               GetDatabaseConf::SignalLength, JBB, lsPtr, 1);
+    return;
+  }
   sendSignal(req->senderRef, GSN_GET_DATABASE_CONF, signal,
              GetDatabaseConf::SignalLength, JBB);
 }
@@ -35406,7 +36328,11 @@ void Dbdict::execLIST_DATABASE_REQ(Signal *signal) {
   Uint32 loop_count = 0;
   for (; dbId < c_noOfMetaTables; dbId++) {
     bool ok = find_object(db_ptr, dbId);
-    if (ok && db_ptr.p->m_is_user == is_user) {
+    if (ok && db_ptr.p->m_is_user == is_user &&
+        !((req->requestInfo & QueryDatabaseFilter::AliasOnly) &&
+          !db_ptr.p->m_is_alias) &&
+        !((req->requestInfo & QueryDatabaseFilter::ExcludeAlias) &&
+          db_ptr.p->m_is_alias)) {
       found = true;
       break;
     }
@@ -35456,6 +36382,18 @@ void Dbdict::execLIST_DATABASE_REQ(Signal *signal) {
     db_ptr.p->m_max_parallel_transactions;
   conf->MaxParallelComplexQueries =
     db_ptr.p->m_max_parallel_complex_queries;
+  if ((req->requestInfo & QueryDatabaseFilter::AliasOnly) &&
+      db_ptr.p->m_is_alias) {
+    jam();
+    Uint32 rules[DictDatabaseInfo::MaxAliasRulesBytes / 4];
+    Uint32 used = packAliasRules(db_ptr.p->m_first_alias_rule,
+                                 (char*)rules, sizeof(rules));
+    lsPtr[1].p = rules;
+    lsPtr[1].sz = used / 4;
+    sendSignal(req->senderRef, GSN_LIST_DATABASE_CONF, signal,
+               ListDatabaseConf::SignalLength, JBB, lsPtr, 2);
+    return;
+  }
   sendSignal(req->senderRef, GSN_LIST_DATABASE_CONF, signal,
              ListDatabaseConf::SignalLength, JBB, lsPtr, 1);
 }

@@ -40,6 +40,9 @@ typedef struct HopsworksAPIKey {
 // User table
 typedef struct HopsworksUsers {
   char email[USERS_EMAIL_SIZE];
+  // 8-char generated Hopsworks login ([a-z0-9]{8}); used to build the
+  // project-user rate limit identity (RONDB-978)
+  char username[USERS_USERNAME_SIZE];
 } HopsworksUsers;
 
 // project_team table
@@ -48,8 +51,9 @@ typedef struct HopsworksProjectTeam {
   char team_role[PROJECT_TEAM_TEAM_ROLE_SIZE];
 } HopsworksProjectTeam;
 
-// project_team table
+// project table
 typedef struct HopsworksProject {
+  int id;
   char projectname[PROJECT_PROJECTNAME_SIZE];
 } HopsworksProject;
 
@@ -63,6 +67,24 @@ RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key);
 
 #include <string>
 #include <vector>
+
+// A shared_feature_store row reduced to what the caller needs: the shared
+// store and which of the API key owner's own projects received the share.
+struct SharedStoreRef {
+  int store_id;
+  int recipient_project_id;
+};
+
+// A database the user reaches only through a share, paired with the project
+// of theirs that received it (RONDB-978). Hopsworks grants the share to the
+// MySQL account "<RecipientProject>_<username>"
+// (OnlineFeaturestoreController.shareOnlineFeatureStore), so SQL reads of the
+// shared database are billed to that account; RDRS bills the same bucket so
+// shared-store REST traffic is metered identically instead of running free.
+struct HopsworksSharedDbBilling {
+  std::string db;                 // the shared store's database name
+  std::string recipient_project;  // original-case name of the receiving project
+};
 
 // One fine-grained data grant: a single online table the user may read,
 // either entirely (columns empty) or restricted to the listed columns.
@@ -86,6 +108,19 @@ struct HopsworksUserGrants {
   std::vector<std::string> visible_dbs;
   // Table/column-level data grants.
   std::vector<HopsworksFineGrant> fine_grants;
+  // hopsworks.users.username of the key's owner (RONDB-978)
+  std::string username;
+  // Original-case project names of ALL the user's project_team
+  // memberships (any role, including 'Feature store restricted'): the
+  // projects Hopsworks creates an online-FS MySQL account
+  // "<ProjectName>_<username>" for. Unlike full_dbs this excludes shared
+  // stores and preserves case (RONDB-978 rate limit identities).
+  std::vector<std::string> member_projects;
+  // Databases reachable only through a store share, each with the receiving
+  // member project that determines the rate limit identity (RONDB-978).
+  // A database that is also one of the owner's own projects never appears
+  // here - membership always wins.
+  std::vector<HopsworksSharedDbBilling> shared_db_billing;
 };
 
 /*
@@ -114,6 +149,57 @@ RS_Status find_all_api_keys(std::vector<HopsworksAPIKeyEntry> *keys);
 
 // PK read by integer id — returns prefix, secret, salt, user_id
 RS_Status find_api_key_by_id(int id, HopsworksAPIKeyEntry *entry);
+
+class Ndb;
+
+// ---- Rate limit groups (RONDB-1158) ---------------------------------------
+// Desired state for the sync loop, expanded from the three
+// hopsworks.rate_limit_group* tables. Who rows become the online-FS MySQL
+// account names (one per project_team membership of a uid row, one per
+// member of a project row, clip31(ProjectName_username) as in
+// make_rate_limit_identity); What rows become table or database scopes.
+
+// One alias rule scope: a single online table or a whole database. The
+// default-constructed scope (an empty db) is the ALL rule / "no scope".
+struct RateLimitScope {
+  bool is_table = false;  // true: --table=<db>.<table>; false: --database=<db>
+  std::string db;         // the feature store's database name
+  std::string table;      // "<fg_name>_<version>"; empty for a database scope
+  bool operator==(const RateLimitScope &o) const {
+    return is_table == o.is_table && db == o.db && table == o.table;
+  }
+};
+
+struct RateLimitDesiredGroup {
+  int group_id;
+  std::string name;
+  // budget_percent in hundredths (decimal(5,2): "20.00" -> 2000), so the
+  // percent -> rate-per-sec conversion stays exact integer math.
+  int budget_percent_hundredths;
+  bool all_scope;                      // data_scope = 'ALL'
+  std::vector<std::string> accounts;   // sorted, deduplicated alias names
+  std::vector<RateLimitScope> scopes;  // sorted; empty for ALL and for inert
+};
+
+/*
+ * Read the version counter hopsworks bumps on every group-table write.
+ * *found is false when the table or the row does not exist (the Hopsworks
+ * migration has not run or no group was ever saved): the caller treats that
+ * as "no groups", not as an error.
+ */
+RS_Status read_rate_limit_group_version(Ndb *ndb_object,
+                                        unsigned long long *version,
+                                        bool *found);
+
+/*
+ * Expand the group tables into the desired state, sorted by group id (the
+ * order the sync applies them in). Who/What rows whose referenced user,
+ * project, feature group or store vanished mid-read (FK-cascade race) are
+ * skipped; a failed table read is an error so the caller skips the run
+ * rather than mistaking it for an empty desired state.
+ */
+RS_Status expand_rate_limit_groups(Ndb *ndb_object,
+                                   std::vector<RateLimitDesiredGroup> *groups);
 
 #endif  // __cplusplus
 

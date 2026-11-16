@@ -30,6 +30,20 @@
 
 #define JAM_FILE_ID 562
 
+/**
+ * requestInfo bits shared by GetDatabaseReq and ListDatabaseReq. Bit 0 picks
+ * the user kind ($-prefixed objects), which includes USER ALIAS objects so
+ * the NDB API name cache resolves aliases with no client change. The alias
+ * bits narrow that: USER commands pass ExcludeAlias, USER ALIAS commands
+ * pass AliasOnly. An AliasOnly GET or LIST reply carries the alias's packed
+ * rule list (DictDatabaseInfo::AliasRules layout) in section ALIAS_RULES.
+ */
+struct QueryDatabaseFilter {
+  static constexpr Uint32 UserKind = 1;
+  static constexpr Uint32 AliasOnly = 2;
+  static constexpr Uint32 ExcludeAlias = 4;
+};
+
 struct GetDatabaseReq {
   static constexpr Uint32 SignalLength = 3;
 
@@ -55,6 +69,9 @@ struct GetDatabaseConf {
   Uint32 MaxTransactionSize;
   Uint32 MaxParallelTransactions;
   Uint32 MaxParallelComplexQueries;
+
+  /* Present only on an AliasOnly request against a USER ALIAS. */
+  SECTION( ALIAS_RULES = 0 );
 
   friend bool printGET_DATABASE_CONF(FILE *, const Uint32 *, Uint32, Uint16);
 };
@@ -96,6 +113,8 @@ struct ListDatabaseConf {
   Uint32 MaxParallelTransactions;
   Uint32 MaxParallelComplexQueries;
   SECTION( DATABASE_NAME = 0 );
+  /* Present only on an AliasOnly request against a USER ALIAS. */
+  SECTION( ALIAS_RULES = 1 );
 
   friend bool printLIST_DATABASE_CONF(FILE *, const Uint32 *, Uint32, Uint16);
 };

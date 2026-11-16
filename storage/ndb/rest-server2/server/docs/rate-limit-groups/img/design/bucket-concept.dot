@@ -1,0 +1,49 @@
+digraph bucketconcept {
+  rankdir=LR; newrank=true;
+  graph [fontname="Helvetica", fontsize=11, pad=0.3, nodesep=0.5, ranksep=0.8, bgcolor="white"];
+  node  [shape=plaintext, fontname="Helvetica", fontsize=11];
+  edge  [fontname="Helvetica", fontsize=9, color="#096b67", arrowsize=0.7, penwidth=1.1];
+
+  who1 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="7" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>WHO shares it</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">Project <B>Recommender</B><BR ALIGN="LEFT"/><FONT POINT-SIZE="9" COLOR="#566574">Alice, Ava, and whoever joins later</FONT></TD></TR>
+</TABLE>>];
+
+  bucket1 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="8" COLOR="#096b67">
+ <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>Group: recommender_team_rl</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4"><B>20%</B> of the cluster<BR/><FONT POINT-SIZE="9" COLOR="#566574">one shared budget, scope: ALL</FONT></TD></TR>
+</TABLE>>];
+
+  what1 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="7" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>WHAT it applies to</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT"><B>All data</B> they may read<BR ALIGN="LEFT"/><FONT POINT-SIZE="9" COLOR="#566574">own feature store and anything shared with them</FONT></TD></TR>
+</TABLE>>];
+
+  who2 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="7" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>WHO shares it</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT"><B>Mary, Mike</B><BR ALIGN="LEFT"/><FONT POINT-SIZE="9" COLOR="#566574">two named people</FONT></TD></TR>
+</TABLE>>];
+
+  bucket2 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="8" COLOR="#096b67">
+ <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>Group: marketing_clicks_rl</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4"><B>2%</B> of the cluster<BR/><FONT POINT-SIZE="9" COLOR="#566574">one shared budget, scope: SELECTED</FONT></TD></TR>
+</TABLE>>];
+
+  what2 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="7" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>WHAT it applies to</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">Feature group <B>marketing_clicks</B><BR ALIGN="LEFT"/><FONT POINT-SIZE="9" COLOR="#566574">one table; other data is not affected</FONT></TD></TR>
+</TABLE>>];
+
+  { rank=same; who1; what1; who2; what2; }
+  who1 -> what1 -> who2 -> what2 [style=invis];
+  who1 -> bucket1;
+  what1 -> bucket1 [dir=back];
+  who2 -> bucket2;
+  what2 -> bucket2 [dir=back];
+}

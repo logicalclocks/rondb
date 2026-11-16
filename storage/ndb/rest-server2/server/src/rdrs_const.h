@@ -100,6 +100,10 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define RESTRICTED_FEATURE_ACCESS       "restricted_feature_access"
 #define FEATURE_GROUP            "feature_group"
 #define ON_DEMAND_FEATURE_GROUP  "on_demand_feature_group"
+#define RATE_LIMIT_GROUP         "rate_limit_group"
+#define RATE_LIMIT_GROUP_USER    "rate_limit_group_user"
+#define RATE_LIMIT_GROUP_DATA    "rate_limit_group_data"
+#define RATE_LIMIT_GROUP_VERSION "rate_limit_group_version"
 
 // project_team.team_role value that routes a member to the restricted_*
 // per-user grant tables instead of full member access
@@ -111,6 +115,7 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define API_KEY_SECRET_SIZE                512 + 2   /* +2 for ndb len or '\0'*/
 #define API_KEY_SALT_SIZE                  256 + 2   /* +2 for ndb len or '\0'*/
 #define USERS_EMAIL_SIZE                   150 + 1   /* +1 for ndb len or '\0'*/
+#define USERS_USERNAME_SIZE                10 + 1    /* +1 for ndb len or '\0'*/
 #define PROJECT_TEAM_TEAM_MEMBER_SIZE      150 + 1   /* +1 for ndb len or '\0'*/
 #define PROJECT_TEAM_TEAM_ROLE_SIZE        32 + 1    /* +1 for ndb len or '\0'*/
 #define SHARED_FEATURE_NAME_SIZE           63 + 1    /* +1 for ndb len or '\0'*/
@@ -128,6 +133,8 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define SERVING_KEY_JOIN_ON_SIZE           1000 + 2  /* +2 for ndb len or '\0'*/
 #define SERVING_KEY_JOIN_PREFIX_SIZE       63 + 1    /* +1 for ndb len or '\0'*/
 #define FEATURE_GROUP_SUBJECT_SIZE         255 + 1   /* +1 for ndb len or '\0'*/
+#define RATE_LIMIT_GROUP_NAME_SIZE         63 + 1    /* +1 for ndb len or '\0'*/
+#define RATE_LIMIT_GROUP_SCOPE_SIZE        10 + 1    /* +1 for ndb len or '\0'*/
 
 // Data types
 #define DECIMAL_MAX_SIZE_IN_BYTES           9 * 4   /*4 bytes per 9 digits. 65/9 + 1 * 4*/

@@ -132,6 +132,8 @@
 #define ZDICT_CONNECT_LOOP 12
 #define ZDICT_DISCONNECT_LOOP 13
 #define ZNSL_FK_REPORT 14
+#define ZDICT_ALIAS_ATTACH_LOOP 15
+#define ZDICT_ALIAS_TABLE_SCAN_LOOP 16
 
 
 /*--------------------------------------------------------------*/
@@ -694,10 +696,46 @@ class Dbdict : public SimulatedBlock {
    */
   PageRecord c_indexPage;
 
+  /**
+   * One rule of a USER ALIAS (RONDB-1158). Rules are kept per alias as a
+   * singly linked list through m_next_rule in insertion order; evaluation
+   * order (table before database before all) is decided where the rules
+   * are used, not by the list order. Scope and target are stored by NAME,
+   * not id: a table dropped and recreated must keep matching, so table ids
+   * are resolved where the rule is attached to the data path, never here.
+   */
+  struct AliasRule {
+    AliasRule()
+    {
+      m_next_rule = RNIL;
+      m_target_id = RNIL;
+    }
+
+    static bool isCompatible(Uint32 type) { return DictTabInfo::isDatabase(type); }
+    Uint32 m_magic;
+
+    union {
+      Uint32 nextPool;
+      Uint32 nextList;
+    };
+
+    Uint32 m_scope_type;  // DictDatabaseInfo::AliasScopeType
+    Uint32 m_target_id;   // the target USER's object id, resolved at SET time
+    Uint32 m_next_rule;
+    char m_scope_name[MAX_TAB_NAME_SIZE];  // internal name; empty for ALL
+    char m_target_name[MAX_DB_NAME_SIZE];  // without the '$' prefix
+  };
+  typedef Ptr<AliasRule> AliasRulePtr;
+  typedef RecordPool<RWPool<AliasRule> > AliasRule_pool;
+  AliasRule_pool c_alias_rule_pool;
+
   struct Database {
     Database()
     {
       m_alter_db_ref = RNIL;
+      m_is_alias = false;
+      m_alias_rule_count = 0;
+      m_first_alias_rule = RNIL;
     }
 
     static bool isCompatible(Uint32 type) { return DictTabInfo::isDatabase(type); }
@@ -725,6 +763,14 @@ class Dbdict : public SimulatedBlock {
     Uint32 m_max_parallel_transactions;
     Uint32 m_max_parallel_complex_queries;
     bool m_is_user;
+    /**
+     * A USER ALIAS (RONDB-1158) is a user-kind object (m_is_user is also
+     * true, so every user-path check accepts it) with no budget of its own
+     * and an ordered rule list resolving (caller, table) to a target USER.
+     */
+    bool m_is_alias;
+    Uint32 m_alias_rule_count;
+    Uint32 m_first_alias_rule;  // head of AliasRule list, insertion order
   };
   typedef Ptr<Database> DatabasePtr;
   typedef RecordPool<RWPool<Database> > Database_pool;
@@ -3027,6 +3073,9 @@ class Dbdict : public SimulatedBlock {
     // Table has been modified by subOps
     bool m_modified_by_subOps;
 
+    // USER ALIAS scan cursor during activate (RONDB-1158)
+    Uint32 m_alias_scan_id;
+
     CreateTableRec() : OpRec(g_opInfo, (Uint32 *)&m_request) {
       std::memset(&m_request, 0, sizeof(m_request));
       m_tabInfoPtrI = RNIL;
@@ -3036,6 +3085,7 @@ class Dbdict : public SimulatedBlock {
       m_abortPrepareDone = false;
       m_fully_replicated_trigger = false;
       m_modified_by_subOps = false;
+      m_alias_scan_id = 0;
     }
 
 #if defined(VM_TRACE)
@@ -3206,6 +3256,9 @@ class Dbdict : public SimulatedBlock {
     bool m_sub_suma_enable;
     bool m_sub_suma_filter;
 
+    // USER ALIAS re-scan cursor after a rename (RONDB-1158)
+    Uint32 m_alias_scan_id;
+
     AlterTableRec() : OpRec(g_opInfo, (Uint32 *)&m_request) {
       std::memset(&m_request, 0, sizeof(m_request));
       m_newTablePtrI = RNIL;
@@ -3227,6 +3280,7 @@ class Dbdict : public SimulatedBlock {
       m_sub_copy_data = false;
       m_sub_suma_enable = false;
       m_sub_suma_filter = false;
+      m_alias_scan_id = 0;
     }
 #if defined(VM_TRACE)
     void print(NdbOut&) const;
@@ -4791,6 +4845,39 @@ class Dbdict : public SimulatedBlock {
 
   void packDatabaseIntoPages(SimpleProperties::Writer & w,
                              DatabasePtr db_ptr);
+
+  /**
+   * USER ALIAS rule-list helpers (RONDB-1158). They operate on a detached
+   * (first_rule, rule_count) list so a list can be built and thrown away
+   * before any dictionary object exists: a malformed client blob is then
+   * refused before anything needs unwinding.
+   */
+  Uint32 packAliasRules(Uint32 first_rule, char* buf, Uint32 bufSize);
+  bool unpackAliasRules(const char* buf, Uint32 len,
+                        Uint32& first_rule, Uint32& rule_count,
+                        bool is_restart, ErrorInfo& error,
+                        bool remove_rules = false);
+  bool addAliasRule(Uint32& first_rule, Uint32& rule_count,
+                    Uint32 scope_type, const char* scope_name,
+                    const char* target_name,
+                    bool is_restart, ErrorInfo& error);
+  void removeAliasRule(Uint32& first_rule, Uint32& rule_count,
+                       Uint32 scope_type, const char* scope_name);
+  bool copyAliasRules(Uint32 src_first, Uint32& dst_first,
+                      Uint32& dst_count);
+  void releaseAliasRules(Uint32& first_rule, Uint32& rule_count);
+  Uint32 getAliasAllTargetId(DatabasePtr db_ptr);
+  bool computeAliasRuleMatch(Uint32 first_rule, const char* table_name,
+                             Uint32& target_id, Uint32& priority);
+  void sendAliasAttachLoop(Signal* signal, Uint32 op_key,
+                           DatabasePtr alias_ptr, Uint32 next_table_id,
+                           bool is_alter);
+  void aliasAttachLoopDone(Signal* signal, Uint32 op_key, bool is_alter);
+  void createTab_aliasScan(Signal* signal, SchemaOpPtr op_ptr);
+  void sendAliasTableScanLoop(Signal* signal, Uint32 op_key, Uint32 tableId,
+                              Uint32 next_alias_id, bool is_rename);
+  void alterTable_handleDatabaseChange_continue(Signal* signal,
+                                                SchemaOpPtr op_ptr);
 
   void createDb_writeTableConf(Signal* signal,
                                Uint32 op_key,

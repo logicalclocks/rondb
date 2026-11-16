@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RonDB rate-limit buckets: the Hopsworks tables</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f8fa; --paper: #fff; --text: #202a33; --muted: #566574;
+    --accent: #096b67; --line: #d7e0e5; --soft: #edf4f4; --code: #eef1f4;
+    --note: #fff7e7; --note-line: #b67a12;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141a1f; --paper: #1b232a; --text: #e6edf2; --muted: #afbec9;
+      --accent: #75d5c9; --line: #3b4a56; --soft: #203634; --code: #27323c;
+      --note: #342c1d; --note-line: #e1b45c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-padding-top: 1.5rem; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 58rem; margin: auto; padding: 3.5rem 2rem 5rem; }
+  header { border-bottom: 2px solid var(--accent); padding-bottom: 1.8rem; }
+  .eyebrow { color: var(--accent); font-size: .8rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  h1 { max-width: 24ch; margin: .6rem 0 1rem; font-size: clamp(2rem, 5vw, 2.8rem); line-height: 1.15; letter-spacing: -.025em; }
+  h2 { margin: 3rem 0 1rem; font-size: 1.5rem; line-height: 1.3; letter-spacing: -.015em; }
+  h3 { margin: 1.8rem 0 .65rem; font-size: 1.08rem; line-height: 1.4; }
+  p, ul, ol, dl { max-width: 72ch; margin: 0 0 1rem; }
+  li { margin-bottom: .55rem; }
+  strong { font-weight: 650; }
+  a { color: var(--accent); text-underline-offset: .18em; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+  .lead { font-size: 1.18rem; line-height: 1.6; max-width: 64ch; }
+  .meta, figcaption, caption { color: var(--muted); font-size: .88rem; }
+  nav { padding: 1.2rem 0; border-bottom: 1px solid var(--line); }
+  nav ol { display: grid; grid-template-columns: 1fr 1fr; gap: .35rem 2rem; padding-left: 1.3rem; margin: 0; font-size: .92rem; }
+  nav li { margin: 0; }
+  code, pre { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: .87em; }
+  code { background: var(--code); border-radius: 3px; padding: .12em .3em; overflow-wrap: anywhere; }
+  pre { background: var(--code); border: 1px solid var(--line); border-radius: 6px; padding: 1rem; overflow-x: auto; line-height: 1.55; margin: 1rem 0; }
+  pre code { padding: 0; background: none; overflow-wrap: normal; }
+  .tablewrap { overflow-x: auto; margin: 1rem 0 1.4rem; }
+  table { width: 100%; border-collapse: collapse; background: var(--paper); font-size: .9rem; }
+  caption { text-align: left; padding: 0 0 .6rem; }
+  th, td { padding: .7rem .8rem; text-align: left; vertical-align: top; border: 1px solid var(--line); }
+  th { background: var(--soft); font-weight: 650; }
+  td p:last-child { margin: 0; }
+  .rows td, .rows th { padding: .45rem .7rem; font-size: .86rem; }
+  .rows caption { font-weight: 650; color: var(--text); font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: .85rem; }
+  .rows caption span { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; font-weight: 400; color: var(--muted); }
+  .note, .example { padding: 1rem 1.2rem; margin: 1.3rem 0; border-radius: 5px; }
+  .note { background: var(--note); border-left: 3px solid var(--note-line); }
+  .example { background: var(--soft); border-left: 3px solid var(--accent); }
+  .note p:last-child, .example p:last-child, .example ol:last-child, .example ul:last-child { margin-bottom: 0; }
+  figure { margin: 1.3rem 0; }
+  figure.erd { margin: 1.4rem 0 1.8rem; }
+  figure.erd img { display: block; width: 100%; height: auto; background: #fff; border: 1px solid var(--line); border-radius: 6px; }
+  .mock { background: var(--paper); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .mock-title { background: var(--soft); padding: .75rem 1rem; font-weight: 650; }
+  .mock dl { display: grid; grid-template-columns: 7rem 1fr; gap: .75rem; padding: 1rem; margin: 0; }
+  .mock dt { font-weight: 650; }
+  .mock dd { margin: 0; }
+  .mock-footer { border-top: 1px solid var(--line); padding: .75rem 1rem; font-size: .88rem; color: var(--muted); }
+  footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+  @media (max-width: 640px) {
+    main { padding: 2rem 1rem 3rem; }
+    nav ol { grid-template-columns: 1fr; }
+    th, td { padding: .55rem; }
+    .tablewrap table { min-width: 35rem; }
+    .mock dl { grid-template-columns: 5rem 1fr; }
+  }
+  @media print {
+    :root { color-scheme: light; --bg: #fff; --paper: #fff; --text: #111; --muted: #444; --accent: #075651; --line: #bbb; --soft: #f0f5f4; --code: #f3f3f3; --note: #faf7ef; --note-line: #886020; }
+    body { font-size: 10pt; }
+    main { max-width: none; padding: 0; }
+    nav { display: none; }
+    h2, h3 { break-after: avoid; }
+    h2 { margin-top: 1.8rem; }
+    tr, .note, .example, figure { break-inside: avoid; }
+    .tablewrap { overflow: visible; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <p class="eyebrow">RonDB · Design proposal · October 2026</p>
+  <h1>Rate-limit buckets: shared database budgets for teams</h1>
+  <p class="lead">Today RonDB can limit how much database work one API key may cause.
+  That is the wrong unit. A team has several people and each person has several keys,
+  and what an administrator actually wants to say is “this team may use 20% of the
+  cluster” or “this team may use 20% of <em>our</em> cluster when it reads <em>our</em>
+  data”. This document proposes a way to say exactly that in Hopsworks.</p>
+  <p>The proposal adds one new concept, the <strong>rate-limit bucket</strong>: a named
+  budget that a group of people share, applied either to everything they read or to
+  specific feature groups and feature stores. Hopsworks stores buckets in three new
+  database tables. The RonDB REST server (RDRS) reads those tables, works out which bucket
+  each incoming request belongs to, and tags the request with the bucket’s name. RonDB
+  then enforces the budget using the rate-limit feature it already has.</p>
+  <p>The document is built around one worked example: four projects sharing a single RonDB
+  cluster. It shows the exact rows that get stored, how an API key is mapped to a bucket,
+  and how the limits reach the cluster. Deployments with several RonDB clusters are
+  covered in <a href="#multi">section 9</a>.</p>
+  <p class="meta">Status: proposal. RonDB’s rate limiting exists today. Everything else
+  described here (the tables, the admin page, the RDRS lookup, and the sync to the cluster)
+  is new work. No existing Hopsworks table is changed.</p>
+</header>
+
+<nav aria-label="Contents">
+  <ol>
+    <li><a href="#problem">The problem and the idea</a></li>
+    <li><a href="#teams">The teams, and what Hopsworks already stores about them</a></li>
+    <li><a href="#tables">The new tables</a></li>
+    <li><a href="#example">The example: one cluster, three wishes</a></li>
+    <li><a href="#mapping">How an API key ends up in a bucket</a></li>
+    <li><a href="#rules">Rules when saving and deleting</a></li>
+    <li><a href="#sync">Getting the limits onto the cluster</a></li>
+    <li><a href="#admin">The admin page</a></li>
+    <li><a href="#multi">Later: more than one cluster</a></li>
+    <li><a href="#build">What needs to be built</a></li>
+    <li><a href="#mechanics">Reference: how RonDB enforces a limit</a></li>
+    <li><a href="#ddl">Appendix: proposed table definitions</a></li>
+  </ol>
+</nav>
+
+<section id="problem">
+<h2>1. The problem and the idea</h2>
+<p>RonDB can put a budget on a <em>name</em>. The command</p>
+<pre><code>ndb_mgm&gt; USER SET etl_jobs --rate-per-sec = 10000</code></pre>
+<p>means: all database work tagged <code>etl_jobs</code> may use about 1% of one CPU on
+each data node. Today RDRS tags every transaction with the caller’s API key, so every API
+key is its own budget.</p>
+<div class="example">
+  <p><strong>Why that is not enough.</strong> Alice and Ava are the Recommender team.
+  Alice has two API keys, Ava has one. The team should get 20% of the cluster.</p>
+  <ul>
+    <li>Give each key 20%? The team now has 60%, and 80% when Ava creates another key.</li>
+    <li>Give each key 7%? Alice’s training job hits its 7% while the other two keys sit idle.</li>
+  </ul>
+  <p>What the administrator wants to say is: “the Recommender team, together, gets 20%.”</p>
+</div>
+<p>A <strong>rate-limit bucket</strong> says exactly that. It has a name, a budget, a list
+of <strong>who</strong> shares it, and a list of <strong>what</strong> data it applies to.
+When Alice reads a table, RDRS finds the bucket that contains both Alice and that table,
+and tags the transaction with the bucket’s name. Everyone in the bucket draws from the
+same budget; one busy member can use it all.</p>
+<p>Two things a bucket is <em>not</em>: it is not a permission (listing Rosa in a bucket
+does not let her read anything new), and it is not a reservation (20% is a ceiling, not
+guaranteed capacity).</p>
+</section>
+
+<section id="teams">
+<h2>2. The teams, and what Hopsworks already stores about them</h2>
+<p>The example has four projects on one RonDB cluster. Marketing has shared its feature
+store with Recommender and with Recommender2. Sales has shared <code>sales_orders</code>
+with Recommender.</p>
+<div class="tablewrap"><table>
+  <thead><tr><th scope="col">Project</th><th scope="col">Members</th><th scope="col">Feature groups it owns</th><th scope="col">Shared with</th></tr></thead>
+  <tbody>
+    <tr><td>Marketing</td><td>Mary, Mike</td><td><code>marketing_clicks</code>, <code>marketing_campaigns</code></td><td>Recommender, Recommender2 (whole store)</td></tr>
+    <tr><td>Sales</td><td>Sam</td><td><code>sales_orders</code></td><td>Recommender (that one feature group)</td></tr>
+    <tr><td>Recommender</td><td>Alice, Ava</td><td><code>recommender_features</code></td><td>nobody</td></tr>
+    <tr><td>Recommender2</td><td>Rosa</td><td><code>recommender2_features</code></td><td>nobody</td></tr>
+  </tbody>
+</table></div>
+<p>A <strong>feature group</strong> is a table of features. A <strong>feature store</strong>
+is a project’s collection of feature groups. In RonDB a feature store is one database,
+named after the project in lower case (<code>marketing</code>), and each feature group is
+a table in it named <code>&lt;name&gt;_&lt;version&gt;</code>
+(<code>marketing_clicks_1</code>).</p>
+<p>The bucket tables refer to people, projects, and data by the ids Hopsworks already
+has. Here are the existing rows the examples will point at.</p>
+<figure class="erd"><img src="img/existing-tables.png" alt="The existing Hopsworks rows the examples point at, with their foreign keys. Ids are illustrative; only the columns that matter are shown."><figcaption>The existing Hopsworks rows the examples point at, with their foreign keys. Ids are illustrative; only the columns that matter are shown. Grey italic text is explanation, not a column.</figcaption></figure>
+<p>The shares are in <code>shared_feature_store</code> (store 21 → projects 13 and 14)
+and <code>shared_feature_group</code> (feature group 33 → project 13). RDRS already reads
+all of these tables to authenticate a key and to decide whether a read is allowed.
+Nothing in them changes.</p>
+</section>
+
+<section id="tables">
+<h2>3. The new tables</h2>
+<p>The proposal adds three tables to the <code>hopsworks</code> database. They refer to
+the existing rows above by id and change nothing in the existing tables. This section
+explains what each table means; the column definitions are in the
+<a href="#ddl">appendix</a>.</p>
+<div class="tablewrap"><table>
+  <thead><tr><th scope="col">Table</th><th scope="col">Answers the question</th><th scope="col">One row is</th></tr></thead>
+  <tbody>
+    <tr><td><code>rate_limit_bucket</code></td><td>Which buckets exist, and how big is each?</td><td>One bucket: a name, a percentage, and whether it covers all data or selected data.</td></tr>
+    <tr><td><code>rate_limit_bucket_user</code></td><td>Who shares the bucket?</td><td>One person (<code>users.uid</code>) <em>or</em> one whole project (<code>project.id</code>).</td></tr>
+    <tr><td><code>rate_limit_bucket_data</code></td><td>Which data does it apply to?</td><td>One feature group (<code>feature_group.id</code>) <em>or</em> one whole feature store (<code>feature_store.id</code>).</td></tr>
+  </tbody>
+</table></div>
+
+<h3>3.1 <code>rate_limit_bucket</code></h3>
+<ul>
+  <li><strong><code>name</code></strong> is the string RonDB sees. RDRS tags transactions
+  with it, and the cluster gets a <code>USER SET &lt;name&gt; …</code> entry. Unique.
+  Renaming would mean dropping and recreating the RonDB entry, so the UI should not allow
+  it.</li>
+  <li><strong><code>budget_percent</code></strong> is a share of the cluster’s capacity.
+  It is stored as a percentage, not as a RonDB rate, and converted at install time
+  (<a href="#sync">section 7</a>).</li>
+  <li><strong><code>data_scope</code></strong> is <code>ALL</code> (“whatever its members
+  read”; the bucket has no data rows) or <code>SELECTED</code> (“only the data rows
+  listed”). <a href="#rules">Section 6</a> explains why this is a column and not “no data
+  rows means all”.</li>
+</ul>
+
+<h3>3.2 <code>rate_limit_bucket_user</code></h3>
+<p>A row sets <code>uid</code> or <code>project_id</code>, never both. The two kinds of
+row resolve to people in different ways, and the difference matters:</p>
+<ul>
+  <li><strong>A <code>uid</code> row names exactly one login user</strong>, by
+  <code>users.uid</code>. Nothing is interpreted. Row <code>(1001, NULL)</code> is Mary
+  and nobody else.</li>
+  <li><strong>A <code>project_id</code> row is a rule, not a list.</strong> It means
+  “every user who has a <code>project_team</code> row for this project at the moment the
+  request arrives”. RDRS already computes that: when it authenticates a key it looks up
+  <code>project_team</code> by the owner’s email and gets back the owner’s (project,
+  role) pairs. The Who check for a project row is just “is this project among them”.
+  Three consequences follow.
+    <ul>
+      <li><em>Every role counts.</em> Data owner, data scientist, observer, and
+      feature-store-restricted members all match. <code>team_role</code> is not consulted.</li>
+      <li><em>Service accounts count.</em> Hopsworks adds <code>onlinefs</code> and
+      <code>airflow</code> (as data scientists) and <code>srvmanager</code> (as data
+      owner) to every project’s team. They are members like anyone else, so a project row
+      includes them. In practice only requests that reach RDRS with an API key are affected,
+      and these accounts mostly do not make such requests, but the rule should be stated and
+      a decision taken on whether to exclude them.</li>
+      <li><em>Membership changes write nothing here.</em> When Bob joins Recommender,
+      RDRS sees him in bucket 1 after its next membership refresh. When Ava leaves, she
+      drops out the same way. The row <code>(NULL, 13)</code> is unchanged in both cases.</li>
+    </ul>
+  </li>
+</ul>
+<p><strong>A person can match more than one row.</strong> Alice is in Recommender. If she
+also joins Marketing, and Marketing has its own <code>ALL</code> bucket, she now matches
+two buckets at the same level on every read, which is a tie. <a href="#rules">Section
+6</a> covers how ties are prevented; the point here is that a project row’s membership is
+decided by <code>project_team</code>, so a tie can appear through a membership change
+long after both buckets were saved.</p>
+<p><strong>Why people and not API keys?</strong> Look at the <code>api_key</code> rows in
+section 2: a key has a <code>user_id</code> and no project. RDRS already turns a key into
+its owner to authenticate the request. So the question “is this key in a bucket?” becomes
+“is Alice in a bucket?”, and the answer is the same for key 501, key 502, and the key
+Alice creates tomorrow. API keys never appear in the new tables.</p>
+
+<h3>3.3 <code>rate_limit_bucket_data</code></h3>
+<p>A row sets <code>feature_group_id</code> or <code>feature_store_id</code>, never both.
+Each kind of row resolves to something concrete in RonDB:</p>
+<ul>
+  <li><strong>A <code>feature_group_id</code> row is one online table.</strong> Row 31
+  resolves to database <code>marketing</code> (the store’s name) and table
+  <code>marketing_clicks_1</code> (the feature group’s name, an underscore, and its
+  version). Two things follow. A feature group row in Hopsworks is one <em>version</em>,
+  so if Marketing creates <code>marketing_clicks</code> version 2 that is a new
+  <code>feature_group</code> row with a new id, and a bucket row for id 31 does not cover
+  it; the administrator must add it. And if the feature group is not online-enabled there
+  is no table, and the row matches nothing.</li>
+  <li><strong>A <code>feature_store_id</code> row is one database.</strong> Row 21
+  resolves to database <code>marketing</code>, and matches every table in it: every
+  feature group, every version, including ones created after the row was saved.</li>
+</ul>
+<p>RDRS does not need to parse anything at request time. When it loads the bucket
+tables it expands each data row into a lookup key, (database, table) for a feature group
+row and (database) for a store row, using the same two lookups it already uses to expand
+fine-grained sharing grants: <code>feature_group</code> by id for name, version, and
+store, then <code>feature_store</code> by id for the database name. An incoming request
+names a database and a table, and those two strings are looked up directly.</p>
+<p>A row describes data, not a sharing relationship. “Marketing caps its own use of
+<code>marketing_clicks_1</code>” and “Recommender2’s use of Marketing’s database is
+capped” are both just rows pointing at Marketing’s data. Whether a read is
+<em>allowed</em> is still decided by the sharing tables; this table only decides which
+budget pays for it.</p>
+</section>
+
+<section id="example">
+<h2>4. The example: one cluster, three wishes</h2>
+<p>The administrator has three requirements:</p>
+<ol>
+  <li>“Recommender gets 20% of the cluster, whatever its members read.”</li>
+  <li>“Marketing’s own people may use at most 2% on <code>marketing_clicks</code>.”</li>
+  <li>“Recommender2 may use at most 5% when reading Marketing’s data.”</li>
+</ol>
+<p>That takes three buckets. Here is every row that gets written:</p>
+<figure class="erd"><img src="img/new-tables.png" alt="Every row written for the three wishes (teal headers), and the existing rows they reference (grey headers). Arrows point from a foreign key to the row it names."><figcaption>Every row written for the three wishes (teal headers), and the existing rows they reference (grey headers). Arrows point from a foreign key to the row it names. Grey italic text is explanation, not a column.</figcaption></figure>
+<p>That is nine rows in total. Bucket 1 has no data rows because its scope is <code>ALL</code>. The three
+budgets add up to 27%, under RonDB’s 50% cap (<a href="#mechanics">section 11</a>).
+Wish 2 shows that a team can cap its <em>own</em> data without any sharing involved.</p>
+
+<h3>Who gets charged for what</h3>
+<div class="tablewrap"><table>
+  <thead><tr><th scope="col">Who reads what</th><th scope="col">Charged to</th><th scope="col">Why</th></tr></thead>
+  <tbody>
+    <tr><td>Alice reads <code>recommender_features_1</code></td><td><code>recommender</code></td><td>Alice is in project 13; bucket 1 covers all data.</td></tr>
+    <tr><td>Alice reads <code>marketing_clicks_1</code></td><td><code>recommender</code></td><td>Same. Borrowed data is no different for an <code>ALL</code> bucket.</td></tr>
+    <tr><td>Ava reads <code>sales_orders_1</code></td><td><code>recommender</code></td><td>Same bucket; Alice and Ava share the 20%.</td></tr>
+    <tr><td>Mary reads <code>marketing_clicks_1</code></td><td><code>clicks_own</code></td><td>Mary (1001) is listed, and so is feature group 31.</td></tr>
+    <tr><td>Mary reads <code>marketing_campaigns_1</code></td><td>no bucket</td><td>Bucket 2 lists feature group 31 only. Mary’s read is handled the ordinary per-key way.</td></tr>
+    <tr><td>Rosa reads <code>marketing_clicks_1</code></td><td><code>rec2_on_marketing</code></td><td>Rosa is in project 14; store 21 contains feature group 31.</td></tr>
+    <tr><td>Rosa reads <code>marketing_campaigns_1</code></td><td><code>rec2_on_marketing</code></td><td>Same store, same bucket.</td></tr>
+    <tr><td>Rosa reads <code>sales_orders_1</code></td><td>rejected</td><td>Sales never shared with Recommender2. Authorization fails before any bucket is considered.</td></tr>
+    <tr><td>Sam reads <code>sales_orders_1</code></td><td>no bucket</td><td>Sam is in no bucket. Ordinary per-key behavior.</td></tr>
+  </tbody>
+</table></div>
+<div class="example">
+  <p><strong>When two buckets match, the more specific one wins.</strong> Suppose Marketing
+  adds a fourth bucket, <code>rec2_clicks</code>: project 14 on feature group 31, 1%.
+  Rosa reading <code>marketing_clicks_1</code> now matches bucket 3 (store level) and
+  bucket 4 (feature-group level). Feature group beats store, so she is charged to
+  <code>rec2_clicks</code>. Her reads of <code>marketing_campaigns_1</code> still go to
+  <code>rec2_on_marketing</code>. The two budgets are separate: the 5% is not a cap on
+  her total.</p>
+</div>
+</section>
+
+<section id="mapping">
+<h2>5. How an API key ends up in a bucket</h2>
+<p>RDRS keeps an in-memory copy of the Hopsworks tables it needs, kept fresh in the background:
+<code>api_key</code>, <code>users</code>, <code>project_team</code>,
+<code>feature_store</code>, <code>feature_group</code>, and the sharing tables. The three
+bucket tables join that list. From the bucket rows RDRS builds two lookup maps:</p>
+<figure class="erd"><img src="img/lookup-maps.png" alt="The two maps RDRS builds from the bucket rows, and Alice’s request passing through them."><figcaption>The two maps RDRS builds from the bucket rows, and Alice’s request passing through them. Grey italic text is explanation, not a column.</figcaption></figure>
+
+<h3>Alice’s request, step by step</h3>
+<pre><code>POST /0.1.0/marketing/marketing_clicks_1/pk-read
+X-API-KEY: Qk3mZx8pL2vN7bRt.&lt;64-character secret&gt;</code></pre>
+<div class="tablewrap"><table>
+  <thead><tr><th scope="col">Step</th><th scope="col">Lookup</th><th scope="col">Result</th><th scope="col">Status</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>Key prefix <code>Qk3mZx8pL2vN7bRt</code> → <code>api_key</code> row 501; verify the secret against the stored hash.</td><td><code>user_id</code> = 1004 (Alice)</td><td>exists</td></tr>
+    <tr><td>2</td><td>1004 → <code>users.email</code> = alice@acme.io → every <code>project_team</code> row with that <code>team_member</code>, any role</td><td>member of project 13</td><td>exists</td></tr>
+    <tr><td>3</td><td>The request names database <code>marketing</code> and table <code>marketing_clicks_1</code>. In the cache, <code>marketing</code> is store 21 and (<code>marketing</code>, <code>marketing_clicks_1</code>) is feature group 31.</td><td>store 21, feature group 31</td><td>exists</td></tr>
+    <tr><td>4</td><td>Is project 13 allowed to read it? Not a member of project 11; <code>shared_feature_store</code> has 21 → 13.</td><td>allowed</td><td>exists</td></tr>
+    <tr><td>5</td><td>person → buckets for 1004</td><td>{1}</td><td><strong>new</strong></td></tr>
+    <tr><td>6</td><td>data → buckets, most specific first: feature group 31 → {2}; store 21 → {3}; all → {1}</td><td>{2}, {3}, {1}</td><td><strong>new</strong></td></tr>
+    <tr><td>7</td><td>First level with something in common with {1}: {2}∩{1} = {}, {3}∩{1} = {}, {1}∩{1} = {1}</td><td>bucket 1, <code>recommender</code></td><td><strong>new</strong></td></tr>
+    <tr><td>8</td><td><code>setUserId("recommender")</code> on the transaction; RonDB meters it.</td><td>tagged</td><td>exists</td></tr>
+  </tbody>
+</table></div>
+<p>Steps 5 to 7 are the new work: two map lookups and an intersection per request. Here is
+the same walk for the other keys from section 2:</p>
+<div class="tablewrap"><table>
+  <thead><tr><th scope="col">Key</th><th scope="col">Owner</th><th scope="col">Reads</th><th scope="col">Person’s buckets</th><th scope="col">Data’s buckets (FG / store / all)</th><th scope="col">Tagged</th></tr></thead>
+  <tbody>
+    <tr><td>502 <code>Hc9t…</code></td><td>1004 Alice</td><td><code>marketing_clicks_1</code></td><td>{1}</td><td>{2} / {3} / {1}</td><td><code>recommender</code></td></tr>
+    <tr><td>503 <code>Zr5n…</code></td><td>1005 Ava</td><td><code>sales_orders_1</code></td><td>{1}</td><td>{} / {} / {1}</td><td><code>recommender</code></td></tr>
+    <tr><td>504 <code>Tp7g…</code></td><td>1001 Mary</td><td><code>marketing_clicks_1</code></td><td>{2}</td><td>{2} / {3} / {1}</td><td><code>clicks_own</code></td></tr>
+    <tr><td>504 <code>Tp7g…</code></td><td>1001 Mary</td><td><code>marketing_campaigns_1</code></td><td>{2}</td><td>{} / {3} / {1}</td><td>none; per-key as today</td></tr>
+    <tr><td>505 <code>Wd2x…</code></td><td>1006 Rosa</td><td><code>marketing_campaigns_1</code></td><td>{3}</td><td>{} / {3} / {1}</td><td><code>rec2_on_marketing</code></td></tr>
+  </tbody>
+</table></div>
+<p>Three things are worth noticing in that table. Keys 501 and 502 both belong to Alice
+and land in the same bucket; a third key she creates tomorrow will too, with no change to any table. Mary’s
+one key lands in a bucket for one table and in none for another, because the match is on
+(person, data), not on the key. And no API key, prefix, or secret is stored in the bucket
+tables.</p>
+
+<h3>Edge cases</h3>
+<ul>
+  <li><strong>Nothing matches</strong> (Sam, or Mary on <code>marketing_campaigns_1</code>):
+  RDRS does what it does today, which is tag the API key, or nothing, depending on the
+  configured mode.</li>
+  <li><strong>A tie at the same level</strong>: Hopsworks refuses to save it
+  (<a href="#rules">section 6</a>). If a stale cache produces one anyway, RDRS picks the
+  lower bucket id and logs it.</li>
+  <li><strong>One transaction, several feature groups</strong> (a feature-view read):
+  a RonDB transaction carries one name. The proposal is to charge the whole transaction to
+  the most restrictive matching bucket, with no splitting and no extra charge to a
+  team-wide bucket. What “most restrictive” means when budgets are equal still needs to be
+  written down.</li>
+  <li><strong>Sharing is removed</strong>: step 4 rejects the request, even though bucket
+  rows still list the person and the data. Buckets never grant access.</li>
+</ul>
+</section>
+
+<section id="rules">
+<h2>6. Rules when saving and deleting</h2>
+<h3>What Hopsworks checks on save</h3>
+<div class="tablewrap"><table>
+  <thead><tr><th scope="col">Rule</th><th scope="col">Example</th></tr></thead>
+  <tbody>
+    <tr><td>A Who row names a person or a project, not both. A What row names a feature group or a store, not both.</td><td>A row with <code>uid = 1001</code> and <code>project_id = 11</code>. Rejected.</td></tr>
+    <tr><td>Scope matches rows: an <code>ALL</code> bucket has no What rows; a <code>SELECTED</code> bucket has at least one.</td><td><code>clicks_own</code> saved as <code>SELECTED</code> with no What rows. Allowed, but shown as inert: it matches nothing.</td></tr>
+    <tr><td>No ties: two buckets at the same level of detail may not cover the same person and the same data. Levels: feature group, store, all. A person is “covered” by a project row if they have any <code>project_team</code> row for that project.</td><td>Bucket X: {Mary} on feature group 31. Bucket Y: {project 11} on feature group 31. Mary is in both at the same level. Rejected. (Y on store 21 instead would be fine: X is more specific and wins.)<br><br>Two <code>ALL</code> buckets, one for project 13 and one for project 11, while Alice is a member of both. Every read by Alice would tie. Rejected.</td></tr>
+    <tr><td>Budget between 0 and 50. RonDB will not accept one entry above 50%.</td><td>A bucket at 60%. Rejected.</td></tr>
+  </tbody>
+</table></div>
+<p>The no-ties check also has to run when someone joins a project, because joining can
+create an overlap that did not exist at save time: the two <code>ALL</code> buckets above
+are both valid until Alice joins Marketing. Hopsworks then has to either refuse the
+membership change with a message naming the two buckets, or accept it and mark both
+buckets as conflicting on the admin page. Refusing is simpler and is the proposal; RDRS
+still falls back to the lower bucket id if a stale cache produces a tie. Whether all budgets <em>add up</em>
+under 50% is checked by RonDB when the entry is installed; Hopsworks can warn, and the sync
+has to surface a refusal (<a href="#sync">section 7</a>).</p>
+<p>Who may create buckets is a product decision. A natural split would be that
+administrators create <code>ALL</code> buckets, while a data owner of a store or feature
+group may create <code>SELECTED</code> buckets on their own data.</p>
+
+<h3>What happens when something is deleted</h3>
+<p>The new tables use cascading foreign keys, so deleting a user, project, feature group,
+or store cleans up the bucket rows that pointed at it. Convenient, with one trap.</p>
+<div class="tablewrap"><table>
+  <thead><tr><th scope="col">Deleted</th><th scope="col">Example</th><th scope="col">Result</th></tr></thead>
+  <tbody>
+    <tr><td>A bucket</td><td>Admin deletes <code>clicks_own</code>.</td><td>Its Who and What rows go with it. The next sync runs <code>USER DROP clicks_own</code>. Mary’s reads fall back to per-key behavior.</td></tr>
+    <tr><td>A person or project</td><td>Mike leaves the company; user 1002 is deleted.</td><td>His row in bucket 2 disappears. The bucket now covers only Mary. Harmless.</td></tr>
+    <tr><td>A feature group or store</td><td>Marketing drops <code>marketing_clicks</code> (feature group 31).</td><td>The What row in bucket 2 disappears, and bucket 2 has no What rows left. If “no rows” meant “all data”, Mary and Mike would suddenly be limited to 2% for <em>everything</em> they read. With <code>data_scope = SELECTED</code> the bucket is simply inert and the UI shows a warning.</td></tr>
+    <tr><td>Nothing, but membership changes</td><td>Bob joins Recommender.</td><td>No rows change. After RDRS’s next membership refresh, Bob’s keys land in bucket 1.</td></tr>
+  </tbody>
+</table></div>
+<div class="note">
+  <p><strong>Decision needed.</strong> Earlier drafts said “a bucket with no What rows
+  covers all data.” The third row above is why this draft has the <code>data_scope</code>
+  column instead. The alternative, refusing to delete a feature group while a bucket points
+  at it, would block ordinary feature-store cleanup because of an unrelated admin setting.
+  The column is the smaller cost.</p>
+</div>
+</section>
+
+<section id="sync">
+<h2>7. Getting the limits onto the cluster</h2>
+<p>Tagging a transaction <code>recommender</code> does nothing unless the cluster has a
+<code>USER</code> entry with that exact name. RonDB treats an unknown name as “no limit”.
+So the rows in Hopsworks have to become <code>USER SET</code> commands on the cluster’s
+management server, and this is part of the design.</p>
+<p>RDRS is the natural place to do this: it already reads the Hopsworks tables, it already
+talks to the cluster, and it runs in every deployment. On a timer, it does the following:</p>
+<div class="example">
+  <ol>
+    <li>Reads the three <code>rate_limit_bucket</code> rows.</li>
+    <li>Converts each percentage using the data nodes’ thread count. With 20 threads:
+    20% → 4,000,000, 2% → 400,000, 5% → 1,000,000 (<a href="#mechanics">section 11</a>).</li>
+    <li>Runs <code>USER LIST</code> and fixes the differences:
+    <pre><code>USER SET recommender       --rate-per-sec = 4000000
+USER SET clicks_own        --rate-per-sec = 400000
+USER SET rec2_on_marketing --rate-per-sec = 1000000</code></pre>
+    A changed budget becomes <code>USER ALTER</code>; a bucket that is gone from Hopsworks
+    becomes <code>USER DROP</code>.</li>
+  </ol>
+</div>
+<p><code>USER SET</code> on an existing name followed by <code>USER ALTER</code> is
+harmless, so several RDRS instances doing this against the same cluster do not conflict.
+The loop also repairs entries lost to a cluster restart or a manual drop.</p>
+<div class="note">
+  <p><strong>Saving a bucket does not make it active.</strong> Between the save and the
+  next sync plus cache refresh, Alice’s reads are tagged with a name the cluster does not
+  know yet, and run unlimited. The admin page needs to show the state (pending, installed,
+  refused because the 50% cap is full), and the implementation has to decide whether RDRS
+  may tag a bucket before it is installed.</p>
+</div>
+</section>
+
+<section id="admin">
+<h2>8. The admin page</h2>
+<p>One page: a list of buckets on the left, and a form for the selected bucket on the
+right. Each form field writes to exactly one table, shown in the right margin. The list
+also shows the cluster state from <a href="#sync">section 7</a>, so an administrator can
+see when a saved bucket has actually been installed.</p>
+<figure class="erd"><img src="img/admin-page.png" alt="Mockup of the admin page: a list of the three example buckets with their cluster state, the edit form for rec2_on_marketing, and callouts naming the table and column each field writes."><figcaption>Proposed admin page, editing <code>rec2_on_marketing</code>. “All accessible data” is an explicit choice that sets <code>data_scope = ALL</code>; leaving the selected list empty is not how you say “everything”.</figcaption></figure>
+<p>Three details carried from earlier sections: the name is read-only after creation
+(renaming would drop and recreate the RonDB entry); the budget field shows the converted
+<code>rate-per-sec</code> so the administrator sees what the cluster will receive; and the
+sentence preview restates the bucket in words, which is the quickest check that Who and
+What were filled in as intended.</p>
+</section>
+
+<section id="multi">
+<h2>9. Later: more than one cluster</h2>
+<p>Some deployments give each project its own RonDB cluster (M for Marketing, S for Sales,
+R for Recommender). The owner of each cluster then wants to say “Recommender may use 20%
+of <em>my</em> cluster, Recommender2 30%.” The same three tables express that with no
+cluster column:</p>
+<figure class="erd"><img src="img/multi-cluster.png" alt="The same three tables with a cluster per project. No row names a cluster; each cluster’s RDRS installs the buckets whose data it holds."><figcaption>The same three tables with a cluster per project. No row names a cluster; each cluster’s RDRS installs the buckets whose data it holds.</figcaption></figure>
+<p>Each cluster’s RDRS runs the sync from section 7 but installs only the buckets whose data
+is on its own cluster, which it checks by asking its own data connection whether the
+database exists. M installs the first two, so “20%” and “30%” are percentages of M; S
+installs the third; R installs nothing. The matching in section 5 is unchanged, because
+Alice’s request for Marketing’s data arrives at M’s RDRS, which reads the same bucket
+tables from the main cluster over the metadata connection it already has.</p>
+<p>Only one thing would need a cluster name: giving an <code>ALL</code> bucket a different
+size on one cluster (“Recommender gets 20% everywhere but 40% on R”). That would be a
+fourth table, <code>rate_limit_cluster_override</code> (bucket, cluster name, percent),
+plus a <code>ClusterName</code> setting in RDRS. It is in the appendix for completeness
+and is not needed for a single cluster.</p>
+</section>
+
+<section id="build">
+<h2>10. What needs to be built</h2>
+<div class="tablewrap"><table>
+  <thead><tr><th scope="col">Area</th><th scope="col">Work</th></tr></thead>
+  <tbody>
+    <tr><td>Hopsworks tables</td><td>Migration with the three tables (appendix); entities; the save rules in section 6; re-check “no ties” when memberships change.</td></tr>
+    <tr><td>Hopsworks admin page</td><td>Section 8, plus install state. Decide who may create <code>ALL</code> vs <code>SELECTED</code> buckets.</td></tr>
+    <tr><td>RDRS cache</td><td>Load the three tables with the existing Hopsworks metadata; build the two maps in section 5.</td></tr>
+    <tr><td>RDRS matching</td><td>Steps 5 to 7 of section 5. Specify the tie and multi-group rules.</td></tr>
+    <tr><td>RDRS sync</td><td>The loop in section 7, including what to report when RonDB refuses a <code>USER SET</code>.</td></tr>
+    <tr><td>RonDB</td><td>Nothing. Named limits, transaction tagging, and the <code>USER</code> commands are on 26.02.</td></tr>
+    <tr><td>SQL traffic</td><td>Not in a first version. MySQL tags the per-project account name, not a person. <code>ALL</code> buckets could cover SQL with an account → person mapping; data-scoped SQL limits need more.</td></tr>
+    <tr><td>Superuser queries</td><td>Partially shared feature groups and restricted-role queries run as a superuser today and bypass any caller-based limit. Decide: attribute them, or exempt them explicitly.</td></tr>
+    <tr><td>Several clusters</td><td>Section 9: the local-data check in the sync; optionally the override table and <code>ClusterName</code>.</td></tr>
+  </tbody>
+</table></div>
+</section>
+
+<section id="mechanics">
+<h2>11. Reference: how RonDB enforces a limit</h2>
+<p>This section describes the rate-limit mechanism RonDB already has. Nothing here is
+new; it is the machinery that a bucket name is handed to.</p>
+
+<h3>A limit measures work, not requests</h3>
+<pre><code>ndb_mgm&gt; USER SET etl_jobs --rate-per-sec = 10000</code></pre>
+<p>This gives <code>etl_jobs</code> 10,000 microseconds of accounted work per second on
+each data node, which is 1% of one CPU thread. Each operation has an assigned cost:</p>
+<div class="tablewrap"><table>
+  <caption>Illustrative costs from the RonDB rate-limit guide. Real throughput depends on the workload.</caption>
+  <thead><tr><th scope="col">Operation</th><th scope="col">Approximate cost</th></tr></thead>
+  <tbody>
+    <tr><td>Primary-key read</td><td>1.25 microseconds</td></tr>
+    <tr><td>Insert, update, or delete</td><td>4 microseconds</td></tr>
+    <tr><td>Scanned row examined</td><td>0.75 microseconds</td></tr>
+    <tr><td>Data read</td><td>plus 1.5 microseconds per kB</td></tr>
+    <tr><td>Data written</td><td>plus 3 microseconds per kB</td></tr>
+  </tbody>
+</table></div>
+<p>So a 10,000 budget allows roughly 8,000 small primary-key reads or 2,500 writes per
+second per node. A value of zero turns enforcement off for that name.</p>
+
+<h3>Turning a percentage into a rate</h3>
+<pre><code>rate-per-sec = budget_percent / 100 × thread_count × 1,000,000
+
+20% on a 20-thread data node:  0.20 × 20 × 1,000,000 = 4,000,000</code></pre>
+<p>All worker threads on a data node add to one counter per name. Each node enforces the
+full rate on its own work; there is no cluster-wide counter. Evenly spread work can use
+the budget on every node; work that lands mostly on one node hits that node’s limit
+first.</p>
+
+<h3>The 50% cap</h3>
+<p>All configured rates on a cluster may add up to at most half a data node’s capacity:
+on a 20-thread node, 10,000,000 per second. An entry counts toward the cap even when its
+owner is idle. That is why 1,000 per-key limits of 10,000 each would fill a 20-thread
+node completely, and why a handful of buckets is a better fit than one limit per key.
+Buckets do not raise the cap and do not reserve CPU for their members.</p>
+
+<h3>What a limited caller sees</h3>
+<p>RonDB adds up work under the name and lets the total drain at the configured rate.
+Short bursts pass. Sustained excess first slows work, then rejects reads, and under heavy
+overload rejects writes too. Rejections are temporary; callers should back off and retry.
+The NDB API reports error 2203 for reads and 243 for writes; SQL reports 1297 with the
+underlying NDB error; RDRS answers HTTP 429.</p>
+
+<h3>Managing names</h3>
+<pre><code>ndb_mgm&gt; USER ALTER etl_jobs --rate-per-sec = 20000
+ndb_mgm&gt; USER GET etl_jobs
+ndb_mgm&gt; USER LIST
+ndb_mgm&gt; USER DROP etl_jobs</code></pre>
+<p>A name may be up to 128 bytes. RonDB stores it internally as <code>$name</code> so it
+cannot collide with a database name; callers always use the plain name. The NDB API
+attaches a name to a transaction with <code>NdbTransaction::setUserId</code>, which is
+what RDRS uses. With <code>ndb_user_rate_limits = ON</code>, MySQL tags its transactions
+with the connection’s login name.</p>
+<p><strong>A name with no configured limit runs unlimited.</strong> Matching the right
+bucket and installing it on the cluster are both required.</p>
+</section>
+
+<section id="ddl">
+<h2>12. Appendix: proposed table definitions</h2>
+<p>In the style of the existing Hopsworks Flyway migrations (the next free number is
+V96). Every id column matches the <code>int(11)</code> key it references. Names and
+constraints are open to review.</p>
+<pre><code>CREATE TABLE `hopsworks`.`rate_limit_bucket` (
+  `id`             int(11)      NOT NULL AUTO_INCREMENT,
+  `name`           varchar(63)  COLLATE latin1_general_cs NOT NULL,
+  `budget_percent` decimal(5,2) NOT NULL,
+  `data_scope`     varchar(10)  NOT NULL DEFAULT 'SELECTED',   -- 'ALL' or 'SELECTED'
+  `created`        timestamp    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `created_by`     int(11)      NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `name` (`name`),
+  CONSTRAINT `rlb_created_by_fk` FOREIGN KEY (`created_by`) REFERENCES `users` (`uid`)
+    ON DELETE NO ACTION ON UPDATE NO ACTION
+) ENGINE = ndbcluster;
+
+CREATE TABLE `hopsworks`.`rate_limit_bucket_user` (
+  `id`         int(11) NOT NULL AUTO_INCREMENT,
+  `bucket_id`  int(11) NOT NULL,
+  `uid`        int(11) DEFAULT NULL,       -- a login user, or
+  `project_id` int(11) DEFAULT NULL,       -- a whole project (exactly one is set)
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `bucket_uid`     (`bucket_id`, `uid`),
+  UNIQUE KEY `bucket_project` (`bucket_id`, `project_id`),
+  CONSTRAINT `rlbu_bucket_fk`  FOREIGN KEY (`bucket_id`)  REFERENCES `rate_limit_bucket` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `rlbu_uid_fk`     FOREIGN KEY (`uid`)        REFERENCES `users`   (`uid`) ON DELETE CASCADE,
+  CONSTRAINT `rlbu_project_fk` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`)  ON DELETE CASCADE
+) ENGINE = ndbcluster;
+
+CREATE TABLE `hopsworks`.`rate_limit_bucket_data` (
+  `id`               int(11) NOT NULL AUTO_INCREMENT,
+  `bucket_id`        int(11) NOT NULL,
+  `feature_group_id` int(11) DEFAULT NULL,  -- one feature group, or
+  `feature_store_id` int(11) DEFAULT NULL,  -- a whole feature store (exactly one is set)
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `bucket_fg` (`bucket_id`, `feature_group_id`),
+  UNIQUE KEY `bucket_fs` (`bucket_id`, `feature_store_id`),
+  CONSTRAINT `rlbd_bucket_fk` FOREIGN KEY (`bucket_id`)        REFERENCES `rate_limit_bucket` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `rlbd_fg_fk`     FOREIGN KEY (`feature_group_id`) REFERENCES `feature_group` (`id`)     ON DELETE CASCADE,
+  CONSTRAINT `rlbd_fs_fk`     FOREIGN KEY (`feature_store_id`) REFERENCES `feature_store` (`id`)     ON DELETE CASCADE
+) ENGINE = ndbcluster;
+
+-- Only for multi-cluster deployments that want a different ALL-bucket size per cluster (section 9).
+CREATE TABLE `hopsworks`.`rate_limit_cluster_override` (
+  `bucket_id`      int(11)      NOT NULL,
+  `cluster_name`   varchar(63)  COLLATE latin1_general_cs NOT NULL,
+  `budget_percent` decimal(5,2) NOT NULL,
+  PRIMARY KEY (`bucket_id`, `cluster_name`),
+  CONSTRAINT `rlco_bucket_fk` FOREIGN KEY (`bucket_id`) REFERENCES `rate_limit_bucket` (`id`) ON DELETE CASCADE
+) ENGINE = ndbcluster;</code></pre>
+<p>The “one of two columns is set” rule and the “no ties” rule are enforced in application
+code, as the existing sharing tables do; the unique keys prevent duplicate rows.</p>
+</section>
+
+<footer>
+  <p class="meta">Basis: the RonDB 26.02 rate-limit implementation and customer guide,
+  RONDB-978 branch notes, the Hopsworks schema at migration V95, and the Hopsworks,
+  rondb-helm, and deploy.hopsworks.ai source reviews recorded with this design. Examples
+  describe proposed behavior; they are not a claim that the feature has shipped.</p>
+</footer>
+</main>
+</body>
+</html>
