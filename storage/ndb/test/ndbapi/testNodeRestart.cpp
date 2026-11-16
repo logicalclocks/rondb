@@ -12387,6 +12387,17 @@ int runTcTakeoverReopenOlderGciBehindNewerGci(NDBT_Context *ctx,
   if (restarter.insertErrorInNode(master, 0) != 0) {
     return NDBT_FAILED;
   }
+  /**
+   * The takeover completes the victim's asynchronous commit (TCKEY_FAILCONF)
+   * and puts it in the Ndb's completed list. Poll it out of that list before
+   * the transaction is closed: closing a transaction that is still in a list
+   * makes NdbTransaction::release() abort the API in a VM_TRACE build.
+   */
+  if (ndb->pollNdb(30000, 1) != 1) {
+    g_err << "Victim transaction did not complete after the takeover" << endl;
+    return NDBT_FAILED;
+  }
+  victimOps.closeTransaction(ndb);
   if (restarter.waitNodesNoStart(&victim, 1, 30) != 0) {
     g_err << "Victim did not reach nostart after failure" << endl;
     return NDBT_FAILED;
