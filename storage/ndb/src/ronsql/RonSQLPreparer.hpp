@@ -820,6 +820,15 @@ private:
   [[noreturn]] void throw_classified_ndb_error(const NdbError& err,
                                                const char* what,
                                                const char* where);
+  // J-6: raise the error a failed NdbQueryBuilder call left on the
+  // builder (the transaction does not see it): a stale index (4809)
+  // reloads the schema, a too large definition (4812) is a limit error,
+  // out of memory a resource error, anything else internal.
+  [[noreturn]] void throw_query_builder_error(const NdbQueryBuilder* qb,
+                                              const char* what);
+  // J-6: unless `condition`, throw_query_builder_error(qb, msg).
+  void require_qb(const NdbQueryBuilder* qb, bool condition,
+                  const char* msg);
   // WP-F: recognise `col IN (…)` (an OR tree of `col = literal` leaves
   // on one column); see the definition for the contract.
   bool match_in_shape(struct ConditionalExpression* ce, Uint32* col_idx,
@@ -1012,6 +1021,12 @@ private:
    * Phase N.1, wrong results).
    */
   void validate_cte_execution_shapes();
+  /**
+   * J-6 = C-9: refuse, with a limit error, a join query whose CTE
+   * subtrees and main plan need more than the 32 operations of one
+   * pushed query, before execute_join builds it.
+   */
+  void check_pushed_query_size();
   /**
    * Resolve the (NdbDictionary::Column::Type, length, charset) tuple
    * for a column reference in `scope`, walking through chained CTE

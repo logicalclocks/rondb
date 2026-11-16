@@ -319,6 +319,8 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     STAT_SET(m_conf.phase_stats, load_us, s_load_start, s_load_end);
     if (m_has_ctes)
       validate_cte_execution_shapes();
+    if (m_cte_scopes.size() > 0 && is_join_query())
+      check_pushed_query_size();
     if (!is_join_query())
       plan_index_and_filter();
     PERF_TS(t_compile_start);
@@ -7701,6 +7703,50 @@ RonSQLPreparer::validate_cte_execution_shapes()
   }
 }
 
+// The operations NdbQueryBuilder numbers for one JoinPlan: one per
+// operation and two for a unique-index lookup (the index and the table).
+static Uint32
+plan_internal_op_count(const JoinPlan& plan)
+{
+  Uint32 count = 0;
+  for (Uint32 i = 0; i < plan.num_ops; i++)
+    count += (plan.ops[i].type == JoinOp::UNIQUE_LOOKUP) ? 2 : 1;
+  return count;
+}
+
+/*
+ * J-6 = C-9: execute_join builds the CTE subtrees and the main query as one
+ * NdbQueryDef, and NdbQueryBuilder refuses its 33rd internal operation
+ * (QRY_DEFINITION_TOO_LARGE, NDB_SPJ_MAX_TREE_NODES).  QueryPlanner counts
+ * the main plan alone; the CTE subtrees were not counted, so a query over
+ * the limit failed while being built, with "Failed to create child
+ * operation." (or the CTE body or root op that crossed it) as an internal
+ * error without the builder's code.  Count what execute_join builds, before
+ * it builds: per CTE, the subtree operation (beginCteSubtree), its body's
+ * operations and the readTuple self-join of a scalar MIN/MAX body (Phase
+ * I.10); then the main plan.  Every CTE needs two operations at least, so
+ * the 32 operations also keep the CTE ids below the 64 that
+ * beginCteSubtree, defineCte and DBTC accept.
+ */
+void
+RonSQLPreparer::check_pushed_query_size()
+{
+  Uint32 count = plan_internal_op_count(m_main_scope.join_plan);
+  for (Uint32 c = 0; c < m_cte_scopes.size(); c++) {
+    const QueryScope* cs = m_cte_scopes[c];
+    if (cs == NULL) continue;
+    count += 1 + plan_internal_op_count(cs->join_plan);
+    if (cs->body_minmax_kind != QueryScope::MinMaxKind::NONE) count++;
+  }
+  if (count <= MAX_SPJ_TREE_NODES) return;
+  throw RonSQLPermanentError(
+      RonSQLErrorClass::LIMIT,
+      "Pushed join too large: the query and its CTEs need " +
+      std::to_string(count) + " operations, more than the NDB limit of " +
+      std::to_string(MAX_SPJ_TREE_NODES) + " (a CTE counts 1 plus the "
+      "operations of its body; a unique-index lookup counts 2).");
+}
+
 void
 RonSQLPreparer::mark_scope_column_ref(bool* refs, Uint32 col_idx) const
 {
@@ -12091,7 +12137,8 @@ RonSQLPreparer::execute_join()
       check_cte_group_key_size(cteAgg);
       finalize_aggregator(cteAgg, "Failed to finalize CTE aggregator.");
 
-      qb->beginCteSubtree(c);
+      require_qb(qb, qb->beginCteSubtree(c) != NULL,
+                 "Failed to begin a CTE subtree.");
       const NdbQueryOperationDef* cteOpDefs[MAX_SPJ_TREE_NODES];
       if (cp.num_ops == 1 && cp.ops[0].type == JoinOp::TABLE_SCAN) {
         // Single-table CTE body: attach the aggregator directly on the
@@ -12126,8 +12173,8 @@ RonSQLPreparer::execute_join()
         require_run(rootOpts.setAggregation(*cteAgg) == 0,
                     "Failed to attach aggregator to CTE body scan root.");
         cteOpDefs[0] = qb->scanTable(srcTab, &rootOpts);
-        require_run(cteOpDefs[0] != NULL,
-                    "Failed to create CTE body scan root.");
+        require_qb(qb, cteOpDefs[0] != NULL,
+                   "Failed to create CTE body scan root.");
       } else if (cp.num_ops == 1 && cp.ops[0].type == JoinOp::INDEX_SCAN) {
         // Phase I.9: single-table CTE body via ordered index.  Same
         // in-place aggregation feed as the TABLE_SCAN branch, but use
@@ -12159,16 +12206,16 @@ RonSQLPreparer::execute_join()
           }
           rootOpts.setMaxRows(1);
           cteOpDefs[0] = qb->scanIndex(idx, srcTab, NULL, &rootOpts);
-          require_run(cteOpDefs[0] != NULL,
-                      "Failed to create CTE body index-scan root.");
+          require_qb(qb, cteOpDefs[0] != NULL,
+                     "Failed to create CTE body index-scan root.");
 
           const NdbQueryOperand* keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
           int nkeys = srcTab->getNoOfPrimaryKeys();
           for (int k = 0; k < nkeys; k++) {
             const char* pk_name = srcTab->getPrimaryKey(k);
             keys[k] = qb->linkedValue(cteOpDefs[0], pk_name);
-            require_run(keys[k] != NULL,
-                        "Failed to create CTE body self-join linked key.");
+            require_qb(qb, keys[k] != NULL,
+                       "Failed to create CTE body self-join linked key.");
           }
           keys[nkeys] = nullptr;
           NdbQueryOptions leafOpts;
@@ -12176,8 +12223,8 @@ RonSQLPreparer::execute_join()
           require_run(leafOpts.setAggregation(*cteAgg) == 0,
                       "Failed to attach aggregator to CTE body leaf.");
           cteOpDefs[1] = qb->readTuple(srcTab, keys, &leafOpts);
-          require_run(cteOpDefs[1] != NULL,
-                      "Failed to create CTE body self-join leaf.");
+          require_qb(qb, cteOpDefs[1] != NULL,
+                     "Failed to create CTE body self-join leaf.");
         } else {
           // Aggregator directly on the index-scan root — same in-place
           // feed as the TABLE_SCAN branch; bounds and residual filter
@@ -12201,7 +12248,10 @@ RonSQLPreparer::execute_join()
         emit_root_op(qb, cs, cteOpDefs, cteAgg, cteChildVT);
         emit_child_ops(qb, cs, cteOpDefs, cteAgg, nullptr, cteChildVT);
       }
+      // endCteSubtree() returns nothing; a failure is left on the builder.
       qb->endCteSubtree();
+      require_qb(qb, qb->getNdbError().code == 0,
+                 "Failed to end a CTE subtree.");
       // For chained CTE bodies whose root is CTE_SCAN, cs.table is NULL.
       // defineCte's srcTab argument expects a table descriptor that
       // matches the CTE's output schema — use the predecessor's virt
@@ -12234,9 +12284,9 @@ RonSQLPreparer::execute_join()
           (is_single_group_cte_body(cs, cte->stmt)
                ? QN_CteSubtreeNode::CTE_SINGLE_GROUP
                : 0);
-      require_run(qb->defineCte(c, defineSrcTab, *cteAgg, cteDepMask,
-                                 cteFlags) == 0,
-                  "Failed to defineCte.");
+      require_qb(qb, qb->defineCte(c, defineSrcTab, *cteAgg, cteDepMask,
+                                   cteFlags) == 0,
+                 "Failed to defineCte.");
       // Don't delete cteChildVT entries here: qb's serialized scanCte
       // op retains raw NdbDictionary::Table* pointers into them.
       // Deletion happens in the end-of-execute cleanup alongside main
@@ -12273,7 +12323,7 @@ RonSQLPreparer::execute_join()
   PERF_TS(t_qb_prepare);
   STAT_TS(m_conf.phase_stats, s_qb_prepare);
   const NdbQueryDef* queryDef = qb->prepare(ndb);
-  require_run(queryDef != NULL, "Failed to prepare query.");
+  require_qb(qb, queryDef != NULL, "Failed to prepare query.");
   objs.query_def = queryDef;
   PERF_TS(t_qb_prepared);
   PERF_LOG("  qb->prepare", t_qb_prepare, t_qb_prepared);
@@ -12854,8 +12904,8 @@ RonSQLPreparer::emit_index_scan_root(NdbQueryBuilder* qb,
       ConditionalExpression* right_const = ce->args.right;
       raw_value rv = encode_constant(right_const, tab_col);
       const NdbQueryOperand* operand = query_const_value(qb, rv, tab_col);
-      require_run(operand != NULL,
-                  "Failed to create const value for index-scan root bound.");
+      require_qb(qb, operand != NULL,
+                 "Failed to create const value for index-scan root bound.");
       TokenKind op = ce->op;
       if (op == T_EQUALS || op == T_GE || op == T_GT) {
         low_op = operand;
@@ -12917,8 +12967,8 @@ RonSQLPreparer::emit_index_scan_root(NdbQueryBuilder* qb,
   auto in_operand = [&](Uint32 r) -> const NdbQueryOperand* {
     raw_value rv = encode_constant(sc.in_values[r], in_tab_col);
     const NdbQueryOperand* operand = query_const_value(qb, rv, in_tab_col);
-    require_run(operand != NULL,
-                "Failed to create const value for index-scan root range.");
+    require_qb(qb, operand != NULL,
+               "Failed to create const value for index-scan root range.");
     return operand;
   };
 
@@ -12986,14 +13036,8 @@ RonSQLPreparer::emit_index_scan_root(NdbQueryBuilder* qb,
     }
     def = qb->scanIndex(idx, tab, bound_ptrs, num_ranges, &rootOpts);
   }
-  if (def == NULL) {
-    // The query builder's error (e.g. QRY_MULTI_RANGE_BOUND) says why.
-    std::stringstream msg;
-    msg << "Failed to create index-scan root: "
-        << qb->getNdbError().message << " (" << qb->getNdbError().code
-        << ").";
-    require_run(false, msg.str().c_str());
-  }
+  // The query builder's error (e.g. QRY_MULTI_RANGE_BOUND) says why.
+  require_qb(qb, def != NULL, "Failed to create index-scan root.");
   return def;
 }
 
@@ -13035,8 +13079,8 @@ RonSQLPreparer::emit_pk_equality_index_scan_root(
     ndbrequire(pk_col != NULL);
     raw_value rv = encode_constant(pk_const[p], pk_col);
     pk_keys[k] = query_const_value(qb, rv, pk_col);
-    require_run(pk_keys[k] != NULL,
-                "Failed to create const value for PK index scan.");
+    require_qb(qb, pk_keys[k] != NULL,
+               "Failed to create const value for PK index scan.");
   }
   pk_keys[nkeys] = nullptr;
   if (residual != NULL)
@@ -13053,7 +13097,7 @@ RonSQLPreparer::emit_pk_equality_index_scan_root(
   NdbQueryIndexBound bound(pk_keys);
   const NdbQueryOperationDef* def =
       qb->scanIndex(pk_ordered_idx, root_table, &bound, &rootOpts);
-  require_run(def != NULL, "Failed to create root PK index scan.");
+  require_qb(qb, def != NULL, "Failed to create root PK index scan.");
   return def;
 }
 
@@ -13166,7 +13210,7 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
       }
       opDefs[0] = qb->scanCte(plan.ops[0].cte_def_idx, numResultCols,
                               cteVirtualTables[0], &rootOpts);
-      require_run(opDefs[0] != NULL, "Failed to create scanCte root.");
+      require_qb(qb, opDefs[0] != NULL, "Failed to create scanCte root.");
       return;
     }
 
@@ -13230,8 +13274,8 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
       opDefs[0] = qb->lookupCte(plan.ops[0].cte_def_idx, numResultCols,
                                 cteVirtualTables[0], scalar_keys,
                                 &rootOpts);
-      require_run(opDefs[0] != NULL,
-                  "Failed to create scalar lookupCte root.");
+      require_qb(qb, opDefs[0] != NULL,
+                 "Failed to create scalar lookupCte root.");
       return;
     }
     if (scope.join_where_ce[0] != NULL && !root_cte_is_scalar &&
@@ -13444,8 +13488,8 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
           }
           break;
         }
-        require_run(lookup_keys[k] != NULL,
-                    "Failed to create const value for CTE root lookup.");
+        require_qb(qb, lookup_keys[k] != NULL,
+                   "Failed to create const value for CTE root lookup.");
       }
       lookup_keys[root_nkeys] = nullptr;
       if (root_residual != NULL)
@@ -13470,8 +13514,8 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
       opDefs[0] = qb->lookupCte(plan.ops[0].cte_def_idx, numResultCols,
                                  cteVirtualTables[0], lookup_keys,
                                  &rootOpts);
-      require_run(opDefs[0] != NULL,
-                  "Failed to create lookupCte root.");
+      require_qb(qb, opDefs[0] != NULL,
+                 "Failed to create lookupCte root.");
       return;
     }
 
@@ -13498,7 +13542,7 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     }
     opDefs[0] = qb->scanCte(plan.ops[0].cte_def_idx, numResultCols,
                             cteVirtualTables[0], &rootOpts);
-    require_run(opDefs[0] != NULL, "Failed to create scanCte root.");
+    require_qb(qb, opDefs[0] != NULL, "Failed to create scanCte root.");
     return;
   }
 
@@ -13515,7 +13559,7 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     require_run(rootOpts.setInterpretedCode(code) == 0,
                 "Failed to set interpreted code on root scan.");
     opDefs[0] = qb->scanTable(root_table, &rootOpts);
-    require_run(opDefs[0] != NULL, "Failed to create root scan.");
+    require_qb(qb, opDefs[0] != NULL, "Failed to create root scan.");
     return;
   }
 
@@ -13640,8 +13684,8 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
         ndbrequire(pk_col != NULL);
         raw_value rv = encode_constant(pk_const[k], pk_col);
         pk_keys[k] = query_const_value(qb, rv, pk_col);
-        require_run(pk_keys[k] != NULL,
-                    "Failed to create const value for PK lookup.");
+        require_qb(qb, pk_keys[k] != NULL,
+                   "Failed to create const value for PK lookup.");
       }
       pk_keys[nkeys] = nullptr;
       if (root_residual != NULL)
@@ -13650,7 +13694,7 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
                     "Failed to set interpreted code on root PK lookup.");
       }
       opDefs[0] = qb->readTuple(root_table, pk_keys, &rootOpts);
-      require_run(opDefs[0] != NULL, "Failed to create root PK lookup.");
+      require_qb(qb, opDefs[0] != NULL, "Failed to create root PK lookup.");
       return;
     }
   }
@@ -13681,7 +13725,7 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
                      "Failed to set interpreted code on root scan.");
   }
   opDefs[0] = qb->scanTable(root_table, &rootOpts);
-  require_run(opDefs[0] != NULL, "Failed to create root scan.");
+  require_qb(qb, opDefs[0] != NULL, "Failed to create root scan.");
 }
 
 // Recursively resolve the (Type, length, charset) tuple for a column
@@ -15678,7 +15722,7 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
     for (Uint32 k = 0; k < op.num_key_cols; k++) {
       keys[k] = qb->linkedValue(opDefs[op.key_parent_op_idx[k]],
                                  op.parent_key_col_names[k]);
-      require_run(keys[k] != NULL, "Failed to create linked value.");
+      require_qb(qb, keys[k] != NULL, "Failed to create linked value.");
     }
     keys[op.num_key_cols] = nullptr;
 
@@ -15733,7 +15777,7 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
         NdbLinkedOperand* lv = qb->linkedValue(
             opDefs[plan.linked_projs[j].source_op_idx],
             plan.linked_projs[j].column_name);
-        require_run(lv != NULL, "Failed to create linked projection.");
+        require_qb(qb, lv != NULL, "Failed to create linked projection.");
         require_run(opts.addLinkedProjection(lv) == 0,
                     "Failed to add linked projection.");
       }
@@ -15752,7 +15796,7 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
         NdbLinkedOperand* lv = qb->linkedValue(
             opDefs[plan.linked_projs[j].source_op_idx],
             plan.linked_projs[j].column_name);
-        require_run(lv != NULL, "Failed to create linked projection.");
+        require_qb(qb, lv != NULL, "Failed to create linked projection.");
         require_run(opts.addLinkedProjection(lv) == 0,
                     "Failed to add linked projection.");
       }
@@ -15774,7 +15818,7 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
         NdbLinkedOperand* lv = qb->linkedValue(
             opDefs[plan.linked_projs[j].source_op_idx],
             plan.linked_projs[j].column_name);
-        require_run(lv != NULL, "Failed to create linked projection.");
+        require_qb(qb, lv != NULL, "Failed to create linked projection.");
         require_run(opts.addLinkedProjection(lv) == 0,
                     "Failed to add linked projection.");
       }
@@ -15808,7 +15852,7 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
         for (Uint32 k = 0; k < op.num_key_cols; k++) {
           lowKeys[k] = highKeys[k] = qb->linkedValue(
               opDefs[op.key_parent_op_idx[k]], op.parent_key_col_names[k]);
-          require_run(lowKeys[k] != NULL, "Failed to create linked value.");
+          require_qb(qb, lowKeys[k] != NULL, "Failed to create linked value.");
         }
 
         // child_bounds: a RangeBound with const_cond carries a
@@ -15844,8 +15888,8 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
         Uint32 lowIdx = op.num_key_cols;
         for (Uint32 b = 0; b < op.num_low_bounds; b++) {
           lowKeys[lowIdx] = bound_operand(op.low_bounds[b]);
-          require_run(lowKeys[lowIdx] != NULL,
-                      "Failed to create lower bound operand.");
+          require_qb(qb, lowKeys[lowIdx] != NULL,
+                     "Failed to create lower bound operand.");
           lowIncl = op.low_bounds[b].inclusive;
           lowIdx++;
         }
@@ -15855,8 +15899,8 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
         Uint32 highIdx = op.num_key_cols;
         for (Uint32 b = 0; b < op.num_high_bounds; b++) {
           highKeys[highIdx] = bound_operand(op.high_bounds[b]);
-          require_run(highKeys[highIdx] != NULL,
-                      "Failed to create upper bound operand.");
+          require_qb(qb, highKeys[highIdx] != NULL,
+                     "Failed to create upper bound operand.");
           highIncl = op.high_bounds[b].inclusive;
           highIdx++;
         }
@@ -15975,25 +16019,9 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
     default:
       abort();
     }
-    if (opDefs[i] == NULL) {
-      // NdbQueryBuilder reports QRY_UNRELATED_INDEX when the index's
-      // recorded m_table_id / m_table_version disagree with the table's
-      // current ObjectId / ObjectVersion — a stale-index condition that
-      // arises after a concurrent DROP INDEX / CREATE INDEX on a joined
-      // child table, when the dict cache holds a stale index against a
-      // freshly reloaded table.  The builder classifies it as
-      // ApplicationError (not SchemaError), so the generic SRE handler
-      // would treat it as permanent and skip retry.  Route through
-      // RonSQLMaybeStaleSchema so handle_ronsql_exception calls
-      // unload_schema(); if the schema actually changed, the next retry's
-      // RonSQLPreparer.load() picks up consistent table + index objects.
-      const NdbError& qb_err = qb->getNdbError();
-      if (qb_err.code == 4809 /* QRY_UNRELATED_INDEX */) {
-        throw RonSQLMaybeStaleSchema("Failed to create child operation"
-                                     " (index/table version mismatch).");
-      }
-    }
-    require_run(opDefs[i] != NULL, "Failed to create child operation.");
+    // QRY_UNRELATED_INDEX (a stale index) reloads the schema, as for
+    // every builder call (throw_query_builder_error).
+    require_qb(qb, opDefs[i] != NULL, "Failed to create child operation.");
   }
 }
 
@@ -16103,6 +16131,81 @@ RonSQLPreparer::throw_classified_ndb_error(const NdbError& op_err,
     break;
   }
   throw RonSQLPermanentError(cls, what, op_err.code);
+}
+
+/*
+ * J-6 = C-9: raise the error of a failed NdbQueryBuilder call.  The builder
+ * keeps its first error (every later operation call fails on it), and the
+ * transaction never sees it.  require_run left
+ * handle_ronsql_exception to classify the transaction's error, which is
+ * none, so every builder failure was an internal error without a code, and
+ * only a child operation reloaded the schema for a stale index.  The
+ * builder's error is classified here instead:
+ *  - QRY_UNRELATED_INDEX (4809): the table id or version an index records
+ *    is not its table's, as when the dictionary cache holds an index and a
+ *    table from before and after a concurrent DROP / CREATE INDEX.  The
+ *    builder calls it an application error.  RonSQLMaybeStaleSchema makes
+ *    handle_ronsql_exception reload the schema and retry if it changed,
+ *    for the root and CTE-body index scans as for a child: unload_schema
+ *    snapshots the tables and indexes of every scope and compares each
+ *    index's table id and version with its table's, the 4809 condition.
+ *  - A schema error and a temporary error go the way a transaction's go
+ *    (none of the builder's errors is one today).
+ *  - QRY_DEFINITION_TOO_LARGE (4812): the query exceeds a size limit of a
+ *    pushed query, such as 64K words for the definition or one range
+ *    (check_pushed_query_size refuses more than 32 operations before the
+ *    build): LIMIT.
+ *  - Err_MemoryAlloc (4000): RESOURCE, as std::bad_alloc.
+ *  - Any other error is a definition RonSQL should not have built: the
+ *    builder's application errors are RonSQL's, not the statement's
+ *    (encode_constant refuses a literal its column cannot hold before the
+ *    builder sees it).  INTERNAL.
+ * The message and the exception carry the builder's code.
+ */
+void
+RonSQLPreparer::throw_query_builder_error(const NdbQueryBuilder* qb,
+                                          const char* what)
+{
+  NdbError qb_err = qb->getNdbError();
+  std::string msg(what);
+  if (qb_err.code == 0) {
+    msg += " The query builder reported no error.";
+  } else {
+    msg += " NDB error " + std::to_string(qb_err.code) + ": " +
+           (qb_err.message != NULL ? qb_err.message : "unknown error");
+  }
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+  if (qb_err.code == 4809 /* QRY_UNRELATED_INDEX */ ||
+      qb_err.classification == NdbError::SchemaError) {
+    err << "Error handling: query builder->RMS\n" << qb_err << '\n';
+    throw RonSQLMaybeStaleSchema(msg);
+  }
+  if (qb_err.status == NdbError::TemporaryError) {
+    throw_classified_ndb_error(qb_err, msg.c_str(), "query builder");
+  }
+  RonSQLErrorClass cls = RonSQLErrorClass::INTERNAL;
+  switch (qb_err.code) {
+  case 4812:  // QRY_DEFINITION_TOO_LARGE
+    cls = RonSQLErrorClass::LIMIT;
+    break;
+  case 4000:  // Err_MemoryAlloc
+    cls = RonSQLErrorClass::RESOURCE;
+    break;
+  default:
+    break;
+  }
+  err << "Error handling: query builder->RPE\n" << qb_err << '\n';
+  throw RonSQLPermanentError(cls, msg, qb_err.code);
+}
+
+// J-6: require that a NdbQueryBuilder call succeeded; otherwise raise the
+// builder's error, not the transaction's (throw_query_builder_error).
+void
+RonSQLPreparer::require_qb(const NdbQueryBuilder* qb, bool condition,
+                           const char* msg)
+{
+  if (likely(condition)) return;
+  throw_query_builder_error(qb, msg);
 }
 
 void
@@ -16968,7 +17071,8 @@ RonSQLPreparer::scalar_cte_dummy_key(NdbQueryBuilder* qb,
     break;
   }
   }
-  require_run(key != NULL, "Failed to create dummy scalar CTE lookup key.");
+  require_qb(qb, key != NULL,
+             "Failed to create dummy scalar CTE lookup key.");
   return key;
 }
 
