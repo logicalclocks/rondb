@@ -297,12 +297,16 @@ struct MemberIdCache : MemberId<M> {
 
   static ID_t getId(JNIEnv *env, jclass cls) {
     assert(cls != NULL);
-    // the cached member id is only valid along with global class ref
-    assert(env->IsSameObject(gClassRef.load(std::memory_order_acquire),
+    // a cached member id is only valid along with its global class ref; a
+    // failed lookup publishes neither, and NULL returns with the exception
+    // still pending
+    ID_t id = mid.load(std::memory_order_relaxed);
+    assert(id == NULL ||
+           env->IsSameObject(gClassRef.load(std::memory_order_acquire),
                              NULL) == JNI_FALSE);
     (void)env;
     (void)cls;
-    return mid.load(std::memory_order_relaxed);
+    return id;
   }
 
  protected:
