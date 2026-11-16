@@ -45539,7 +45539,16 @@ void Dblqh::execDUMP_STATE_ORD(Signal *signal) {
   }
   if (arg == 5050) {
 #ifdef ERROR_INSERT
-    SET_ERROR_INSERT_VALUE2(5050, c_master_node_id);
+    /**
+     * 5050 is cleared when the take-over of a failed TC's operations
+     * completes, and only the LDM instances take part in that
+     * (LQH_TRANSREQ). A query instance would keep it set, and the
+     * check that error inserts are cleared at the end of the test would
+     * crash the node.
+     */
+    if (!m_is_query_block) {
+      SET_ERROR_INSERT_VALUE2(5050, c_master_node_id);
+    }
 #endif
   }
 
