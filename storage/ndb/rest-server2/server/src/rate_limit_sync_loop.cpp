@@ -31,8 +31,12 @@
 #include <NdbApi.hpp>
 #include "../../../src/ndbapi/NdbInfo.hpp"
 
+#include <NdbTick.h>
+
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <random>
 #include <sstream>
 
@@ -252,6 +256,86 @@ RS_Status RateLimitSyncLoop::read_cluster_facts(
   return RS_OK;
 }
 
+const char *RateLimitSyncLoop::state_name(GroupState state) {
+  switch (state) {
+    case GroupState::Pending:
+      return "PENDING";
+    case GroupState::Installed:
+      return "INSTALLED";
+    case GroupState::Inert:
+      return "INERT";
+    case GroupState::Refused:
+      return "REFUSED";
+  }
+  return "PENDING";
+}
+
+/*
+ * Report the per-group states back to
+ * hopsworks.rate_limit_group_cluster_state over the metadata connection,
+ * under this cluster's configured name. Best effort: a missing table means
+ * the Hopsworks migration has not run, and a refused row means the group
+ * was deleted under us (its rows cascade away) - neither fails the run, so
+ * each row commits on its own.
+ */
+void RateLimitSyncLoop::write_states(
+  const std::map<int, GroupState> &states) {
+  if (states.empty()) {
+    return;
+  }
+  Ndb *ndb_object = nullptr;
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
+  if (status.http_code != SUCCESS) {
+    return;
+  }
+  const std::string &cluster_name = globalConfigs.rateLimit.syncClusterName;
+  do {
+    if (ndb_object->setCatalogName(HOPSWORKS) != 0) {
+      break;
+    }
+    const NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
+    const NdbDictionary::Table *table_dict =
+      dict->getTable("rate_limit_group_cluster_state");
+    if (table_dict == nullptr) {
+      break;  // migration not run on this deployment
+    }
+    Int64 now_ms = (Int64)NdbTick_CurrentMillisecond();
+    for (const auto &entry : states) {
+      NdbTransaction *tx = ndb_object->startTransaction();
+      if (tx == nullptr) {
+        break;
+      }
+      NdbOperation *ndb_op = tx->getNdbOperation(table_dict);
+      if (ndb_op == nullptr || ndb_op->writeTuple() != 0) {
+        ndb_object->closeTransaction(tx);
+        continue;
+      }
+      char cluster_buf[64];
+      size_t cluster_len = std::min(cluster_name.size(), (size_t)63);
+      cluster_buf[0] = (char)cluster_len;
+      memcpy(cluster_buf + 1, cluster_name.data(), cluster_len);
+      const char *state_str = state_name(entry.second);
+      char state_buf[17];
+      size_t state_len = strlen(state_str);
+      state_buf[0] = (char)state_len;
+      memcpy(state_buf + 1, state_str, state_len);
+      if (ndb_op->equal("group_id", entry.first) != 0 ||
+          ndb_op->equal("cluster_name", cluster_buf) != 0 ||
+          ndb_op->setValue("state", state_buf) != 0 ||
+          ndb_op->setValue("updated", now_ms) != 0) {
+        ndb_object->closeTransaction(tx);
+        continue;
+      }
+      // A foreign key refusal here means the group was deleted since the
+      // reconcile read it; dropping the report is the correct outcome.
+      tx->execute(NdbTransaction::Commit);
+      ndb_object->closeTransaction(tx);
+    }
+  } while (false);
+  RS_Status ok = RS_OK;
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &ok);
+}
+
 RS_Status RateLimitSyncLoop::run_once(RunResult *result) {
   std::lock_guard<std::mutex> guard(run_mutex_);
   return run_once_locked(result);
@@ -427,6 +511,16 @@ RS_Status RateLimitSyncLoop::run_once_locked(RunResult *result) {
     }
     if (rc == 0) {
       result->commands_executed++;
+      if (cmd.kind == RateLimitCommand::Kind::UserSet ||
+          cmd.kind == RateLimitCommand::Kind::UserAlter) {
+        // The group's USER is live now; Inert keeps its more specific
+        // judgement.
+        auto group_it = group_by_user.find(cmd.name);
+        if (group_it != group_by_user.end() &&
+            new_states[group_it->second] == GroupState::Pending) {
+          new_states[group_it->second] = GroupState::Installed;
+        }
+      }
       continue;
     }
     result->commands_failed++;
@@ -458,8 +552,9 @@ RS_Status RateLimitSyncLoop::run_once_locked(RunResult *result) {
   have_applied_version_ = true;
   {
     std::lock_guard<std::mutex> guard(state_mutex_);
-    states_ = std::move(new_states);
+    states_ = new_states;
   }
+  write_states(states_);
   result->ran = true;
   return RS_OK;
 }

@@ -611,6 +611,11 @@ CLASS
     "Run a full reconcile every Nth run even when the version counter is"
     " unchanged, so entities lost to a manual drop or missed at a restart"
     " are repaired. 0 disables the periodic full resync.")
+ CM(std::string, syncClusterName, RateLimitSyncClusterName, "default",
+    "The name this cluster's per-group install states are reported under"
+    " in hopsworks.rate_limit_group_cluster_state, which the admin page"
+    " reads back. Give every data cluster of a multi-cluster deployment"
+    " its own name.")
  PROBLEM(identity != "apikey" && identity != "username",
          ".RateLimit.Identity must be 'apikey' or 'username'")
  PROBLEM(identity == "username" && fullApiKey,

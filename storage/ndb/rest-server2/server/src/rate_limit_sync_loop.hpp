@@ -98,9 +98,14 @@ class RateLimitSyncLoop {
   // states; read back by the admin page through Hopsworks).
   std::map<int, GroupState> group_states();
 
+  // The section 8 state names as written to
+  // hopsworks.rate_limit_group_cluster_state.
+  static const char *state_name(GroupState state);
+
  private:
   RS_Status run_once_locked(RunResult *result);
   RS_Status read_cluster_facts(std::set<std::string> *local_dbs);
+  void write_states(const std::map<int, GroupState> &states);
 
   std::mutex run_mutex_;           // one run at a time (timer vs tests)
   std::mutex state_mutex_;         // guards states_

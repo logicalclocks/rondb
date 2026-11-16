@@ -36,6 +36,7 @@
 #include <mgmapi.h>
 #include <mysql_com.h>  // NAME_LEN, which ndb_limits.h uses
 #include <ndb_limits.h>  // RNIL, the user/alias list end marker
+#include <mysql.h>
 
 #include <drogon/HttpTypes.h>
 #include <gtest/gtest.h>
@@ -67,6 +68,10 @@ class RateLimitSyncClusterTest : public ::testing::Test {
   static void TearDownTestSuite() {
     // Drop everything the loop installed so MTR's check-testcase sees no
     // leftover entities; failures are fine (a test may have dropped some).
+    // The state rows do not cascade (the fixture groups stay), so the
+    // check-testcase baseline requires removing them here.
+    query_sql("DELETE FROM hopsworks.rate_limit_group_cluster_state"
+              " WHERE cluster_name = 'default'");
     NdbMgmHandle mgm = connect_mgm();
     if (mgm != nullptr) {
       for (const char *account : kAliasAccounts) {
@@ -84,6 +89,39 @@ class RateLimitSyncClusterTest : public ::testing::Test {
       errno = status.http_code;
       exit(errno);
     }
+  }
+
+  // Read one string column from the metadata mysqld, one row per element.
+  static std::vector<std::string> query_sql(const std::string &statement) {
+    std::vector<std::string> rows;
+    auto &mySQL = globalConfigs.testing.mySQL;
+    MYSQL *conn = mysql_init(nullptr);
+    unsigned int protocol = MYSQL_PROTOCOL_TCP;
+    mysql_options(conn, MYSQL_OPT_PROTOCOL, &protocol);
+    if (mysql_real_connect(conn, mySQL.servers[0].IP.c_str(),
+                           mySQL.user.c_str(), mySQL.password.c_str(),
+                           nullptr, mySQL.servers[0].port, nullptr,
+                           0) == nullptr) {
+      ADD_FAILURE() << "mysql connect failed: " << mysql_error(conn);
+      mysql_close(conn);
+      return rows;
+    }
+    if (mysql_query(conn, statement.c_str()) != 0) {
+      ADD_FAILURE() << "SQL failed: " << statement << ": "
+                    << mysql_error(conn);
+      mysql_close(conn);
+      return rows;
+    }
+    MYSQL_RES *result = mysql_store_result(conn);
+    if (result != nullptr) {
+      MYSQL_ROW row;
+      while ((row = mysql_fetch_row(result)) != nullptr) {
+        rows.emplace_back(row[0] == nullptr ? "" : row[0]);
+      }
+      mysql_free_result(result);
+    }
+    mysql_close(conn);
+    return rows;
   }
 
   static NdbMgmHandle connect_mgm() {
@@ -213,6 +251,19 @@ TEST_F(RateLimitSyncClusterTest, InstallShortCircuitAndRepair) {
     find_alias(aliases, "RateLimitGroupVeryLongProj_rlga");
   ASSERT_NE(a4, nullptr) << "clip31 identity missing";
   EXPECT_EQ(a4->rules.size(), 1u);
+
+  // The run reported its per-group states back to Hopsworks: the three
+  // live groups as INSTALLED and the rule-less one as INERT, under this
+  // cluster's configured name.
+  std::vector<std::string> states = query_sql(
+    "SELECT CONCAT(group_id, ':', state)"
+    " FROM hopsworks.rate_limit_group_cluster_state"
+    " WHERE cluster_name = 'default' ORDER BY group_id");
+  ASSERT_EQ(states.size(), 4u);
+  EXPECT_EQ(states[0], "1:INSTALLED");
+  EXPECT_EQ(states[1], "2:INSTALLED");
+  EXPECT_EQ(states[2], "3:INSTALLED");
+  EXPECT_EQ(states[3], "4:INERT");
 
   // 2. The next run short-circuits on the unchanged version counter.
   status = loop.run_once(&result);

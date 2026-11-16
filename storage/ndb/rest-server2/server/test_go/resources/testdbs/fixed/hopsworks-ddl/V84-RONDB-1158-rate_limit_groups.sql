@@ -51,3 +51,18 @@ CREATE TABLE `rate_limit_group_version` (
   `version` bigint(20) NOT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE = ndbcluster;
+
+-- Install state per group per cluster, written back by the RDRS sync loops
+-- (PENDING, INSTALLED, REFUSED or INERT) over their metadata connection and
+-- read by the Hopsworks admin page. `updated` is epoch milliseconds: the
+-- writers use the NDB API, which has no column defaults or TIMESTAMP
+-- conveniences.
+CREATE TABLE `rate_limit_group_cluster_state` (
+  `group_id`     int(11)     NOT NULL,
+  `cluster_name` varchar(63) COLLATE latin1_general_cs NOT NULL,
+  `state`        varchar(16) COLLATE latin1_general_cs NOT NULL,
+  `updated`      bigint(20)  NOT NULL,
+  PRIMARY KEY (`group_id`, `cluster_name`),
+  CONSTRAINT `rlgs_group_fk` FOREIGN KEY (`group_id`)
+    REFERENCES `rate_limit_group` (`id`) ON DELETE CASCADE
+) ENGINE = ndbcluster;

@@ -75,6 +75,9 @@ class RateLimitSyncFleetTest : public ::testing::Test {
     // Remove the mid-run group's rows (idempotent) and every entity the
     // loops installed, so check-testcase sees a clean cluster.
     run_sql("DELETE FROM hopsworks.rate_limit_group WHERE id = 10");
+    // The fixture groups stay, so their state rows do not cascade away.
+    run_sql("DELETE FROM hopsworks.rate_limit_group_cluster_state"
+            " WHERE cluster_name = 'default'");
     run_sql("UPDATE hopsworks.rate_limit_group_version"
             " SET version = version + 1 WHERE id = 1");
     NdbMgmHandle mgm = connect_mgm();
