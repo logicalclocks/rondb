@@ -9197,19 +9197,29 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     jamDebug();
     /**
      * The user id word is always present when the flag is set, so var_index
-     * must advance regardless of whether this block has the database record
-     * in its local hash. Query threads (DBQLQH) in particular may not hold
-     * the record; only the accounting via m_user_ptr_i is then skipped. If
-     * var_index were advanced only on a hit, the fixed-length check below
-     * would fail on those blocks and abort the node.
+     * must advance regardless of whether the id resolves to a record. If it
+     * were advanced only on a hit, the fixed-length check below would fail
+     * and abort the node.
+     *
+     * Query threads (DBQLQH) hold no user records (CREATE_DB_REQ is routed
+     * to the LDM workers only), so they cannot resolve the id here. The raw
+     * id is stashed in m_user_ptr_i and resolved against the owning LDM
+     * instance's hash once that instance is known, after
+     * setup_query_thread_for_key_access below. A raw Uint32 id can never
+     * equal RNIL64, so the stash cannot be mistaken for "no user".
      */
-    DatabaseRecordPtr dbPtr;
     Uint32 user_id = lqhKeyReq->variableData[0];
-    DatabaseRecord key(*this, user_id);
     var_index++;
-    if (m_databaseRecordHash.find(dbPtr, key)) {
-      jam();
-      regTcPtr->m_user_ptr_i = dbPtr.i;
+    if (qt_likely(!m_is_query_block)) {
+      DatabaseRecordPtr dbPtr;
+      DatabaseRecord key(*this, user_id);
+      if (m_databaseRecordHash.find(dbPtr, key)) {
+        jam();
+        regTcPtr->m_user_ptr_i = dbPtr.i;
+      }
+    } else {
+      jamDebug();
+      regTcPtr->m_user_ptr_i = user_id;
     }
   }
   sig3 = lqhKeyReq->variableData[var_index];
@@ -9598,6 +9608,16 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     }
     regTcPtr->ldmInstance = instanceNo;
     setup_query_thread_for_key_access(instanceNo);
+    if (regTcPtr->m_user_ptr_i != RNIL64) {
+      jamDebug();
+      /**
+       * The raw user id was stashed when the request was parsed; the
+       * owning LDM instance is known now, so turn it into that
+       * instance's record .i (or RNIL64 when the user is gone).
+       */
+      regTcPtr->m_user_ptr_i =
+        resolve_user_record(Uint32(regTcPtr->m_user_ptr_i));
+    }
   }
   if (unlikely(tabptr.i >= ctabrecFileSize)) {
     LQHKEY_error(signal, 5, tcConnectptr);
@@ -20430,18 +20450,29 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
     jamDebug();
     /**
      * The user id word is always present when the flag is set, so
-     * extra_len_index must advance regardless of whether this block holds
-     * the database record locally (query threads may not). Advancing it
-     * only on a hit would desync the variableData offsets / length on
-     * those blocks. See execLQHKEYREQ for the key-op equivalent.
+     * extra_len_index must advance regardless of whether the id resolves
+     * to a record. Advancing it only on a hit would desync the
+     * variableData offsets / length. See execLQHKEYREQ for the key-op
+     * equivalent.
+     *
+     * Query threads (DBQLQH) hold no user records (CREATE_DB_REQ is
+     * routed to the LDM workers only), so they resolve the id in the
+     * owning LDM instance's hash instead. That instance is already known
+     * here: setup_query_thread_for_scan_access ran earlier in
+     * execSCAN_FRAGREQ.
      */
-    DatabaseRecordPtr dbPtr;
     Uint32 user_id = scanFragReq->variableData[0];
-    DatabaseRecord key(*this, user_id);
     extra_len_index++;
-    if (m_databaseRecordHash.find(dbPtr, key)) {
-      jam();
-      regTcPtr->m_user_ptr_i = dbPtr.i;
+    if (qt_likely(!m_is_query_block)) {
+      DatabaseRecordPtr dbPtr;
+      DatabaseRecord key(*this, user_id);
+      if (m_databaseRecordHash.find(dbPtr, key)) {
+        jam();
+        regTcPtr->m_user_ptr_i = dbPtr.i;
+      }
+    } else {
+      jamDebug();
+      regTcPtr->m_user_ptr_i = resolve_user_record(user_id);
     }
   }
   if (ScanFragReq::getCorrFactorFlag(reqinfo)) {
@@ -40591,6 +40622,35 @@ Dblqh::update_rate_usage(Uint32 tableId,
   if (unlikely(m_is_query_block)) {
     unlock_database_hash();
   }
+}
+
+/**
+ * Resolve a user id carried in LQHKEYREQ/SCAN_FRAGREQ to the .i of the
+ * DatabaseRecord in the LDM instance owning the fragment. User records
+ * exist only in LDM instances (CREATE_DB_REQ is routed to the LDM
+ * workers), so a query thread must look the record up in the owning LDM
+ * instance's hash, under that instance's mutex since the LDM thread
+ * adds and removes records concurrently (the LDM-side writers always
+ * take the mutex). The returned .i is consumed by update_rate_usage,
+ * which also runs on the owning LDM instance via m_ldm_instance_used,
+ * so the pool reference stays consistent. Must only be called after
+ * m_ldm_instance_used is set up for the current operation; in LDM
+ * threads it permanently points to the own instance.
+ */
+Uint64
+Dblqh::resolve_user_record(Uint32 user_id)
+{
+  Dblqh *ldm = m_ldm_instance_used;
+  DatabaseRecordPtr dbPtr;
+  DatabaseRecord key(*ldm, user_id);
+  if (unlikely(m_is_query_block)) {
+    ldm->lock_database_hash();
+  }
+  bool found = ldm->m_databaseRecordHash.find(dbPtr, key);
+  if (unlikely(m_is_query_block)) {
+    ldm->unlock_database_hash();
+  }
+  return found ? dbPtr.i : RNIL64;
 }
 
 Uint32 Dblqh::get_delay(Uint32 tableId) {

@@ -5480,6 +5480,7 @@ private:
                                Uint32 line,
                                Uint32 pageId);
   void update_rate_usage(Uint32 tableId, Uint64 databasePtrI, Uint32 added_rate);
+  Uint64 resolve_user_record(Uint32 user_id);
   void send_database_quota_rep(DatabaseRecordPtr dbPtr, NDB_TICKS);
   Uint32 get_delay(Uint32 tableId);
   void change_report_limits(DatabaseRecord *dbPtrP,
