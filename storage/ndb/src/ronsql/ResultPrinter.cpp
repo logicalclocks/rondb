@@ -213,7 +213,7 @@ ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
   case RonSQLExecParams::OutputFormat::TEXT_NOHEADER:
     break;
   default:
-    abort();
+    ronsql_bug("The result printer got an unknown output format.");
   }
   assert(err != NULL);
   compile();
@@ -433,7 +433,8 @@ ResultPrinter::compile()
           max(number_of_aggregates, o->avg.agg_index_count + 1);
         break;
       default:
-        abort();
+        ronsql_bug("The result printer got a SELECT output that is not a "
+                   "column, an aggregate or an AVG.");
       }
       o = o->next;
     }
@@ -506,7 +507,7 @@ ResultPrinter::compile()
       }
       else
       {
-        abort();
+        ronsql_bug("The result printer has neither JSON nor TSV output.");
       }
     }
     Outputs* o = m_outputs[i];
@@ -545,9 +546,13 @@ ResultPrinter::compile()
           precision = 0;
           scale = 0;
         }
-        ndbrequire(precision <= 65);
-        ndbrequire(scale <= 30);
-        ndbrequire(scale <= precision);
+        ronsql_require_bug(precision <= 65,
+                           "A GROUP BY output has a precision above 65.");
+        ronsql_require_bug(scale <= 30,
+                           "A GROUP BY output has a scale above 30.");
+        ronsql_require_bug(scale <= precision,
+                           "A GROUP BY output has a scale above its "
+                           "precision.");
         Cmd cmd;
         cmd.type = Cmd::Type::PRINT_GROUP_BY_COLUMN;
         cmd.print_group_by_column.reg_g = m_col_idx_groupby_map[o->column.col_idx];
@@ -596,7 +601,8 @@ ResultPrinter::compile()
         break;
       }
     default:
-      abort();
+      ronsql_bug("The result printer got a SELECT output that is not a "
+                 "column, an aggregate or an AVG.");
     }
   }
   if (m_json_output)
@@ -615,7 +621,7 @@ ResultPrinter::compile()
   }
   else
   {
-    abort();
+    ronsql_bug("The result printer has neither JSON nor TSV output.");
   }
 }
 
@@ -707,7 +713,7 @@ ResultPrinter::run_program(Uint32 from, Uint32 to,
       assert(false && "Print commands should not be run via run_program");
       break;
     default:
-      abort();
+      ronsql_bug("The result printer program has a command of unknown type.");
     }
   }
 }
@@ -842,7 +848,7 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
               print_string(out, content, charset, false, true, true);
             }
             else {
-              abort();
+              ronsql_bug("The result printer has neither JSON nor TSV output.");
             }
             break;
           }
@@ -973,7 +979,7 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
       }
       break;
     default:
-      abort();
+      ronsql_bug("The result printer program has a command of unknown type.");
     }
   }
 }
@@ -1149,7 +1155,7 @@ ResultPrinter::avg_sort_key(NdbAggregator::Result sum,
       convert_result_to_double(sum) / convert_result_to_double(count);
   if (scale < 0)
     return result;
-  ndbrequire(scale <= 30);
+  ronsql_require_bug(scale <= 30, "The result printer got an AVG scale above 30.");
   char buffer[FLOATING_POINT_BUFFER];
   const size_t len = format_fixed_scale(result, scale, buffer);
   if (len == 0)
@@ -1260,7 +1266,7 @@ ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
   else
   {
     DEB_TRACE();
-    abort();
+    ronsql_bug("The result printer has neither JSON nor TSV output.");
   }
 }
 
@@ -1302,7 +1308,7 @@ ResultPrinter::setup_output_format()
     m_null_representation = LexString{"null", 4};
     break;
   default:
-    abort();
+    ronsql_bug("The result printer got an unknown output format.");
   }
 }
 
@@ -1485,7 +1491,7 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
       } else if (m_tsv_output) {
         print_string(out, content, charset, false, true, true);
       } else {
-        abort();
+        ronsql_bug("The result printer has neither JSON nor TSV output.");
       }
       break;
     }
@@ -1592,7 +1598,7 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
       } else if (m_tsv_output) {
         print_binary_tsv(out, bytes, len);
       } else {
-        abort();
+        ronsql_bug("The result printer has neither JSON nor TSV output.");
       }
       break;
     }
@@ -1694,7 +1700,7 @@ ResultPrinter::print_avro_value(std::ostream& out,
                      pointer_cast<const unsigned char*>(json.data()),
                      json.size());
   } else {
-    abort();
+    ronsql_bug("The result printer has neither JSON nor TSV output.");
   }
 }
 
@@ -1852,7 +1858,7 @@ ResultPrinter::print_count_star_result(Uint64 count,
   }
   else
   {
-    abort();
+    ronsql_bug("The result printer has neither JSON nor TSV output.");
   }
 }
 
@@ -1937,7 +1943,7 @@ ResultPrinter::print_result(NdbAggregator* aggregator,
   else
   {
     DEB_TRACE();
-    abort();
+    ronsql_bug("The result printer has neither JSON nor TSV output.");
   }
   // ================================================================================
 }
@@ -2086,7 +2092,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
               print_string(out, content, charset, false, true, true);
             }
             else {
-              abort();
+              ronsql_bug("The result printer has neither JSON nor TSV output.");
             }
             break;
           }
@@ -2217,7 +2223,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
       }
       break;
     default:
-      abort();
+      ronsql_bug("The result printer program has a command of unknown type.");
     }
   }
 }
@@ -2606,13 +2612,15 @@ double_to_fixed(double value, char* to, bool* error)
     return glen;
   }
   // [-]d[.ddd]e-NN becomes [-]0.<NN - 1 zeros><digits>.
-  ndbrequire(e[1] == '-');
+  ronsql_require_bug(e[1] == '-',
+                     "A double below 0.1 was printed with a positive exponent.");
   int exponent = 0;
   for (const char* p = e + 2; *p != '\0'; p++)
     exponent = exponent * 10 + (*p - '0');
   const int zeros = exponent - 1;
   const char* src = g;
-  ndbrequire(3 + zeros + (e - src) <= FLOATING_POINT_BUFFER + 1);
+  ronsql_require_bug(3 + zeros + (e - src) <= FLOATING_POINT_BUFFER + 1,
+                     "A double below 0.1 does not fit the fixed-point buffer.");
   char* dst = to;
   if (*src == '-') *dst++ = *src++;
   *dst++ = '0';
@@ -2641,7 +2649,8 @@ ResultPrinter::print_float_or_double(std::ostream& out, double value,
     out << m_null_representation;
     return;
   }
-  ndbrequire(len > 0 && buffer[len] == 0);
+  ronsql_require_bug(len > 0 && buffer[len] == 0,
+                     "A double was formatted as an empty or unterminated string.");
   out << buffer;
   return;
 }
@@ -2669,7 +2678,8 @@ ResultPrinter::print_float_or_double(std::ostream& out, double value,
 static size_t
 format_fixed_scale(double value, int scale, char* to)
 {
-  ndbrequire(scale >= 0 && scale <= 30);
+  ronsql_require_bug(scale >= 0 && scale <= 30,
+                     "A fixed-scale value has a scale outside 0 to 30.");
   if (!std::isfinite(value))
     return 0;
   decimal_digit_t digits[9];
@@ -2722,14 +2732,16 @@ ResultPrinter::print_avg_result(std::ostream& out,
   }
 
   // AVG over an exact type is a DECIMAL in MySQL (O-6).
-  ndbrequire(scale <= 30);
+  ronsql_require_bug(scale <= 30, "The result printer got an AVG scale above 30.");
   print_fixed_scale(out, result, scale);
 }
 
 int
 ResultPrinter::avg_arg_scale(const Outputs* out) const
 {
-  ndbrequire(out != NULL && out->type == Outputs::Type::AVG);
+  ronsql_require_bug(out != NULL && out->type == Outputs::Type::AVG,
+                     "The result printer took the AVG scale of an output "
+                     "that is not an AVG.");
   const AggregationAPICompiler::Expr* arg = out->avg.arg;
   // Expression result-type inference is separate from column metadata.
   // Keep the existing four-digit formatting for those arguments.
@@ -3217,7 +3229,7 @@ ResultPrinter::explain(std::basic_ostream<char>* out_stream)
     format_description = "mysql-style tab separated, header-less";
     break;
   default:
-    abort();
+    ronsql_bug("The result printer got an unknown output format.");
   }
   // m_has_orderby is also set by HAVING alone (to buffer the groups), which
   // leaves nothing to sort by.

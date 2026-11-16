@@ -598,4 +598,27 @@ class RonSQLMaybeStaleSchema : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
 
+/*
+ * X-14: a broken invariant of RonSQL is a bug, but RonSQL runs inside RDRS,
+ * where ndbrequire() and abort() would stop every request in flight.  Fail
+ * only the statement: a permanent INTERNAL error whose message says what
+ * broke, with " Please report a bug." appended.  Keep ndbrequire() where a
+ * throw is unsafe (destructors, noexcept functions, code called from C) or
+ * memory is already corrupt.  Named so as not to clash with the require_bug
+ * macro of RonSQLPreparer.cpp and the bug macro of ResultPrinter.cpp.
+ */
+[[noreturn]] static inline void
+ronsql_bug(const char* msg)
+{
+  throw RonSQLPermanentError(RonSQLErrorClass::INTERNAL,
+                             std::string(msg) + " Please report a bug.");
+}
+
+static inline void
+ronsql_require_bug(bool condition, const char* msg)
+{
+  if (likely(condition)) return;
+  ronsql_bug(msg);
+}
+
 #endif

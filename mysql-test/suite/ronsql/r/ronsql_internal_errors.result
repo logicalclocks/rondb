@@ -1,0 +1,14 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== ie-1: TEXT GROUP BY key through two CTEs ===
+Error handling: RPE
+ronsql_cli caught exception: A GROUP BY output has a precision above 65. Please report a bug.
+
+=== ie-2: the same through RDRS ===
+HTTP 500
+x-ronsql-error-class: internal
+== RDRS still answers ==
+HTTP 200
+
+=== Cleanup ===

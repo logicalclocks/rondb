@@ -408,10 +408,12 @@ run_ronsql(RonSQLExecParams& params) {
       return 1;
     }
     catch (...) {
-      // This should never happen
+      // This should never happen: handle_ronsql_exception turns every
+      // exception into one of the types above.  Kept as abort() (X-14):
+      // ronsql_cli runs one statement and exits, and no input gets here.
       abort();
     }
   }
-  // Unreachable
+  // Unreachable: every attempt returns or, before the last, retries.
   abort();
 }

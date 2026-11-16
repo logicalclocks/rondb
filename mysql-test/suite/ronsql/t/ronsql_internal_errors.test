@@ -1,0 +1,53 @@
+# X-14 = J-10 = O-17: invariant checks of RonSQL that a statement can
+# reach fail the statement with an internal error ("Please report a
+# bug.", HTTP 500 in RDRS) instead of aborting the process.  In RDRS an
+# abort ended every request in flight.
+#
+#   ie-1  a TEXT GROUP BY key passed up two CTEs (ronsql_cli): the
+#         chained column metadata gives the result printer the inline
+#         size of the TEXT column (256) as a DECIMAL precision, which
+#         failed its ndbrequire(precision <= 65).  RONSQL-39 fixed the
+#         same for a stored column (ronsql_groupby_blob).
+#   ie-2  the same through RDRS: HTTP 500 with error class internal,
+#         and RDRS answers the next request.
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE ie_t (
+  id  INT NOT NULL,
+  txt TEXT,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+INSERT INTO ie_t VALUES (1, 'apple'), (2, 'banana'), (3, 'apple');
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === ie-1: TEXT GROUP BY key through two CTEs ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT txt, COUNT(*) AS n FROM ie_t GROUP BY txt), b AS (SELECT txt, SUM(n) AS n2 FROM a GROUP BY txt) SELECT txt, SUM(n2) FROM b GROUP BY txt;' 2>&1
+
+--echo
+--echo === ie-2: the same through RDRS ===
+--exec printf '{"query":"WITH a AS (SELECT txt, COUNT(*) AS n FROM ie_t GROUP BY txt), b AS (SELECT txt, SUM(n) AS n2 FROM a GROUP BY txt) SELECT txt, SUM(n2) FROM b GROUP BY txt;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ie-body
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/ie-hdrs -o /dev/null -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ie-body
+--exec grep -i '^x-ronsql-error-class:' $MYSQL_TMP_DIR/ie-hdrs | tr -d '\r' | tr '[:upper:]' '[:lower:]'
+--echo == RDRS still answers ==
+--exec printf '{"query":"SELECT COUNT(*) AS n FROM ie_t;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ie-body
+--exec curl -s -w 'HTTP %{http_code}\n' -o /dev/null -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ie-body
+--remove_file $MYSQL_TMP_DIR/ie-body
+--remove_file $MYSQL_TMP_DIR/ie-hdrs
+
+--echo
+--echo === Cleanup ===
+
+--disable_query_log
+DROP TABLE ie_t;
+--enable_query_log
