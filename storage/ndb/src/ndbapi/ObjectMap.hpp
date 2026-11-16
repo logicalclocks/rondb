@@ -85,6 +85,19 @@ class NdbObjectIdMap {
       return reinterpret_cast<void *>(m_val);
     }
 
+    /**
+     * The mapped object, or nullptr if the entry is free. Unlike isFree()
+     * followed by getObj(), this reads m_val only once: the receive thread
+     * looks objects up while the client thread unmaps them (see
+     * ObjectMap.cpp), and the entry can be freed between two reads.
+     */
+    void *getObjIfMapped() const {
+      const UintPtr val = *static_cast<const volatile UintPtr *>(&m_val);
+      if ((val & 1) == 1) return nullptr;
+      assert((val & 3) == 0);
+      return reinterpret_cast<void *>(val);
+    }
+
     void setObj(void *obj) {
       m_val = reinterpret_cast<UintPtr>(obj);
       assert((m_val & 3) == 0);
@@ -156,11 +169,7 @@ inline void *NdbObjectIdMap::getObject(Uint32 id) const {
   // m_map[id>>2].m_obj));
   id >>= 2;
   if (id < m_size) {
-    if (m_map[id].isFree()) {
-      return nullptr;
-    } else {
-      return m_map[id].getObj();
-    }
+    return m_map[id].getObjIfMapped();
   }
   return nullptr;
 }
