@@ -626,6 +626,7 @@ private:
                       Uint32 scope_type, const char *scope_name, NdbOut& out);
   void get_user_alias(const char *alias_name, NdbOut& out);
   void list_user_aliases(Uint32 nextAliasId, NdbOut& out);
+  void backup_user_aliases(Uint32 nextAliasId, NdbOut& out);
   int alias_schema_op(Uint32 req_gsn, const char *alias_name,
                       Uint32 rule_cmd, const Uint32 *rule_blob,
                       Uint32 rule_blob_bytes);

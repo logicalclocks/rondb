@@ -5073,6 +5073,80 @@ int ndb_mgm_list_user_aliases(NdbMgmHandle handle,
   DBUG_RETURN(0);
 }
 
+int ndb_mgm_backup_user_aliases(NdbMgmHandle handle,
+                                Uint32 *nextAliasId,
+                                char **result_buf) {
+  DBUG_ENTER("ndb_mgm_backup_user_aliases");
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR,
+            "Executing: ndb_mgm_backup_user_aliases");
+  CHECK_CONNECTED(handle, -1);
+
+  Properties args;
+  args.put("nextAliasId", *nextAliasId);
+
+  const ParserRow<ParserDummy> backup_user_alias_reply[] = {
+    MGM_CMD("backup user alias reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("num_rows", Int, Optional, "Number of result rows"),
+    MGM_ARG("nextAliasId", Int, Optional, "next Alias Id"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         backup_user_alias_reply,
+                                         "backup user alias",
+                                         &args);
+
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to backup user aliases, internal error");
+    DBUG_RETURN(-1);
+  }
+
+  // Check the result for Ok or error
+  const char * result;
+  Uint32 error_code = 0;
+  reply->get("result", &result);
+  if (strcmp(result, "Ok") != 0) {
+    reply->get("error_code", &error_code);
+    if (error_code) {
+      SET_ERROR(handle, error_code, result);
+    } else {
+      SET_ERROR(handle, NDB_MGM_USAGE_ERROR, result);
+    }
+    delete reply;
+    DBUG_RETURN(-1);
+  }
+  Uint32 total_num_rows = 0;
+  if (!reply->get("num_rows", &total_num_rows)) {
+    fprintf(handle->errstream, "Invalid response, expected num_rows\n\n");
+    delete reply;
+    ndb_mgm_disconnect_quiet(handle);
+    DBUG_RETURN(-1);
+  }
+  if (total_num_rows == 0) {
+    /* Backup command completed */
+    *nextAliasId = RNIL;
+    delete reply;
+    DBUG_RETURN(0);
+  }
+  if (!reply->get("nextAliasId", nextAliasId)) {
+    fprintf(handle->errstream, "Invalid response, expected nextAliasId\n\n");
+    delete reply;
+    ndb_mgm_disconnect_quiet(handle);
+    DBUG_RETURN(-1);
+  }
+  delete reply;
+  char *buf = mgm_read_alias_rows(handle, total_num_rows,
+                                  "Error reading Backup user alias");
+  if (buf == nullptr) {
+    ndb_mgm_disconnect_quiet(handle);
+    DBUG_RETURN(-1);
+  }
+  *result_buf = buf;
+  DBUG_RETURN(0);
+}
+
 int ndb_mgm_get_quotas(NdbMgmHandle handle,
                        const char *database_name,
                        char **result_buf) {

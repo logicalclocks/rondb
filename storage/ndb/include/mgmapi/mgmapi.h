@@ -2094,6 +2094,19 @@ int ndb_mgm_get_tls_stats(NdbMgmHandle handle,
                                 char **result_buf);
 
   /**
+   * Backup user aliases as replayable "USER ALIAS SET" lines.
+   *
+   * @param   handle        Management handle.
+   * @param   nextAliasId   Next alias id to start searching from.
+   *                        Both input parameter and output
+   * @param   result_buf    The result rows; the caller frees it with
+   *                        delete[]
+   */
+  int ndb_mgm_backup_user_aliases(NdbMgmHandle handle,
+                                  Uint32 *nextAliasId,
+                                  char **result_buf);
+
+  /**
    * Error printer
    */
   void ndb_mgm_print_error(NdbMgmHandle handle);

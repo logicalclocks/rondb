@@ -4912,12 +4912,25 @@ int CommandInterpreter::executeUserRestore(char* parameters) {
     char *line = strdup(c_str);
     if (memcmp(line, user_backup_magic_str, 15) == 0) {
       ; // Skip magic string
+    } else if (line[0] == '#' || line[0] == 0) {
+      ; // Skip comments (e.g. an alias whose rules were all dropped)
     } else {
       ndbout << "Execute " << c_str << endl;
       char* firstToken = strtok(line, " ");
       char* allAfterFirstToken = strtok(NULL, "");
       if (native_strcasecmp(firstToken, "USER") == 0 &&
-          allAfterFirstToken != NULL) {
+          allAfterFirstToken != NULL &&
+          native_strncasecmp(allAfterFirstToken, "ALIAS",
+                             sizeof("ALIAS") - 1) == 0) {
+        int error_code = executeUserAlias(allAfterFirstToken);
+        if (error_code != 0) {
+          ndbout << "USER ALIAS SET command failed" << endl;
+          ndbout << "Will continue with next command" << endl;
+        } else {
+          ndbout << "USER ALIAS SET command succeeded for RESTORE" << endl;
+        }
+      } else if (native_strcasecmp(firstToken, "USER") == 0 &&
+                 allAfterFirstToken != NULL) {
         int error_code = executeUserSet(allAfterFirstToken);
         if (error_code != 0) {
           ndbout << "USER SET command failed" << endl;
@@ -4975,7 +4988,6 @@ int CommandInterpreter::executeUserBackup(char* parameters) {
     if (result == 0) {
       if (nextUserId == RNIL) {
         free(result_buf);
-        fprintf(stdout, "User Backup command completed\n");
         break;
       }
       int res = fprintf(fd, "%s", result_buf);
@@ -4992,6 +5004,36 @@ int CommandInterpreter::executeUserBackup(char* parameters) {
       break;
     }
   } while (true);
+  /**
+   * The aliases follow the users in the file so that USER RESTORE replays
+   * the targets before the rules that reference them (RONDB-1158).
+   */
+  if (result == 0) {
+    Uint32 nextAliasId = 0;
+    do {
+      char *result_buf = nullptr;
+      result = ndb_mgm_backup_user_aliases(m_mgmsrv, &nextAliasId,
+                                           &result_buf);
+      if (result == 0) {
+        if (nextAliasId == RNIL) {
+          fprintf(stdout, "User Backup command completed\n");
+          break;
+        }
+        int res = fprintf(fd, "%s", result_buf);
+        delete[] result_buf;
+        if (res == -1) {
+          int error_code = errno;
+          ndbout << "Failed to write backup file with errno: " << error_code;
+          ndbout << endl;
+          return -1;
+        }
+      } else {
+        ndbout << "USER BACKUP" << " command failed: Error:" << endl;
+        printError();
+        break;
+      }
+    } while (true);
+  }
   fclose(fd);
   return result;
 }

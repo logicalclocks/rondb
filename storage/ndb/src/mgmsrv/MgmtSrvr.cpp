@@ -7368,6 +7368,161 @@ void MgmtSrvr::get_user_alias(const char *alias_name, NdbOut& out) {
   }
 }
 
+/**
+ * Emit replayable "USER ALIAS SET" lines for one alias per round trip, the
+ * alias half of USER BACKUP. The blob is walked with the same defensive
+ * framing as print_alias_rules; num_rows counts the emitted lines exactly
+ * (the client reads that many off the socket). An alias whose rules were
+ * all dropped emits one comment line, which USER RESTORE skips, because a
+ * zero num_rows would read as the end of the listing.
+ */
+void MgmtSrvr::backup_user_aliases(Uint32 nextAliasId, NdbOut& out) {
+  SignalSender ss(theFacade);
+  ss.lock();
+
+  int res;
+  if ((res = check_quota_version(true))) {
+    out << "result: Quotas not supported in this cluster, requires 24.10.18"
+        << endl;
+    out << "error_code: " << 4572 << endl;
+    out << endl;
+    return;
+  }
+  NodeId nodeId = ss.get_an_alive_node();
+
+  SimpleSignal ssig;
+  ssig.header.m_noOfSections = 0;
+
+  ListDatabaseReq* req =
+    CAST_PTR(ListDatabaseReq, ssig.getDataPtrSend());
+
+  req->requestInfo =
+    QueryDatabaseFilter::UserKind | QueryDatabaseFilter::AliasOnly;
+  req->senderData = 89;
+  req->senderRef = ss.getOwnRef();
+  req->nextDatabaseId = nextAliasId;
+
+  if (ss.sendSignal(nodeId,
+                    ssig,
+                    DBDICT,
+                    GSN_LIST_DATABASE_REQ,
+                    ListDatabaseReq::SignalLength) != SEND_OK) {
+    out << "result: Send or Receive failed" << endl;
+    out << "error_code: " << SEND_OR_RECEIVE_FAILED << endl;
+    out << endl;
+    return;
+  }
+
+  while (true) {
+    SimpleSignal *signal = ss.waitFor();
+    int gsn = signal->readSignalNumber();
+    switch (gsn) {
+      case GSN_LIST_DATABASE_CONF:
+      {
+        const ListDatabaseConf * conf =
+          CAST_CONSTPTR(ListDatabaseConf, signal->getDataPtr());
+
+        if (conf->databaseId == RNIL) {
+          out << "result: Ok" << endl;
+          out << "num_rows: 0" << endl;
+          out << endl;
+          return;
+        }
+        if (signal->header.m_noOfSections != 2) {
+          out << "result: Wrong number of sections returned from data node";
+          out << "error_code: 1" << endl;
+          out << endl;
+          return;
+        }
+        const char *aliasName = (const char*)signal->ptr[0].p;
+        const Uint32 *words = signal->ptr[1].p;
+        const Uint32 num_words = signal->ptr[1].sz;
+        Uint32 count = (num_words >= 1) ? words[0] : 0;
+
+        nextAliasId = conf->databaseId + 1;
+        out << "result: Ok" << endl;
+        out << "num_rows: " << (count > 0 ? count : 1) << endl;
+        out << "nextAliasId: " << nextAliasId << endl;
+        out << endl;
+
+        if (count == 0) {
+          out << "# USER ALIAS " << aliasName << " has no rules" << endl;
+          return;
+        }
+        Uint32 emitted = 0;
+        Uint32 off_words = 1;
+        char display[MAX_TAB_NAME_SIZE + 2];
+        for (Uint32 i = 0; i < count; i++) {
+          if (off_words + 3 > num_words) {
+            break;
+          }
+          const Uint32 scope_type = words[off_words];
+          const Uint32 scope_len = words[off_words + 1];
+          const Uint32 target_len = words[off_words + 2];
+          const Uint32 scope_pad_words = (scope_len + 3) / 4;
+          const Uint32 target_pad_words = (target_len + 3) / 4;
+          if (scope_len > MAX_TAB_NAME_SIZE || target_len == 0 ||
+              target_len > MAX_DB_NAME_SIZE ||
+              off_words + 3 + scope_pad_words + target_pad_words >
+                num_words) {
+            break;
+          }
+          const char *scope_name = (const char *)&words[off_words + 3];
+          const char *target_name = scope_name + (scope_pad_words * 4);
+          out << "USER ALIAS SET " << aliasName;
+          out << " --target = " << target_name;
+          if (scope_type == DictDatabaseInfo::AliasScopeTable) {
+            alias_scope_to_display(scope_name, display, sizeof(display));
+            out << " --table = " << display;
+          } else if (scope_type == DictDatabaseInfo::AliasScopeDatabase) {
+            out << " --database = " << scope_name;
+          }
+          out << endl;
+          emitted++;
+          off_words += 3 + scope_pad_words + target_pad_words;
+        }
+        for (Uint32 i = emitted; i < count; i++) {
+          out << "# malformed rule skipped" << endl;
+        }
+        return;
+      }
+      case GSN_LIST_DATABASE_REF:
+      {
+        const ListDatabaseRef * ref =
+          CAST_CONSTPTR(ListDatabaseRef, signal->getDataPtr());
+        Uint32 err = ref->errorCode;
+        out << "result: Backup user aliases failed with error ";
+        out << "error_code: " << err << endl;
+        out << endl;
+        return;
+      }
+      case GSN_NF_COMPLETEREP:
+        break;
+      case GSN_NODE_FAILREP:
+      {
+        if (node_failrep_has_node(signal, nodeId)) {
+          out << "result: Backup user aliases failed due to node failure"
+              << endl;
+          out << "error_code: 1" << endl;
+          out << endl;
+          return;
+        }
+        break;
+      }
+      case GSN_API_REGCONF:
+      case GSN_TAKE_OVERTCCONF:
+      case GSN_CONNECT_REP:
+        break;
+      default:
+        report_unknown_signal(signal);
+        out << "result: Send or Receive failed" << endl;
+        out << "error_code: " << SEND_OR_RECEIVE_FAILED << endl;
+        out << endl;
+        return;
+    }
+  }
+}
+
 void MgmtSrvr::list_user_aliases(Uint32 nextAliasId, NdbOut& out) {
   SignalSender ss(theFacade);
   ss.lock();
