@@ -201,6 +201,16 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
           m_limit = word & 0x03FFFFFF;
           m_has_limit = true;
           break;
+        case kOpDropZeroCount:
+          /* Empty-group trailer entry (D-4): a visible COUNT slot,
+           * checked to be a COUNT below. */
+          if ((word & 0xFFFF) >= m_n_visible_results) {
+            bad_avg = true;
+            break;
+          }
+          m_drop_zero_slot = word & 0xFFFF;
+          m_has_drop_zero = true;
+          break;
         case kOpLoadCol: {
           Uint32 type = decodeLoadColType(word);
           if (type == NDB_TYPE_DECIMAL ||
@@ -322,6 +332,14 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
     extractAggOps(m_prog, m_prog_len, m_agg_prog_start_pos,
                   m_cached_agg_ops, m_n_agg_results,
                   m_avg_hidden_map, m_n_visible_results);
+    /* The empty-group trailer erases a group whose slot holds 0: only
+     * a COUNT says that no row reached the group (D-4). */
+    if (m_has_drop_zero && m_cached_agg_ops[m_drop_zero_slot] != kOpCount) {
+      g_eventLogger->error(
+          "JoinAggInterpreter::Init: kOpDropZeroCount names slot %u, "
+          "which is not a COUNT", m_drop_zero_slot);
+      return false;
+    }
   }
   return true;
 }
@@ -704,6 +722,58 @@ int JoinAggInterpreter::finalizeLimitSlice(Uint32 max_groups,
   m_limit_finalized = true;
   m_limit_finalizing = false;
   return 1;
+}
+
+bool JoinAggInterpreter::finalizeDropZeroSlice(Uint32 max_groups) {
+  if (!m_has_drop_zero || m_drop_zero_finalized) {
+    return true;
+  }
+  if (m_n_gb_cols == 0 || m_gb_map == nullptr) {
+    /* Without GROUP BY the one result row is kept, whatever its COUNT
+     * (MySQL returns COUNT 0 and NULL for the others). */
+    m_drop_zero_finalized = true;
+    m_drop_zero_finalizing = false;
+    return true;
+  }
+
+  /* Resume from the saved cursor, or start from the beginning.  The
+   * saved entry is the next one to examine, so it is still live, and
+   * the table does not grow in the FINAL_REP..CTE_READY window
+   * (AggHashTable iteratorAt). */
+  JoinGBHashTable::Iterator it;
+  if (!m_drop_zero_finalizing) {
+    m_drop_zero_finalizing = true;
+    it = m_gb_map->begin();
+  } else {
+    it = m_gb_map->iteratorAt(m_drop_zero_bucket, m_drop_zero_raw);
+  }
+
+  Uint32 processed = 0;
+  while (it.valid()) {
+    if (processed >= max_groups) {
+      m_drop_zero_bucket = it.bucket();
+      m_drop_zero_raw = it.raw();
+      return false;
+    }
+    char* data = it.data();
+    AggResItem* slots = reinterpret_cast<AggResItem*>(data + it.keyLen());
+    const AggResItem& count = slots[m_drop_zero_slot];
+    processed++;
+    if (count.is_null || count.value.val_uint64 == 0) {
+      if (hasStringSlots()) {
+        freeGroupStringSlots(slots);
+      }
+      m_gb_map->eraseAndNext(it);
+      freeGroupData(data);
+      if (m_n_groups > 0) m_n_groups--;
+    } else {
+      m_gb_map->next(it);
+    }
+  }
+
+  m_drop_zero_finalized = true;
+  m_drop_zero_finalizing = false;
+  return true;
 }
 
 /**

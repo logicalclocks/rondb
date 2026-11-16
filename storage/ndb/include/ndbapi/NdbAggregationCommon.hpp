@@ -182,6 +182,17 @@ enum InterpreterOp {
   kOpOrderBy,
   kOpLimit,
 
+  /* Empty-group trailer for grouped CTE aggregation programs (D-4).
+   * Declarative no-op per row; parsed by JoinAggInterpreter::Init.
+   *   kOpDropZeroCount: (op << 26) | (slot & 0xFFFF)
+   *               slot = a visible kOpCount slot.
+   * The owner erases every group whose COUNT in that slot is 0 after
+   * the CTE redistribute, before the ORDER BY / LIMIT finalize and
+   * before CTE_READY.  RonSQL names the hidden COUNT of the rows that
+   * passed a cross-table filter: a group is created when a row
+   * arrives, before the filter can stop the row. */
+  kOpDropZeroCount,
+
   kOpTotal
 };
 

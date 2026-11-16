@@ -2038,8 +2038,10 @@ Int32 AggInterpreterBase::executeStandardOpcode(
 
     case kOpOrderBy:
     case kOpLimit:
+    case kOpDropZeroCount:
       /* Declarative ORDER BY / LIMIT trailer (cte_orderby_limit_plan.md)
-       * — no per-row work; JoinAggInterpreter::Init parsed them. */
+       * and empty-group trailer (D-4) — no per-row work;
+       * JoinAggInterpreter::Init parsed them. */
       return 0;
 
     // Type-specific Sum operations

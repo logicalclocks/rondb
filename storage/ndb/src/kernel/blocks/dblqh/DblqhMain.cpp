@@ -1220,6 +1220,12 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     continueCteLimitFinalize(signal, data0);
     return;
   }
+  case ZCONTINUE_CTE_DROP_ZERO_FINALIZE:
+  {
+    jam();
+    continueCteDropZeroFinalize(signal, data0);
+    return;
+  }
   case ZCONTINUE_JOIN_AGG_PARK_SWEEP:
   {
     jam();
@@ -25500,6 +25506,36 @@ void Dblqh::continueCteLimitFinalize(Signal *signal, Uint32 aggStateKey) {
   checkCteReady(signal, state);
 }
 
+/* CONTINUEB slice driver for the empty-group drop (D-4) — same shape
+ * as the AVG chain: each slice erases the zero-COUNT groups of a
+ * bounded batch, and completion re-invokes checkCteReady, which sees
+ * dropZeroFinalized() and goes on to the AVG divide and the LIMIT. */
+void Dblqh::continueCteDropZeroFinalize(Signal *signal, Uint32 aggStateKey) {
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (state == nullptr || state->isAborting()) {
+    jam();
+    return;  // Aborted or released while this continuation was queued.
+  }
+  if (state->m_state.load() == JoinAggregationState::CTE_READY) {
+    jam();
+    return;
+  }
+  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
+  if (interp == nullptr) {
+    jam();
+    return;
+  }
+  if (!interp->finalizeDropZeroSlice(ZCTE_AVG_FINALIZE_BATCH)) {
+    jam();
+    signal->theData[0] = ZCONTINUE_CTE_DROP_ZERO_FINALIZE;
+    signal->theData[1] = aggStateKey;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+    return;
+  }
+  jam();
+  checkCteReady(signal, state);
+}
+
 void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
   /* Redistribution, FINAL and queue-drain handlers run on the owner. */
   ndbassert(state->m_owner_instance == instance());
@@ -25564,6 +25600,33 @@ void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
                                  ? ZCTE_SINGLE_ROW_VIOLATION
                                  : ZCTE_SINGLE_GROUP_VIOLATION);
       return;
+    }
+  }
+
+  /* Empty-group drop (D-4): every node's COUNT contributions are
+   * merged by now, so a group whose kOpDropZeroCount COUNT is 0 had no
+   * row pass the body's cross-table filter on any node.  Erase it
+   * before the AVG divide and before the LIMIT selection, where it
+   * would take a place.  CONTINUEB-sliced like the AVG walk. */
+  {
+    JoinAggInterpreter *dropInterp = getJoinAggResultInterpreter(state);
+    if (dropInterp != nullptr && dropInterp->hasDropZero() &&
+        !dropInterp->dropZeroFinalized()) {
+      if (dropInterp->dropZeroFinalizing()) {
+        jam();
+        /* A drop chain is already running; it will re-invoke
+         * checkCteReady on completion. */
+        return;
+      }
+      jam();
+      if (!dropInterp->finalizeDropZeroSlice(ZCTE_AVG_FINALIZE_BATCH)) {
+        jam();
+        signal->theData[0] = ZCONTINUE_CTE_DROP_ZERO_FINALIZE;
+        signal->theData[1] = state->m_key;
+        sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+        return;
+      }
+      /* Walk completed within the first slice — fall through. */
     }
   }
 

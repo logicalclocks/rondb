@@ -108,6 +108,7 @@
 #define BR_kOpAvg           31
 #define BR_kOpOrderBy       32
 #define BR_kOpLimit         33
+#define BR_kOpDropZeroCount 34
 
 /* From storage/ndb/include/ndb_constants.h. */
 #define BR_NDB_TYPE_TINYINT          1
@@ -313,6 +314,7 @@ const char *ndb_jit_bridge_agg_op_name(uint32_t op) {
     case BR_kOpAvg:            return "kOpAvg";
     case BR_kOpOrderBy:        return "kOpOrderBy";
     case BR_kOpLimit:          return "kOpLimit";
+    case BR_kOpDropZeroCount:  return "kOpDropZeroCount";
     default:                   return "kOp?";
   }
 }
@@ -4006,9 +4008,11 @@ JitBridgeReason ndb_jit_bridge_translate_ex(const uint32_t *ndb_prog,
 
       case BR_kOpOrderBy:
       case BR_kOpLimit:
+      case BR_kOpDropZeroCount:
         /* Declarative CTE metadata, already parsed by JoinAggInterpreter.
-         * Sorting and truncation run after aggregation and redistribution;
-         * these words have no per-row work, just like in the interpreter. */
+         * Sorting, truncation and the empty-group drop run after
+         * aggregation and redistribution; these words have no per-row
+         * work, just like in the interpreter. */
         pos += 1;
         break;
 

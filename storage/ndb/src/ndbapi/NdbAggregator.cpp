@@ -1583,6 +1583,23 @@ bool NdbAggregator::Limit(Uint32 n) {
   return true;
 }
 
+bool NdbAggregator::DropZeroCountGroups(Uint32 agg_id) {
+  /* Empty-group trailer for a grouped CTE aggregation program (D-4):
+   * the owner node erases every group whose COUNT in slot agg_id is 0
+   * after the CTE redistribute, before the groups become visible.
+   * agg_id must already be a Count() slot.  Declarative: no per-row
+   * work. */
+  if (agg_id >= MAX_AGGREGATION_OP_SIZE || agg_ops_[agg_id] != kOpCount) {
+    SetError(kErrInvalidAggNo);
+    return false;
+  }
+  if (!HasRoom(1)) return false;
+  buffer_[curr_prog_pos_++] =
+    (kOpDropZeroCount) << 26 |
+    (agg_id & 0xFFFF);
+  return true;
+}
+
 bool NdbAggregator::GroupBy(const char* name) {
   if (name == nullptr) {
     SetError(kErrInvalidColumnName);

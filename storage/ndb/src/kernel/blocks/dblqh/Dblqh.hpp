@@ -392,6 +392,9 @@ class FsReadWriteReq;
 #define ZCONTINUE_FREE_CTE_REDIST_PAGES 58
 /* Test hook 5147: a CTE_SCAN_CONF held for a local requester. */
 #define ZCONTINUE_CTE_SCAN_CONF_HELD 59
+/* D-4: sliced erase of the groups whose kOpDropZeroCount COUNT is 0.
+ * 60 is ZCONTINUE_JOIN_AGG_FLUSH_HELD, 61 ZCONTINUE_JOIN_AGG_SEND. */
+#define ZCONTINUE_CTE_DROP_ZERO_FINALIZE 62
 #ifdef ERROR_INSERT
 /* Test hook 5150: one timer per instance re-checks the held replays. */
 #define ZCONTINUE_JOIN_AGG_FLUSH_HELD 60
@@ -3762,6 +3765,7 @@ private:
   void continueCteScanConfHeld(Signal* signal);
   void continueCteAvgFinalize(Signal* signal, Uint32 aggStateKey);
   void continueCteLimitFinalize(Signal* signal, Uint32 aggStateKey);
+  void continueCteDropZeroFinalize(Signal* signal, Uint32 aggStateKey);
   void continueAggInterpTeardown(Signal* signal, AggInterpreter* interp);
   void processRedistQueue(Signal* signal, JoinAggregationState* state,
                           Uint32 aggStateKey);

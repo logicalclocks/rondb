@@ -66,7 +66,10 @@ class JoinAggInterpreter : public AggInterpreterBase {
     m_n_order_cols(0), m_limit(0), m_has_limit(false),
     m_limit_finalizing(false), m_limit_finalized(false),
     m_lim_select_done(false), m_lim_bucket(0), m_lim_raw(nullptr),
-    m_lim_cand(nullptr), m_lim_cand_count(0) {
+    m_lim_cand(nullptr), m_lim_cand_count(0),
+    m_drop_zero_slot(0), m_has_drop_zero(false),
+    m_drop_zero_finalizing(false), m_drop_zero_finalized(false),
+    m_drop_zero_bucket(0), m_drop_zero_raw(nullptr) {
     /* m_attr_read_buf / m_prog_buf / m_gb_cols_buf / m_agg_results_buf /
      * m_gb_map_buf / m_buf_block initialised by the base ctor
      * (Step 3a-B). */
@@ -358,6 +361,25 @@ class JoinAggInterpreter : public AggInterpreterBase {
   bool limitFinalized() const { return m_limit_finalized; }
   bool limitFinalizing() const { return m_limit_finalizing; }
 
+  /**
+   * Empty-group drop (D-4): erase every group whose COUNT in the slot
+   * named by the kOpDropZeroCount trailer is 0.  RonSQL names the
+   * hidden COUNT of the rows that passed a cross-table filter: the
+   * group prologue of ProcessRec creates the group before the filter
+   * can stop the row, so a group whose rows all failed holds 0 there.
+   * Runs on the owner after the FINAL_REP barrier (the counts are
+   * merged) and before the AVG divide and the ORDER BY / LIMIT
+   * finalize, so a dropped group never takes a LIMIT place.  Sliced
+   * like the AVG walk (ZCONTINUE_CTE_DROP_ZERO_FINALIZE): true when
+   * the walk is complete, false when a CONTINUEB slice should follow.
+   * A no-op without the trailer and without GROUP BY (the one row of
+   * an aggregate without GROUP BY is always kept, as in MySQL).
+   */
+  bool finalizeDropZeroSlice(Uint32 max_groups);
+  bool hasDropZero() const { return m_has_drop_zero; }
+  bool dropZeroFinalized() const { return m_drop_zero_finalized; }
+  bool dropZeroFinalizing() const { return m_drop_zero_finalizing; }
+
   /* Compare two group records under the ORDER BY spec (< 0: a orders
    * before b).  GROUP BY columns compare via GBColTypeInfo::cmpFn on
    * the AttributeHeader-framed key entries (NULL flag from the AH);
@@ -489,6 +511,15 @@ class JoinAggInterpreter : public AggInterpreterBase {
   char* m_lim_raw;
   char** m_lim_cand;       /* heap of kept group data pointers */
   Uint32 m_lim_cand_count;
+
+  /* Empty-group trailer state (D-4): the COUNT slot from
+   * kOpDropZeroCount and the sliced erase walk's cursor. */
+  Uint32 m_drop_zero_slot;
+  bool m_has_drop_zero;
+  bool m_drop_zero_finalizing;
+  bool m_drop_zero_finalized;
+  Uint32 m_drop_zero_bucket;
+  char* m_drop_zero_raw;
 
   /* Per-column GROUP BY type metadata (m_gb_types, m_gb_types_inited,
    * m_xfrm_buf, m_xfrm_buf_len) lifted to AggInterpreterBase in Step

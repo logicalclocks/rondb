@@ -1274,6 +1274,11 @@ private:
                               NdbAggregator* aggregator,
                               NdbDictionary::Table* const* cteVirtualTables
                                   = NULL);
+  // The slot of the hidden sentinel COUNT of a cross-table filter: the
+  // one after every aggregate slot of the compiled program, AVG of a
+  // CTE body included (D-4).
+  static Uint32 cross_filter_sentinel_slot(
+      const AggregationAPICompiler& agg);
   // F16: a failed Sum / Avg emit; names an unsupported SUM / AVG over a
   // string or temporal column (see the definition).  Always throws.
   [[noreturn]] void throw_sum_avg_emit_error(NdbAggregator* aggregator,

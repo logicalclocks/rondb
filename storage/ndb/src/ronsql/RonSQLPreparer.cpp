@@ -8761,20 +8761,8 @@ RonSQLPreparer::compile()
       // Pre-compute sentinel slot for ResultPrinter (set before construction).
       // The actual sentinel instructions are emitted later in execute_join().
       if (m_main_scope.agg != NULL && !m_has_select_subqueries) {
-        Uint32 sentinel_slot = 0;
-        DynamicArray<AggregationAPICompiler::Instr>& prog = m_main_scope.agg->m_program;
-        for (Uint32 pi = 0; pi < prog.size(); pi++) {
-          auto t = prog[pi].type;
-          if (t == AggregationAPICompiler::SVMInstrType::Sum ||
-              t == AggregationAPICompiler::SVMInstrType::Count ||
-              t == AggregationAPICompiler::SVMInstrType::Min ||
-              t == AggregationAPICompiler::SVMInstrType::Max ||
-              t == AggregationAPICompiler::SVMInstrType::AggRepeat) {
-            if (prog[pi].dest >= sentinel_slot)
-              sentinel_slot = prog[pi].dest + 1;
-          }
-        }
-        m_context.ast_root.sentinel_agg_slot = (Int32)sentinel_slot;
+        m_context.ast_root.sentinel_agg_slot =
+            (Int32)cross_filter_sentinel_slot(*m_main_scope.agg);
       }
     }
   }
@@ -18975,26 +18963,48 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
   }
 
   // Emit hidden sentinel COUNT: counts rows that passed cross-table filters.
-  // GROUP BY groups where sentinel is 0 are suppressed at result time.
+  // GROUP BY groups where sentinel is 0 are suppressed: those of the main
+  // query by the printer, those of a CTE body by the data node that owns
+  // them, before the CTE is read (D-4).
   if (has_embedded_filter) {
-    // Sentinel slot = next slot after all user-visible aggregate slots
-    Uint32 sentinel_slot = 0;
-    for (Uint32 i = 0; i < program.size(); i++) {
-      auto t = program[i].type;
-      if (t == AggregationAPICompiler::SVMInstrType::Sum ||
-          t == AggregationAPICompiler::SVMInstrType::Count ||
-          t == AggregationAPICompiler::SVMInstrType::Min ||
-          t == AggregationAPICompiler::SVMInstrType::Max ||
-          t == AggregationAPICompiler::SVMInstrType::AggRepeat) {
-        if (program[i].dest >= sentinel_slot)
-          sentinel_slot = program[i].dest + 1;
-      }
-    }
+    const Uint32 sentinel_slot = cross_filter_sentinel_slot(*scope.agg);
     Uint32 reg = 0;
     programAggregator_do_or_fail(aggregator->LoadUint64(1, reg));
     programAggregator_do_or_fail(aggregator->Count(sentinel_slot, reg));
     // sentinel_agg_slot already set in compile() before ResultPrinter creation
+    if (&scope != &m_main_scope && ast_root.groupby_columns != NULL)
+      programAggregator_do_or_fail(
+          aggregator->DropZeroCountGroups(sentinel_slot));
   }
+}
+
+Uint32
+RonSQLPreparer::cross_filter_sentinel_slot(const AggregationAPICompiler& agg)
+{
+  // compile() numbers the aggregate slots 0..n-1 in program order. A CTE
+  // body compiles AVG as one Avg slot (the main query as a Sum and a
+  // Count), so Avg counts too: without it the sentinel took the slot of
+  // an AVG that was the last aggregate, and Count() refused it (D-4).
+  Uint32 slot = 0;
+  for (Uint32 i = 0; i < agg.m_program.size(); i++)
+  {
+    const AggregationAPICompiler::Instr& instr = agg.m_program[i];
+    switch (instr.type)
+    {
+    case AggregationAPICompiler::SVMInstrType::Sum:
+    case AggregationAPICompiler::SVMInstrType::Min:
+    case AggregationAPICompiler::SVMInstrType::Max:
+    case AggregationAPICompiler::SVMInstrType::Count:
+    case AggregationAPICompiler::SVMInstrType::Avg:
+    case AggregationAPICompiler::SVMInstrType::AggRepeat:
+      if (instr.dest >= slot)
+        slot = instr.dest + 1;
+      break;
+    default:
+      break;
+    }
+  }
+  return slot;
 }
 
 void
