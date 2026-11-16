@@ -135,6 +135,9 @@ my @cpp_tests = ('process_setup_test',        # RONDB-1144 THP opt-out,
                  'rate_limit_sync_cluster_test', # RONDB-1158 one sync run:
                                              # install, short-circuit,
                                              # repair a manual drop
+                 'rate_limit_sync_fleet_test', # RONDB-1158 ten concurrent
+                                             # loops, save mid-run,
+                                             # conservative deletes
                  'probe_server_cluster_test'  # probe-port startup contract +
                                               # /health under contention
                 );

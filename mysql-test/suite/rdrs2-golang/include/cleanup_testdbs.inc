@@ -140,6 +140,8 @@ DROP DATABASE IF EXISTS sentinel;
 --exec $NDB_MGM -e "USER DROP rlg_all_rl"
 --error 0,255,65280
 --exec $NDB_MGM -e "USER DROP rlg_inert_rl"
+--error 0,255,65280
+--exec $NDB_MGM -e "USER DROP rlg_fleet_rl"
 
 --enable_result_log
 

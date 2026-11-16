@@ -186,6 +186,11 @@ RateLimitSyncLoop::group_states() {
  */
 RS_Status RateLimitSyncLoop::read_cluster_facts(
   std::set<std::string> *local_dbs) {
+  /* The reserved pool slot is one cached Ndb object: serialize access
+   * across loop instances. Production runs one loop per process, so this
+   * is uncontended; the fleet concurrency test runs many in one process. */
+  static std::mutex slot_mutex;
+  std::lock_guard<std::mutex> slot_guard(slot_mutex);
   Ndb *ndb_object = nullptr;
   RS_Status status =
     rdrsRonDBConnectionPool->GetRateLimitSyncNdbObject(&ndb_object);
