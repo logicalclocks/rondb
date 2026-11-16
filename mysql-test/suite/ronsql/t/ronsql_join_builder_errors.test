@@ -71,19 +71,19 @@ DELIMITER |;
 --echo
 --echo === jbe-1: control, 32 operations: the largest pushed join ===
 let $QUERY=
-WITH c1 AS (SELECT g AS k1, SUM(v) AS s1 FROM bf GROUP BY g),
-c2 AS (SELECT g AS k2, COUNT(*) AS s2 FROM bf GROUP BY g),
-c3 AS (SELECT g AS k3, MIN(v) AS s3 FROM bf GROUP BY g),
-c4 AS (SELECT g AS k4, MAX(v) AS s4 FROM bf GROUP BY g),
-c5 AS (SELECT g AS k5, SUM(v) AS s5 FROM bf GROUP BY g),
-c6 AS (SELECT g AS k6, COUNT(*) AS s6 FROM bf GROUP BY g),
-c7 AS (SELECT g AS k7, MIN(v) AS s7 FROM bf GROUP BY g),
-c8 AS (SELECT g AS k8, MAX(v) AS s8 FROM bf GROUP BY g),
-c9 AS (SELECT g AS k9, SUM(v) AS s9 FROM bf GROUP BY g),
-c10 AS (SELECT g AS k10, COUNT(v) AS s10 FROM bf GROUP BY g)
-SELECT COUNT(*) AS n, SUM(d.w) AS w, SUM(c1.s1) AS a1, SUM(c2.s2) AS a2,
-SUM(c3.s3) AS a3, SUM(c4.s4) AS a4, SUM(c5.s5) AS a5, SUM(c6.s6) AS a6,
-SUM(c7.s7) AS a7, SUM(c8.s8) AS a8, SUM(c9.s9) AS a9, SUM(c10.s10) AS a10
+WITH c1 AS (SELECT g AS k1, SUM(v) AS m1 FROM bf GROUP BY g),
+c2 AS (SELECT g AS k2, COUNT(*) AS m2 FROM bf GROUP BY g),
+c3 AS (SELECT g AS k3, MIN(v) AS m3 FROM bf GROUP BY g),
+c4 AS (SELECT g AS k4, MAX(v) AS m4 FROM bf GROUP BY g),
+c5 AS (SELECT g AS k5, SUM(v) AS m5 FROM bf GROUP BY g),
+c6 AS (SELECT g AS k6, COUNT(*) AS m6 FROM bf GROUP BY g),
+c7 AS (SELECT g AS k7, MIN(v) AS m7 FROM bf GROUP BY g),
+c8 AS (SELECT g AS k8, MAX(v) AS m8 FROM bf GROUP BY g),
+c9 AS (SELECT g AS k9, SUM(v) AS m9 FROM bf GROUP BY g),
+c10 AS (SELECT g AS k10, COUNT(v) AS m10 FROM bf GROUP BY g)
+SELECT COUNT(*) AS n, SUM(d.w) AS w, SUM(c1.m1) AS a1, SUM(c2.m2) AS a2,
+SUM(c3.m3) AS a3, SUM(c4.m4) AS a4, SUM(c5.m5) AS a5, SUM(c6.m6) AS a6,
+SUM(c7.m7) AS a7, SUM(c8.m8) AS a8, SUM(c9.m9) AS a9, SUM(c10.m10) AS a10
 FROM bf AS f
 JOIN bd AS d ON d.g = f.g
 JOIN c1 ON c1.k1 = d.g
@@ -99,19 +99,19 @@ JOIN c10 ON c10.k10 = d.g;|
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
-WITH c1 AS (SELECT g AS k1, SUM(v) AS s1 FROM bf GROUP BY g),
-c2 AS (SELECT g AS k2, COUNT(*) AS s2 FROM bf GROUP BY g),
-c3 AS (SELECT g AS k3, MIN(v) AS s3 FROM bf GROUP BY g),
-c4 AS (SELECT g AS k4, MAX(v) AS s4 FROM bf GROUP BY g),
-c5 AS (SELECT g AS k5, SUM(v) AS s5 FROM bf GROUP BY g),
-c6 AS (SELECT g AS k6, COUNT(*) AS s6 FROM bf GROUP BY g),
-c7 AS (SELECT g AS k7, MIN(v) AS s7 FROM bf GROUP BY g),
-c8 AS (SELECT g AS k8, MAX(v) AS s8 FROM bf GROUP BY g),
-c9 AS (SELECT g AS k9, SUM(v) AS s9 FROM bf GROUP BY g),
-c10 AS (SELECT g AS k10, COUNT(v) AS s10 FROM bf GROUP BY g)
-SELECT COUNT(*) AS n, SUM(d.w) AS w, SUM(c1.s1) AS a1, SUM(c2.s2) AS a2,
-SUM(c3.s3) AS a3, SUM(c4.s4) AS a4, SUM(c5.s5) AS a5, SUM(c6.s6) AS a6,
-SUM(c7.s7) AS a7, SUM(c8.s8) AS a8, SUM(c9.s9) AS a9, SUM(c10.s10) AS a10
+WITH c1 AS (SELECT g AS k1, SUM(v) AS m1 FROM bf GROUP BY g),
+c2 AS (SELECT g AS k2, COUNT(*) AS m2 FROM bf GROUP BY g),
+c3 AS (SELECT g AS k3, MIN(v) AS m3 FROM bf GROUP BY g),
+c4 AS (SELECT g AS k4, MAX(v) AS m4 FROM bf GROUP BY g),
+c5 AS (SELECT g AS k5, SUM(v) AS m5 FROM bf GROUP BY g),
+c6 AS (SELECT g AS k6, COUNT(*) AS m6 FROM bf GROUP BY g),
+c7 AS (SELECT g AS k7, MIN(v) AS m7 FROM bf GROUP BY g),
+c8 AS (SELECT g AS k8, MAX(v) AS m8 FROM bf GROUP BY g),
+c9 AS (SELECT g AS k9, SUM(v) AS m9 FROM bf GROUP BY g),
+c10 AS (SELECT g AS k10, COUNT(v) AS m10 FROM bf GROUP BY g)
+SELECT COUNT(*) AS n, SUM(d.w) AS w, SUM(c1.m1) AS a1, SUM(c2.m2) AS a2,
+SUM(c3.m3) AS a3, SUM(c4.m4) AS a4, SUM(c5.m5) AS a5, SUM(c6.m6) AS a6,
+SUM(c7.m7) AS a7, SUM(c8.m8) AS a8, SUM(c9.m9) AS a9, SUM(c10.m10) AS a10
 FROM bf AS f
 JOIN bd AS d ON d.g = f.g
 JOIN c1 ON c1.k1 = d.g
@@ -128,19 +128,19 @@ JOIN c10 ON c10.k10 = d.g|
 --echo
 --echo === jbe-2: one more primary-key lookup, 33 operations: a limit error ===
 let $QUERY=
-WITH c1 AS (SELECT g AS k1, SUM(v) AS s1 FROM bf GROUP BY g),
-c2 AS (SELECT g AS k2, COUNT(*) AS s2 FROM bf GROUP BY g),
-c3 AS (SELECT g AS k3, MIN(v) AS s3 FROM bf GROUP BY g),
-c4 AS (SELECT g AS k4, MAX(v) AS s4 FROM bf GROUP BY g),
-c5 AS (SELECT g AS k5, SUM(v) AS s5 FROM bf GROUP BY g),
-c6 AS (SELECT g AS k6, COUNT(*) AS s6 FROM bf GROUP BY g),
-c7 AS (SELECT g AS k7, MIN(v) AS s7 FROM bf GROUP BY g),
-c8 AS (SELECT g AS k8, MAX(v) AS s8 FROM bf GROUP BY g),
-c9 AS (SELECT g AS k9, SUM(v) AS s9 FROM bf GROUP BY g),
-c10 AS (SELECT g AS k10, COUNT(v) AS s10 FROM bf GROUP BY g)
-SELECT COUNT(*) AS n, SUM(d.w) AS w, SUM(c1.s1) AS a1, SUM(c2.s2) AS a2,
-SUM(c3.s3) AS a3, SUM(c4.s4) AS a4, SUM(c5.s5) AS a5, SUM(c6.s6) AS a6,
-SUM(c7.s7) AS a7, SUM(c8.s8) AS a8, SUM(c9.s9) AS a9, SUM(c10.s10) AS a10
+WITH c1 AS (SELECT g AS k1, SUM(v) AS m1 FROM bf GROUP BY g),
+c2 AS (SELECT g AS k2, COUNT(*) AS m2 FROM bf GROUP BY g),
+c3 AS (SELECT g AS k3, MIN(v) AS m3 FROM bf GROUP BY g),
+c4 AS (SELECT g AS k4, MAX(v) AS m4 FROM bf GROUP BY g),
+c5 AS (SELECT g AS k5, SUM(v) AS m5 FROM bf GROUP BY g),
+c6 AS (SELECT g AS k6, COUNT(*) AS m6 FROM bf GROUP BY g),
+c7 AS (SELECT g AS k7, MIN(v) AS m7 FROM bf GROUP BY g),
+c8 AS (SELECT g AS k8, MAX(v) AS m8 FROM bf GROUP BY g),
+c9 AS (SELECT g AS k9, SUM(v) AS m9 FROM bf GROUP BY g),
+c10 AS (SELECT g AS k10, COUNT(v) AS m10 FROM bf GROUP BY g)
+SELECT COUNT(*) AS n, SUM(d.w) AS w, SUM(c1.m1) AS a1, SUM(c2.m2) AS a2,
+SUM(c3.m3) AS a3, SUM(c4.m4) AS a4, SUM(c5.m5) AS a5, SUM(c6.m6) AS a6,
+SUM(c7.m7) AS a7, SUM(c8.m8) AS a8, SUM(c9.m9) AS a9, SUM(c10.m10) AS a10
 FROM bf AS f
 JOIN bd AS d ON d.g = f.g
 JOIN bd AS e ON e.g = d.g
@@ -175,16 +175,16 @@ JOIN c10 ON c10.k10 = d.g;|
 --echo
 --echo === jbe-3: a unique-index lookup counts 2, 33 operations: a limit error ===
 let $QUERY=
-WITH c1 AS (SELECT g AS k1, SUM(v) AS s1 FROM bf GROUP BY g),
-c2 AS (SELECT g AS k2, COUNT(*) AS s2 FROM bf GROUP BY g),
-c3 AS (SELECT g AS k3, MIN(v) AS s3 FROM bf GROUP BY g),
-c4 AS (SELECT g AS k4, MAX(v) AS s4 FROM bf GROUP BY g),
-c5 AS (SELECT g AS k5, SUM(v) AS s5 FROM bf GROUP BY g),
-c6 AS (SELECT g AS k6, COUNT(*) AS s6 FROM bf GROUP BY g),
-c7 AS (SELECT g AS k7, MIN(v) AS s7 FROM bf GROUP BY g),
-c8 AS (SELECT g AS k8, MAX(v) AS s8 FROM bf GROUP BY g),
-c9 AS (SELECT g AS k9, SUM(v) AS s9 FROM bf GROUP BY g),
-c10 AS (SELECT g AS k10, COUNT(v) AS s10 FROM bf GROUP BY g)
+WITH c1 AS (SELECT g AS k1, SUM(v) AS m1 FROM bf GROUP BY g),
+c2 AS (SELECT g AS k2, COUNT(*) AS m2 FROM bf GROUP BY g),
+c3 AS (SELECT g AS k3, MIN(v) AS m3 FROM bf GROUP BY g),
+c4 AS (SELECT g AS k4, MAX(v) AS m4 FROM bf GROUP BY g),
+c5 AS (SELECT g AS k5, SUM(v) AS m5 FROM bf GROUP BY g),
+c6 AS (SELECT g AS k6, COUNT(*) AS m6 FROM bf GROUP BY g),
+c7 AS (SELECT g AS k7, MIN(v) AS m7 FROM bf GROUP BY g),
+c8 AS (SELECT g AS k8, MAX(v) AS m8 FROM bf GROUP BY g),
+c9 AS (SELECT g AS k9, SUM(v) AS m9 FROM bf GROUP BY g),
+c10 AS (SELECT g AS k10, COUNT(v) AS m10 FROM bf GROUP BY g)
 SELECT COUNT(*) AS n
 FROM bf AS f
 JOIN bd AS u ON u.w = f.v
@@ -206,23 +206,23 @@ JOIN c10 ON c10.k10 = f.g;|
 --echo
 --echo === jbe-4: 17 CTEs, 52 operations: a limit error ===
 let $QUERY=
-WITH c1 AS (SELECT g AS k1, SUM(v) AS s1 FROM bf GROUP BY g),
-c2 AS (SELECT g AS k2, SUM(v) AS s2 FROM bf GROUP BY g),
-c3 AS (SELECT g AS k3, SUM(v) AS s3 FROM bf GROUP BY g),
-c4 AS (SELECT g AS k4, SUM(v) AS s4 FROM bf GROUP BY g),
-c5 AS (SELECT g AS k5, SUM(v) AS s5 FROM bf GROUP BY g),
-c6 AS (SELECT g AS k6, SUM(v) AS s6 FROM bf GROUP BY g),
-c7 AS (SELECT g AS k7, SUM(v) AS s7 FROM bf GROUP BY g),
-c8 AS (SELECT g AS k8, SUM(v) AS s8 FROM bf GROUP BY g),
-c9 AS (SELECT g AS k9, SUM(v) AS s9 FROM bf GROUP BY g),
-c10 AS (SELECT g AS k10, SUM(v) AS s10 FROM bf GROUP BY g),
-c11 AS (SELECT g AS k11, SUM(v) AS s11 FROM bf GROUP BY g),
-c12 AS (SELECT g AS k12, SUM(v) AS s12 FROM bf GROUP BY g),
-c13 AS (SELECT g AS k13, SUM(v) AS s13 FROM bf GROUP BY g),
-c14 AS (SELECT g AS k14, SUM(v) AS s14 FROM bf GROUP BY g),
-c15 AS (SELECT g AS k15, SUM(v) AS s15 FROM bf GROUP BY g),
-c16 AS (SELECT g AS k16, SUM(v) AS s16 FROM bf GROUP BY g),
-c17 AS (SELECT g AS k17, SUM(v) AS s17 FROM bf GROUP BY g)
+WITH c1 AS (SELECT g AS k1, SUM(v) AS m1 FROM bf GROUP BY g),
+c2 AS (SELECT g AS k2, SUM(v) AS m2 FROM bf GROUP BY g),
+c3 AS (SELECT g AS k3, SUM(v) AS m3 FROM bf GROUP BY g),
+c4 AS (SELECT g AS k4, SUM(v) AS m4 FROM bf GROUP BY g),
+c5 AS (SELECT g AS k5, SUM(v) AS m5 FROM bf GROUP BY g),
+c6 AS (SELECT g AS k6, SUM(v) AS m6 FROM bf GROUP BY g),
+c7 AS (SELECT g AS k7, SUM(v) AS m7 FROM bf GROUP BY g),
+c8 AS (SELECT g AS k8, SUM(v) AS m8 FROM bf GROUP BY g),
+c9 AS (SELECT g AS k9, SUM(v) AS m9 FROM bf GROUP BY g),
+c10 AS (SELECT g AS k10, SUM(v) AS m10 FROM bf GROUP BY g),
+c11 AS (SELECT g AS k11, SUM(v) AS m11 FROM bf GROUP BY g),
+c12 AS (SELECT g AS k12, SUM(v) AS m12 FROM bf GROUP BY g),
+c13 AS (SELECT g AS k13, SUM(v) AS m13 FROM bf GROUP BY g),
+c14 AS (SELECT g AS k14, SUM(v) AS m14 FROM bf GROUP BY g),
+c15 AS (SELECT g AS k15, SUM(v) AS m15 FROM bf GROUP BY g),
+c16 AS (SELECT g AS k16, SUM(v) AS m16 FROM bf GROUP BY g),
+c17 AS (SELECT g AS k17, SUM(v) AS m17 FROM bf GROUP BY g)
 SELECT COUNT(*) AS n
 FROM bf AS f
 JOIN c1 ON c1.k1 = f.g
