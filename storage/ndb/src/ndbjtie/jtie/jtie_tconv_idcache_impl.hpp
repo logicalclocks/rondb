@@ -332,7 +332,11 @@ struct MemberIdWeakCache : MemberIdCache<M> {
     assert(cls != NULL);
 
     // multithreaded access ok, sets same class/member object
-    Base::mid.store(A::getId(env, cls), std::memory_order_relaxed);
+    auto id = A::getId(env, cls);
+    // A failed lookup leaves an exception pending: publishing the class
+    // then would make every later getId() return NULL with none pending.
+    if (id == NULL) return;
+    Base::mid.store(id, std::memory_order_relaxed);
     Base::gClassRef.store(static_cast<jclass>(env->NewWeakGlobalRef(cls)),
                           std::memory_order_release);
   }
@@ -376,7 +380,11 @@ struct MemberIdStrongCache : MemberIdCache<M> {
     assert(cls != NULL);
 
     // multithreaded access ok, sets same class/member object
-    Base::mid.store(A::getId(env, cls), std::memory_order_relaxed);
+    auto id = A::getId(env, cls);
+    // A failed lookup leaves an exception pending: publishing the class
+    // then would make every later getId() return NULL with none pending.
+    if (id == NULL) return;
+    Base::mid.store(id, std::memory_order_relaxed);
     Base::gClassRef.store(static_cast<jclass>(env->NewGlobalRef(cls)),
                           std::memory_order_release);
   }
