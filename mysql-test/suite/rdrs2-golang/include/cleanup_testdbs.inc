@@ -121,6 +121,26 @@ DROP DATABASE IF EXISTS sentinel;
 --exec $NDB_MGM -e "USER DROP fsdb001_macho"
 --error 0,255,65280
 --exec $NDB_MGM -e "USER DROP userb_project_userb000"
+# The rate limit group sync cluster test (RONDB-1158) installs the fixture
+# groups of rate_limit_groups_data.sql and cleans them up itself; these are
+# the backstop for a test that died mid-run.
+--error 0,255,65280
+--exec $NDB_MGM -e "USER ALIAS DROP RLGrp01_rlga1b2"
+--error 0,255,65280
+--exec $NDB_MGM -e "USER ALIAS DROP RLGrp01_rlgb3c4"
+--error 0,255,65280
+--exec $NDB_MGM -e "USER ALIAS DROP FSDB003_rlga1b2"
+--error 0,255,65280
+--exec $NDB_MGM -e "USER ALIAS DROP RateLimitGroupVeryLongProj_rlga"
+--error 0,255,65280
+--exec $NDB_MGM -e "USER DROP rlg_team_rl"
+--error 0,255,65280
+--exec $NDB_MGM -e "USER DROP rlg_clicks_rl"
+--error 0,255,65280
+--exec $NDB_MGM -e "USER DROP rlg_all_rl"
+--error 0,255,65280
+--exec $NDB_MGM -e "USER DROP rlg_inert_rl"
+
 --enable_result_log
 
 --enable_warnings

@@ -46,6 +46,7 @@ constexpr const char* const usageHelp =
 #include "src/fs_cache.hpp"
 #include "tls_util.hpp"
 #include "src/ttl_purge.hpp"
+#include "src/rate_limit_sync_loop.hpp"
 #include <ndb_opts.h>
 #include <NdbMutex.h>
 
@@ -92,6 +93,7 @@ static bool g_rondis_running = false;
 static int g_exit_code = 0;
 static ProbeServer* g_probe_server = nullptr;
 TTLPurger* g_ttl_purger = nullptr;
+static RateLimitSyncLoop *g_rate_limit_sync_loop = nullptr;
 NdbMutex *globalConfigsMutex = nullptr;
 
 static void do_exit() {
@@ -132,6 +134,11 @@ static void do_exit() {
   if (g_rondis_conn_factory) {
     delete g_rondis_conn_factory;
     g_rondis_conn_factory = nullptr;
+  }
+  if (g_rate_limit_sync_loop != nullptr) {
+    g_rate_limit_sync_loop->stop();
+    delete g_rate_limit_sync_loop;
+    g_rate_limit_sync_loop = nullptr;
   }
   if (g_ttl_purger != nullptr) {
     delete g_ttl_purger;
@@ -497,8 +504,10 @@ int main(int argc, char *argv[]) {
   }
   Uint32 num_rdrs_threads = globalConfigs.rest.numThreads;
   Uint32 num_purge_threads = RDRSRonDBConnectionPool::kNoTTLPurgeThreads;
-  Uint32 tot_num_threads =
-    num_rdrs_threads + num_rondis_threads + num_purge_threads;
+  Uint32 num_rate_limit_sync_threads =
+    RDRSRonDBConnectionPool::kNoRateLimitSyncThreads;
+  Uint32 tot_num_threads = num_rdrs_threads + num_rondis_threads +
+    num_rate_limit_sync_threads + num_purge_threads;
   /**
    * The RDRS server, the Rondis server and the TTL purge threads
    * all share the same cluster connections. The RDRS server can also
@@ -542,6 +551,14 @@ int main(int argc, char *argv[]) {
   if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
     apiKeyCachePtr->preload_all_keys();
     apiKeyCachePtr->start_background_threads();
+  }
+
+  // Start the rate limit group sync loop (RONDB-1158) on sync-enabled
+  // replicas: it expands the hopsworks.rate_limit_group tables into USER /
+  // USER ALIAS entities on this server's data cluster.
+  if (globalConfigs.rateLimit.enableSync) {
+    g_rate_limit_sync_loop = new RateLimitSyncLoop();
+    g_rate_limit_sync_loop->start();
   }
 
   // Preload feature view metadata cache and start event watcher

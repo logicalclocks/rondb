@@ -593,10 +593,31 @@ CLASS
  CM(bool, fullApiKey, FullAPIKey, false,
     "Set to true to use the full API key as the rate limit identity."
     " By default only the API key prefix is used.")
+ CM(bool, enableSync, EnableRateLimitSync, false,
+    "Set to true to run the rate limit group sync loop on this replica"
+    " (RONDB-1158): the hopsworks.rate_limit_group tables are expanded"
+    " into USER / USER ALIAS entities on this server's data cluster. At"
+    " least one sync-enabled replica per data cluster is required for"
+    " groups to install; a cluster with none shows its groups stuck in"
+    " pending. Several sync-enabled replicas converge without"
+    " coordination.")
+ CM(unsigned, syncPeriodS, RateLimitSyncPeriodS, 30,
+    "Seconds between sync loop runs. Each run first reads the one-row"
+    " version counter Hopsworks bumps on every group save and ends"
+    " immediately when nothing changed, so the steady-state cost is one"
+    " primary-key read per period. A per-instance jitter of up to 20% is"
+    " added so a fleet does not stampede the management server.")
+ CM(unsigned, syncFullResyncRuns, RateLimitSyncFullResyncRuns, 10,
+    "Run a full reconcile every Nth run even when the version counter is"
+    " unchanged, so entities lost to a manual drop or missed at a restart"
+    " are repaired. 0 disables the periodic full resync.")
  PROBLEM(identity != "apikey" && identity != "username",
          ".RateLimit.Identity must be 'apikey' or 'username'")
  PROBLEM(identity == "username" && fullApiKey,
          ".RateLimit.FullAPIKey requires .RateLimit.Identity 'apikey'")
+ PROBLEM(enableSync && syncPeriodS == 0,
+         ".RateLimit.RateLimitSyncPeriodS cannot be zero when"
+         " .RateLimit.EnableRateLimitSync is set")
 )
 
 CLASS

@@ -25,6 +25,7 @@
  */
 
 #include "../src/rate_limit_sync.hpp"
+#include "../src/rate_limit_sync_loop.hpp"
 
 #include <gtest/gtest.h>
 #include <NdbMutex.h>
@@ -399,6 +400,83 @@ TEST(RateLimitSyncTest, StaleRuleOfSurvivingAliasIsDropped) {
                     table_scope("marketing", "old_table_1")),
   };
   EXPECT_EQ(commands, expected);
+}
+
+TEST(RateLimitSyncTest, ParseUserList) {
+  // The management server's USER LIST reply rows, as printed by
+  // MgmtSrvr's user listing (see ndb_user_alias_lifecycle.result).
+  const std::string text =
+    "User rate limits for team_rl\n"
+    "  userId = 7\n"
+    "  userVersion = 1\n"
+    "  RatePerSec = 100000\n"
+    "  MaxTransactionSize = 0\n"
+    "  MaxParallelTransactions = 0\n"
+    "  MaxParallelComplexQueries = 0\n"
+    "User rate limits for clicks_rl\n"
+    "  userId = 8\n"
+    "  userVersion = 1\n"
+    "  RatePerSec = 4000000\n"
+    "  MaxTransactionSize = 0\n"
+    "  MaxParallelTransactions = 0\n"
+    "  MaxParallelComplexQueries = 0\n";
+  std::vector<RateLimitActualUser> users;
+  ASSERT_TRUE(rate_limit_parse_user_list(text, &users));
+  ASSERT_EQ(users.size(), 2u);
+  EXPECT_EQ(users[0].name, "team_rl");
+  EXPECT_EQ(users[0].rate_per_sec, 100000ULL);
+  EXPECT_EQ(users[1].name, "clicks_rl");
+  EXPECT_EQ(users[1].rate_per_sec, 4000000ULL);
+}
+
+TEST(RateLimitSyncTest, ParseAliasList) {
+  const std::string text =
+    "User alias rules for mary01ab\n"
+    "aliasId = 12\n"
+    "numRules = 3\n"
+    "  --table=marketing.clicks_1 --target=clicks_rl\n"
+    "  --database=marketing --target=team_rl\n"
+    "  --target=team_rl\n"
+    "User alias rules for rosa9e1f\n"
+    "aliasId = 13\n"
+    "numRules = 1\n"
+    "  --database=marketing --target=recommender2_marketing_rl\n";
+  std::vector<RateLimitActualAlias> aliases;
+  ASSERT_TRUE(rate_limit_parse_alias_list(text, &aliases));
+  ASSERT_EQ(aliases.size(), 2u);
+  EXPECT_EQ(aliases[0].name, "mary01ab");
+  ASSERT_EQ(aliases[0].rules.size(), 3u);
+  EXPECT_EQ(aliases[0].rules[0].scope,
+            table_scope("marketing", "clicks_1"));
+  EXPECT_EQ(aliases[0].rules[0].target, "clicks_rl");
+  EXPECT_EQ(aliases[0].rules[1].scope, db_scope("marketing"));
+  EXPECT_EQ(aliases[0].rules[1].target, "team_rl");
+  EXPECT_EQ(aliases[0].rules[2].scope, all_scope());
+  EXPECT_EQ(aliases[0].rules[2].target, "team_rl");
+  EXPECT_EQ(aliases[1].name, "rosa9e1f");
+  ASSERT_EQ(aliases[1].rules.size(), 1u);
+}
+
+TEST(RateLimitSyncTest, LocalFilter) {
+  // marketing exists on this cluster, salesdb does not; the group whose
+  // every scope is foreign disappears, the mixed group keeps its local
+  // scope, and ALL and inert groups always stay.
+  std::vector<RateLimitDesiredGroup> groups = {
+    make_group(1, "all_rl", 100, true, {"P_u1"}, {}),
+    make_group(2, "mixed_rl", 100, false, {"P_u1"},
+               {db_scope("marketing"), db_scope("salesdb")}),
+    make_group(3, "foreign_rl", 100, false, {"P_u1"},
+               {table_scope("salesdb", "t1_1")}),
+    make_group(4, "inert_rl", 100, false, {"P_u1"}, {}),
+  };
+  std::set<std::string> local_dbs = {"marketing", "hopsworks"};
+  rate_limit_filter_local(local_dbs, &groups);
+  ASSERT_EQ(groups.size(), 3u);
+  EXPECT_EQ(groups[0].name, "all_rl");
+  EXPECT_EQ(groups[1].name, "mixed_rl");
+  ASSERT_EQ(groups[1].scopes.size(), 1u);
+  EXPECT_EQ(groups[1].scopes[0], db_scope("marketing"));
+  EXPECT_EQ(groups[2].name, "inert_rl");
 }
 
 TEST(RateLimitSyncTest, InertGroupInstallsUserButNoRules) {

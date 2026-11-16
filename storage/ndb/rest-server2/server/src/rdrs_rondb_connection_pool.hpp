@@ -101,6 +101,9 @@ class RDRSRonDBConnectionPool {
 
  public:
   static const Uint32 kNoTTLPurgeThreads = 2;
+  /* One data-connection slot reserved for the rate limit group sync loop
+   * (RONDB-1158), below the two TTL slots. */
+  static const Uint32 kNoRateLimitSyncThreads = 1;
   RDRSRonDBConnectionPool();
   ~RDRSRonDBConnectionPool();
 
@@ -202,6 +205,13 @@ class RDRSRonDBConnectionPool {
     static_assert(RDRS_MIN_NUM_THREADS >= 1);
     return GetNdbObject(ndb_object, m_num_threads - 1);
   }
+
+  // Get the specific NdbObject of the rate limit sync loop (RONDB-1158).
+  // The slot exists because main sizes the pool with
+  // kNoRateLimitSyncThreads on top of the worker and TTL threads.
+  RS_Status GetRateLimitSyncNdbObject(Ndb **ndb_object) {
+    return GetNdbObject(ndb_object, m_num_threads - 3);
+  }
   /**
    * @brief Return NDB Object back to the pool
    *
@@ -222,6 +232,11 @@ class RDRSRonDBConnectionPool {
   RS_Status ReturnTTLPurgeWorkerNdbObject(Ndb *ndb_object,
                                           RS_Status *status) {
     return ReturnNdbObject(ndb_object, status, m_num_threads - 1);
+  }
+
+  RS_Status ReturnRateLimitSyncNdbObject(Ndb *ndb_object,
+                                         RS_Status *status) {
+    return ReturnNdbObject(ndb_object, status, m_num_threads - 3);
   }
   /**
    * @brief Get ndb object for metadata operation
