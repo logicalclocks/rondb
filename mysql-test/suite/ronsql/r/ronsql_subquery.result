@@ -1053,6 +1053,38 @@ Number of output lines, including header: 5
 
 
 
+=== Test 69: NOT around a correlated SUM that is NULL for a present group ===
+Expected: o_id=1 (NOT 100<10) and 3 (NOT 300<30); order 2 (NULL) and 4 (no group) dropped
+== Query ==
+SELECT o_id, SUM(o_amt)
+FROM nq_outer
+WHERE NOT (o_amt < (SELECT SUM(i_k) FROM nq_inner WHERE i_id = o_id))
+GROUP BY o_id;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
+=== Test 70: NOT around <> with a correlated MAX that is NULL for a present group ===
+Expected: o_id=1 (o_k 10 = 10); order 2 (NULL MAX), 3 (NULL o_k) and 4 (no group) dropped
+== Query ==
+SELECT o_id, SUM(o_amt)
+FROM nq_outer
+WHERE NOT (o_k <> (SELECT MAX(i_k) FROM nq_inner WHERE i_id = o_id))
+GROUP BY o_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
 === Cleanup ===
 DROP TABLE empty_table;
 DROP TABLE lineitem;

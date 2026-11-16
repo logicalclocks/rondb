@@ -912,6 +912,37 @@ HAVING SUM(o_amt DIV 100) > 0 AND
 EOF
 --source suite/ronsql/include/ronsql_compare.inc
 
+# README finding S-1 (checked, not a bug): the substitution of a
+# correlated scalar subquery leaves out the inner groups whose value is
+# NULL, which is FALSE where MySQL has UNKNOWN.  That differs only under
+# NOT, and decorrelate_scalar() folds a NOT into the operator, so the
+# rewritten comparison is never under NOT.  Tests 34 and 35 cover outer
+# keys without an inner group; these two cover an inner group whose
+# value is NULL: SUM(i_k) and MAX(i_k) per i_id are (1,10), (2,NULL)
+# and (3,30), and order 4 has no inner row.
+
+--echo
+--echo === Test 69: NOT around a correlated SUM that is NULL for a present group ===
+--echo Expected: o_id=1 (NOT 100<10) and 3 (NOT 300<30); order 2 (NULL) and 4 (no group) dropped
+--write_file $QUERY_FILE
+SELECT o_id, SUM(o_amt)
+FROM nq_outer
+WHERE NOT (o_amt < (SELECT SUM(i_k) FROM nq_inner WHERE i_id = o_id))
+GROUP BY o_id;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 70: NOT around <> with a correlated MAX that is NULL for a present group ===
+--echo Expected: o_id=1 (o_k 10 = 10); order 2 (NULL MAX), 3 (NULL o_k) and 4 (no group) dropped
+--write_file $QUERY_FILE
+SELECT o_id, SUM(o_amt)
+FROM nq_outer
+WHERE NOT (o_k <> (SELECT MAX(i_k) FROM nq_inner WHERE i_id = o_id))
+GROUP BY o_id;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
 --let $QUERY_FILE=
 --let $strict_diff=
 
