@@ -122,6 +122,8 @@ my @cpp_tests = ('process_setup_test',        # RONDB-1144 THP opt-out,
                  'json_parser_test',          # RONDB-1152 bodies rejected
                                               # before a document exists
                                               # (cluster-free)
+                 'rate_limit_sync_test',      # RONDB-1158 reconcile engine
+                                              # (cluster-free)
                  'probe_server_http_test',    # probe-port HTTP conformance
                                               # (cluster-free, fast)
                  'error_handling_test',       # pure error-classification tests

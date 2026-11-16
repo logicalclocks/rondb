@@ -54,6 +54,7 @@ file(GLOB_RECURSE SRC
         process_setup.cc
         prometheus_ctrl.cpp
         rate_limit.cpp
+        rate_limit_sync.cpp
         rdrs_dal.cpp
         rdrs_hopsworks_dal.cpp
         rdrs_rondb_connection.cpp
