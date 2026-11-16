@@ -285,7 +285,8 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_accessed_tables(conf.amalloc),
   m_accessed_columns(conf.amalloc)
 {
-  ndbrequire(m_status == Status::BEGIN);
+  ronsql_require_bug(m_status == Status::BEGIN,
+                     "A RonSQLPreparer did not start in state BEGIN.");
   try {
     PERF_TS(t_prep_start);
     configure();
@@ -372,7 +373,8 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf, ParseOnly parse_only):
   m_accessed_tables(conf.amalloc),
   m_accessed_columns(conf.amalloc)
 {
-  ndbrequire(m_status == Status::BEGIN);
+  ronsql_require_bug(m_status == Status::BEGIN,
+                     "A RonSQLPreparer did not start in state BEGIN.");
   try {
     configure();
     parse();
@@ -389,14 +391,18 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf, ParseOnly parse_only):
 const DynamicArray<LexCString>&
 RonSQLPreparer::get_accessed_tables()
 {
-  ndbrequire(m_status == Status::PARSED);
+  ronsql_require_bug(m_status == Status::PARSED,
+                     "get_accessed_tables() needs a parse-only "
+                     "RonSQLPreparer.");
   return m_accessed_tables;
 }
 
 const DynamicArray<RonSQLPreparer::AccessedColumn>&
 RonSQLPreparer::get_accessed_columns()
 {
-  ndbrequire(m_status == Status::PARSED);
+  ronsql_require_bug(m_status == Status::PARSED,
+                     "get_accessed_columns() needs a parse-only "
+                     "RonSQLPreparer.");
   return m_accessed_columns;
 }
 
@@ -766,7 +772,9 @@ RonSQLPreparer::classify_ce_table_resolved(
     return -1;
   if (ce->op == T_IDENTIFIER)
   {
-    ndbrequire(scope.resolved_columns != NULL);
+    ronsql_require_bug(scope.resolved_columns != NULL,
+                       "A WHERE column was classified before its scope was "
+                       "resolved.");
     const QueryScope::ResolvedColumnRef& ref =
         scope.resolved_columns[ce->col_idx];
     if (ref.kind == QueryScope::ResolvedColumnRef::Kind::Unresolved ||
@@ -807,7 +815,9 @@ static bool
 visit_boolean_terms(ConditionalExpression* root, TokenKind connective,
                     Visitor visit)
 {
-  ndbrequire(connective == T_AND || connective == T_OR);
+  ronsql_require_bug(connective == T_AND || connective == T_OR,
+                     "visit_boolean_terms() got a connective that is not "
+                     "AND or OR.");
   auto walk = [&](auto& self, ConditionalExpression* ce) -> bool {
     if (ce == NULL) return true;
     if (ce->op == connective)
@@ -860,7 +870,9 @@ static ConditionalExpression*
 append_condition(ArenaMalloc* amalloc, TokenKind connective,
                  ConditionalExpression* tree, ConditionalExpression* term)
 {
-  ndbrequire(connective == T_AND || connective == T_OR);
+  ronsql_require_bug(connective == T_AND || connective == T_OR,
+                     "append_condition() got a connective that is not AND "
+                     "or OR.");
   if (term == NULL) return tree;
   if (tree == NULL) return term;
   ConditionalExpression* combined =
@@ -940,9 +952,15 @@ RonSQLPreparer::configure()
 {
   // Validate m_conf
 #ifdef VM_TRACE
-  ndbrequire(m_conf.sql_buffer != NULL);
-  ndbrequire(m_conf.sql_len > 0);
-  ndbrequire(m_conf.amalloc != NULL);
+  // X-14: kept and checked first: the error handler that every throw
+  // reaches writes to err_stream.
+  ndbrequire(m_conf.err_stream != NULL);
+  ronsql_require_bug(m_conf.sql_buffer != NULL,
+                     "RonSQLExecParams has no SQL buffer.");
+  ronsql_require_bug(m_conf.sql_len > 0,
+                     "RonSQLExecParams has an empty SQL buffer.");
+  ronsql_require_bug(m_conf.amalloc != NULL,
+                     "RonSQLExecParams has no arena allocator.");
   RonSQLExecParams::ExplainMode mode = m_conf.explain_mode;
   bool may_query =
     (mode == RonSQLExecParams::ExplainMode::ALLOW ||
@@ -952,17 +970,21 @@ RonSQLPreparer::configure()
     (mode == RonSQLExecParams::ExplainMode::ALLOW ||
      mode == RonSQLExecParams::ExplainMode::REQUIRE ||
      mode == RonSQLExecParams::ExplainMode::FORCE);
-  ndbrequire(may_query || may_explain);
-  ndbrequire(m_conf.out_stream != NULL);
-  ndbrequire(m_conf.output_format == RonSQLExecParams::OutputFormat::JSON ||
-             m_conf.output_format == RonSQLExecParams::OutputFormat::JSON_ASCII ||
-             m_conf.output_format == RonSQLExecParams::OutputFormat::TEXT ||
-             m_conf.output_format == RonSQLExecParams::OutputFormat::TEXT_NOHEADER);
+  ronsql_require_bug(may_query || may_explain,
+                     "RonSQLExecParams has an unknown explain mode.");
+  ronsql_require_bug(m_conf.out_stream != NULL,
+                     "RonSQLExecParams has no output stream.");
+  ronsql_require_bug(
+      m_conf.output_format == RonSQLExecParams::OutputFormat::JSON ||
+      m_conf.output_format == RonSQLExecParams::OutputFormat::JSON_ASCII ||
+      m_conf.output_format == RonSQLExecParams::OutputFormat::TEXT ||
+      m_conf.output_format == RonSQLExecParams::OutputFormat::TEXT_NOHEADER,
+      "RonSQLExecParams has an unknown output format.");
   if (may_query && !m_parse_only)
   {
-    ndbrequire(m_conf.ndb != NULL);
+    ronsql_require_bug(m_conf.ndb != NULL,
+                       "RonSQLExecParams has no Ndb object for a query.");
   }
-  ndbrequire(m_conf.err_stream != NULL);
 #endif
   /*
    * Both `yy_scan_string' and `yy_scan_bytes' create and scan a copy of the
@@ -975,9 +997,10 @@ RonSQLPreparer::configure()
   char* sql_buffer = m_conf.sql_buffer;
   size_t sql_len = m_conf.sql_len;
   // SQL buffer must be double NUL-terminated
-  ndbrequire(sql_len >= 2 &&
-             sql_buffer[sql_len-1] == '\0' &&
-             sql_buffer[sql_len-2] == '\0');
+  ronsql_require_bug(sql_len >= 2 &&
+                     sql_buffer[sql_len-1] == '\0' &&
+                     sql_buffer[sql_len-2] == '\0',
+                     "The SQL buffer does not end with two NUL bytes.");
   rsqlp_lex_init_extra(&m_context, &m_scanner);
   // The non-const sql_buffer is only used to initialize the flex scanner. The
   // flex scanner shouldn't modify it either, but only because we have removed
@@ -1022,7 +1045,7 @@ register_simple_aggregate(AggregationAPICompiler& agg,
   case T_SUM:
     return agg.Sum(expr);
   default:
-    abort();
+    ronsql_bug("An aggregate output has an unknown aggregate function.");
   }
 }
 
@@ -1047,7 +1070,8 @@ RonSQLPreparer::register_main_outputs()
     case Outputs::Type::AGGREGATE:
     {
       has_aggregate_outputs = true;
-      ndbrequire(m_main_scope.agg != NULL);
+      ronsql_require_bug(m_main_scope.agg != NULL,
+                         "An aggregate output has no aggregate compiler.");
       outputs->aggregate.agg_index =
           register_simple_aggregate(*m_main_scope.agg,
                                     outputs->aggregate.fun,
@@ -1065,7 +1089,7 @@ RonSQLPreparer::register_main_outputs()
       has_subquery_agg_outputs = true;
       break;
     default:
-      abort();
+      ronsql_bug("A SELECT output has an unknown type.");
     }
     outputs = outputs->next;
   }
@@ -1073,12 +1097,18 @@ RonSQLPreparer::register_main_outputs()
                                 m_context.ast_root.having_expression != NULL);
   if (m_main_scope.agg == NULL)
   {
-    ndbrequire(!has_aggregate_outputs);
+    ronsql_require_bug(!has_aggregate_outputs,
+                       "Aggregate outputs have no aggregate compiler.");
   }
   else
   {
-    ndbrequire(has_aggregate_outputs || has_having_aggregates);
-    ndbrequire(m_main_scope.agg->getStatus() == AggregationAPICompiler::Status::PROGRAMMING);
+    ronsql_require_bug(has_aggregate_outputs || has_having_aggregates,
+                       "An aggregate compiler has no aggregate outputs or "
+                       "HAVING aggregates.");
+    ronsql_require_bug(m_main_scope.agg->getStatus() ==
+                           AggregationAPICompiler::Status::PROGRAMMING,
+                       "The aggregate compiler left state PROGRAMMING before "
+                       "the outputs were registered.");
   }
   return has_aggregate_outputs || has_having_aggregates ||
          has_subquery_agg_outputs;
@@ -1125,7 +1155,7 @@ RonSQLPreparer::register_cte_outputs()
         throw RonSQLPermanentError(
             "Subquery aggregation inside CTE body not yet supported.");
       default:
-        abort();
+        ronsql_bug("A CTE output has an unknown type.");
       }
     }
   }
@@ -1288,7 +1318,7 @@ RonSQLPreparer::prepare_projection_only_query()
       if (!projection_only_join_chain) break;
       if (join->join_type == JoinClause::INNER_JOIN &&
           any_parent_under_left) {
-        ndbrequire(m_conf.err_stream != NULL);
+        ndbrequire(m_conf.err_stream != NULL);  // X-14: kept, see configure()
         std::basic_ostream<char>& err = *m_conf.err_stream;
         err << "INNER JOIN below a LEFT JOIN is not supported in"
                " projection-only queries: RonSQL does not yet emit"
@@ -1328,7 +1358,7 @@ RonSQLPreparer::prepare_projection_only_query()
         // wording instead of the generic gate text; same for
         // WrongColumns (the I.20 message).
         if (coverage.state == CteKeyCoverage::Partial) {
-          ndbrequire(m_conf.err_stream != NULL);
+          ndbrequire(m_conf.err_stream != NULL);  // X-14: kept, see configure()
           std::basic_ostream<char>& err = *m_conf.err_stream;
           err << "Partial CTE lookup key not supported.  The virtual"
                  " CTE primary key matches the CTE body's GROUP BY"
@@ -1341,7 +1371,7 @@ RonSQLPreparer::prepare_projection_only_query()
               "Partial CTE lookup key not supported.");
         }
         if (coverage.state == CteKeyCoverage::WrongColumns) {
-          ndbrequire(m_conf.err_stream != NULL);
+          ndbrequire(m_conf.err_stream != NULL);  // X-14: kept, see configure()
           std::basic_ostream<char>& err = *m_conf.err_stream;
           if (join_cte->stmt->is_single_row_cte) {
             err << "CTE lookup key references a column that is not"
@@ -1371,7 +1401,7 @@ RonSQLPreparer::prepare_projection_only_query()
   }
   if (!projection_only_cte_scan && !projection_only_join_chain &&
       !projection_only_single_table) {
-    ndbrequire(m_conf.err_stream != NULL);
+    ndbrequire(m_conf.err_stream != NULL);  // X-14: kept, see configure()
     std::basic_ostream<char>& err = *m_conf.err_stream;
     err << "This query has no aggregate expression, so it is not an aggregate query.\n"
            "Currently, RonSQL only supports aggregate queries and projection-only\n"
@@ -1400,7 +1430,8 @@ RonSQLPreparer::parse()
   m_context.m_collect_access = false;
   if (parse_result == 0)
   {
-    ndbrequire(m_context.m_err_state == ErrState::NONE);
+    ronsql_require_bug(m_context.m_err_state == ErrState::NONE,
+                       "A statement that parsed has a parse error recorded.");
     // The WITH list as written, before the rewrites below can drop entries.
     for (const CteDefinition* cte = m_context.ast_root.cte_list;
          cte != NULL; cte = cte->next)
@@ -1471,14 +1502,20 @@ RonSQLPreparer::throw_parse_error(int parse_result)
     // status 2 therefore means the YYMAXDEPTH limit was reached.
     throw RonSQLPermanentError("Parser stack exceeded its maximum depth.");
   }
-  ndbrequire(parse_result == 1);
-  ndbrequire(m_context.m_err_state != ErrState::NONE);
-  ndbrequire(m_sql.str <= m_context.m_err_pos);
+  ronsql_require_bug(parse_result == 1,
+                     "The parser failed with an unknown result.");
+  ronsql_require_bug(m_context.m_err_state != ErrState::NONE,
+                     "The parser failed without recording an error.");
+  ronsql_require_bug(m_sql.str <= m_context.m_err_pos,
+                     "The parser recorded an error before the statement.");
   size_t err_pos = m_context.m_err_pos - m_sql.str;
   size_t err_stop = err_pos + m_context.m_err_len;
-  ndbrequire(err_pos <= m_sql.len);
-  ndbrequire(err_stop <= m_sql.len + 1); // "Unexpected end of input" marks the
-                                         // character directly after the end.
+  ronsql_require_bug(err_pos <= m_sql.len,
+                     "The parser recorded an error after the statement.");
+  // "Unexpected end of input" marks the character directly after the end.
+  ronsql_require_bug(err_stop <= m_sql.len + 1,
+                     "The parser recorded an error that ends after the "
+                     "statement.");
   const char* msg = NULL;
   bool print_statement = true;
   switch (m_context.m_err_state)
@@ -1572,7 +1609,7 @@ RonSQLPreparer::throw_parse_error(int parse_result)
     }
     break;
   default:
-    abort();
+    ronsql_bug("The parser recorded an error of unknown type.");
   }
   if (print_statement)
   {
@@ -1935,8 +1972,10 @@ RonSQLPreparer::load_single_table()
               "Failed to get table. Note that RonSQL only supports tables"
               " with ENGINE=NDB.");
   // Populate m_indexes — use schema cache if available to skip listIndexes()
-  ndbrequire(m_dict != NULL);
-  ndbrequire(m_main_scope.table != NULL);
+  ronsql_require_bug(m_dict != NULL,
+                     "load() has no dictionary.");
+  ronsql_require_bug(m_main_scope.table != NULL,
+                     "load() has no table.");
   const char* db = m_conf.ndb ? m_conf.ndb->getDatabaseName() : nullptr;
   const RdrsSchemaCache::IndexListPtr cached_indexes =
       (m_conf.schema_cache && db)
@@ -2306,9 +2345,12 @@ RonSQLPreparer::reorder_cte_join_conditions_to_pk_order(
 
   JoinCondition* jc = join->conditions;
   for (Uint32 k = 0; k < r.num_keys; k++) {
-    ndbrequire(jc != NULL);
+    ronsql_require_bug(jc != NULL,
+                       "A CTE join has fewer conditions than key columns.");
     int pk_idx = r.pk_index_for_key[k];
-    ndbrequire(pk_idx >= 0 && (Uint32)pk_idx < r.num_pk_cols);
+    ronsql_require_bug(pk_idx >= 0 && (Uint32)pk_idx < r.num_pk_cols,
+                       "A CTE join condition maps to no key column of the "
+                       "CTE.");
     by_pk[pk_idx] = jc;
     jc = jc->next;
   }
@@ -2316,7 +2358,8 @@ RonSQLPreparer::reorder_cte_join_conditions_to_pk_order(
   JoinCondition* head = NULL;
   JoinCondition* tail = NULL;
   for (Uint32 p = 0; p < r.num_pk_cols; p++) {
-    ndbrequire(by_pk[p] != NULL);
+    ronsql_require_bug(by_pk[p] != NULL,
+                       "A CTE join leaves a key column of the CTE unbound.");
     if (head == NULL) {
       head = tail = by_pk[p];
     } else {
@@ -5113,9 +5156,11 @@ RonSQLPreparer::detect_pk_lookup()
             in_values =
                 m_amalloc->alloc_exc<ConditionalExpression*>(n_leaves);
             Uint32 filled = 0;
-            ndbrequire(match_in_shape(ce, &in_col_idx, in_values, n_leaves,
-                                      &filled) &&
-                       filled == n_leaves);
+            ronsql_require_bug(match_in_shape(ce, &in_col_idx, in_values,
+                                              n_leaves, &filled) &&
+                               filled == n_leaves,
+                               "An IN list on the primary key lost its "
+                               "values.");
             in_total = n_leaves;
             in_col = k;
             in_cond_idx = (int)i;
@@ -5176,7 +5221,9 @@ RonSQLPreparer::detect_pk_lookup()
     // path, like the residual trial build below.
     const NdbDictionary::Column* in_pk_col =
         tab->getColumn(tab->getPrimaryKey(in_col));
-    ndbrequire(in_pk_col != NULL);
+    ronsql_require_bug(in_pk_col != NULL,
+                       "The primary key column of an IN list lookup is "
+                       "missing.");
     if (!dedup_in_values(in_pk_col, in_values, in_total, &in_count)) {
       return false;
     }
@@ -5344,8 +5391,10 @@ RonSQLPreparer::build_scan_config_candidates(
           ConditionalExpression** vals =
               m_amalloc->alloc_exc<ConditionalExpression*>(n_leaves);
           Uint32 filled = 0;
-          ndbrequire(match_in_shape(ce, &leaf_col, vals, n_leaves, &filled) &&
-                     filled == n_leaves);
+          ronsql_require_bug(match_in_shape(ce, &leaf_col, vals, n_leaves,
+                                            &filled) &&
+                             filled == n_leaves,
+                             "An IN list bound lost its values.");
           Uint32 n_distinct = 0;
           if (!dedup_in_values(tab_col, vals, n_leaves, &n_distinct)) {
             continue;
@@ -5354,7 +5403,9 @@ RonSQLPreparer::build_scan_config_candidates(
           ubound_set = true;
           later_columns_blocked = false;
           condition_handling_map[cond_idx] = (int)col_idx;
-          ndbrequire(num_consumed_this_col < 2);
+          ronsql_require_bug(num_consumed_this_col < 2,
+                             "An index column got more than two bound "
+                             "conditions.");
           consumed_this_col[num_consumed_this_col++] = cond_idx;
           in_cond_idx = (int)cond_idx;
           in_col_idx = leaf_col;
@@ -5406,7 +5457,9 @@ RonSQLPreparer::build_scan_config_candidates(
           ubound_set = ubound_set || wants_ubound;
           later_columns_blocked = op != T_EQUALS;
           condition_handling_map[cond_idx] = (int)col_idx;
-          ndbrequire(num_consumed_this_col < 2);
+          ronsql_require_bug(num_consumed_this_col < 2,
+                             "An index column got more than two bound "
+                             "conditions.");
           consumed_this_col[num_consumed_this_col++] = cond_idx;
         } else {
           later_columns_blocked = true;
@@ -6257,7 +6310,8 @@ private:
 void
 append_sql_identifier(ArenaSqlBuilder& sql, const char* name)
 {
-  ndbrequire(name != NULL);
+  ronsql_require_bug(name != NULL,
+                     "A generated SQL identifier is NULL.");
   sql << "`";
   for (const char* p = name; *p != '\0'; p++)
     sql << (*p == '`' ? std::string_view("``") : std::string_view(p, 1));
@@ -6268,10 +6322,13 @@ append_sql_identifier(ArenaSqlBuilder& sql, const char* name)
 std::string_view
 original_subquery_span(const SelectStatement& stmt, const LexString& span)
 {
-  ndbrequire(stmt.sql_begin != NULL && stmt.sql_end != NULL);
-  ndbrequire(span.str != NULL && span.len > 0 &&
-             span.str >= stmt.sql_begin && span.str < stmt.sql_end &&
-             span.len <= size_t(stmt.sql_end - span.str));
+  ronsql_require_bug(stmt.sql_begin != NULL && stmt.sql_end != NULL,
+                     "A subquery has no SQL text.");
+  ronsql_require_bug(span.str != NULL && span.len > 0 &&
+                     span.str >= stmt.sql_begin && span.str < stmt.sql_end &&
+                     span.len <= size_t(stmt.sql_end - span.str),
+                     "A subquery span lies outside the SQL text of the "
+                     "subquery.");
   return std::string_view(span.str, span.len);
 }
 
@@ -6561,7 +6618,9 @@ negate_cmp_op(TokenKind op)
   case T_GE: return T_LT;
   case T_LT: return T_GE;
   case T_LE: return T_GT;
-  default: ndbrequire(false); return op;
+  default:
+    ronsql_require_bug(false, "Negating an operator that is not a comparison.");
+    return op;
   }
 }
 
@@ -7310,7 +7369,8 @@ RonSQLPreparer::validate_having_references()
     if (ce->op == T_IDENTIFIER)
     {
       const Uint32 c = ce->col_idx;
-      ndbrequire(c < m_columns.size());
+      ronsql_require_bug(c < m_columns.size(),
+                         "A HAVING column index is out of range.");
       const bool qualified = (m_column_qualifiers[c].str != NULL);
       const LexString name(m_columns[c]);
       if (!qualified &&
@@ -8692,7 +8752,9 @@ RonSQLPreparer::compile()
     for (Uint32 i = 0; i < m_select_subquery_leaves.size(); i++) {
       SelectSubqueryLeaf &sl = m_select_subquery_leaves[i];
       Outputs *out = sl.output_node;
-      ndbrequire(out->type == Outputs::Type::SUBQUERY_AGG);
+      ronsql_require_bug(out->type == Outputs::Type::SUBQUERY_AGG,
+                         "A SELECT-list subquery leaf has no subquery "
+                         "output.");
       out->type = Outputs::Type::AGGREGATE;
       out->aggregate.fun = sl.agg_fun;
       // agg_index fetches the result.  MIN / MAX / SUM keep the
@@ -8750,9 +8812,15 @@ RonSQLPreparer::compile()
   // Compile aggregation program if applicable
   if (m_main_scope.agg != NULL) {
     if (m_main_scope.agg->compile()) {
-      ndbrequire(m_main_scope.agg->getStatus() == AggregationAPICompiler::Status::COMPILED);
+      ronsql_require_bug(m_main_scope.agg->getStatus() ==
+                             AggregationAPICompiler::Status::COMPILED,
+                         "The aggregate compiler succeeded but is not in "
+                         "state COMPILED.");
     } else {
-      ndbrequire(m_main_scope.agg->getStatus() == AggregationAPICompiler::Status::FAILED);
+      ronsql_require_bug(m_main_scope.agg->getStatus() ==
+                             AggregationAPICompiler::Status::FAILED,
+                         "The aggregate compiler failed but is not in "
+                         "state FAILED.");
       // The compiler fails only when it runs out of registers: a
       // statement-complexity limit, not a bug.
       throw RonSQLPermanentError(
@@ -8772,9 +8840,15 @@ RonSQLPreparer::compile()
     AggregationAPICompiler* cte_agg = m_cte_scopes[c]->agg;
     if (cte_agg == NULL) continue;
     if (cte_agg->compile()) {
-      ndbrequire(cte_agg->getStatus() == AggregationAPICompiler::Status::COMPILED);
+      ronsql_require_bug(cte_agg->getStatus() ==
+                             AggregationAPICompiler::Status::COMPILED,
+                         "The CTE aggregate compiler succeeded but is not "
+                         "in state COMPILED.");
     } else {
-      ndbrequire(cte_agg->getStatus() == AggregationAPICompiler::Status::FAILED);
+      ronsql_require_bug(cte_agg->getStatus() ==
+                             AggregationAPICompiler::Status::FAILED,
+                         "The CTE aggregate compiler failed but is not in "
+                         "state FAILED.");
       throw RonSQLPermanentError(
           RonSQLErrorClass::LIMIT,
           "Failed to compile CTE aggregation program: the aggregate "
@@ -9042,7 +9116,7 @@ RonSQLPreparer::determine_explain()
     do_explain = true;
     break;
   default:
-    abort();
+    ronsql_bug("RonSQLExecParams has an unknown explain mode.");
   }
   // Write to m_do_explain which will be picked up by RonSQLPreparer::execute()
   m_do_explain = do_explain;
@@ -9103,7 +9177,8 @@ RonSQLPreparer::prepare_avro_outputs()
   {
     handles[pos] = NULL;
     if (!is_avro_output(o)) continue;
-    ndbrequire(o->type == Outputs::Type::COLUMN);
+    ronsql_require_bug(o->type == Outputs::Type::COLUMN,
+                       "An AVRO() output is not a column.");
     const Uint32 col_idx = o->column.col_idx;
     const QueryScope::ResolvedColumnRef& ref =
         m_main_scope.resolved_columns[col_idx];
@@ -9151,8 +9226,10 @@ RonSQLPreparer::execute_subqueries()
   {
     SubqueryInfo& info = m_subquery_infos[i];
     SelectStatement* inner = info.inner_stmt;
-    ndbrequire(inner->sql_begin != NULL && inner->sql_end != NULL);
-    ndbrequire(inner->sql_end > inner->sql_begin);
+    ronsql_require_bug(inner->sql_begin != NULL && inner->sql_end != NULL,
+                       "A subquery has no SQL text.");
+    ronsql_require_bug(inner->sql_end > inner->sql_begin,
+                       "A subquery has empty SQL text.");
 
     // Extract inner SQL from the original buffer
     size_t inner_len = inner->sql_end - inner->sql_begin;
@@ -9510,7 +9587,8 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
       }
       return;
     }
-    ndbrequire(false);
+    ronsql_require_bug(false,
+                       "A correlated scalar subquery has no SubqueryInfo.");
     return;
   }
 
@@ -9637,7 +9715,8 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
         return;
       }
     }
-    ndbrequire(false);
+    ronsql_require_bug(false,
+                       "An IN subquery has no SubqueryInfo.");
     return;
   }
 
@@ -9673,7 +9752,8 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
       }
     }
     // Should not happen — every I_SUBQUERY node should have a SubqueryInfo
-    ndbrequire(false);
+    ronsql_require_bug(false,
+                       "A scalar subquery has no SubqueryInfo.");
     return;
   }
 
@@ -10052,7 +10132,8 @@ RonSQLPreparer::execute()
   require_prm(m_status != Status::FAILED,
               "Attempting RonSQLPreparer::execute while in failed state.");
   DEB_TRACE();
-  ndbrequire(m_status == Status::PREPARED);
+  ronsql_require_bug(m_status == Status::PREPARED,
+                     "RonSQLPreparer::execute() needs a prepared statement.");
   DEB_TRACE();
   Ndb* ndb = m_conf.ndb;
   // close_us sums every close of this attempt (STAT_ADD).
@@ -10075,7 +10156,7 @@ RonSQLPreparer::execute()
         break;
       default:
         DEB_TRACE();
-        abort();
+        ronsql_bug("EXPLAIN got an unknown output format.");
       }
 
       DEB_TRACE();
@@ -10117,7 +10198,8 @@ RonSQLPreparer::execute()
 
     start_transaction();
     // Since ndb exists, m_main_scope.table should have been initialized in load()
-    ndbrequire(m_main_scope.table != NULL);
+    ronsql_require_bug(m_main_scope.table != NULL,
+                       "An aggregate query has no table.");
 
     if (is_count_star_only_query()) {
       // ronsql_count_star_shortcut_plan.md W1: answer from the
@@ -10191,9 +10273,12 @@ RonSQLPreparer::execute()
 void
 RonSQLPreparer::execute_pk_lookup_aggregate(NdbAggregator* aggregator)
 {
-  ndbrequire(m_pk_lookup && m_pk_lookup_in_col >= 0);
+  ronsql_require_bug(m_pk_lookup && m_pk_lookup_in_col >= 0,
+                     "A key lookup aggregate has no IN list on the primary "
+                     "key.");
   const Uint32 n_ops = m_pk_lookup_in_count;
-  ndbrequire(n_ops >= 1);
+  ronsql_require_bug(n_ops >= 1,
+                     "A key lookup has no key.");
   STAT_TS(m_conf.phase_stats, s_kr_start);
   const NdbDictionary::Table* tab = m_main_scope.table;
   const int nkeys = tab->getNoOfPrimaryKeys();
@@ -10226,7 +10311,9 @@ RonSQLPreparer::execute_pk_lookup_aggregate(NdbAggregator* aggregator)
         num_residual++;
       }
     }
-    ndbrequire(num_residual > 0);
+    ronsql_require_bug(num_residual > 0,
+                       "A key lookup with a residual filter has no residual "
+                       "condition.");
     require_run(DBG(filter.end()) >= 0, "Failed to apply lookup filter.");
     require_run(DBG(residual_code.finalise()) == 0,
                 "Failed to finalise lookup filter.");
@@ -10250,7 +10337,8 @@ RonSQLPreparer::execute_pk_lookup_aggregate(NdbAggregator* aggregator)
     for (int k = 0; k < nkeys; k++) {
       const NdbDictionary::Column* pk_col =
           tab->getColumn(tab->getPrimaryKey(k));
-      ndbrequire(pk_col != NULL);
+      ronsql_require_bug(pk_col != NULL,
+                         "A primary key column of the table is missing.");
       // The column's NdbRecord byte format, as in the pass-through arm.
       raw_value rv = encode_constant(key_const[k], pk_col);
       char* dst = NdbDictionary::getValuePtr(rec, key_row,
@@ -10482,8 +10570,10 @@ RonSQLPreparer::open_single_table_scan_op(Uint32 batch_rows)
   // such candidates), so the ranges need no particular order.
   const bool in_ranges = (sc.in_cond_idx >= 0);
   const Uint32 num_ranges = in_ranges ? sc.in_count : 1;
-  ndbrequire(num_ranges >= 1);
-  ndbrequire(!(in_ranges && sc.index_order));
+  ronsql_require_bug(num_ranges >= 1,
+                     "An index scan has no range.");
+  ronsql_require_bug(!(in_ranges && sc.index_order),
+                     "An index scan in index order has an IN list.");
   if (num_ranges > 1) {
     scanFlags |= NdbScanOperation::SF_MultiRange;
   }
@@ -10539,7 +10629,8 @@ RonSQLPreparer::open_single_table_scan_op(Uint32 batch_rows)
       case T_GT:     bt = NdbIndexScanOperation::BoundType::BoundLT; break;
       case T_LE:     bt = NdbIndexScanOperation::BoundType::BoundGE; break;
       case T_LT:     bt = NdbIndexScanOperation::BoundType::BoundGT; break;
-      default: abort();
+      default:
+        ronsql_bug("An index bound has an operator that is not a comparison.");
       }
       const char* colName = m_columns[condition_col_idx].c_str();
       require_run(m_main_scope.resolved_columns != NULL,
@@ -10894,7 +10985,9 @@ RonSQLPreparer::ApiRowAggregation::add_row(const Attr* const* attrs)
       if (r.is_null) break;  // the slot stays empty
       const StringRef& sr = strs[instr.src];
       const Uint32 bytes = sr.prefix_bytes + sr.payload_len;
-      ndbrequire(str_pos + 4 + bytes <= m_str_buf_len);
+      ronsql_require_bug(str_pos + 4 + bytes <= m_str_buf_len,
+                         "The string buffer of the API-side aggregation is "
+                         "too small.");
       char* buf = m_str_buf + str_pos;
       str_pos += ((4 + bytes) + 7) & ~7U;
       Uint16* hdr = reinterpret_cast<Uint16*>(buf);
@@ -10909,7 +11002,8 @@ RonSQLPreparer::ApiRowAggregation::add_row(const Attr* const* attrs)
       break;
     }
     default:
-      abort();  // rejected by the constructor
+      ronsql_bug("API-side aggregation got an instruction its constructor "
+                 "rejects.");
     }
   }
   return m_aggregator->MergeLocalGroup(nullptr, 0, items);
@@ -10930,7 +11024,8 @@ RonSQLPreparer::execute_api_side_aggregate()
   finalize_aggregator(&aggregator, "Failed to finalize aggregator.");
   // The body's ORDER BY is required (route_lastn_aggregate_to_api), and
   // its first column is the one read when the program loads none.
-  ndbrequire(m_context.ast_root.orderby_columns != NULL);
+  ronsql_require_bug(m_context.ast_root.orderby_columns != NULL,
+                     "API-side aggregation has no ORDER BY.");
   ApiRowAggregation api_rows(&aggregator, m_main_scope.agg,
                              m_main_scope.resolved_columns,
                              m_context.ast_root.orderby_columns->col_idx,
@@ -11113,7 +11208,8 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
    * to api_rows instead; nothing is printed here.
    */
   start_transaction();
-  ndbrequire(m_main_scope.table != NULL);
+  ronsql_require_bug(m_main_scope.table != NULL,
+                     "A pass-through query has no table.");
 
   // The column registry indexes read per row, in attrs order.
   const Uint32* cols;
@@ -11130,12 +11226,14 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
     Uint32 i = 0;
     for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
          o = o->next, i++) {
-      ndbrequire(o->type == Outputs::Type::COLUMN);
+      ronsql_require_bug(o->type == Outputs::Type::COLUMN,
+                         "A pass-through output is not a column.");
       output_cols[i] = o->column.col_idx;
     }
     cols = output_cols;
   }
-  ndbrequire(num_cols > 0);
+  ronsql_require_bug(num_cols > 0,
+                     "A pass-through query reads no column.");
   // WP-J J5: merge one delivered row, raising a failed merge (1860) as the
   // pushdown scan raises it.
   auto aggregate_row = [&](const auto* const* row) {
@@ -11195,7 +11293,8 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
      */
     const Uint32 n_ops =
         (m_pk_lookup_in_col >= 0) ? m_pk_lookup_in_count : 1;
-    ndbrequire(n_ops >= 1);
+    ronsql_require_bug(n_ops >= 1,
+                       "A key lookup has no key.");
     const NdbOperation** exec_ops =
         m_amalloc->alloc_exc<const NdbOperation*>(n_ops);
     const NdbRecAttr** op_attrs =
@@ -11248,7 +11347,9 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
             num_residual++;
           }
         }
-        ndbrequire(num_residual > 0);
+        ronsql_require_bug(num_residual > 0,
+                           "A key lookup with a residual filter has no "
+                           "residual condition.");
         require_run(DBG(filter.end()) >= 0, "Failed to apply lookup filter.");
       }
       require_run(DBG(residual_code.finalise()) == 0,
@@ -11268,7 +11369,8 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
           const char* pk_name = m_main_scope.table->getPrimaryKey(k);
           const NdbDictionary::Column* pk_col =
               m_main_scope.table->getColumn(pk_name);
-          ndbrequire(pk_col != NULL);
+          ronsql_require_bug(pk_col != NULL,
+                             "A primary key column of the table is missing.");
           raw_value rv = encode_constant(key_const[k], pk_col);
           require_run(DBG(op->equal(pk_name,
                                     static_cast<const char*>(rv.val))) == 0,
@@ -11283,7 +11385,8 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
           const char* pk_name = m_main_scope.table->getPrimaryKey(k);
           const NdbDictionary::Column* pk_col =
               m_main_scope.table->getColumn(pk_name);
-          ndbrequire(pk_col != NULL);
+          ronsql_require_bug(pk_col != NULL,
+                             "A primary key column of the table is missing.");
           // encode_constant produces the column's NdbRecord byte format
           // for every supported PK type (little-endian ints at column
           // width, space-padded CHAR, length-prefixed VARCHAR, packed
@@ -11597,7 +11700,8 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
 void
 RonSQLPreparer::start_transaction() {
   Ndb* ndb = m_conf.ndb;
-  ndbrequire(m_trans == NULL);
+  ronsql_require_bug(m_trans == NULL,
+                     "A transaction was started while another is open.");
   m_trans = DBG(ndb->startTransaction());
   require_run(m_trans != NULL, "Failed to start transaction.");
   if (m_conf.rate_limit_identity != NULL) {
@@ -11620,6 +11724,8 @@ void
 RonSQLPreparer::cleanup_trans() {
   if (m_trans) {
     Ndb* ndb = m_conf.ndb;
+    // X-14: kept: every error path runs this cleanup, and m_trans came
+    // from this Ndb, so a NULL Ndb here means corrupt state.
     ndbrequire(ndb);
     STAT_TS(m_conf.phase_stats, s_close_start);
     DBGV(ndb->closeTransaction(m_trans));
@@ -12044,7 +12150,8 @@ RonSQLPreparer::execute_join()
 
   // Build NdbQueryBuilder tree
   NdbQueryBuilder* qb = NdbQueryBuilder::create();
-  ndbrequire(qb != NULL);
+  // J-10: create() returns NULL only when it is out of memory.
+  if (qb == NULL) throw std::bad_alloc();
   objs.qb = qb;
 
   // Emit CTE subtrees first, in declaration order, so the main query's
@@ -12408,7 +12515,8 @@ RonSQLPreparer::execute_join()
     PERF_TS(t_result_start);
     STAT_TS(m_conf.phase_stats, s_result_start);
     NdbAggregator* resultAgg = query->getAggregator();
-    ndbrequire(resultAgg != NULL);
+    ronsql_require_bug(resultAgg != NULL,
+                       "A join aggregate query has no result aggregator.");
     m_resultprinter->print_result(resultAgg, m_conf.out_stream);
     PERF_TS(t_result_done);
     PERF_LOG("  print results", t_result_start, t_result_done);
@@ -12443,8 +12551,10 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
                                            NdbDictionary::Table**
                                                cteVirtualTables)
 {
-  ndbrequire(query != NULL);
-  ndbrequire(m_resultprinter != NULL);
+  ronsql_require_bug(query != NULL,
+                     "The pass-through drain has no query.");
+  ronsql_require_bug(m_resultprinter != NULL,
+                     "The pass-through drain has no result printer.");
 
   // CTE subtree ops are appended to the NdbQuery before main-query
   // ops (the qb->beginCteSubtree...endCteSubtree blocks run first
@@ -12528,7 +12638,8 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
     for (Uint32 cte_col = 0; cte_col < vtNcols; cte_col++) {
       const NdbDictionary::Column* vcol =
           cteVirtualTables[dop]->getColumn(cte_col);
-      ndbrequire(vcol != NULL);
+      ronsql_require_bug(vcol != NULL,
+                         "A column of a CTE virtual table is missing.");
       NdbRecAttr* ra = dopOp->getValue(vcol);
       require_run(ra != NULL,
                   "Pass-through drain: CTE column getValue() failed.");
@@ -12552,7 +12663,8 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
   Uint32 i = 0;
   for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
        o = o->next, i++) {
-    ndbrequire(o->type == Outputs::Type::COLUMN);
+    ronsql_require_bug(o->type == Outputs::Type::COLUMN,
+                       "A pass-through output is not a column.");
     Uint32 col_idx = o->column.col_idx;
     const QueryScope::ResolvedColumnRef& col_ref =
         m_main_scope.resolved_columns[col_idx];
@@ -12573,7 +12685,9 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
 
     if (col_ref.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn) {
       Uint32 cte_col_idx = col_ref.cte_result_idx;
-      ndbrequire(cteAttrsByCol[plan_op_idx] != NULL);
+      ronsql_require_bug(cteAttrsByCol[plan_op_idx] != NULL,
+                         "A CTE operation of the pass-through drain has no "
+                         "result columns.");
       attrs[i] = cteAttrsByCol[plan_op_idx][cte_col_idx];
       require_run(attrs[i] != NULL,
                   "Pass-through drain: CTE NdbRecAttr lookup failed.");
@@ -12639,7 +12753,9 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
           slot = num_stored++;
           if (R.kind ==
               QueryScope::ResolvedColumnRef::Kind::CteResultColumn) {
-            ndbrequire(cteAttrsByCol[plan_op_idx] != NULL);
+            ronsql_require_bug(cteAttrsByCol[plan_op_idx] != NULL,
+                               "A CTE operation of the pass-through drain "
+                               "has no result columns.");
             attrs[slot] = cteAttrsByCol[plan_op_idx][R.cte_result_idx];
             require_run(attrs[slot] != NULL,
                         "ORDER BY CTE column NdbRecAttr lookup failed.");
@@ -12882,7 +12998,8 @@ RonSQLPreparer::emit_index_scan_root(NdbQueryBuilder* qb,
               "Index-scan root: too many index columns.");
   for (Uint32 k = 0; k < idx_col_count; k++) {
     const NdbDictionary::Column* idx_col = idx->getColumn(k);
-    ndbrequire(idx_col != NULL);
+    ronsql_require_bug(idx_col != NULL,
+                       "A column of the root index is missing.");
     const NdbDictionary::Column* tab_col =
         tab->getColumn(idx_col->getName());
     require_run(tab_col != NULL,
@@ -13076,7 +13193,8 @@ RonSQLPreparer::emit_pk_equality_index_scan_root(
                 "PK index scan: index column is not a primary key column.");
     const NdbDictionary::Column* pk_col =
         root_table->getColumn(pk_col_names[p]);
-    ndbrequire(pk_col != NULL);
+    ronsql_require_bug(pk_col != NULL,
+                       "A primary key column of the table is missing.");
     raw_value rv = encode_constant(pk_const[p], pk_col);
     pk_keys[k] = query_const_value(qb, rv, pk_col);
     require_qb(qb, pk_keys[k] != NULL,
@@ -13235,7 +13353,7 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     if (root_cte_is_scalar && scope.join_where_ce[0] != NULL &&
         outer_agg_needs_scan_root && !where_never_true)
     {
-      ndbrequire(m_conf.err_stream != NULL);
+      ndbrequire(m_conf.err_stream != NULL);  // X-14: kept, see configure()
       *m_conf.err_stream
           << "An outer join below a scalar CTE root with a WHERE clause"
              " is not supported in an aggregate query: the root is a"
@@ -13434,7 +13552,8 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
         const char* pk_name = cteVirtualTables[0]->getPrimaryKey(k);
         const NdbDictionary::Column* pk_col =
             cteVirtualTables[0]->getColumn(pk_name);
-        ndbrequire(pk_col != NULL);
+        ronsql_require_bug(pk_col != NULL,
+                           "A key column of a CTE virtual table is missing.");
         const ConditionalExpression* ce_const = root_pk_const[k];
         switch (pk_col->getType()) {
         case NdbDictionary::Column::Tinyint:
@@ -13681,7 +13800,8 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
         const char* pk_name = root_table->getPrimaryKey(k);
         const NdbDictionary::Column* pk_col =
             root_table->getColumn(pk_name);
-        ndbrequire(pk_col != NULL);
+        ronsql_require_bug(pk_col != NULL,
+                           "A primary key column of the table is missing.");
         raw_value rv = encode_constant(pk_const[k], pk_col);
         pk_keys[k] = query_const_value(qb, rv, pk_col);
         require_qb(qb, pk_keys[k] != NULL,
@@ -14066,10 +14186,13 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
       continue;
 
     const CteDefinition* cte = op.cte_def;
-    ndbrequire(cte != NULL);
-    ndbrequire(op.cte_def_idx < m_cte_scopes.size());
+    ronsql_require_bug(cte != NULL,
+                       "A CTE operation has no CTE.");
+    ronsql_require_bug(op.cte_def_idx < m_cte_scopes.size(),
+                       "A CTE operation has a CTE index out of range.");
     QueryScope* cte_scope = m_cte_scopes[op.cte_def_idx];
-    ndbrequire(cte_scope != NULL);
+    ronsql_require_bug(cte_scope != NULL,
+                       "A CTE operation has no CTE scope.");
 
     char vtname[64];
     snprintf(vtname, sizeof(vtname), "__cte_%u", op.cte_def_idx);
@@ -14474,7 +14597,8 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
         throw RonSQLPermanentError(
             "Unsupported CTE output kind.");
       }
-      ndbrequire(have_derived);
+      ronsql_require_bug(have_derived,
+                         "A CTE output got no virtual column type.");
 
       vcol.setType(derived_type);
       vcol.setLength(derived_length);
@@ -14519,7 +14643,8 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
       Uint32 ncol = (Uint32)vt->getNoOfColumns();
       for (Uint32 cidx = 0; cidx < ncol; cidx++) {
         NdbDictionary::Column* mut_col = vt->getColumn((int)cidx);
-        ndbrequire(mut_col != NULL);
+        ronsql_require_bug(mut_col != NULL,
+                           "A column of a CTE virtual table is missing.");
         NdbColumnImpl& mut_impl = NdbColumnImpl::getImpl(*mut_col);
         mut_impl.m_attrId = (int)cidx;
 
@@ -15650,7 +15775,7 @@ RonSQLPreparer::check_cte_join_key_types(
         child_col->getLength() == parent_col->getLength() &&
         child_col->getCharset() == parent_col->getCharset())
       continue;
-    ndbrequire(m_conf.err_stream != NULL);
+    ndbrequire(m_conf.err_stream != NULL);  // X-14: kept, see configure()
     std::basic_ostream<char>& err = *m_conf.err_stream;
     err << "Join columns '" << plan.ops[parent_idx].alias.c_str() << "."
         << op.parent_key_col_names[k] << "' ("
@@ -15877,7 +16002,9 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
           require_run(bcol != NULL, "Unknown bound column.");
           raw_value rv = encode_constant(rb.const_cond->args.right, bcol);
           const NdbQueryOperand* cv = query_const_value(qb, rv, bcol);
-          ndbrequire(num_cb_operands < MAX_JOIN_KEY_COLS * 2);
+          ronsql_require_bug(num_cb_operands < MAX_JOIN_KEY_COLS * 2,
+                             "A join operation has more bound operands than "
+                             "it has room for.");
           cb_conds[num_cb_operands] = rb.const_cond;
           cb_operands[num_cb_operands] = cv;
           num_cb_operands++;
@@ -16017,7 +16144,7 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
       break;
     }
     default:
-      abort();
+      ronsql_bug("A join operation has an unknown type.");
     }
     // QRY_UNRELATED_INDEX (a stale index) reloads the schema, as for
     // every builder call (throw_query_builder_error).
@@ -16259,7 +16386,8 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     // Roll back — cleanup_trans() releases the NDB transaction, and the
     // caller frees this query's arena once the failure propagates — then
     // fail the whole query with a clean permanent error.  Without this arm
-    // std::bad_alloc would fall to the catch(...) below and abort().  Note
+    // std::bad_alloc would fall to the catch(...) below (an internal
+    // error since X-14, an abort() before).  Note
     // it must precede the std::runtime_error arm in intent: std::bad_alloc
     // is NOT a std::runtime_error, so it would otherwise reach catch(...).
     DEB_TRACE(); err << "Error handling: OOM->RPE\n";
@@ -16275,6 +16403,8 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     NdbError ndb_err;
     if (m_trans != NULL) {
       DEB_TRACE(); err << ",te";
+      // X-14: kept: the error handler must not throw before it closes the
+      // transaction, and m_trans came from this Ndb.
       ndbrequire(ndb != NULL);
       ndb_err = m_trans->getNdbError();
     } else if (ndb != NULL) {
@@ -16365,9 +16495,13 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     throw RonSQLPermanentError(cls, e.what(), ndb_err.code);
   }
   catch (...) {
-    // All exceptions thrown should be instances of runtime_error.
-    DEB_TRACE();
-    abort();
+    // All exceptions thrown should be instances of runtime_error.  X-14:
+    // another type (a std::logic_error from the standard library, say)
+    // fails the statement, not the process.
+    DEB_TRACE(); err << "Error handling: UNK->RPE\n";
+    cleanup_trans();
+    ronsql_bug("An exception of an unexpected type reached the error "
+               "handler.");
   }
 }
 
@@ -16587,7 +16721,8 @@ RonSQLPreparer::unload_schema() {
   for (Uint32 i = 0; i < old_indexes_count; i++) {
     DEB_TRACE();
     const NdbDictionary::Index* old_index = m_indexes[i];
-    ndbrequire(old_index != NULL);
+    ronsql_require_bug(old_index != NULL,
+                       "A loaded index is missing.");
     old_indexes_idver[i] = { DBG(old_index->getObjectId()),
                              DBG(old_index->getObjectVersion()) };
     some_old_indexes_not_retrieved = some_old_indexes_not_retrieved ||
@@ -16712,7 +16847,8 @@ RonSQLPreparer::apply_filter_top_level(NdbScanFilter* filter)
       apply_filter(filter, m_main_scope, m_toplevel_conditions[i]);
     }
   }
-  ndbrequire(has_filter);
+  ronsql_require_bug(has_filter,
+                     "A scan filter got no condition.");
   require_sch(DBG(filter->end()) >= 0, filter_fail);
 }
 
@@ -16777,7 +16913,8 @@ void
 RonSQLPreparer::apply_filter(NdbScanFilter* filter, QueryScope& scope,
                              struct ConditionalExpression* ce)
 {
-  ndbrequire(ce != NULL);
+  ronsql_require_bug(ce != NULL,
+                     "A scan filter got no condition.");
   switch (ce->op)
   {
   case T_OR:
@@ -16787,7 +16924,7 @@ RonSQLPreparer::apply_filter(NdbScanFilter* filter, QueryScope& scope,
     require_sch(DBG(filter->end()) >= 0, filter_fail);
     break;
   case T_XOR:
-    abort(); // This should have been "simplified" away
+    ronsql_bug("A scan filter got an XOR, which simplification removes.");
   case T_AND:
     require_run(DBG(filter->begin(NdbScanFilter::AND)) >= 0, filter_fail);
     apply_filter(filter, scope, ce->args.left);
@@ -17258,7 +17395,8 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       case E_DEC_TRUNCATED:
         throw RonSQLMaybeStaleSchema("Failed converting float literal to DECIMAL");
       default:
-        abort();
+        ronsql_bug("Converting a float literal to DECIMAL gave an unknown "
+                   "error.");
       }
     }
     return raw_value{ bin, bin_len };
@@ -17399,7 +17537,7 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       break;
     }
     default:
-      abort();
+      ronsql_bug("A temporal constant has an unknown column type.");
     }
     return raw_value{bindate, retlen};
   }
@@ -18150,7 +18288,7 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
     }
     default:
       // Unknown instruction
-      abort();
+      ronsql_bug("The aggregation program has an unknown instruction.");
     }
   }
 }
@@ -18441,7 +18579,9 @@ RonSQLPreparer::generate_embedded_filter_condition(NdbAggregator* aggregator,
       case T_LE:         return Interpreter::BRANCH_GT_REG_REG;
       case T_GT:         return Interpreter::BRANCH_LE_REG_REG;
       case T_GE:         return Interpreter::BRANCH_LT_REG_REG;
-      default: abort();
+      default:
+        ronsql_bug("A cross-table filter has an operator that is not a "
+                   "comparison.");
       }
     }
     switch (op) {
@@ -18451,7 +18591,9 @@ RonSQLPreparer::generate_embedded_filter_condition(NdbAggregator* aggregator,
     case T_LE:         return Interpreter::BRANCH_LE_REG_REG;
     case T_GT:         return Interpreter::BRANCH_GT_REG_REG;
     case T_GE:         return Interpreter::BRANCH_GE_REG_REG;
-    default: abort();
+    default:
+      ronsql_bug("A cross-table filter has an operator that is not a "
+                 "comparison.");
     }
   };
 
@@ -18473,7 +18615,9 @@ RonSQLPreparer::generate_embedded_filter_condition(NdbAggregator* aggregator,
     emit_embedded_filter_expr(aggregator, scope, atom->args.right, leaf_idx,
                               R2, R3, cur, atom_fail);
     Uint32 branch_instr_pos = pos + atom_words[a] - 1;
-    ndbrequire(cur == branch_instr_pos);
+    ronsql_require_bug(cur == branch_instr_pos,
+                       "A cross-table filter atom has another size than "
+                       "counted.");
     Uint32 branch_offset = second_exit_label - branch_instr_pos;
     Uint32 br_op = reg_branch_opcode(atom->op);
     programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
@@ -19096,7 +19240,7 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
       break;
     }
     default:
-      abort();
+      ronsql_bug("The aggregation program has an unknown instruction.");
     }
   }
 
@@ -19665,7 +19809,9 @@ RonSQLPreparer::generate_embedded_condition(
   auto resolve_col_side =
       [&](ConditionalExpression* col_side, SideInfo& out)
       {
-        ndbrequire(col_side->op == T_IDENTIFIER);
+        ronsql_require_bug(col_side->op == T_IDENTIFIER,
+                           "The column side of a cross-table filter is not "
+                           "a column.");
         Uint32 cidx = col_side->col_idx;
         out.col_idx = cidx;
         out.linked_position = 0;
@@ -19876,7 +20022,7 @@ RonSQLPreparer::generate_embedded_condition(
             info.word_count = 1 + 3 + info.rhs.data_words;
             break;
           case SideKind::Constant:
-            abort();  // unreachable — LHS is always a column
+            ronsql_bug("The left side of a cross-table filter is a constant.");
         }
       }
     }
@@ -19950,7 +20096,9 @@ RonSQLPreparer::generate_embedded_condition(
           case T_LE:         return Interpreter::LT;
           case T_GT:         return Interpreter::GE;
           case T_GE:         return Interpreter::GT;
-          default: abort();
+          default:
+            ronsql_bug("A cross-table filter has an operator that is not a "
+                       "comparison.");
         }
       }
       switch (op) {
@@ -19960,7 +20108,9 @@ RonSQLPreparer::generate_embedded_condition(
         case T_LE:         return Interpreter::GE;
         case T_GT:         return Interpreter::LT;
         case T_GE:         return Interpreter::LE;
-        default: abort();
+        default:
+          ronsql_bug("A cross-table filter has an operator that is not a "
+                     "comparison.");
       }
     };
     auto reg_branch_opcode =
@@ -19973,7 +20123,9 @@ RonSQLPreparer::generate_embedded_condition(
           case T_LE:         return Interpreter::BRANCH_GT_REG_REG;
           case T_GT:         return Interpreter::BRANCH_LE_REG_REG;
           case T_GE:         return Interpreter::BRANCH_LT_REG_REG;
-          default: abort();
+          default:
+            ronsql_bug("A cross-table filter has an operator that is not a "
+                       "comparison.");
         }
       }
       switch (op) {
@@ -19983,7 +20135,9 @@ RonSQLPreparer::generate_embedded_condition(
         case T_LE:         return Interpreter::BRANCH_LE_REG_REG;
         case T_GT:         return Interpreter::BRANCH_GT_REG_REG;
         case T_GE:         return Interpreter::BRANCH_GE_REG_REG;
-        default: abort();
+        default:
+          ronsql_bug("A cross-table filter has an operator that is not a "
+                     "comparison.");
       }
     };
 
@@ -20792,7 +20946,9 @@ RonSQLPreparer::print()
       Uint32 bound_cnt = cond_cnt - filter_cnt;
       // Phase 4b: an ORDER BY-driven candidate may carry no bounds at
       // all (full index scan in key order, conjuncts as filters).
-      ndbrequire(bound_cnt > 0 || sc.index_order);
+      ronsql_require_bug(bound_cnt > 0 || sc.index_order,
+                         "An index scan without bounds is not in index "
+                         "order.");
       if (bound_cnt == 0) {
         out << "Chosen for ORDER BY index order (no bounds).\n"
             << (cond_cnt ? "FILTERS:\n" : "No filters.\n");
@@ -20863,8 +21019,10 @@ RonSQLPreparer::print()
   out << '\n';
 
   // Print post-processing information
-  ndbrequire(m_resultprinter != NULL);
-  ndbrequire(m_conf.out_stream != NULL);
+  ronsql_require_bug(m_resultprinter != NULL,
+                     "EXPLAIN has no result printer.");
+  ronsql_require_bug(m_conf.out_stream != NULL,
+                     "EXPLAIN has no output stream.");
   m_resultprinter->explain(m_conf.out_stream);
 
   out << '\n';
@@ -21203,7 +21361,8 @@ static const char* interval_type_name(TokenKind interval_type)
   case T_DAY_MINUTE: return "DAY_MINUTE";
   case T_DAY_HOUR: return "DAY_HOUR";
   case T_YEAR_MONTH: return "YEAR_MONTH";
-  default: abort();
+  default:
+    ronsql_bug("An interval has an unknown type.");
   }
 }
 
@@ -21278,7 +21437,8 @@ RonSQLPreparer::Context::avro_output(LexCString function_name,
 LexCString
 RonSQLPreparer::column_idx_to_name(Uint32 col_idx)
 {
-  ndbrequire(col_idx < m_columns.size());
+  ronsql_require_bug(col_idx < m_columns.size(),
+                     "A column index is out of range.");
   return m_columns[col_idx];
 }
 
@@ -21410,7 +21570,8 @@ RonSQLPreparer::Context::enter_subquery(bool is_cte_body)
 AggregationAPICompiler*
 RonSQLPreparer::Context::leave_subquery()
 {
-  ndbrequire(m_subquery_depth > 0);
+  ronsql_require_bug(m_subquery_depth > 0,
+                     "The parser left a subquery it had not entered.");
   m_subquery_depth--;
   AggregationAPICompiler* out = m_inner_agg;
   m_inner_agg = NULL;
