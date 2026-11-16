@@ -13013,20 +13013,104 @@ static bool cteNfClearSurvivingInsert(NdbRestarter &restarter,
   return true;
 }
 
+/* Error insert 5140 holds only a redistribute request that asks for the
+ * flow-control CONF. A sender asks for it when its window crosses 64 KiB,
+ * from the node that receives the group crossing it, so one armed node
+ * may get no such request in a query, or (NF-9) only the coordinator's.
+ * These cases therefore arm every data node but the coordinator and take
+ * the holding node from the first matching event, as the RonSQL MTR
+ * include cte_nodefail.inc does. pickVictim only checks the topology. */
+static bool cteNfArmsEveryPeer(const CteNfHoldCase &hold) {
+  return hold.insert == 5140;
+}
+
+/* Clear the insert on the data nodes cteNfArmPeers armed, except the
+ * killed node and keep (0 for none). */
+static bool cteNfClearArmedPeers(NdbRestarter &restarter, Uint32 tcNodeId,
+                                 int killed, int keep) {
+  bool ok = true;
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    const int n = restarter.getDbNodeId(i);
+    if ((Uint32)n == tcNodeId || n == killed || n == keep) continue;
+    if (restarter.insertErrorInNode(n, 0) != 0) {
+      g_err << "Failed to clear the error insert on node " << n << endl;
+      ok = false;
+    }
+  }
+  return ok;
+}
+
+/* Arm the case's insert, extra = iteration, on every data node but the
+ * coordinator. */
+static bool cteNfArmPeers(NdbRestarter &restarter, const CteNfHoldCase &hold,
+                          Uint32 tcNodeId, Uint32 iteration) {
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    const int n = restarter.getDbNodeId(i);
+    if ((Uint32)n == tcNodeId) continue;
+    if (restarter.insertError2InNode(n, hold.insert, iteration) != 0) {
+      g_err << "insertError2InNode(" << n << ", " << hold.insert
+            << ") failed" << endl;
+      /* A failed management call may still have delivered the insert. */
+      cteNfClearArmedPeers(restarter, tcNodeId, 0, 0);
+      return false;
+    }
+  }
+  return true;
+}
+
+/* Wait up to 30 s for a hold event of this iteration from a node armed by
+ * cteNfArmPeers, skipping events whose requester is the coordinator when
+ * skipCoordinator is set. Returns the holding node in *node. */
+static bool cteNfWaitHeldByPeer(NDBT_Context *ctx, CteNfEventListener &events,
+                                const CteNfHoldCase &hold, Uint32 iteration,
+                                Uint32 tcNodeId, bool skipCoordinator,
+                                int *node, BaseString *line) {
+  require(hold.eventNamesRequester);
+  BaseString needle;
+  needle.assfmt("[%s node=", hold.eventTag);
+  const Uint64 start = NdbTick_CurrentMillisecond();
+  for (;;) {
+    const Uint64 waited = NdbTick_CurrentMillisecond() - start;
+    if (waited >= 30000 ||
+        !events.waitFor(ctx, needle.c_str(), Uint32(30000 - waited), line))
+      return false;
+    const char *marker = strstr(line->c_str(), needle.c_str());
+    Uint32 held = 0, iter = 0, requester = 0;
+    if (marker == nullptr ||
+        sscanf(marker + needle.length(), "%u iteration=%u requester=%u]",
+               &held, &iter, &requester) != 3) {
+      g_err << "Invalid " << hold.eventTag << " marker: " << line->c_str()
+            << endl;
+      return false;
+    }
+    if (iter != iteration || held == tcNodeId) continue;
+    if (skipCoordinator && requester == tcNodeId) continue;
+    *node = (int)held;
+    return true;
+  }
+}
+
 struct CteNfSurvivingInsertGuard {
   NDBT_Context *ctx;
   NdbRestarter *restarter;
   const CteNfHoldCase *hold;
   Uint32 iteration;
   bool cleared;
+  int killed;  // the node killed in this iteration, 0 before the kill
 
   bool clear() {
-    if (cleared || hold->killTarget == CTE_NF_KILL_ARMED ||
+    const bool everyPeer = cteNfArmsEveryPeer(*hold);
+    if (cleared || (hold->killTarget == CTE_NF_KILL_ARMED && !everyPeer) ||
         ctx->getProperty("CteNfArmed", (Uint32)0) != iteration ||
         ctx->getProperty("CteNfSkip", (Uint32)0) == iteration)
       return true;
-    const int node = (int)ctx->getProperty("CteNfVictim", (Uint32)0);
-    if (!cteNfClearSurvivingInsert(*restarter, *hold, node)) return false;
+    if (everyPeer) {
+      const Uint32 tc = ctx->getProperty("CteNfTc", (Uint32)0);
+      if (!cteNfClearArmedPeers(*restarter, tc, killed, 0)) return false;
+    } else {
+      const int node = (int)ctx->getProperty("CteNfVictim", (Uint32)0);
+      if (!cteNfClearSurvivingInsert(*restarter, *hold, node)) return false;
+    }
     cleared = true;
     return true;
   }
@@ -13066,8 +13150,13 @@ static bool cteNfHoldBeforeExecute(void *arg, Uint32 tcNodeId) {
     g_err << "Hold event listener was not ready within 30 s" << endl;
     return false;
   }
-  if (a->restarter->insertError2InNode(victim, a->hold->insert,
-                                       a->iter + 1) != 0) {
+  const bool everyPeer = cteNfArmsEveryPeer(*a->hold);
+  if (everyPeer) {
+    if (!cteNfArmPeers(*a->restarter, *a->hold, tcNodeId, a->iter + 1)) {
+      return false;
+    }
+  } else if (a->restarter->insertError2InNode(victim, a->hold->insert,
+                                              a->iter + 1) != 0) {
     g_err << "insertError2InNode(" << victim << ", " << a->hold->insert
           << ") failed" << endl;
     /* A failed management call may still have delivered the insert. */
@@ -13081,7 +13170,11 @@ static bool cteNfHoldBeforeExecute(void *arg, Uint32 tcNodeId) {
    * no insert for this iteration. Finish that handoff by clearing here.
    * Otherwise the killer's guard now owns cleanup of the published insert. */
   if (a->ctx->isTestStopped()) {
-    cteNfClearSurvivingInsert(*a->restarter, *a->hold, victim);
+    if (everyPeer) {
+      cteNfClearArmedPeers(*a->restarter, tcNodeId, 0, 0);
+    } else {
+      cteNfClearSurvivingInsert(*a->restarter, *a->hold, victim);
+    }
     return false;
   }
   return true;
@@ -13184,7 +13277,7 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
   for (Uint32 iter = 0; iter < CTE_NF_ITERATIONS; iter++) {
     /* Install before waiting: stopTest can wake the wait after arming. */
     CteNfSurvivingInsertGuard insertGuard = {
-        ctx, &restarter, &hold, iter + 1, false};
+        ctx, &restarter, &hold, iter + 1, false, 0};
     CteNfEventListener events;
     if (!events.open(restarter)) {
       g_err << "Failed to subscribe to hold events" << endl;
@@ -13198,8 +13291,10 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
       /* The query step reports the skip and ends the case. */
       return NDBT_OK;
     }
-    const int armed = (int)ctx->getProperty("CteNfVictim", (Uint32)0);
+    int armed = (int)ctx->getProperty("CteNfVictim", (Uint32)0);
     int victim = armed;
+    const bool everyPeer = cteNfArmsEveryPeer(hold);
+    const Uint32 tcNodeId = ctx->getProperty("CteNfTc", (Uint32)0);
     /* Match the complete marker, including node and iteration; a
      * requester-naming marker is matched up to the requester field. */
     BaseString expected, line;
@@ -13223,15 +13318,31 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
         hold.eventNamesRequester && hold.killTarget != CTE_NF_KILL_ARMED &&
         !hold.allowCoordinatorRequester;
     if (skipCoordinator) {
-      ignored.assfmt("%s%u]", expected.c_str(),
-                     ctx->getProperty("CteNfTc", (Uint32)0));
+      ignored.assfmt("%s%u]", expected.c_str(), tcNodeId);
     }
-    const bool held = events.waitFor(
-        ctx, expected.c_str(), 30000, &line,
-        skipCoordinator ? ignored.c_str() : nullptr);
+    bool held;
+    if (everyPeer) {
+      held = cteNfWaitHeldByPeer(ctx, events, hold, iter + 1, tcNodeId,
+                                 skipCoordinator, &armed, &line);
+      if (held) {
+        /* The holding node plays the armed node's part from here on. */
+        victim = armed;
+        expected.assfmt("[%s node=%u iteration=%u requester=", hold.eventTag,
+                        (Uint32)armed, iter + 1);
+      }
+    } else {
+      held = events.waitFor(ctx, expected.c_str(), 30000, &line,
+                            skipCoordinator ? ignored.c_str() : nullptr);
+    }
     if (!held || ctx->isTestStopped()) {
-      g_err << "No " << hold.eventTag << " event from node " << armed
-            << " for iteration " << iter << endl;
+      if (everyPeer) {
+        g_err << "No " << hold.eventTag << " event from a node other than "
+              << "the coordinator " << tcNodeId << " for iteration " << iter
+              << endl;
+      } else {
+        g_err << "No " << hold.eventTag << " event from node " << armed
+              << " for iteration " << iter << endl;
+      }
       ctx->stopTest();
       return NDBT_FAILED;
     }
@@ -13282,10 +13393,19 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
     ctx->setProperty("CteNfKillIssued", iter + 1);
     g_err << "Killing peer node " << victim << " on " << hold.eventTag
           << endl;
+    insertGuard.killed = victim;
     if (restarter.restartOneDbNode(victim, /* initial */ false,
                                    /* nostart */ true,
                                    /* abort */ true) != 0) {
       g_err << "restartOneDbNode(" << victim << ") failed" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    /* Only the reporting node's hold is part of the case. Release what
+     * the other armed peers hold, so that the failure is handled as with
+     * a single armed node. */
+    if (everyPeer &&
+        !cteNfClearArmedPeers(restarter, tcNodeId, victim, armed)) {
       ctx->stopTest();
       return NDBT_FAILED;
     }
@@ -13375,6 +13495,10 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
  * crosses the 64 KiB flow-control threshold and needs a CONF; the hook
  * emits CTE_NF2_CONF_HELD only for a held remote RI_NEED_CONF request,
  * so at least one surviving owner is paused on the victim's CONF.
+ * Which node a sender asks for the CONF depends on the group that
+ * crosses the threshold, so 5140 is armed on every node but the
+ * coordinator and the victim is the node that reports a hold first
+ * (cteNfArmsEveryPeer).
  */
 static const CteNfHoldCase CTE_NF2_HOLD = {
     "CtePeerDiesDuringRedistribute", 5140, "CTE_NF2_CONF_HELD",
@@ -13865,6 +13989,7 @@ static int runCteCoordinatorReadyKiller(NDBT_Context *ctx, NDBT_Step *step) {
  * their senders sit in CTE_REDISTRIBUTING waiting for its CONF (one
  * group per row makes the redistribution need a CONF). Other rows
  * proceed normally without consuming timer entries.
+ * 5140 is armed on every node but the coordinator (cteNfArmsEveryPeer).
  * Wait for a held request naming a sender other than the coordinator,
  * proving that a surviving owner is paused before issuing the kill.
  * Killing the coordinator there must make the owner sweep mark the
