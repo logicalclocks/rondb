@@ -6799,11 +6799,17 @@ void MgmtSrvr::backup_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out) {
           out << endl;
           return;
         }
-        /* First send the protocol part */
+        /* First send the protocol part. The key must match what the client
+         * reply parser declares: ndb_mgm_backup_users expects nextUserId,
+         * ndb_mgm_backup_quotas nextDatabaseId. */
         nextDatabaseId = conf->databaseId + 1;
         out << "result: Ok" << endl;
         out << "num_rows: 1" << endl;
-        out << "nextDatabaseId: " << nextDatabaseId << endl;
+        if (!is_user) {
+          out << "nextDatabaseId: " << nextDatabaseId << endl;
+        } else {
+          out << "nextUserId: " << nextDatabaseId << endl;
+        }
         out << endl;
 
         /* Next send the result data with 9 rows */
