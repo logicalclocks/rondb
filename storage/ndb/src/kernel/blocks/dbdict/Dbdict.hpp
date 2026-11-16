@@ -133,6 +133,7 @@
 #define ZDICT_DISCONNECT_LOOP 13
 #define ZNSL_FK_REPORT 14
 #define ZDICT_ALIAS_ATTACH_LOOP 15
+#define ZDICT_ALIAS_TABLE_SCAN_LOOP 16
 
 
 /*--------------------------------------------------------------*/
@@ -3072,6 +3073,9 @@ class Dbdict : public SimulatedBlock {
     // Table has been modified by subOps
     bool m_modified_by_subOps;
 
+    // USER ALIAS scan cursor during activate (RONDB-1158)
+    Uint32 m_alias_scan_id;
+
     CreateTableRec() : OpRec(g_opInfo, (Uint32 *)&m_request) {
       std::memset(&m_request, 0, sizeof(m_request));
       m_tabInfoPtrI = RNIL;
@@ -3081,6 +3085,7 @@ class Dbdict : public SimulatedBlock {
       m_abortPrepareDone = false;
       m_fully_replicated_trigger = false;
       m_modified_by_subOps = false;
+      m_alias_scan_id = 0;
     }
 
 #if defined(VM_TRACE)
@@ -3251,6 +3256,9 @@ class Dbdict : public SimulatedBlock {
     bool m_sub_suma_enable;
     bool m_sub_suma_filter;
 
+    // USER ALIAS re-scan cursor after a rename (RONDB-1158)
+    Uint32 m_alias_scan_id;
+
     AlterTableRec() : OpRec(g_opInfo, (Uint32 *)&m_request) {
       std::memset(&m_request, 0, sizeof(m_request));
       m_newTablePtrI = RNIL;
@@ -3272,6 +3280,7 @@ class Dbdict : public SimulatedBlock {
       m_sub_copy_data = false;
       m_sub_suma_enable = false;
       m_sub_suma_filter = false;
+      m_alias_scan_id = 0;
     }
 #if defined(VM_TRACE)
     void print(NdbOut&) const;
@@ -4864,6 +4873,11 @@ class Dbdict : public SimulatedBlock {
                            DatabasePtr alias_ptr, Uint32 next_table_id,
                            bool is_alter);
   void aliasAttachLoopDone(Signal* signal, Uint32 op_key, bool is_alter);
+  void createTab_aliasScan(Signal* signal, SchemaOpPtr op_ptr);
+  void sendAliasTableScanLoop(Signal* signal, Uint32 op_key, Uint32 tableId,
+                              Uint32 next_alias_id, bool is_rename);
+  void alterTable_handleDatabaseChange_continue(Signal* signal,
+                                                SchemaOpPtr op_ptr);
 
   void createDb_writeTableConf(Signal* signal,
                                Uint32 op_key,

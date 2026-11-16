@@ -105,7 +105,12 @@ struct ConnectTableDbReq {
      * walk it belongs to).
      */
     ALIAS_ATTACH = 4,
-    ALIAS_ATTACH_ALTER = 5
+    ALIAS_ATTACH_ALTER = 5,
+    /* Sent per matching alias when a table is created or renamed; the
+     * suffix again only routes the CONF/REF to the right operation. DBTC
+     * treats every type from ALIAS_ATTACH up as the same attach. */
+    ALIAS_ATTACH_TABLE = 6,
+    ALIAS_ATTACH_RENAME = 7
   };
   Uint32 senderRef;
   Uint32 senderData;

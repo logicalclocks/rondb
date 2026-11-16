@@ -330,17 +330,198 @@ if (!$throttled)
   --echo mary: unthrottled after dropping the rule as expected
 }
 
+--echo #
+--echo # 7. A table created AFTER the SET is matched: rick's rule names
+--echo #    marketing.late before it exists; the create attaches it.
+--echo #
+connection default;
+--disable_result_log
+--exec $NDB_MGM -e "USER ALIAS SET rick55 --target=clicks_rl --table=marketing.late"
+--enable_result_log
+CREATE USER 'rick55'@'%' IDENTIFIED BY 'pw';
+GRANT ALL PRIVILEGES ON marketing.* TO 'rick55'@'%';
+GRANT ALL PRIVILEGES ON sales.* TO 'rick55'@'%';
+CREATE TABLE marketing.late (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO marketing.late VALUES (1,0),(2,0),(3,0),(4,0),(5,0);
+connect (rick, 127.0.0.1, rick55, pw, marketing, $MASTER_MYPORT);
+connection rick;
+--disable_query_log
+--disable_result_log
+let $throttled = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a, b FROM marketing.late;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $throttled;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($throttled)
+{
+  --echo rick: throttled on the late-created table as expected
+}
+if (!$throttled)
+{
+  --echo rick: NOT THROTTLED - create-time attach missed the rule
+}
+
+--echo #
+--echo # 8. Dropping and recreating the table re-attaches the rule.
+--echo #
+connection default;
+DROP TABLE marketing.late;
+CREATE TABLE marketing.late (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO marketing.late VALUES (1,0),(2,0),(3,0),(4,0),(5,0);
+--sleep 3
+connection rick;
+--disable_query_log
+--disable_result_log
+let $throttled = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a, b FROM marketing.late;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $throttled;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($throttled)
+{
+  --echo rick: throttled after drop and recreate as expected
+}
+if (!$throttled)
+{
+  --echo rick: NOT THROTTLED after recreate - attach did not follow the table
+}
+
+--echo #
+--echo # 9. A rename out of a database rule's scope detaches: rosa's
+--echo #    marketing rule stops charging a table renamed into sales.
+--echo #
+connection default;
+GRANT ALL PRIVILEGES ON sales.* TO 'rosa9e1f'@'%';
+CREATE TABLE marketing.moving (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO marketing.moving VALUES (1,0),(2,0),(3,0),(4,0),(5,0);
+disconnect rosa;
+connect (rosa, 127.0.0.1, rosa9e1f, pw, marketing, $MASTER_MYPORT);
+connection rosa;
+--disable_query_log
+--disable_result_log
+let $throttled = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a, b FROM marketing.moving;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $throttled;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($throttled)
+{
+  --echo rosa: throttled on marketing.moving as expected (database rule)
+}
+if (!$throttled)
+{
+  --echo rosa: NOT THROTTLED on marketing.moving before the rename
+}
+connection default;
+RENAME TABLE marketing.moving TO sales.moved;
+--sleep 3
+connection rosa;
+--disable_query_log
+--disable_result_log
+let $throttled = 0;
+let $count = 100;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a, b FROM sales.moved;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $throttled;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($throttled)
+{
+  --echo rosa: STILL THROTTLED after the rename out of marketing
+}
+if (!$throttled)
+{
+  --echo rosa: unthrottled after the rename out of marketing as expected
+}
+
+--echo #
+--echo # 10. A rename INTO a table rule's scope attaches: rick's rule
+--echo #     catches a table renamed to marketing.late.
+--echo #
+connection default;
+DROP TABLE marketing.late;
+CREATE TABLE marketing.incoming (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO marketing.incoming VALUES (1,0),(2,0),(3,0),(4,0),(5,0);
+RENAME TABLE marketing.incoming TO marketing.late;
+--sleep 3
+connection rick;
+--disable_query_log
+--disable_result_log
+let $throttled = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a, b FROM marketing.late;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    inc $throttled;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($throttled)
+{
+  --echo rick: throttled after the rename into the rule as expected
+}
+if (!$throttled)
+{
+  --echo rick: NOT THROTTLED - rename into the rule did not attach
+}
+
 # Cleanup
 connection default;
 disconnect alice;
 disconnect mary;
 disconnect rosa;
 disconnect bob;
+disconnect rick;
 --disable_result_log
 --exec $NDB_MGM -e "USER ALIAS DROP alice4f2"
 --exec $NDB_MGM -e "USER ALIAS DROP mary01ab"
 --exec $NDB_MGM -e "USER ALIAS DROP rosa9e1f"
 --exec $NDB_MGM -e "USER ALIAS DROP bob77"
+--exec $NDB_MGM -e "USER ALIAS DROP rick55"
 --exec $NDB_MGM -e "USER DROP team_rl"
 --exec $NDB_MGM -e "USER DROP clicks_rl"
 --exec $NDB_MGM -e "USER DROP big_rl"
@@ -349,5 +530,6 @@ DROP USER 'alice4f2'@'%';
 DROP USER 'mary01ab'@'%';
 DROP USER 'rosa9e1f'@'%';
 DROP USER 'bob77'@'%';
+DROP USER 'rick55'@'%';
 DROP DATABASE marketing;
 DROP DATABASE sales;

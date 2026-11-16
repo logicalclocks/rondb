@@ -28069,9 +28069,9 @@ void Dbtc::execCONNECT_TABLE_DB_REQ(Signal *signal) {
                ConnectTableDbRef::SignalLength, JBB);
     return;
   }
-  if (req.requestType == ConnectTableDbReq::ALIAS_ATTACH ||
-      req.requestType == ConnectTableDbReq::ALIAS_ATTACH_ALTER) {
+  if (req.requestType >= ConnectTableDbReq::ALIAS_ATTACH) {
     jam();
+    ndbrequire(req.requestType <= ConnectTableDbReq::ALIAS_ATTACH_RENAME);
     ndbrequire(signal->getLength() >= ConnectTableDbReq::SignalLengthAlias);
     ndbrequire(dbPtr.p->m_is_user && dbPtr.p->m_is_alias);
     bool ok = true;

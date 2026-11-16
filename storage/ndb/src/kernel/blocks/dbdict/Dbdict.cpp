@@ -858,6 +858,27 @@ void Dbdict::execCONTINUEB(Signal *signal) {
                         next_table_id, is_alter);
     return;
   }
+  case ZDICT_ALIAS_TABLE_SCAN_LOOP:
+  {
+    SchemaOpPtr op_ptr;
+    Uint32 next_alias_id = signal->theData[2];
+    bool is_rename = (signal->theData[3] != 0);
+    Uint32 tableId;
+    if (!is_rename) {
+      jam();
+      CreateTableRecPtr createTabPtr;
+      ndbrequire(findSchemaOp(op_ptr, createTabPtr, signal->theData[1]));
+      tableId = createTabPtr.p->m_request.tableId;
+    } else {
+      jam();
+      AlterTableRecPtr alterTabPtr;
+      ndbrequire(findSchemaOp(op_ptr, alterTabPtr, signal->theData[1]));
+      tableId = alterTabPtr.p->m_request.tableId;
+    }
+    sendAliasTableScanLoop(signal, op_ptr.p->op_key, tableId,
+                           next_alias_id, is_rename);
+    return;
+  }
   case ZDICT_DISCONNECT_LOOP:
   {
     SchemaOpPtr op_ptr;
@@ -8587,9 +8608,9 @@ Dbdict::createTab_activate(Signal* signal, SchemaOpPtr op_ptr,
     sendSignal(DBLQH_REF, GSN_CONNECT_TABLE_DB_REQ, signal,
                ConnectTableDbReq::SignalLength, JBB);
     return;
- 
+
   }
-  createTab_activate_next(signal, op_ptr);
+  createTab_aliasScan(signal, op_ptr);
 }
 
 void
@@ -11950,6 +11971,32 @@ void Dbdict::alterTable_contComplete(Signal *signal, SchemaOpPtr op_ptr) {
 
 void
 Dbdict::alterTable_handleDatabaseChange(Signal *signal, SchemaOpPtr op_ptr) {
+  jam();
+
+  /**
+   * A rename invalidates the table's USER ALIAS attachments (RONDB-1158):
+   * drop them all in DBTC first; the CONF starts a re-scan of the aliases
+   * against the new name, and the scan's completion continues with the
+   * database-connection change below.
+   */
+  {
+    AlterTableRecPtr alterTabPtr;
+    getOpRec(op_ptr, alterTabPtr);
+    DisconnectTableDbReq* req =
+      (DisconnectTableDbReq*)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = op_ptr.p->op_key;
+    req->requestType = DisconnectTableDbReq::ALIAS_DETACH_TABLE;
+    req->databaseId = RNIL;
+    req->tableId = alterTabPtr.p->m_request.tableId;
+    sendSignal(DBTC_REF, GSN_DISCONNECT_TABLE_DB_REQ, signal,
+               DisconnectTableDbReq::SignalLength, JBB);
+  }
+}
+
+void
+Dbdict::alterTable_handleDatabaseChange_continue(Signal *signal,
+                                                 SchemaOpPtr op_ptr) {
   jam();
 
   AlterTableRecPtr alterTabPtr;
@@ -34274,6 +34321,103 @@ void Dbdict::aliasAttachLoopDone(Signal *signal,
   execute(signal, alterDbPtr.p->m_callback, db_ptr.p->key);
 }
 
+/**
+ * The inverse walk (RONDB-1158): one table against every alias, run when a
+ * table is created (also an index, which is skipped) or renamed, so rules
+ * written before their table exists still take effect. Sends one
+ * ALIAS_ATTACH_TABLE or ALIAS_ATTACH_RENAME per matching alias, cursor in
+ * the operation record's m_alias_scan_id.
+ */
+void Dbdict::sendAliasTableScanLoop(Signal *signal,
+                                    Uint32 op_key,
+                                    Uint32 tableId,
+                                    Uint32 next_alias_id,
+                                    bool is_rename) {
+  char tableNameBuf[MAX_TAB_NAME_SIZE + 1];
+  tableNameBuf[0] = 0;
+  {
+    DictObjectPtr tab_obj_ptr;
+    if (!find_object(tab_obj_ptr, tableId) ||
+        tab_obj_ptr.p->m_type != DictTabInfo::UserTable) {
+      jam();
+      /* Indexes resolve through their base table in DBTC. */
+      next_alias_id = m_max_schema_objects;
+    } else {
+      jam();
+      get_table_name(&tableNameBuf[0], tab_obj_ptr.p);
+    }
+  }
+  const Uint32 start_alias_id = next_alias_id;
+  while (next_alias_id < m_max_schema_objects) {
+    DatabasePtr alias_ptr;
+    if (find_object(alias_ptr, next_alias_id) && alias_ptr.p->m_is_alias) {
+      Uint32 target_id = RNIL;
+      Uint32 priority = 0;
+      if (computeAliasRuleMatch(alias_ptr.p->m_first_alias_rule,
+                                tableNameBuf, target_id, priority)) {
+        jam();
+        /* Save the cursor so the CONF can resume behind this alias. */
+        SchemaOpPtr cur_op_ptr;
+        if (is_rename) {
+          jam();
+          AlterTableRecPtr alterTabPtr;
+          ndbrequire(findSchemaOp(cur_op_ptr, alterTabPtr, op_key));
+          alterTabPtr.p->m_alias_scan_id = next_alias_id;
+        } else {
+          jam();
+          CreateTableRecPtr createTabPtr;
+          ndbrequire(findSchemaOp(cur_op_ptr, createTabPtr, op_key));
+          createTabPtr.p->m_alias_scan_id = next_alias_id;
+        }
+        ConnectTableDbReq* req = (ConnectTableDbReq*)signal->getDataPtrSend();
+        req->senderRef = reference();
+        req->senderData = op_key;
+        req->requestType = is_rename ? ConnectTableDbReq::ALIAS_ATTACH_RENAME
+                                     : ConnectTableDbReq::ALIAS_ATTACH_TABLE;
+        req->databaseId = alias_ptr.p->key;
+        req->tableId = tableId;
+        req->targetDatabaseId = target_id;
+        req->priority = priority;
+        DEB_QUOTAS(("Send ALIAS_ATTACH for new table %u, alias %u, target %u",
+                    tableId, alias_ptr.p->key, target_id));
+        sendSignal(DBTC_REF, GSN_CONNECT_TABLE_DB_REQ, signal,
+                   ConnectTableDbReq::SignalLengthAlias, JBB);
+        return;
+      }
+    }
+    if ((next_alias_id - start_alias_id) > 300) {
+      jam();
+      signal->theData[0] = ZDICT_ALIAS_TABLE_SCAN_LOOP;
+      signal->theData[1] = op_key;
+      signal->theData[2] = next_alias_id + 1;
+      signal->theData[3] = is_rename ? 1 : 0;
+      sendSignal(reference(), GSN_CONTINUEB, signal, 4, JBB);
+      return;
+    }
+    next_alias_id++;
+  }
+  SchemaOpPtr op_ptr;
+  if (!is_rename) {
+    jam();
+    CreateTableRecPtr createTabPtr;
+    ndbrequire(findSchemaOp(op_ptr, createTabPtr, op_key));
+    createTab_activate_next(signal, op_ptr);
+    return;
+  }
+  jam();
+  AlterTableRecPtr alterTabPtr;
+  ndbrequire(findSchemaOp(op_ptr, alterTabPtr, op_key));
+  alterTable_handleDatabaseChange_continue(signal, op_ptr);
+}
+
+void Dbdict::createTab_aliasScan(Signal *signal, SchemaOpPtr op_ptr) {
+  CreateTableRecPtr createTabPtr;
+  getOpRec(op_ptr, createTabPtr);
+  createTabPtr.p->m_alias_scan_id = 0;
+  sendAliasTableScanLoop(signal, op_ptr.p->op_key,
+                         createTabPtr.p->m_request.tableId, 0, false);
+}
+
 void Dbdict::execCONNECT_TABLE_DB_CONF(Signal *signal) {
   jamEntry();
 
@@ -34328,7 +34472,7 @@ void Dbdict::execCONNECT_TABLE_DB_CONF(Signal *signal) {
     DEB_QUOTAS(("CONNECT_TABLE_DB_CONF from DBTC, CreateTable"));
     CreateTableRecPtr createTabPtr;
     ndbrequire(findSchemaOp(op_ptr, createTabPtr, conf.senderData));
-    createTab_activate_next(signal, op_ptr);
+    createTab_aliasScan(signal, op_ptr);
   } else if (conf.requestType == ConnectTableDbReq::RENAME_TABLE) {
     DEB_QUOTAS(("CONNECT_TABLE_DB_CONF from DBTC, RenameTable"));
     AlterTableRecPtr alterTabPtr;
@@ -34350,6 +34494,20 @@ void Dbdict::execCONNECT_TABLE_DB_CONF(Signal *signal) {
     ndbrequire(find_object(db_ptr, alterDbPtr.p->m_request.databaseId));
     sendAliasAttachLoop(signal, op_ptr.p->op_key, db_ptr,
                         db_ptr.p->m_table_id_check + 1, true);
+  } else if (conf.requestType == ConnectTableDbReq::ALIAS_ATTACH_TABLE) {
+    DEB_QUOTAS(("CONNECT_TABLE_DB_CONF from DBTC, AliasAttachTable"));
+    CreateTableRecPtr createTabPtr;
+    ndbrequire(findSchemaOp(op_ptr, createTabPtr, conf.senderData));
+    sendAliasTableScanLoop(signal, op_ptr.p->op_key,
+                           createTabPtr.p->m_request.tableId,
+                           createTabPtr.p->m_alias_scan_id + 1, false);
+  } else if (conf.requestType == ConnectTableDbReq::ALIAS_ATTACH_RENAME) {
+    DEB_QUOTAS(("CONNECT_TABLE_DB_CONF from DBTC, AliasAttachRename"));
+    AlterTableRecPtr alterTabPtr;
+    ndbrequire(findSchemaOp(op_ptr, alterTabPtr, conf.senderData));
+    sendAliasTableScanLoop(signal, op_ptr.p->op_key,
+                           alterTabPtr.p->m_request.tableId,
+                           alterTabPtr.p->m_alias_scan_id + 1, true);
   } else {
     ndbabort();
   }
@@ -34402,6 +34560,24 @@ void Dbdict::execCONNECT_TABLE_DB_REF(Signal *signal) {
     ndbrequire(find_object(db_ptr, alterDbPtr.p->m_request.databaseId));
     sendAliasAttachLoop(signal, op_ptr.p->op_key, db_ptr,
                         db_ptr.p->m_table_id_check + 1, true);
+  } else if (ref.requestType == ConnectTableDbReq::ALIAS_ATTACH_TABLE) {
+    DEB_QUOTAS(("CONNECT_TABLE_DB_REF from DBTC, AliasAttachTable"));
+    /* A table CREATE can still fail cleanly. */
+    CreateTableRecPtr createTabPtr;
+    ndbrequire(findSchemaOp(op_ptr, createTabPtr, ref.senderData));
+    setError(op_ptr, ref.errorCode, __LINE__);
+    execute(signal, createTabPtr.p->m_callback, 0);
+  } else if (ref.requestType == ConnectTableDbReq::ALIAS_ATTACH_RENAME) {
+    DEB_QUOTAS(("CONNECT_TABLE_DB_REF from DBTC, AliasAttachRename"));
+    /* The rename is already committed: log and scan on (fail generous). */
+    AlterTableRecPtr alterTabPtr;
+    ndbrequire(findSchemaOp(op_ptr, alterTabPtr, ref.senderData));
+    g_eventLogger->info("DICT: USER ALIAS rename attach failed with error %u"
+                        " for alias %u table %u, continuing",
+                        ref.errorCode, ref.databaseId, ref.tableId);
+    sendAliasTableScanLoop(signal, op_ptr.p->op_key,
+                           alterTabPtr.p->m_request.tableId,
+                           alterTabPtr.p->m_alias_scan_id + 1, true);
   }
   else
   {
@@ -34997,7 +35173,7 @@ void Dbdict::execDISCONNECT_TABLE_DB_CONF(Signal *signal) {
     alterTable_tableDisconnectedDatabase(signal, conf.senderData);
   } else if (conf.requestType == DisconnectTableDbReq::ALIAS_DETACH) {
     jam();
-    /* Only the alias ALTER diff walk sends detaches. */
+    /* Only the alias ALTER diff walk sends single detaches. */
     SchemaOpPtr op_ptr;
     AlterDatabaseRecPtr alterDbPtr;
     ndbrequire(findSchemaOp(op_ptr, alterDbPtr, conf.senderData));
@@ -35005,6 +35181,14 @@ void Dbdict::execDISCONNECT_TABLE_DB_CONF(Signal *signal) {
     ndbrequire(find_object(db_ptr, alterDbPtr.p->m_request.databaseId));
     sendAliasAttachLoop(signal, op_ptr.p->op_key, db_ptr,
                         db_ptr.p->m_table_id_check + 1, true);
+  } else if (conf.requestType == DisconnectTableDbReq::ALIAS_DETACH_TABLE) {
+    jam();
+    /* A rename dropped the table's attachments; re-scan the new name. */
+    SchemaOpPtr op_ptr;
+    AlterTableRecPtr alterTabPtr;
+    ndbrequire(findSchemaOp(op_ptr, alterTabPtr, conf.senderData));
+    sendAliasTableScanLoop(signal, op_ptr.p->op_key,
+                           alterTabPtr.p->m_request.tableId, 0, true);
   } else {
     ndbabort();
   }
