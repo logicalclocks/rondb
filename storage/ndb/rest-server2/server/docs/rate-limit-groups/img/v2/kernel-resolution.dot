@@ -1,0 +1,64 @@
+digraph kernelres {
+  rankdir=LR;
+  graph [fontname="Helvetica", fontsize=11, pad=0.3, nodesep=0.5, ranksep=0.6, bgcolor="white"];
+  node  [shape=plaintext, fontname="Helvetica", fontsize=11];
+  edge  [fontname="Helvetica", fontsize=9, color="#096b67", arrowsize=0.7, penwidth=1.1];
+
+  /* ---- example 1: Mary, any table she may read ---- */
+  in1 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>TCKEYREQ arrives</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">tagged name<BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="10">Marketing_mary01ab</FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">table: any she may read</TD></TR>
+</TABLE>>];
+
+  alias1 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD COLSPAN="2" BGCOLOR="#096b67"><FONT COLOR="white"><B>USER ALIAS</B> <FONT FACE="Menlo" POINT-SIZE="10">Marketing_mary01ab</FONT> (new)</FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4"><B>target</B></TD><TD PORT="r1"><FONT FACE="Menlo" POINT-SIZE="10">mary_mike_rl</FONT></TD></TR>
+ <TR><TD COLSPAN="2" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#566574">One target, no rules. Stored by name,<BR ALIGN="LEFT"/>re-resolved if the target USER is recreated.<BR ALIGN="LEFT"/>A plain USER has no alias step and is charged directly.</FONT></TD></TR>
+</TABLE>>];
+
+  user1 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>USER</B> <FONT FACE="Menlo" POINT-SIZE="10">mary_mike_rl</FONT></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">rate 400,000 µs/s<BR ALIGN="LEFT"/><FONT POINT-SIZE="9" COLOR="#566574">(2% of a 20-thread node)</FONT></TD></TR>
+</TABLE>>];
+
+  in1 -> alias1 [label="name → object (exact match)"];
+  alias1:r1 -> user1 [label="one indirection"];
+
+  /* ---- example 2: Alice ---- */
+  in2 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>TCKEYREQ arrives</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">tagged name<BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="10">Recommender_alice4f2</FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">table: any</TD></TR>
+</TABLE>>];
+
+  alias2 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD COLSPAN="2" BGCOLOR="#096b67"><FONT COLOR="white"><B>USER ALIAS</B> <FONT FACE="Menlo" POINT-SIZE="10">Recommender_alice4f2</FONT></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4"><B>target</B></TD><TD PORT="r1"><FONT FACE="Menlo" POINT-SIZE="10">recommender_team_rl</FONT></TD></TR>
+</TABLE>>];
+
+  user2 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>USER</B> <FONT FACE="Menlo" POINT-SIZE="10">recommender_team_rl</FONT></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">rate 4,000,000 µs/s<BR ALIGN="LEFT"/><FONT POINT-SIZE="9" COLOR="#566574">(20% of a 20-thread node)</FONT></TD></TR>
+</TABLE>>];
+
+  in2 -> alias2;
+  alias2:r1 -> user2;
+
+  note [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT"><FONT COLOR="#566574"><I>The whole transaction sticks to the resolved USER<BR ALIGN="LEFT"/>(ApiConnectRecord::m_queuedDatabasePtrI); every operation<BR ALIGN="LEFT"/>is charged there. Dblqh and Dbspj receive the resolved id.</I></FONT></TD></TR>
+</TABLE>>];
+
+  { rank=same; in1; in2; note; }
+  { rank=same; alias1; alias2; }
+  { rank=same; user1; user2; }
+  in1 -> in2 [style=invis];
+  in2 -> note [style=invis];
+}

@@ -90,6 +90,16 @@
   where the REST server (RDRS) works it out, and <strong>Variant B</strong>, where RonDB
   works it out. All precise semantics, line references and edge cases live in the design
   document (sections 5 to 8); this page only explains the idea.</p>
+  <div class="note" style="background:#fff7e7;border-left:3px solid #b67a12;padding:1rem 1.2rem;border-radius:5px">
+    <p style="margin:0"><strong>Superseded, 2026-11-17.</strong> This page explains the
+    version 1.0 design, where a group could scope to feature groups and feature stores
+    and an RDRS sync loop installed the objects. Design version 2.0 removed both: a
+    group now bounds people on a cluster (no data scoping, so the alias has one target
+    and no rules), and Hopsworks installs the objects itself. The variant question this
+    page answers was settled in B&rsquo;s favor and simplified further; see
+    <em>Hopsworks-OnlineFS-Ratelimiting-Design-v2.0.html</em>. Kept as the record of the
+    v1.0 reasoning.</p>
+  </div>
 </header>
 
 <nav aria-label="Contents">

@@ -1,9 +1,12 @@
 # Hopsworks OnlineFS rate limit groups — design docs and working notes
 
 Follow-up to RONDB-978 (per-identity rate limits). A **rate limit group** is a named
-budget (% of a RonDB cluster) tied to WHO (Hopsworks users and/or whole projects) and
-WHAT (feature groups and/or feature stores). One group = one kernel `USER SET` entry.
-Earlier drafts called this a "rate-limit bucket"; the term was dropped for customers.
+budget (% of a RonDB cluster) tied to WHO (Hopsworks users and/or whole projects) and a
+CLUSTER (one by name, or every cluster). One group = one kernel `USER SET` entry per
+targeted cluster, installed by Hopsworks itself. Earlier drafts called this a
+"rate-limit bucket"; the term was dropped for customers. Design version 1.0 also scoped
+budgets to feature groups and feature stores and had RDRS install the objects; v2.0
+(2026-11-17) removed both (the v2.0 design doc's header note records why).
 
 Everything in this folder is self-contained: the two documents, the Oct 2 original they
 grew from, every diagram with its Graphviz source, the DOCX builder, printed PDF/DOCX
@@ -14,19 +17,24 @@ new session does not have to re-read the rondb and hopsworks repos.
 
 | File | Audience | What it is |
 |---|---|---|
-| `Hopsworks-OnlineFS-Ratelimiting-v1.0.html` | customer | White paper. The feature, what a 20% budget means, worked scenario, admin UI mockup, planning, several clusters, FAQ. Only two entry points are named: REST server (RDRS) and MySQL server. Never mentions the design doc. |
-| `Hopsworks-OnlineFS-Ratelimiting-Design-v1.0.html` | internal | Detailed design: what exists vs what is new, the two entry points, Hopsworks accounts, new tables (ERD), REST-path matching, SQL-path matching and the kernel `USER ALIAS` proposal, sync loop, save/delete rules, admin page, one cluster vs several, build list, kernel reference, open decisions, DDL appendix. |
-| `Hopsworks-OnlineFS-Ratelimiting-Variants-Explained.html` | internal | Plain-words companion to the design doc: the two resolution variants (A, RDRS resolves; B, RonDB resolves) with five inline SVG pictures, including why the data nodes never read the Hopsworks tables. Adds no facts; precise semantics stay in the design doc, sections 5 to 8. |
-| `RonDB-Group-Rate-Limits.html` | internal, historical | The 2026-10-02 original (bucket terminology, `--bucket=` syntax, table names `rate_limit_bucket*`). Kept untouched as the source both documents were spliced from. |
-| `dist/*.pdf`, `dist/*.docx` | share | Printed copies of the two v1.0 documents, built 2026-10-21. Regenerate after editing the HTML (see below). |
+| `Hopsworks-OnlineFS-Ratelimiting-v2.0.html` | customer | **Current** white paper. The feature (WHO + cluster, no data scoping), what a 20% budget means, worked scenario, admin UI mockup, planning, several clusters, FAQ. Only two entry points are named: REST server (RDRS) and MySQL server. Never mentions the design doc. |
+| `Hopsworks-OnlineFS-Ratelimiting-Design-v2.0.html` | internal | **Current** design: what exists vs what is new (incl. the Hopsworks mgm client and namespace discovery), the two entry points, Hopsworks accounts, new tables (ERD), the single-target kernel `USER ALIAS`, the Hopsworks installer + reconciler, save/delete rules, admin page, one cluster vs several (cluster column), build list, kernel reference, open decisions, DDL appendix. The header note records what v2.0 removed from v1.0 and why. |
+| `Hopsworks-OnlineFS-Ratelimiting-v1.0.html`, `Hopsworks-OnlineFS-Ratelimiting-Design-v1.0.html` | internal, historical | The data-scoped design (FG/FS `rate_limit_group_data` rows, scoped alias rules, most-specific precedence, RDRS sync loop). Superseded 2026-11-17; kept as the record, referenced by v2.0 §14. |
+| `Hopsworks-OnlineFS-Ratelimiting-Variants-Explained.html` | internal, historical | Plain-words companion to the **v1.0** design doc: the two resolution variants (A, RDRS resolves; B, RonDB resolves) with five inline SVG pictures. Carries a superseded banner; the v2.0 alias is B simplified to one target. |
+| `RonDB-Group-Rate-Limits.html` | internal, historical | The 2026-10-02 original (bucket terminology, `--bucket=` syntax, table names `rate_limit_bucket*`). Kept untouched as the source both v1.0 documents were spliced from. |
+| `dist/*.pdf`, `dist/*.docx` | share | Printed copies of the current documents. Regenerate after editing the HTML (see below). |
 
-Shared vocabulary of the v1.0 documents (keep it when editing):
-- "rate limit group", never "bucket"; tables `rate_limit_group`, `rate_limit_group_user`,
-  `rate_limit_group_data`, optional `rate_limit_group_cluster_override`; column `group_id`.
-- Example groups `recommender_team_rl` (project Recommender, ALL, 20%),
-  `marketing_clicks_rl` (Mary+Mike on `marketing_clicks`, 2%),
-  `recommender2_marketing_rl` (project Recommender2 on the Marketing store, 5%).
-- Alias option is `--target=<group>`.
+Shared vocabulary of the v2.0 documents (keep it when editing):
+- "rate limit group", never "bucket"; tables `rate_limit_group` (with `cluster`, NULL =
+  every cluster), `rate_limit_group_user`, `rate_limit_group_cluster_state`; column `group_id`.
+  No `rate_limit_group_data`, no `data_scope`, no override table (v1.0 only).
+- Example groups `recommender_team_rl` (project Recommender, every cluster, 20%),
+  `mary_mike_rl` (Mary+Mike, 2%), `recommender2_rl` (project Recommender2, 5%);
+  multi-cluster examples `recommender_m_rl` / `recommender2_m_rl` / `recommender_s_rl`
+  name namespaces `rondb-m` / `rondb-s`.
+- Alias option is `--target=<group>`; an alias has exactly one target and no scope options.
+- A cluster's name is its Kubernetes namespace (label `hopsworks.ai/onlinefs-cluster`;
+  main = the install namespace); mgmd endpoint `headless-mgmds.<namespace>.svc:1186`.
 - Budget explanation: "a data node with 20 CPU cores", never "a typical data node".
 - Cap rationale: the meter only charges row operations; redo, checkpoints, sends, DDL and
   unmetered identities still need CPU, so half the pool is kept for them.
@@ -35,8 +43,9 @@ Shared vocabulary of the v1.0 documents (keep it when editing):
 
 | Folder | Used by | Naming |
 |---|---|---|
-| `img/` | `RonDB-Group-Rate-Limits.html` (existing-tables, new-tables, lookup-maps, multi-cluster, admin-page) and the customer doc (`admin-page-customer`) | bucket era, except `admin-page-customer` |
-| `img/design/` | `Hopsworks-OnlineFS-Ratelimiting-Design-v1.0.html` (all nine figures) | group era |
+| `img/` | `RonDB-Group-Rate-Limits.html` (existing-tables, new-tables, lookup-maps, multi-cluster, admin-page) and the v1.0 customer doc (`admin-page-customer`) | bucket era, except `admin-page-customer` |
+| `img/design/` | `Hopsworks-OnlineFS-Ratelimiting-Design-v1.0.html` (all nine figures); `existing-tables` is also reused by the v2.0 design doc | group era |
+| `img/v2/` | the v2.0 documents: group-concept, new-tables, kernel-resolution, architecture, multi-cluster, multi-cluster-topology, admin-page (design doc), admin-page-customer (white paper) | cluster era |
 
 Every figure ships as `.dot` (source), `.svg` and `.png`; the admin mockups are hand-written
 SVG. In the ERDs, grey italic borderless cells are explanations, not columns.
@@ -56,25 +65,25 @@ explicit `/tmp/...` output paths):
 ```
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu \
   --no-first-run --no-pdf-header-footer \
-  --print-to-pdf=/tmp/Hopsworks-OnlineFS-Ratelimiting-Design-v1.0.pdf \
-  file:///<abs path>/Hopsworks-OnlineFS-Ratelimiting-Design-v1.0.html
+  --print-to-pdf=/tmp/Hopsworks-OnlineFS-Ratelimiting-Design-v2.0.pdf \
+  file:///<abs path>/Hopsworks-OnlineFS-Ratelimiting-Design-v2.0.html
 ```
 
 DOCX (`textutil -convert docx` silently drops every image, so use the builder):
 ```
 cd docx-build
 npm install --cache ./.npmcache --no-audit --no-fund      # docx@9; sandbox blocks ~/.npm
-python3 extract.py ../Hopsworks-OnlineFS-Ratelimiting-Design-v1.0.html blocks-design.json
-node build.js blocks-design.json ./Hopsworks-OnlineFS-Ratelimiting-Design-v1.0.docx \
-  "Hopsworks OnlineFS Ratelimiting — Design" "Hopsworks OnlineFS Ratelimiting Design v1.0 · "
-python3 extract.py ../Hopsworks-OnlineFS-Ratelimiting-v1.0.html blocks.json
-node build.js blocks.json ./Hopsworks-OnlineFS-Ratelimiting-v1.0.docx \
-  "Hopsworks OnlineFS Ratelimiting" "Hopsworks OnlineFS Ratelimiting v1.0 · "
+python3 extract.py ../Hopsworks-OnlineFS-Ratelimiting-Design-v2.0.html blocks-design.json
+node build.js blocks-design.json ./Hopsworks-OnlineFS-Ratelimiting-Design-v2.0.docx \
+  "Hopsworks OnlineFS Ratelimiting — Design" "Hopsworks OnlineFS Ratelimiting Design v2.0 · "
+python3 extract.py ../Hopsworks-OnlineFS-Ratelimiting-v2.0.html blocks.json
+node build.js blocks.json ./Hopsworks-OnlineFS-Ratelimiting-v2.0.docx \
+  "Hopsworks OnlineFS Ratelimiting" "Hopsworks OnlineFS Ratelimiting v2.0 · "
 ```
 `extract.py` turns the HTML into blocks (headings, paragraphs, lists, tables, figures,
 `<dl>`); `build.js` writes the DOCX with a table of contents before the first level-2
 heading (Word asks to update fields on open; answer yes). Verify with
-`unzip -l x.docx | grep media/` (9 images for the design doc, 1 for the customer doc).
+`unzip -l x.docx | grep media/` (8 images for the v2.0 design doc, 1 for the customer doc).
 
 ## Working notes (`notes/`)
 
@@ -130,14 +139,18 @@ Hopsworks (`<repos>/hopsworks`):
 
 ## Status and next steps
 
-- The follow-up work is ticketed as RONDB-1158. The design doc was revised 2026-11-13
-  after a code re-verification (Hopsworks master `628ebc969`, RonDB 26.02.15); section 14
-  carries the new open decisions and the defect list, and some code pointers below
-  predate the revision.
+- The work is ticketed as RONDB-1158. **Design v2.0, 2026-11-17**: budgets no longer
+  scope to data (WHO + cluster only), and Hopsworks installs the objects instead of an
+  RDRS sync loop. The v2.0 design doc's header note records the provenance (the v1.0
+  data scope existed to pin budgets to clusters; Hopsworks already had cluster
+  discovery, `KubeBackupController` / HWORKS-2638). Section 14 of v2.0 carries the open
+  decisions; ask before resolving any.
 - RonDB per-name metering (apikey mode in RDRS, mysqld account tagging): merged on 26.02-main.
-- RDRS username mode: parked on `origin/RONDB-978-Cont`, held back until Hopsworks provisions USER entries.
-- Everything else in the design doc (tables, admin page, RDRS sync loop + username tagging, kernel `USER ALIAS`): not started.
-- Open decisions: section 14 of the design doc. Item 4 was decided on 2026-11-13: go
-  straight to the kernel alias (RonDB resolves); no REST-only intermediate step, the
-  section 5 per-request maps are not built. Ask before resolving the others.
-- Turning the design into tickets (Hopsworks tables + admin page, RDRS cache/match/sync, kernel alias) is the next piece of work.
+- RDRS username mode: merged onto the `RONDB-1158` branch (from `origin/RONDB-978-Cont`).
+- A v1.0 implementation (scoped kernel aliases, RDRS sync loop, FG/FS admin page) exists
+  as five draft PRs (rondb#1234, rondb#1235, hopsworks-ee#3776, hopsworks-front#2280,
+  rondb-helm#270); it is being reshaped to v2.0. The query-thread fix (rondb#1235) is
+  design-independent and stands.
+- Next: rework the branches to v2.0 (shrink the kernel alias to one target, drop the
+  RDRS sync series, move provisioning into hopsworks-ee, simplify the admin page and
+  helm values), and refresh the JIRA description.

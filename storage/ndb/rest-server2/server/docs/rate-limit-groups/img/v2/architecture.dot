@@ -1,0 +1,106 @@
+digraph architecture {
+  rankdir=TB;
+  graph [fontname="Helvetica", fontsize=11, pad=0.3, nodesep=0.3, ranksep=0.5, bgcolor="white", compound=true, newrank=true];
+  node  [shape=plaintext, fontname="Helvetica", fontsize=11];
+  edge  [fontname="Helvetica", fontsize=9, color="#096b67", arrowsize=0.7, penwidth=1.1];
+
+  subgraph cluster_hw {
+    label=<<B>Hopsworks (main cluster)</B>>; fontsize=12; color="#8aa5a3"; style="rounded"; margin=12;
+    admin [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>Admin page</B> (new)</FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">name · budget % · who · cluster</TD></TR>
+</TABLE>>];
+    newtabs [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>New tables</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9">rate_limit_group</FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9">rate_limit_group_user</FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9">rate_limit_group_cluster_state</FONT></TD></TR>
+</TABLE>>];
+    installer [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#096b67" ALIGN="LEFT"><FONT COLOR="white"><B>Installer</B> (new): on save, on membership change, and a primary-gated reconciler</FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">1&nbsp; discover clusters: install namespace + namespaces labeled <FONT FACE="Menlo" POINT-SIZE="9">hopsworks.ai/onlinefs-cluster</FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">2&nbsp; per cluster: groups naming it, plus every-cluster groups</TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">3&nbsp; expand Who into account names (all accounts of each covered person)</TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">4&nbsp; percent → rate using that cluster's thread count</TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">5&nbsp; USER SET / ALTER / DROP per group; USER ALIAS SET / DROP per account</TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">6&nbsp; write the state row per (group, cluster)</TD></TR>
+</TABLE>>];
+    admin -> newtabs [label="writes", constraint=false];
+    newtabs -> installer [label="reads"];
+  }
+
+  subgraph cluster_rondb {
+    label=<<B>Each RonDB cluster (namespace)</B>>; fontsize=12; color="#8aa5a3"; style="rounded"; margin=12;
+    mgmd [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>Management server</B> (mgmd)</FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9">headless-mgmds.&lt;namespace&gt;.svc:1186</FONT><BR ALIGN="LEFT"/>USER commands (existing)<BR ALIGN="LEFT"/>USER ALIAS commands (new)</TD></TR>
+</TABLE>>];
+    dict [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>Data nodes: Dbdict objects</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><B>USER</B> (budgeted, existing)<BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="9">recommender_team_rl · mary_mike_rl · recommender2_rl</FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><B>USER ALIAS</B> (not budgeted, new, one target each)<BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="9">Recommender_alice4f2 → recommender_team_rl<BR ALIGN="LEFT"/>Marketing_mary01ab → mary_mike_rl<BR ALIGN="LEFT"/>…</FONT></TD></TR>
+</TABLE>>];
+    tc [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>Dbtc admission</B> (changed)</FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">alias → its target USER (one indirection)</TD></TR>
+</TABLE>>];
+    lqh [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>Dblqh</B> (existing)</FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">charges the group</TD></TR>
+</TABLE>>];
+    mgmd -> dict [label="schema transaction"];
+    dict -> tc [label="lookup", style=dashed, color="#566574"];
+    tc -> lqh [label="resolved group id"];
+  }
+
+  subgraph cluster_req {
+    label=<<B>Request paths (per cluster)</B>>; fontsize=12; color="#8aa5a3"; style="rounded"; margin=12;
+    rest [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT"><B>REST request</B> (API key)</TD></TR>
+</TABLE>>];
+    rdrs [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>RDRS</B> (no group code)</FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">tags the project-user name</TD></TR>
+</TABLE>>];
+    sql [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT"><B>SQL</B> (MySQL server)<BR ALIGN="LEFT"/>as account <FONT FACE="Menlo" POINT-SIZE="9">Marketing_mary01ab</FONT></TD></TR>
+</TABLE>>];
+    mysqld [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>mysqld</B> (unchanged)</FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">tags the account name<BR ALIGN="LEFT"/>once per transaction</TD></TR>
+</TABLE>>];
+    onlinefs [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT"><B>onlinefs</B> (ClusterJ)</TD></TR>
+</TABLE>>];
+    cj [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>ClusterJ</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">untagged today (optional later)</TD></TR>
+</TABLE>>];
+    rest -> rdrs;
+    sql -> mysqld;
+    onlinefs -> cj;
+  }
+
+  installer -> mgmd [label="mgm protocol, per cluster", ltail=cluster_hw];
+  rdrs -> tc;
+  mysqld -> tc;
+  cj -> tc [style=dashed, color="#566574"];
+
+  { rank=same; admin; newtabs; }
+  { rank=same; mgmd; rest; sql; onlinefs; }
+  { rank=same; dict; rdrs; mysqld; cj; }
+  { rank=same; tc; }
+}
