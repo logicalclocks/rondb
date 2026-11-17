@@ -4602,6 +4602,17 @@ int runTestUnlockMulti(NDBT_Context *ctx, NDBT_Step *step) {
 
     ndbout << "Depth " << level << endl;
 
+    /**
+     * Each level waits for TransC to time out on the lock, and a
+     * transaction that has no lock to release at this level stays idle.
+     * Refresh both, or TransactionInactiveTimeout (60 s by default)
+     * aborts the one that holds fewer locks before it gets to unlock.
+     */
+    CHECKN(transA->refresh() == 0, transA, NDBT_FAILED);
+    if (numLocksInTransB > 0) {
+      CHECKN(transB->refresh() == 0, transB, NDBT_FAILED);
+    }
+
     ndbout << "  TransC : Trying to lock row with lockmode ";
     NdbOperation::LockMode lmC;
     if (useExclusiveInA) {
