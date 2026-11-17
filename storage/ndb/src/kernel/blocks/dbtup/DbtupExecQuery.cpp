@@ -13504,10 +13504,16 @@ Dbtup::handle_size_change_after_update(Signal *signal,
               req_struct->fragPtrP->fragmentId,
               regOperPtr->m_tuple_location.m_page_no,
               regOperPtr->m_tuple_location.m_page_idx));
-      org->m_header_bits= bits |
-                          Tuple_header::MM_GROWN |
-                          Tuple_header::VAR_PART;
-      m_base_header_bits = org->m_header_bits;
+      /**
+       * Update bits as well: the disk part (ind == DD) is handled after
+       * this and assigns bits to m_base_header_bits when it sets
+       * DISK_REORG. A stale bits would drop MM_GROWN, and committed
+       * readers would then read the grown entry, whose tail is not part
+       * of the row, as the varpart of the row.
+       */
+      bits |= Tuple_header::MM_GROWN | Tuple_header::VAR_PART;
+      org->m_header_bits = bits;
+      m_base_header_bits = bits;
       new_var_part[needed - 1] = orig_size;
 
       /**
@@ -13542,9 +13548,9 @@ Dbtup::handle_size_change_after_update(Signal *signal,
       regFragPtr->m_varWordsFree -= pageP->free_space;
       pageP->grow_entry(oldref.m_page_idx, add);
       update_free_page_list(regFragPtr, pagePtr);
-      m_base_header_bits= bits |
-                          Tuple_header::MM_GROWN |
-                          Tuple_header::VAR_PART;
+      /* Update bits as well, see the exclusive access case above. */
+      bits |= Tuple_header::MM_GROWN | Tuple_header::VAR_PART;
+      m_base_header_bits = bits;
       new_var_part[needed-1]= orig_size;
     }
   }
