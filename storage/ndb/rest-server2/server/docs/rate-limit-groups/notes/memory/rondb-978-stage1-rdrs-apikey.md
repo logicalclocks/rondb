@@ -401,7 +401,7 @@ reject at overload(=used/rate)>=30 read / >=60 all; recovery only by RAISING lim
 
 
 ## 26.02 branch RONDB-978-Cont (2026-07-31, VALIDATED+PUSHED 2026-08-10)
-Working in /Users/salman/code/hops/rondb (NOT rondb2). Rebased 2026-08-10 onto
+Working in <repos>/rondb (NOT rondb2). Rebased 2026-08-10 onto
 upstream/26.02-main tip ea4df44859f (across the MySQL 8.4.11 upmerge, ~250 commits).
 PUSHED to origin (smkniazi fork, force-with-lease) = 6 commits:
 5aaf5b9bbb2 atomic seeder · 40dee85245d user-id cache authoritative + 60s re-LIST ·

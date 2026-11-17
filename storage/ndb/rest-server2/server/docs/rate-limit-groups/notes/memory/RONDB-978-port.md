@@ -57,7 +57,7 @@ RONDB-978-port vs separate PR to 26.02-main** (upstream needs it either way).
 Merge commit `f6919f81b78` (amended: 00efe92bc1f → fa5d07cdccf → 4de1c3dca11 → final,
 last amend = 31 copyright start-year restorations per Mikael, e.g. 2021, 2026 not
 2024, 2026 — user chose amend over separate commit) on branch
-`upmerge-26.02.9-into-26.05-main` in `/Users/salman/code/hops/rondb2`
+`upmerge-26.02.9-into-26.05-main` in `<repos>/rondb2`
 (26.05-main tip `0ee5cbaf98e` + upstream/26.02-main tip `b5336b8978b` = PR #1015).
 Mikael CONFIRMED the bit approach + new RB bits OK to change freely (only 26.02 is
 released; 26.04.x are betas w/o upgrade support). ndbd_support_user_rate_limits
@@ -169,7 +169,7 @@ or validate completeness. **FINAL RESOLUTION (2026-07-31): e7f776e1c66 DROPPED (
 ATOMIC SEEDER commit (final hash `838c89a66c8`)** — user verified Hopsworks production writes
 the whole FV graph in ONE cascaded JPA transaction (FeatureViewFacade @Stateless
 default-REQUIRED tx; FeatureView entity cascades ALL to features/joins/filters/
-servingKeys/trainingDatasets — checked in /Users/salman/code/hops/hopsworks), so
+servingKeys/trainingDatasets — checked in <repos>/hopsworks), so
 the partial-read window was a TEST-SEEDING artifact (Go seeder = autocommit per
 statement). Fix: schemata.go runQueriesWithConnection does SET autocommit=0 +
 single COMMIT (ROLLBACK on error) on the pinned conn → each DB's data = one NDB
@@ -226,9 +226,9 @@ the audit warning below; never DBSPJ-reader commit `0564ea16c1c` alone).
 descendant) holds **12 cherry-picked commits**, author = Mikael Ronström, committer =
 Salman Niazi, all carrying `(cherry picked from ...)` provenance (`-x`). Working tree
 clean. Source of the commits: `upstream/26.04-main`, also checked out locally at
-`/Users/salman/code/hops/rondb2` (build dir `/Users/salman/code/hops/rondb2/build`).
+`<repos>/rondb2` (build dir `<repos>/rondb2/build`).
 
-Our working checkout: `/Users/salman/code/hops/rondb`, build dir `.../rondb/build`.
+Our working checkout: `<repos>/rondb`, build dir `.../rondb/build`.
 
 ## What the feature does
 

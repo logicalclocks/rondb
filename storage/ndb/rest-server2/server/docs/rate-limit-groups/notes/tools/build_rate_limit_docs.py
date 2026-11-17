@@ -1,5 +1,5 @@
 import re, sys
-D='/Users/salman/code/hops/rondb/storage/ndb/rest-server2/server/docs/'
+D='<repos>/rondb/storage/ndb/rest-server2/server/docs/'
 old=open(D+'RonDB-Group-Rate-Limits.html',encoding='utf-8').read()
 
 def sec(i):

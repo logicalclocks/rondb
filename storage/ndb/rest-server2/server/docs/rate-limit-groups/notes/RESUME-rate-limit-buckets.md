@@ -1,7 +1,7 @@
 # Resume prompt — RonDB rate-limit buckets design doc
 
 Paste the block below into a fresh Claude Code session started in
-`/Users/salman/code/hops/rondb`. Last worked on 2026-10-02 (a full day of doc iteration);
+`<repos>/rondb`. Last worked on 2026-10-02 (a full day of doc iteration);
 this file was rewritten on 2026-10-21 at the end of that session.
 
 ---
@@ -22,9 +22,9 @@ that writing the document exposed.
    (untracked). Read it start to finish before touching it. Images are in `docs/img/`.
 3. `.claude/RONDB-978-username-rate-limit-status.md` for RONDB-978 background.
 
-Repos: `/Users/salman/code/hops/rondb` (kernel + RDRS), `/Users/salman/code/hops/hopsworks`
-(metadata, UI, provisioning), `/Users/salman/code/hops/rondb-helm`,
-`/Users/salman/code/hops/deploy.hopsworks.ai`.
+Repos: `<repos>/rondb` (kernel + RDRS), `<repos>/hopsworks`
+(metadata, UI, provisioning), `<repos>/rondb-helm`,
+`<repos>/deploy.hopsworks.ai`.
 
 ## The agreed design (do NOT re-litigate; rejected alternatives are in the memory file)
 
@@ -131,7 +131,7 @@ Generated outputs live in volatile `/private/tmp` and were GONE after the 2026-1
 restart; regenerate before sharing.
 
 - **PDF** (images embedded): headless Chrome, run with the command sandbox DISABLED:
-  `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu --no-first-run --no-pdf-header-footer --print-to-pdf=/private/tmp/RonDB-Group-Rate-Limits.pdf file:///Users/salman/code/hops/rondb/storage/ndb/rest-server2/server/docs/RonDB-Group-Rate-Limits.html`
+  `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --disable-gpu --no-first-run --no-pdf-header-footer --print-to-pdf=/private/tmp/RonDB-Group-Rate-Limits.pdf file://<repos>/rondb/storage/ndb/rest-server2/server/docs/RonDB-Group-Rate-Limits.html`
 - **DOCX**: `textutil -convert docx` silently DROPS every image (relative, absolute,
   data-URI — all tried). Use the builder checked into
   `storage/ndb/rest-server2/server/docs/docx-build/` (extract.py = HTML→blocks.json with

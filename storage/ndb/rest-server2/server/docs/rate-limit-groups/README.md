@@ -119,7 +119,7 @@ RDRS (`storage/ndb/rest-server2/server/src`):
   `find_feature_store_name_int` in `rdrs_hopsworks_dal.cpp` ~1560-1600.
 - Username identity mode (parked): commit `aab9edbfbaf` on `origin/RONDB-978-Cont`.
 
-Hopsworks (`/Users/salman/code/hops/hopsworks`):
+Hopsworks (`<repos>/hopsworks`):
 - MySQL account name: `clip31(ProjectName_username)` (OnlineFeaturestoreFacade); decodable
   to (project, user); collisions unguarded; airflow has no account.
 - Provisioning hook candidates: `OnlinefsOperationHandler`, `RonDbManagementClient`

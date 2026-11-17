@@ -10,7 +10,7 @@ metadata:
 
 # RONDB-978: Hopsworks-side USER provisioning — scouting results (2026-09-23)
 
-Three parallel explorers mapped /Users/salman/code/hops/hopsworks (HEAD 895a1739bd).
+Three parallel explorers mapped <repos>/hopsworks (HEAD 895a1739bd).
 Conclusion: design doc §7's "cross-repo provisioning work" is far smaller than assumed —
 **all three sub-items (provisioning, service-user exemption, reconciliation) have existing
 templates**; ~1 command class + 1 handler bean + 1 reconciler bean, zero producer changes.
