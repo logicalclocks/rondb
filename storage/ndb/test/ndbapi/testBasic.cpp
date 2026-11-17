@@ -38,6 +38,7 @@
 #include <UtilTransactions.hpp>
 #include <cstring>
 #include <signaldata/DictTabInfo.hpp>
+#include <vector>
 #include <signaldata/DumpStateOrd.hpp>
 #include "util/require.h"
 
@@ -1490,6 +1491,276 @@ int runInsertError2(NDBT_Context *ctx, NDBT_Step *step) {
 
   restarter.insertErrorInAllNodes(0);
   return NDBT_OK;
+}
+
+/**
+ * UpdateGrowDiskReorgError
+ *
+ * An update that grows both the in-memory varpart and the disk part of a
+ * row, where the disk part has to move to a new disk row (DISK_REORG).
+ * DBTUP grows the in-memory varpart first and sets MM_GROWN in the row,
+ * so that committed readers use the original size stored in the last word
+ * of the grown entry.
+ *
+ * Error insert 4044 forces the DISK_REORG path for an update that grows
+ * the disk part, 4045 also fails the allocation of the new disk row with
+ * 1601. The test inserts rows with all nullable columns NULL, and then
+ * sets a nullable in-memory and a nullable disk Varbinary/Longvarbinary
+ * column to max length values:
+ * 1) With 4045, every update fails with 1601. No abort comes to DBTUP for
+ *    the failed operation, so DBTUP must undo the in-memory grow itself.
+ *    Committed and locking reads must return the committed row.
+ * 2) With 4044, every update is left prepared, and committed reads from
+ *    another transaction must return the committed row meanwhile. The
+ *    update is rolled back, then done again and committed. This is also
+ *    the first update after 1), which expands the base row (expand_tuple
+ *    does not accept a base row with MM_GROWN set).
+ *
+ * The first rows of a fragment get later rows behind them on their varpart
+ * page, so their in-memory varpart grows by reallocation, the last row of a
+ * fragment grows in place. Both ways are covered.
+ */
+static bool isNullableVarbinary(const NdbDictionary::Column *col) {
+  return !col->getPrimaryKey() && col->getNullable() &&
+         (col->getType() == NdbDictionary::Column::Varbinary ||
+          col->getType() == NdbDictionary::Column::Longvarbinary);
+}
+
+/* A max length value of a Varbinary/Longvarbinary, with its length bytes. */
+static void maxVarbinaryValue(const NdbDictionary::Column *col, char fill,
+                              std::vector<char> &buf) {
+  const Uint32 len = col->getLength();
+  buf.clear();
+  buf.push_back(char(len & 0xFF));
+  if (col->getType() == NdbDictionary::Column::Longvarbinary) {
+    buf.push_back(char(len >> 8));
+  }
+  buf.insert(buf.end(), len, fill);
+}
+
+static int growDefineUpdate(NdbTransaction *trans,
+                            const NdbDictionary::Table *tab,
+                            HugoOperations &hugoOps, int row, int mmCol,
+                            int ddCol, char fill) {
+  NdbOperation *op = trans->getNdbOperation(tab);
+  if (op == nullptr || op->updateTuple() != 0 ||
+      hugoOps.equalForRow(op, row) != 0) {
+    return -1;
+  }
+  std::vector<char> buf;
+  maxVarbinaryValue(tab->getColumn(mmCol), fill, buf);
+  if (op->setValue(mmCol, buf.data()) != 0) return -1;
+  maxVarbinaryValue(tab->getColumn(ddCol), fill, buf);
+  if (op->setValue(ddCol, buf.data()) != 0) return -1;
+  return 0;
+}
+
+/* Read the row, fill 0 means that both columns are expected to be NULL. */
+static int growCheckRow(Ndb *ndb, const NdbDictionary::Table *tab,
+                        HugoOperations &hugoOps, int row, int mmCol,
+                        int ddCol, NdbOperation::LockMode lm, char fill) {
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    g_err << "startTransaction failed: " << ndb->getNdbError() << endl;
+    return NDBT_FAILED;
+  }
+  int result = NDBT_OK;
+  do {
+    NdbOperation *op = trans->getNdbOperation(tab);
+    CHK2(op != nullptr, trans->getNdbError());
+    CHK2(op->readTuple(lm) == 0, op->getNdbError());
+    CHK2(hugoOps.equalForRow(op, row) == 0, "equalForRow failed");
+    NdbRecAttr *const vals[2] = {op->getValue(mmCol), op->getValue(ddCol)};
+    CHK2(vals[0] != nullptr && vals[1] != nullptr, op->getNdbError());
+    CHK2(trans->execute(NdbTransaction::Commit) == 0, trans->getNdbError());
+    const int cols[2] = {mmCol, ddCol};
+    for (int i = 0; i < 2; i++) {
+      const NdbDictionary::Column *col = tab->getColumn(cols[i]);
+      bool ok;
+      if (fill == 0) {
+        ok = (vals[i]->isNULL() == 1);
+      } else {
+        std::vector<char> buf;
+        maxVarbinaryValue(col, fill, buf);
+        ok = (vals[i]->isNULL() == 0 &&
+              vals[i]->get_size_in_bytes() == buf.size() &&
+              memcmp(vals[i]->aRef(), buf.data(), buf.size()) == 0);
+      }
+      if (!ok) {
+        const char fillStr[2] = {fill, 0};
+        g_err << "Row " << row << " column " << col->getName()
+              << " lock mode " << int(lm) << ": expected "
+              << (fill == 0 ? "NULL" : "the max length value of ")
+              << fillStr << ", read "
+              << (vals[i]->isNULL() == 1
+                      ? "NULL"
+                      : (vals[i]->isNULL() == 0 ? "a value" : "nothing"))
+              << " of " << vals[i]->get_size_in_bytes() << " bytes" << endl;
+        result = NDBT_FAILED;
+      }
+    }
+  } while (0);
+  ndb->closeTransaction(trans);
+  return result;
+}
+
+static int growCheckRows(Ndb *ndb, const NdbDictionary::Table *tab,
+                         HugoOperations &hugoOps, int rows, int mmCol,
+                         int ddCol, char fill) {
+  for (int row = 0; row < rows; row++) {
+    if (growCheckRow(ndb, tab, hugoOps, row, mmCol, ddCol,
+                     NdbOperation::LM_CommittedRead, fill) != NDBT_OK ||
+        growCheckRow(ndb, tab, hugoOps, row, mmCol, ddCol,
+                     NdbOperation::LM_Read, fill) != NDBT_OK) {
+      return NDBT_FAILED;
+    }
+  }
+  return NDBT_OK;
+}
+
+int runUpdateGrowDiskReorgError(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *ndb = GETNDB(step);
+  const NdbDictionary::Table *tab = ctx->getTab();
+  /* Records is also the number of rows that runClearTable deletes. */
+  const int rows = ctx->getProperty("Records", Uint32(16));
+
+  int mmCol = -1;
+  int ddCol = -1;
+  for (int i = 0; i < tab->getNoOfColumns(); i++) {
+    const NdbDictionary::Column *col = tab->getColumn(i);
+    if (col->getType() == NdbDictionary::Column::Blob ||
+        col->getType() == NdbDictionary::Column::Text) {
+      g_err << "[SKIPPED] Test does not handle blob columns" << endl;
+      return NDBT_SKIPPED;
+    }
+    if (!isNullableVarbinary(col)) continue;
+    if (col->getStorageType() == NdbDictionary::Column::StorageTypeMemory) {
+      if (mmCol == -1) mmCol = i;
+    } else if (ddCol == -1) {
+      ddCol = i;
+    }
+  }
+  if (mmCol == -1 || ddCol == -1) {
+    g_err << "[SKIPPED] Test requires a nullable Varbinary or Longvarbinary"
+          << " column in memory and one on disk" << endl;
+    return NDBT_SKIPPED;
+  }
+  ndbout << "Growing columns " << tab->getColumn(mmCol)->getName() << " and "
+         << tab->getColumn(ddCol)->getName() << " of " << rows << " rows"
+         << endl;
+
+  HugoOperations hugoOps(*tab);
+  NdbRestarter restarter;
+  int result = NDBT_OK;
+
+  if (UtilTransactions(*tab).clearTable(ndb) != 0) {
+    g_err << "Failed to clear table " << tab->getName() << endl;
+    return NDBT_FAILED;
+  }
+
+  /* Insert the rows with all nullable columns NULL. */
+  for (int row = 0; row < rows && result == NDBT_OK; row++) {
+    NdbTransaction *trans = ndb->startTransaction();
+    if (trans == nullptr) {
+      g_err << "startTransaction failed: " << ndb->getNdbError() << endl;
+      return NDBT_FAILED;
+    }
+    do {
+      NdbOperation *op = trans->getNdbOperation(tab);
+      CHK2(op != nullptr, trans->getNdbError());
+      CHK2(op->insertTuple() == 0, op->getNdbError());
+      CHK2(hugoOps.equalForRow(op, row) == 0, "equalForRow failed");
+      for (int i = 0; i < tab->getNoOfColumns(); i++) {
+        const NdbDictionary::Column *col = tab->getColumn(i);
+        if (col->getPrimaryKey()) continue;
+        if (col->getNullable()) {
+          CHK2(op->setValue(i, (const char *)nullptr) == 0,
+               op->getNdbError());
+        } else {
+          CHK2(hugoOps.setValueForAttr(op, i, row, 0) == 0,
+               "setValueForAttr failed");
+        }
+      }
+      if (result != NDBT_OK) break;
+      CHK2(trans->execute(NdbTransaction::Commit) == 0, trans->getNdbError());
+    } while (0);
+    ndb->closeTransaction(trans);
+  }
+  if (result != NDBT_OK) return result;
+
+  /* 1) The new disk row cannot be allocated after the in-memory grow. */
+  ndbout << "Updates failing to allocate the new disk row (4045)" << endl;
+  if (restarter.insertErrorInAllNodes(4045) != 0) {
+    g_err << "Failed to insert error 4045" << endl;
+    return NDBT_FAILED;
+  }
+  for (int row = 0; row < rows && result == NDBT_OK; row++) {
+    NdbTransaction *trans = ndb->startTransaction();
+    if (trans == nullptr) {
+      g_err << "startTransaction failed: " << ndb->getNdbError() << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+    do {
+      CHK2(growDefineUpdate(trans, tab, hugoOps, row, mmCol, ddCol, 'a') == 0,
+           trans->getNdbError());
+      CHK2(trans->execute(NdbTransaction::NoCommit) != 0,
+           "Row " << row << ": the update succeeded despite error insert 4045");
+      CHK2(trans->getNdbError().code == 1601,
+           "Row " << row << ": expected error 1601, got "
+                  << trans->getNdbError());
+    } while (0);
+    ndb->closeTransaction(trans);
+  }
+  restarter.insertErrorInAllNodes(0);
+  if (result != NDBT_OK) return result;
+  if (growCheckRows(ndb, tab, hugoOps, rows, mmCol, ddCol, 0) != NDBT_OK) {
+    return NDBT_FAILED;
+  }
+
+  /**
+   * 2) Prepared updates that moved the disk row, first rolled back and
+   *    then committed.
+   */
+  ndbout << "Prepared updates moving the disk row (4044)" << endl;
+  if (restarter.insertErrorInAllNodes(4044) != 0) {
+    g_err << "Failed to insert error 4044" << endl;
+    return NDBT_FAILED;
+  }
+  for (int row = 0; row < rows && result == NDBT_OK; row++) {
+    for (int commit = 0; commit < 2 && result == NDBT_OK; commit++) {
+      const char fill = commit ? 'c' : 'b';
+      NdbTransaction *trans = ndb->startTransaction();
+      if (trans == nullptr) {
+        g_err << "startTransaction failed: " << ndb->getNdbError() << endl;
+        result = NDBT_FAILED;
+        break;
+      }
+      do {
+        CHK2(growDefineUpdate(trans, tab, hugoOps, row, mmCol, ddCol, fill) ==
+                 0,
+             trans->getNdbError());
+        CHK2(trans->execute(NdbTransaction::NoCommit) == 0,
+             trans->getNdbError());
+        /* Readers of the committed row while the update is prepared. */
+        CHK2(growCheckRow(ndb, tab, hugoOps, row, mmCol, ddCol,
+                          NdbOperation::LM_CommittedRead, 0) == NDBT_OK,
+             "Row " << row << ": committed read of the prepared update");
+        CHK2(trans->execute(commit ? NdbTransaction::Commit
+                                   : NdbTransaction::Rollback) == 0,
+             trans->getNdbError());
+      } while (0);
+      ndb->closeTransaction(trans);
+      if (result == NDBT_OK) {
+        result = growCheckRow(ndb, tab, hugoOps, row, mmCol, ddCol,
+                              NdbOperation::LM_CommittedRead,
+                              commit ? fill : 0);
+      }
+    }
+  }
+  restarter.insertErrorInAllNodes(0);
+  if (result != NDBT_OK) return result;
+  return growCheckRows(ndb, tab, hugoOps, rows, mmCol, ddCol, 'c');
 }
 
 int runBug25090(NDBT_Context *ctx, NDBT_Step *step) {
@@ -4489,6 +4760,15 @@ TESTCASE("TupError", "Verify what happens when we fill the db") {
 }
 TESTCASE("InsertError", "") { INITIALIZER(runInsertError); }
 TESTCASE("InsertError2", "") { INITIALIZER(runInsertError2); }
+TESTCASE("UpdateGrowDiskReorgError",
+         "An update that grows the in-memory varpart and moves the disk "
+         "part to a new disk row, which fails to allocate (error insert "
+         "4045) or is left prepared under committed reads (4044). Needs "
+         "nullable Varbinary columns in memory and on disk, e.g. D2") {
+  TC_PROPERTY("Records", Uint32(16));
+  INITIALIZER(runUpdateGrowDiskReorgError);
+  FINALIZER(runClearTable);
+}
 TESTCASE("Fill", "Verify what happens when we fill the db") {
   STEP(runFillTable);
 }
