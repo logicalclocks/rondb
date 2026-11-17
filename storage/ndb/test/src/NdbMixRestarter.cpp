@@ -76,6 +76,14 @@ int NdbMixRestarter::restart_cluster(NDBT_Context *ctx, NDBT_Step *step,
 
     if (ctx->getProperty(NMR_SR_VALIDATE_THREADS) > 0) {
       ndbout << " -- Validating starts " << endl;
+      /**
+       * Each validator decrements the active count when it has validated,
+       * so set it before the validators can see SR_VALIDATING. Otherwise
+       * the wait below ends at once and the load threads run again while
+       * the validators still validate.
+       */
+      ctx->setProperty(NMR_SR_VALIDATE_THREADS_ACTIVE,
+                       ctx->getProperty(NMR_SR_VALIDATE_THREADS));
       ctx->setProperty(NMR_SR, NdbMixRestarter::SR_VALIDATING);
 
       while (ctx->getProperty(NMR_SR_VALIDATE_THREADS_ACTIVE) > 0 &&

@@ -34,7 +34,7 @@ let $tab= t2;
 connection con1;
 create table t3 (pk int not null primary key, uk int not null,
                  ts timestamp not null, unique key(uk) using hash)
-                 engine=ndb comment="NDB_TABLE=TTL=1@ts";
+                 engine=ndb comment="NDB_TABLE=TTL=10@ts";
 insert into t3 values (1, 1, now() - interval 1 day), (2, 2, now());
 connection con2;
 select pk, uk from t3 where uk = 1;

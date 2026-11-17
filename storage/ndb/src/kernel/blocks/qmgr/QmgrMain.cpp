@@ -6428,6 +6428,22 @@ void Qmgr::api_failed(Signal *signal, Uint32 nodeId, ApiFailureCause afc,
                       Uint32 senderRef) {
   jam();
 
+  /**
+   * MAX_NODES is the highest node id in the configuration this node
+   * fetched plus one (see execAPI_VERSION_REQ()), so a node added by a
+   * newer configuration can have a node id beyond it. We know nothing
+   * about such a node, and getNodeInfo() would fail its ndbrequire.
+   */
+  if (unlikely(nodeId == 0 || nodeId >= MAX_NODES)) {
+    jam();
+    jamLine(Uint16(nodeId));
+    g_eventLogger->warning(
+        "Ignoring failed connection report for Node %u, which is not in our"
+        " configuration (highest node id %u)",
+        nodeId, MAX_NODES - 1);
+    return;
+  }
+
   const NodeInfo::NodeType nodeType = getNodeInfo(nodeId).getType();
   if (nodeType != NodeInfo::API && nodeType != NodeInfo::MGM) {
     g_eventLogger->warning(

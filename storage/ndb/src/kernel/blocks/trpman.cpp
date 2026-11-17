@@ -39,6 +39,8 @@
 
 #include "EventLogger.hpp"
 #include "mt.hpp"
+#include "../../common/transporter/Multi_Transporter.hpp"
+#include "../../common/transporter/Transporter.hpp"
 
 #define JAM_FILE_ID 430
 
@@ -1117,6 +1119,38 @@ void Trpman::execNDB_TAMPER(Signal *signal) {
 #endif
 }  // execNDB_TAMPER()
 
+#ifdef ERROR_INSERT
+/**
+ * The transporters that DUMP 9993 and 9991 unblock for a node: first its
+ * active transporters (num_active of them), then the inactive transporters
+ * of its multi transporter. DUMP 9992 blocks the transporters that are
+ * active at the time. If the node then fails, its multi transporters are
+ * disconnected and it switches back to its base transporter, which moves
+ * the blocked multi transporters to the inactive list. A blocked
+ * transporter holds back its disconnect report until it is unblocked
+ * (TransporterRegistry::report_disconnect()), so unless they are unblocked
+ * too, the node failure handling never completes and the node cannot get
+ * its node id back.
+ */
+static void get_trps_to_unblock(NodeId nodeId, TrpId *trp_ids, Uint32 &num_ids,
+                                Uint32 &num_active) {
+  globalTransporterRegistry.lockMultiTransporters();
+  globalTransporterRegistry.get_trps_for_node(nodeId, trp_ids, num_active,
+                                              MAX_NODE_GROUP_TRANSPORTERS);
+  num_ids = num_active;
+  Multi_Transporter *multi_trp =
+      globalTransporterRegistry.get_node_multi_transporter(nodeId);
+  if (multi_trp != nullptr) {
+    const Uint32 num_inactive = multi_trp->get_num_inactive_transporters();
+    for (Uint32 i = 0; i < num_inactive; i++) {
+      trp_ids[num_ids++] =
+          multi_trp->get_inactive_transporter(i)->getTransporterIndex();
+    }
+  }
+  globalTransporterRegistry.unlockMultiTransporters();
+}
+#endif
+
 void Trpman::execDUMP_STATE_ORD(Signal *signal) {
   DumpStateOrd *const &dumpState = (DumpStateOrd *)&signal->theData[0];
   Uint32 arg [[maybe_unused]] = dumpState->args[0];
@@ -1200,12 +1234,18 @@ void Trpman::execDUMP_STATE_ORD(Signal *signal) {
     for (Uint32 n = 1; n < signal->getLength(); n++) {
       const NodeId nodeId = signal->theData[n];
       if ((nodeId > 0) && (nodeId < MAX_NODES)) {
-        TrpId trp_ids[MAX_NODE_GROUP_TRANSPORTERS];
+        TrpId trp_ids[2 * MAX_NODE_GROUP_TRANSPORTERS];
         Uint32 num_ids;
-        globalTransporterRegistry.lockMultiTransporters();
-        globalTransporterRegistry.get_trps_for_node(
-            nodeId, trp_ids, num_ids, MAX_NODE_GROUP_TRANSPORTERS);
-        globalTransporterRegistry.unlockMultiTransporters();
+        Uint32 num_active;
+        if (block) {
+          globalTransporterRegistry.lockMultiTransporters();
+          globalTransporterRegistry.get_trps_for_node(
+              nodeId, trp_ids, num_ids, MAX_NODE_GROUP_TRANSPORTERS);
+          globalTransporterRegistry.unlockMultiTransporters();
+          num_active = num_ids;
+        } else {
+          get_trps_to_unblock(nodeId, trp_ids, num_ids, num_active);
+        }
 
         for (unsigned i = 0; i < num_ids; i++) {
           if (!handles_this_trp(trp_ids[i])) continue;
@@ -1230,7 +1270,7 @@ void Trpman::execDUMP_STATE_ORD(Signal *signal) {
                   instance(), trp_ids[i], nodeId);
 
               globalTransporterRegistry.unblockReceive(*recvdata, trp_ids[i]);
-            } else {
+            } else if (i < num_active) {
               g_eventLogger->info(
                   "TRPMAN : Ignoring dump %u for transporter %u"
                   " (receive link is not blocked)",
@@ -1305,13 +1345,11 @@ void Trpman::execDUMP_STATE_ORD(Signal *signal) {
     for (Uint32 node = 1; node < MAX_NODES; node++) {
       if (node == getOwnNodeId()) continue;
 
-      // Get all node (multi-)Transporters, unblock all
-      TrpId trp_ids[MAX_NODE_GROUP_TRANSPORTERS];
+      // Get all node (multi-)Transporters, active and inactive, unblock all
+      TrpId trp_ids[2 * MAX_NODE_GROUP_TRANSPORTERS];
       Uint32 num_ids;
-      globalTransporterRegistry.lockMultiTransporters();
-      globalTransporterRegistry.get_trps_for_node(node, trp_ids, num_ids,
-                                                  MAX_NODE_GROUP_TRANSPORTERS);
-      globalTransporterRegistry.unlockMultiTransporters();
+      Uint32 num_active;
+      get_trps_to_unblock(node, trp_ids, num_ids, num_active);
 
       for (unsigned i = 0; i < num_ids; i++) {
         if (!handles_this_trp(trp_ids[i])) continue;
