@@ -9911,7 +9911,14 @@ Dbtup::handle_size_change_after_update(Signal *signal,
            * size we already seized in the page, thus add will here
            * only be positive if we need to increase our allocation.
            */
-          if (Int32(Int32(used) + add) <= Int32(free))
+          /**
+           * Error insert 4044 moves a growing disk row to a new page
+           * (DISK_REORG) even if it fits in its current page, 4045 also
+           * fails the allocation of the new disk row.
+           */
+          const bool force_reorg =
+              add > 0 && (ERROR_INSERTED(4044) || ERROR_INSERTED(4045));
+          if (!force_reorg && Int32(Int32(used) + add) <= Int32(free))
           {
             /**
              * Size of new row fits in the current disk page, no need
@@ -10043,11 +10050,20 @@ Dbtup::handle_size_change_after_update(Signal *signal,
             Local_key new_key;
             /* Add extra word to handle possible directory size increase.*/
             new_size++;
-            int ret = disk_page_prealloc(signal,
-                                         prepare_fragptr,
-                                         regTabPtr,
-                                         &new_key,
-                                         new_size);
+            int ret;
+            if (unlikely(ERROR_INSERTED(4045)))
+            {
+              jam();
+              ret = -1601; // Out of extents, tablespace full
+            }
+            else
+            {
+              ret = disk_page_prealloc(signal,
+                                       prepare_fragptr,
+                                       regTabPtr,
+                                       &new_key,
+                                       new_size);
+            }
             if (unlikely(ret < 0))
             {
               jam();
