@@ -144,6 +144,24 @@ CLASS
     " MaxOperationsPerBatchRequest.")
  CM(Uint32, operationIdMaxSize, OperationIDMaxSize, 256,
     "Maximum length of operation ID strings.")
+ CM(Uint32, featureStoreScanDefaultLimit, FeatureStoreScanDefaultLimit, 1000,
+    "Number of feature vectors a feature_store_scan request returns when the"
+    " request omits the limit field.")
+ CM(Uint32, featureStoreScanMaxLimit, FeatureStoreScanMaxLimit, 10000,
+    "Upper bound on the limit field of a feature_store_scan request and on"
+    " the number of primary-key branches of its fast path. Larger requests"
+    " are rejected with 400.")
+ CM(Uint32, featureStoreScanBatchSize, FeatureStoreScanBatchSize, 256,
+    "Number of root feature-group rows per pk_batch_read round-trip when a"
+    " feature_store_scan request fans out to the joined feature groups.")
+ CM(std::string, featureStoreScanTableScanPolicy,
+    FeatureStoreScanTableScanPolicy, "reject",
+    "Whether a feature_store_scan request may scan the whole online table of"
+    " the root feature group (a request without an index whose filters are"
+    " not primary-key equalities, or an index range with no bounds)."
+    " reject = never, such requests get 400 (the default);"
+    " request = only when the request sets options.allowTableScan to true;"
+    " allow = always. Case-insensitive.")
  //todo warn (preallocatedbuffers == 0, "preAllocatedBuffers should be > 0")
  PROBLEM(maxHttpReqSize < 256, "MaxHttpReqSize should be >= 256")
  PROBLEM(maxOperationsPerBatchRequest == 0,
@@ -166,6 +184,22 @@ CLASS
          "MaxOperationsPerNdbExecute should be <= 512")
  PROBLEM(maxOperationsPerNdbExecute < 50,
          "MaxOperationsPerNdbExecute should be >= 50")
+ PROBLEM(featureStoreScanDefaultLimit < 1,
+         "FeatureStoreScanDefaultLimit should be >= 1")
+ PROBLEM(featureStoreScanMaxLimit < featureStoreScanDefaultLimit,
+         "FeatureStoreScanMaxLimit should be >= FeatureStoreScanDefaultLimit")
+ PROBLEM(featureStoreScanBatchSize < 1,
+         "FeatureStoreScanBatchSize should be >= 1")
+ PROBLEM(!Internal::parseTableScanPolicy(featureStoreScanTableScanPolicy, nullptr),
+         "FeatureStoreScanTableScanPolicy should be reject, request or allow")
+
+ CLASSDEFS
+ (
+  enum class TableScanPolicy { REJECT, REQUEST, ALLOW };
+  static bool parseTableScanPolicy(const std::string &spec, TableScanPolicy *out);
+
+  TableScanPolicy tableScanPolicy() const;
+ )
 )
 
 CLASS

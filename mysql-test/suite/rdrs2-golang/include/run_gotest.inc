@@ -14,7 +14,7 @@
 #
 # The groups (%groups below):
 #   pkread_batchpkread, index_scan,
-#   feature_store_batchfeaturestore_sharing, ronsql
+#   feature_store_batchfeaturestore_sharing, featurestorescan, ronsql
 #                the packages of that name;
 #   ping_health_stat_smoke
 #                the remaining integration packages, the unit packages, and
@@ -92,6 +92,12 @@ my %groups = (
     },
     'ronsql' => {
         packages => [ "$it/ronsql" ],
+        smoke    => 0,
+    },
+    # RONDB-1142: /feature_store_scan. Its own group because the chunking
+    # tests insert and read back hundreds of rows per test.
+    'featurestorescan' => {
+        packages => [ "$it/featurestorescan" ],
         smoke    => 0,
     },
     # bufferpool and starvation skip here (their tests are driven by the
@@ -230,6 +236,9 @@ my %smoke_test = (
     "$it/index_scan"        => 'Test_SimpleComparison',
     "$it/feature_store"     => 'Test_GetFeatureVector_Success',
     "$it/batchfeaturestore" => 'Test_GetFeatureVector_Success_1entries',
+    # The plain-HTTP server runs with FeatureStoreScanTableScanPolicy=request,
+    # so the smoke test must be a primary-key fast-path request.
+    "$it/featurestorescan"  => 'Test_FastPath_PkEquality_MatchesBatchFeatureStore',
     "$it/sharing"           => 'Test_Sharing_PKRead',
 );
 

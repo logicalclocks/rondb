@@ -1,5 +1,9 @@
 {
   "PIDFile": "@pid-file",
+  "Internal": {
+    "FeatureStoreScanTableScanPolicy": "@FeatureStoreScanTableScanPolicy",
+    "FeatureStoreScanBatchSize": @FeatureStoreScanBatchSize
+  },
   "REST": {
     "ServerIP": "@bind-address",
     "ServerPort": @port,

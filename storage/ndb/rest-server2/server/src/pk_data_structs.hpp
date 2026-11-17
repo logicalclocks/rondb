@@ -631,4 +631,22 @@ RS_Status ValidateScanColumns(const std::vector<ScanReadColumn>& readColumns);
 RS_Status ValidateScanFilter(const std::shared_ptr<FilterNode> filterRoot);
 RS_Status ValidateScanIndex(const IndexScanParams& index_params);
 
+/*
+ * Filter compilation helpers (implemented in rdrs_dal.cpp). A filter tree
+ * is bound to the columns of a table, then compiled into the NdbScanFilter
+ * that wraps an NdbInterpretedCode. The same program can be attached to a
+ * scan (ScanOptions::interpretedCode) or to a primary-key read
+ * (OperationOptions::interpretedCode); in the latter case a rejected row
+ * fails the read with NDB error 626, i.e. it looks like "not found".
+ */
+void ClearFilterColumns(std::shared_ptr<FilterNode>& node);
+RS_Status BindFilterColumns(std::shared_ptr<FilterNode>& node,
+                            const NdbDictionary::Table* table);
+RS_Status CompileFilter(std::shared_ptr<FilterNode>& node,
+                        NdbScanFilter* filter);
+/* Bind-free compile of a whole tree: wraps a non-logic root in AND so the
+ * program is complete and finalised when it returns. */
+RS_Status CompileFilterProgram(std::shared_ptr<FilterNode>& root,
+                               NdbScanFilter& filter);
+
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_PK_DATA_STRUCTS_HPP_

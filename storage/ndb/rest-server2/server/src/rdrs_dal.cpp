@@ -28,6 +28,7 @@
 #include "logger.hpp"
 #include "pk_data_structs.hpp"
 #include "scan_metrics.hpp"
+#include "scan_row_sink.hpp"
 
 #include <storage/ndb/include/ndb_global.h>
 #include <util/require.h>
@@ -189,7 +190,8 @@ RS_Status pk_batch_read(void *amalloc_void,
                         struct RS_BufferChain *resp_chain,
                         unsigned int threadIndex,
                         const char *rate_limit_identity,
-                        unsigned int rate_limit_identity_len) {
+                        unsigned int rate_limit_identity_len,
+                        const void *op_filters) {
   ArenaMalloc *amalloc = (ArenaMalloc*)amalloc_void;
   Ndb *ndb_object  = nullptr;
   RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object,
@@ -210,7 +212,8 @@ RS_Status pk_batch_read(void *amalloc_void,
                                       *resp_chain,
                                       ndb_object,
                                       rate_limit_identity,
-                                      rate_limit_identity_len);
+                                      rate_limit_identity_len,
+                                      op_filters);
   )
   rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object,
                                            &status,
@@ -1314,6 +1317,36 @@ RS_Status CompileFilter(std::shared_ptr<FilterNode>& node,
   return status;
 }
 
+RS_Status CompileFilterProgram(std::shared_ptr<FilterNode>& root,
+                               NdbScanFilter& filter) {
+  if (root == nullptr) {
+    return RS_OK;
+  }
+  /* NdbScanFilter needs an enclosing group; a lone comparison gets AND */
+  bool wrap = (root->type != FilterNode::Type::LOGIC);
+  if (wrap) {
+    DEB_SCAN("  filter->begin(" << FilterNode::Group::AND << ")" << std::endl);
+    if (unlikely(filter.begin(FilterNode::Group::AND) == -1)) {
+      return RS_SERVER_ERROR(
+          std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)) +
+          " filter->begin() failed");
+    }
+  }
+  RS_Status err = CompileFilter(root, &filter);
+  if (err.http_code != HTTP_CODE::SUCCESS) {
+    return err;
+  }
+  if (wrap) {
+    DEB_SCAN("  filter->end()" << std::endl);
+    if (unlikely(filter.end() == -1)) {
+      return RS_SERVER_ERROR(
+          std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)) +
+          " filter->end() failed");
+    }
+  }
+  return RS_OK;
+}
+
 RS_Status BindIndexColumns(IndexScanParams& index_params,
                             const NdbDictionary::Table* table,
                             const NdbDictionary::Index* index) {
@@ -1638,6 +1671,69 @@ void WriteColumnData2Json(RJ_Writer& writer, Uint32 attrType, const NdbDictionar
   return;
 }
 
+void ScanColumnToJson(const NdbRecord *table_rec,
+                      const char *row,
+                      const NdbDictionary::Column *column,
+                      std::vector<char> &out) {
+  out.clear();
+  Uint32 attrId = column->getAttrId();
+  if (NdbDictionary::isNull(table_rec, row, attrId)) {
+    static const char kNull[] = "null";
+    out.assign(kNull, kNull + 4);
+    return;
+  }
+  RJ_StringBuffer buffer;
+  RJ_Writer writer(buffer);
+  const char *field = NdbDictionary::getValuePtr(table_rec, row, attrId);
+  WriteColumnData2Json(writer, column->getType(), column, field);
+  out.assign(buffer.GetString(), buffer.GetString() + buffer.GetSize());
+}
+
+bool ScanColumnRawBytes(const NdbRecord *table_rec,
+                        const char *row,
+                        const NdbDictionary::Column *column,
+                        std::vector<Uint8> &out) {
+  out.clear();
+  Uint32 attrId = column->getAttrId();
+  if (NdbDictionary::isNull(table_rec, row, attrId)) {
+    return false;
+  }
+  const char *field = NdbDictionary::getValuePtr(table_rec, row, attrId);
+  const char *dataStart = nullptr;
+  Uint32 attrBytes = 0;
+  switch (column->getType()) {
+    case NdbDictionary::Column::Binary:
+      dataStart = field;
+      attrBytes = column->getLength();
+      break;
+    case NdbDictionary::Column::Varbinary:
+    case NdbDictionary::Column::Longvarbinary:
+      switch (column->getArrayType()) {
+        case NdbDictionary::Column::ArrayTypeFixed:
+          dataStart = field;
+          attrBytes = column->getLength();
+          break;
+        case NdbDictionary::Column::ArrayTypeShortVar:
+          dataStart = field + 1;
+          attrBytes = static_cast<Uint8>(field[0]);
+          break;
+        case NdbDictionary::Column::ArrayTypeMediumVar:
+          dataStart = field + 2;
+          attrBytes = static_cast<Uint8>(field[0]) +
+                      (static_cast<Uint8>(field[1]) << 8);
+          break;
+        default:
+          return false;
+      }
+      break;
+    default:
+      return false;
+  }
+  out.assign(reinterpret_cast<const Uint8*>(dataStart),
+             reinterpret_cast<const Uint8*>(dataStart) + attrBytes);
+  return true;
+}
+
 RS_Status CompileIndexRanges(const NdbTransaction* transaction,
                              NdbIndexScanOperation* operation,
                              const NdbRecord* index_rec,
@@ -1805,12 +1901,17 @@ class TransactionGuard {
 };
 
 RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_str_buf,
+                       ScanRowSink* sink,
                        const char *rate_limit_identity,
                        unsigned int rate_limit_identity_len,
                        uint64_t* rows_fetched_out, ScanPhaseTiming* timing) {
-  // Clear the JSON buffer in case this is a retry
-  RJ_StringBuffer* buffer = (RJ_StringBuffer*)json_str_buf;
-  buffer->Clear();
+  // Clear the JSON buffer (or the row sink) in case this is a retry
+  if (sink != nullptr) {
+    sink->reset();
+  } else {
+    RJ_StringBuffer* buffer = (RJ_StringBuffer*)json_str_buf;
+    buffer->Clear();
+  }
 
   // Timing setup
   bool timing_enabled = (timing != nullptr);
@@ -1943,25 +2044,9 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
 
     DEB_SCAN(std::endl);
     DEB_SCAN(">>>>>> Compiling PHYSICAL Scan Filter" << std::endl);
-    if (scan_params.filterRoot->type != FilterNode::Type::LOGIC) {
-      DEB_SCAN("  filter->begin(" << FilterNode::Group::AND << ")" << std::endl);
-      if (unlikely(filter.begin(FilterNode::Group::AND) == -1)) {
-        return RS_SERVER_ERROR(
-            std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)) +
-            " filter->begin() failed");
-      }
-    }
-    err = CompileFilter(scan_params.filterRoot, &filter);
+    err = CompileFilterProgram(scan_params.filterRoot, filter);
     if (err.http_code != HTTP_CODE::SUCCESS) {
       return err;
-    }
-    if (scan_params.filterRoot->type != FilterNode::Type::LOGIC) {
-      DEB_SCAN("  filter->end()" << std::endl);
-      if (unlikely(filter.end() == -1)) {
-        return RS_SERVER_ERROR(
-            std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)) +
-            " filter->end() failed");
-      }
     }
     DEB_SCAN("<<<<<<" << std::endl);
   }
@@ -2104,11 +2189,14 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
     int rc = 0;
     DEB_SCAN("Rows: " << std::endl);
 
-    RJ_StringBuffer* buffer = (RJ_StringBuffer*)json_str_buf;
-    RJ_Writer writer(*buffer);
-    writer.StartObject();
-    writer.Key("data");
-    writer.StartArray();
+    std::unique_ptr<RJ_Writer> writer;
+    if (sink == nullptr) {
+      RJ_StringBuffer* buffer = (RJ_StringBuffer*)json_str_buf;
+      writer = std::make_unique<RJ_Writer>(*buffer);
+      writer->StartObject();
+      writer->Key("data");
+      writer->StartArray();
+    }
     uint64_t rows = 0;
 
     // Add json init time to json_serialize_us
@@ -2134,23 +2222,31 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
         break;
       }
       rows++;
-      writer.StartObject();
-      for (auto& column : read_columns) {
-        writer.Key(column->getName());
-
-        Uint32 attrId = column->getAttrId();
-        Uint32 attrType = column->getType();
-        DEB_SCAN("  [" << attrId << "]: ");
-        bool is_null = NdbDictionary::isNull(table_rec, row_ptr, attrId);
-        if (unlikely(is_null)) {
-          DEB_SCAN("NULL");
-          writer.Null();
-        } else {
-          const char* field = NdbDictionary::getValuePtr(table_rec, row_ptr, attrId);
-          WriteColumnData2Json(writer, attrType, column, field);
+      if (sink != nullptr) {
+        RS_Status sink_status = sink->on_row(table_rec, row_ptr, read_columns);
+        if (unlikely(sink_status.http_code != HTTP_CODE::SUCCESS)) {
+          status = sink_status;
+          break;
         }
+      } else {
+        writer->StartObject();
+        for (auto& column : read_columns) {
+          writer->Key(column->getName());
+
+          Uint32 attrId = column->getAttrId();
+          Uint32 attrType = column->getType();
+          DEB_SCAN("  [" << attrId << "]: ");
+          bool is_null = NdbDictionary::isNull(table_rec, row_ptr, attrId);
+          if (unlikely(is_null)) {
+            DEB_SCAN("NULL");
+            writer->Null();
+          } else {
+            const char* field = NdbDictionary::getValuePtr(table_rec, row_ptr, attrId);
+            WriteColumnData2Json(*writer, attrType, column, field);
+          }
+        }
+        writer->EndObject();
       }
-      writer.EndObject();
       DEB_SCAN(std::endl);
 
       // Accumulate JSON serialization time, start timing for next nextResult
@@ -2167,10 +2263,12 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
       phase_start = NdbTick_getCurrentTicks();
     }
 
-    writer.EndArray();
-    writer.Key("rows");
-    writer.Uint64(rows);
-    writer.EndObject();
+    if (sink == nullptr) {
+      writer->EndArray();
+      writer->Key("rows");
+      writer->Uint64(rows);
+      writer->EndObject();
+    }
 
     // Add json finalize time to json_serialize_us
     if (timing_enabled) {
@@ -2250,11 +2348,14 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
     int rc = 0;
     DEB_SCAN("Rows: " << std::endl);
 
-    RJ_StringBuffer* buffer = (RJ_StringBuffer*)json_str_buf;
-    RJ_Writer writer(*buffer);
-    writer.StartObject();
-    writer.Key("data");
-    writer.StartArray();
+    std::unique_ptr<RJ_Writer> writer;
+    if (sink == nullptr) {
+      RJ_StringBuffer* buffer = (RJ_StringBuffer*)json_str_buf;
+      writer = std::make_unique<RJ_Writer>(*buffer);
+      writer->StartObject();
+      writer->Key("data");
+      writer->StartArray();
+    }
     uint64_t rows = 0;
 
     // Add json init time to json_serialize_us
@@ -2280,23 +2381,31 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
         break;
       }
       rows++;
-      writer.StartObject();
-      for (auto& column : read_columns) {
-        writer.Key(column->getName());
-
-        Uint32 attrId = column->getAttrId();
-        Uint32 attrType = column->getType();
-        DEB_SCAN("  [" << attrId << "]: ");
-        bool is_null = NdbDictionary::isNull(table_rec, row_ptr, attrId);
-        if (unlikely(is_null)) {
-          DEB_SCAN("NULL");
-          writer.Null();
-        } else {
-          const char* field = NdbDictionary::getValuePtr(table_rec, row_ptr, attrId);
-          WriteColumnData2Json(writer, attrType, column, field);
+      if (sink != nullptr) {
+        RS_Status sink_status = sink->on_row(table_rec, row_ptr, read_columns);
+        if (unlikely(sink_status.http_code != HTTP_CODE::SUCCESS)) {
+          status = sink_status;
+          break;
         }
+      } else {
+        writer->StartObject();
+        for (auto& column : read_columns) {
+          writer->Key(column->getName());
+
+          Uint32 attrId = column->getAttrId();
+          Uint32 attrType = column->getType();
+          DEB_SCAN("  [" << attrId << "]: ");
+          bool is_null = NdbDictionary::isNull(table_rec, row_ptr, attrId);
+          if (unlikely(is_null)) {
+            DEB_SCAN("NULL");
+            writer->Null();
+          } else {
+            const char* field = NdbDictionary::getValuePtr(table_rec, row_ptr, attrId);
+            WriteColumnData2Json(*writer, attrType, column, field);
+          }
+        }
+        writer->EndObject();
       }
-      writer.EndObject();
       DEB_SCAN(std::endl);
 
       // Accumulate JSON serialization time, start timing for next nextResult
@@ -2313,10 +2422,12 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
       phase_start = NdbTick_getCurrentTicks();
     }
 
-    writer.EndArray();
-    writer.Key("rows");
-    writer.Uint64(rows);
-    writer.EndObject();
+    if (sink == nullptr) {
+      writer->EndArray();
+      writer->Key("rows");
+      writer->Uint64(rows);
+      writer->EndObject();
+    }
 
     // Add json finalize time to json_serialize_us
     if (timing_enabled) {
@@ -2370,10 +2481,14 @@ void ResetScanParams(ScanReadParams& scan_params) {
   }
 }
 
-RS_Status scan_read(ScanReadParams& scan_params, unsigned int threadIndex, void* doc,
-                    const char *rate_limit_identity,
-                    unsigned int rate_limit_identity_len,
-                    uint64_t* rows_fetched_out, ScanPhaseTiming* timing) {
+static RS_Status scan_read_impl(ScanReadParams& scan_params,
+                                unsigned int threadIndex,
+                                void* doc,
+                                ScanRowSink* sink,
+                                const char *rate_limit_identity,
+                                unsigned int rate_limit_identity_len,
+                                uint64_t* rows_fetched_out,
+                                ScanPhaseTiming* timing) {
   bool timing_enabled = (timing != nullptr);
   NDB_TICKS phase_start;
 
@@ -2394,7 +2509,7 @@ RS_Status scan_read(ScanReadParams& scan_params, unsigned int threadIndex, void*
   }
 
   DATA_OP_RETRY_HANDLER(
-    status = perform_scan(scan_params, ndb_object, doc,
+    status = perform_scan(scan_params, ndb_object, doc, sink,
                           rate_limit_identity, rate_limit_identity_len,
                           rows_fetched_out, timing);
     HandleSchemaErrors(ndb_object,
@@ -2420,4 +2535,23 @@ RS_Status scan_read(ScanReadParams& scan_params, unsigned int threadIndex, void*
   }
 
   return status;
+}
+
+RS_Status scan_read(ScanReadParams& scan_params, unsigned int threadIndex, void* doc,
+                    const char *rate_limit_identity,
+                    unsigned int rate_limit_identity_len,
+                    uint64_t* rows_fetched_out, ScanPhaseTiming* timing) {
+  return scan_read_impl(scan_params, threadIndex, doc, nullptr,
+                        rate_limit_identity, rate_limit_identity_len,
+                        rows_fetched_out, timing);
+}
+
+RS_Status scan_read_rows(ScanReadParams& scan_params, unsigned int threadIndex,
+                         ScanRowSink* sink,
+                         const char *rate_limit_identity,
+                         unsigned int rate_limit_identity_len,
+                         uint64_t* rows_fetched_out, ScanPhaseTiming* timing) {
+  return scan_read_impl(scan_params, threadIndex, nullptr, sink,
+                        rate_limit_identity, rate_limit_identity_len,
+                        rows_fetched_out, timing);
 }
