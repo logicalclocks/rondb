@@ -1503,6 +1503,16 @@ Dbtup::load_diskpage(Signal* signal,
     regOperPtr->op_struct.bit_field.m_load_extra_diskpage_on_commit =
       prevOpPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit;
   }
+  else
+  {
+    /**
+     * No operation on the row, so there is no new disk row to load. The
+     * flag can be left set from an earlier use of this operation record
+     * (see the read path in execTUPKEYREQ).
+     */
+    jamDebug();
+    regOperPtr->op_struct.bit_field.m_load_extra_diskpage_on_commit = 0;
+  }
 
   int res= 1;
   if (ptr->m_header_bits & Tuple_header::DISK_PART ||
@@ -2450,6 +2460,14 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
       // Write operations set the state to STARTED indicating that they
       // are waiting for the Commit or Abort decision.
       /* ---------------------------------------------------------------- */
+      /**
+       * A read of a row with a prepared update that moved its disk row
+       * (DISK_REORG) copied m_load_extra_diskpage_on_commit from that
+       * update in load_diskpage. A read has nothing to load at commit, and
+       * DBLQH reuses the operation record without initOpConnection, so
+       * the next operation would inherit the flag.
+       */
+      regOperPtr->op_struct.bit_field.m_load_extra_diskpage_on_commit = 0;
       /**
        * We could release fragment access here for read key readers, but not
        * for scan operations.
