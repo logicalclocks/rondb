@@ -3507,6 +3507,8 @@ public:
 //------------------------------------------------------------------
 //------------------------------------------------------------------
   void tupkeyErrorLab(KeyReqStruct*);
+  void shrink_grown_var_part(Fragrecord *, Tablerec *, Operationrec *,
+                             Tuple_header *, Uint32 &bits);
   void do_tup_abort_operation(Signal*,
                               Tuple_header *,
                               Operationrec*,
@@ -4461,6 +4463,8 @@ public:
 				      Fragrecord* regFragPtr,
 				      Tablerec* regTabPtr,
 				      Uint32 sizes[4]);
+  void undo_mm_grow(Tuple_header *org, Operationrec *regOperPtr,
+                    Fragrecord *regFragPtr, Tablerec *regTabPtr);
   int optimize_var_part(KeyReqStruct* req_struct,
                         Tuple_header* org,
                         Operationrec* regOperPtr,
