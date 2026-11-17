@@ -63,6 +63,14 @@ CREATE TABLE bd (
 ) ENGINE=NDB;
 INSERT INTO bf VALUES (1, 1, 10), (2, 1, 20), (3, 2, 5), (4, 3, 7);
 INSERT INTO bd VALUES (1, 10), (2, 20), (3, 5), (4, 7);
+# The 12 tables of jbe-1 all join on one column, so with the default
+# optimizer_search_depth (62) mysqld tries nearly every join order: it
+# spent 571 s planning jbe-1 (40 rows examined), and the test runs it
+# twice on mysqld.  Limit the search for those runs; GLOBAL as well,
+# since ronsql_compare.inc runs the mysql client in a new session.
+SET @save_optimizer_search_depth = @@global.optimizer_search_depth;
+SET GLOBAL optimizer_search_depth = 4;
+SET SESSION optimizer_search_depth = 4;
 --enable_warnings
 --enable_query_log
 
@@ -268,5 +276,7 @@ DELIMITER ;|
 --disable_warnings
 DROP TABLE bd;
 DROP TABLE bf;
+SET GLOBAL optimizer_search_depth = @save_optimizer_search_depth;
+SET SESSION optimizer_search_depth = DEFAULT;
 --enable_warnings
 --enable_query_log
