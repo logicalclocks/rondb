@@ -248,11 +248,15 @@ check_cte_group_key_size(const NdbAggregator* agg)
  * RONSQL-39: GroupBy() and GroupByLinked() refuse a BLOB or TEXT column
  * (kErrUnSupportedColumn).  That is an unsupported query, not a bug, so
  * throw `unsupported` as such.  Any other refusal throws `msg`.
+ * check_cte_groupby_key_types() refuses a BLOB or TEXT key passed up
+ * through CTEs with the same message.
  */
+static const char GROUPBY_BLOB_UNSUPPORTED[] =
+    "GROUP BY on a BLOB or TEXT column is not supported.";
+
 static void
 groupby_or_fail(NdbAggregator* agg, bool ok, const char* msg,
-                const char* unsupported =
-                    "GROUP BY on a BLOB or TEXT column is not supported.")
+                const char* unsupported = GROUPBY_BLOB_UNSUPPORTED)
 {
   if (ok) return;
   if (agg->GetError().errno_ == kErrUnSupportedColumn)
@@ -318,8 +322,10 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     PERF_LOG("  load (dict)", t_load_start, t_load_end);
     STAT_TS(m_conf.phase_stats, s_load_end);
     STAT_SET(m_conf.phase_stats, load_us, s_load_start, s_load_end);
-    if (m_has_ctes)
+    if (m_has_ctes) {
       validate_cte_execution_shapes();
+      check_cte_groupby_key_types();
+    }
     if (m_cte_scopes.size() > 0 && is_join_query())
       check_pushed_query_size();
     if (!is_join_query())
@@ -7759,6 +7765,68 @@ RonSQLPreparer::validate_cte_execution_shapes()
        cte != NULL && c < m_cte_scopes.size(); cte = cte->next, c++) {
     if (m_cte_scopes[c] != NULL) {
       check_plan(m_cte_scopes[c]->join_plan, cte);
+    }
+  }
+}
+
+/*
+ * RONSQL-39 through CTEs (X-14): GroupBy() and GroupByLinked() refuse a
+ * stored BLOB or TEXT GROUP BY column (groupby_or_fail).  A GROUP BY key
+ * that is a CTE output reached no such check.  One CTE up, the key's
+ * virtual column failed at execute time in build_cte_virtual_tables ("CTE
+ * output column ... has a column type that CTEs do not support.").  Two
+ * CTEs up, the key of the main query has no plumbed dictionary column, so
+ * build_result_column_metadata took the inline and part sizes of the
+ * BLOB or TEXT column (256 and 2000 by default) from
+ * resolve_chained_column_type as a DECIMAL precision and scale, and the
+ * result printer refused them as a bug, at prepare time ("A GROUP BY
+ * output has a precision above 65. Please report a bug.").  Refuse such a
+ * key here, before the printer is built, with the stored column's error.
+ * The type is the one build_cte_virtual_tables gives the key's virtual
+ * column: resolve_chained_column_type follows a CTE output down any
+ * number of CTEs.  The GROUP BY of each CTE body and of the main query
+ * is checked.  A key that is a stored column is left to GroupBy() and
+ * GroupByLinked(), as without CTEs; so is a BLOB or TEXT column a CTE
+ * passes on without a GROUP BY on it.
+ */
+void
+RonSQLPreparer::check_cte_groupby_key_types()
+{
+  Uint32 c = 0;
+  for (const CteDefinition* cte = m_context.ast_root.cte_list;
+       cte != NULL && c < m_cte_scopes.size(); cte = cte->next, c++) {
+    if (m_cte_scopes[c] != NULL) {
+      check_cte_groupby_key_types(*m_cte_scopes[c],
+                                  cte->stmt->groupby_columns);
+    }
+  }
+  check_cte_groupby_key_types(m_main_scope,
+                              m_context.ast_root.groupby_columns);
+}
+
+void
+RonSQLPreparer::check_cte_groupby_key_types(QueryScope& scope,
+                                            const GroupbyColumns* groupby)
+{
+  if (scope.resolved_columns == NULL) return;
+  for (const GroupbyColumns* gb = groupby; gb != NULL; gb = gb->next) {
+    if (gb->col_idx >= m_columns.size()) continue;
+    const QueryScope::ResolvedColumnRef& ref =
+        scope.resolved_columns[gb->col_idx];
+    if (ref.kind != QueryScope::ResolvedColumnRef::Kind::CteResultColumn)
+      continue;
+    NdbDictionary::Column::Type type = NdbDictionary::Column::Undefined;
+    Uint32 length = 1;
+    const void* cs = NULL;
+    Int32 scale = 0;
+    Int32 precision = 0;
+    if (!resolve_chained_column_type(scope, gb->col_idx, type, length, cs,
+                                     scale, precision))
+      continue;
+    if (type == NdbDictionary::Column::Blob ||
+        type == NdbDictionary::Column::Text) {
+      throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
+                                 GROUPBY_BLOB_UNSUPPORTED);
     }
   }
 }

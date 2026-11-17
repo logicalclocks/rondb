@@ -1026,6 +1026,14 @@ private:
    */
   void validate_cte_execution_shapes();
   /**
+   * RONSQL-39 through CTEs (X-14): refuse, as unsupported, a GROUP BY
+   * key of a CTE body or of the main query that is a CTE output whose
+   * type, followed down the CTE chain, is BLOB or TEXT.
+   */
+  void check_cte_groupby_key_types();
+  void check_cte_groupby_key_types(QueryScope& scope,
+                                   const GroupbyColumns* groupby);
+  /**
    * J-6 = C-9: refuse, with a limit error, a join query whose CTE
    * subtrees and main plan need more than the 32 operations of one
    * pushed query, before execute_join builds it.
