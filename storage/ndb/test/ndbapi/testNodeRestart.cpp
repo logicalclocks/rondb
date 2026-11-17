@@ -12924,7 +12924,14 @@ struct CteNfEventListener {
   bool waitFor(NDBT_Context *ctx, const char *needle, Uint32 timeoutMs,
                BaseString *matchedLine = nullptr,
                const char *ignoredMarker = nullptr) {
-    SocketInputStream input(socket, 100);
+    /**
+     * ndb_mgmd writes each event as its text and then "\n" in a second
+     * write, without TCP_NODELAY. Nagle's algorithm can hold the "\n"
+     * until the client's delayed ACK, up to 200 ms on Linux, and
+     * readln_socket fails a line whose end does not arrive within the
+     * timeout. 1000 ms as in testLcp.
+     */
+    SocketInputStream input(socket, 1000);
     const Uint64 start = NdbTick_CurrentMillisecond();
     char line[1024] = {};
     while (!ctx->isTestStopped() &&
