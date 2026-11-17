@@ -1503,6 +1503,16 @@ Dbtup::load_diskpage(Signal* signal,
     regOperPtr->op_struct.bit_field.m_load_extra_diskpage_on_commit =
       prevOpPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit;
   }
+  else
+  {
+    /**
+     * No operation on the row, so there is no new disk row to load. The
+     * flag can be left set from an earlier use of this operation record
+     * (see the read path in execTUPKEYREQ).
+     */
+    jamDebug();
+    regOperPtr->op_struct.bit_field.m_load_extra_diskpage_on_commit = 0;
+  }
 
   int res= 1;
   if (ptr->m_header_bits & Tuple_header::DISK_PART ||
@@ -2450,6 +2460,14 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
       // Write operations set the state to STARTED indicating that they
       // are waiting for the Commit or Abort decision.
       /* ---------------------------------------------------------------- */
+      /**
+       * A read of a row with a prepared update that moved its disk row
+       * (DISK_REORG) copied m_load_extra_diskpage_on_commit from that
+       * update in load_diskpage. A read has nothing to load at commit, and
+       * DBLQH reuses the operation record without initOpConnection, so
+       * the next operation would inherit the flag.
+       */
+      regOperPtr->op_struct.bit_field.m_load_extra_diskpage_on_commit = 0;
       /**
        * We could release fragment access here for read key readers, but not
        * for scan operations.
@@ -9586,6 +9604,17 @@ Dbtup::handle_size_change_after_update(Signal *signal,
 {
   Uint32 bits = m_base_header_bits;
   Uint32 copy_bits= req_struct->m_tuple_ptr->m_header_bits;
+  /**
+   * The MM part is handled before the DD part. If the MM varpart grows
+   * here, MM_GROWN is set in the row, and if the DD part then fails, no
+   * TUP_ABORTREQ comes for this operation (tupkeyErrorLab), so nothing
+   * would shrink it back. Unless an earlier operation of the transaction
+   * already grew it (MM_GROWN set on entry), whose abort or commit
+   * handles it, we undo the grow ourselves on those errors. A MM_GROWN
+   * row without a pending operation is not allowed (expand_tuple).
+   */
+  const bool mm_grown_on_entry = (bits & Tuple_header::MM_GROWN) != 0;
+  bool undo_mm_grow_on_error = false;
 
   DEB_LCP(("(%u)size_change: tab(%u,%u), row_id(%u,%u), old: %u, new: %u",
           instance(),
@@ -9814,6 +9843,9 @@ Dbtup::handle_size_change_after_update(Signal *signal,
             {
               jam();
               terrorCode = -ret;
+              if (undo_mm_grow_on_error) {
+                undo_mm_grow(org, regOperPtr, regFragPtr, regTabPtr);
+              }
               return ret;
             }
             jamDebug();
@@ -9879,7 +9911,14 @@ Dbtup::handle_size_change_after_update(Signal *signal,
            * size we already seized in the page, thus add will here
            * only be positive if we need to increase our allocation.
            */
-          if (Int32(Int32(used) + add) <= Int32(free))
+          /**
+           * Error insert 4044 moves a growing disk row to a new page
+           * (DISK_REORG) even if it fits in its current page, 4045 also
+           * fails the allocation of the new disk row.
+           */
+          const bool force_reorg =
+              add > 0 && (ERROR_INSERTED(4044) || ERROR_INSERTED(4045));
+          if (!force_reorg && Int32(Int32(used) + add) <= Int32(free))
           {
             /**
              * Size of new row fits in the current disk page, no need
@@ -9940,6 +9979,9 @@ Dbtup::handle_size_change_after_update(Signal *signal,
             if (unlikely(terrorCode))
             {
               jam();
+              if (undo_mm_grow_on_error) {
+                undo_mm_grow(org, regOperPtr, regFragPtr, regTabPtr);
+              }
               return -1;
             }
             jamDebug();
@@ -10008,11 +10050,20 @@ Dbtup::handle_size_change_after_update(Signal *signal,
             Local_key new_key;
             /* Add extra word to handle possible directory size increase.*/
             new_size++;
-            int ret = disk_page_prealloc(signal,
-                                         prepare_fragptr,
-                                         regTabPtr,
-                                         &new_key,
-                                         new_size);
+            int ret;
+            if (unlikely(ERROR_INSERTED(4045)))
+            {
+              jam();
+              ret = -1601; // Out of extents, tablespace full
+            }
+            else
+            {
+              ret = disk_page_prealloc(signal,
+                                       prepare_fragptr,
+                                       regTabPtr,
+                                       &new_key,
+                                       new_size);
+            }
             if (unlikely(ret < 0))
             {
               jam();
@@ -10028,6 +10079,9 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                                    c_lgman,
                                    regFragPtr->m_logfile_group_id);
               lgman.free_log_space(undo_insert_len, jamBuffer());
+              if (undo_mm_grow_on_error) {
+                undo_mm_grow(org, regOperPtr, regFragPtr, regTabPtr);
+              }
               return ret;
             }
             jamDebug();
@@ -10194,10 +10248,17 @@ Dbtup::handle_size_change_after_update(Signal *signal,
               req_struct->fragPtrP->fragmentId,
               regOperPtr->m_tuple_location.m_page_no,
               regOperPtr->m_tuple_location.m_page_idx));
-      org->m_header_bits= bits |
-                          Tuple_header::MM_GROWN |
-                          Tuple_header::VAR_PART;
-      m_base_header_bits = org->m_header_bits;
+      /**
+       * Update bits as well: the disk part (ind == DD) is handled after
+       * this and assigns bits to m_base_header_bits when it sets
+       * DISK_REORG. A stale bits would drop MM_GROWN, and committed
+       * readers would then read the grown entry, whose tail is not part
+       * of the row, as the varpart of the row.
+       */
+      bits |= Tuple_header::MM_GROWN | Tuple_header::VAR_PART;
+      org->m_header_bits = bits;
+      m_base_header_bits = bits;
+      undo_mm_grow_on_error = !mm_grown_on_entry;
       new_var_part[needed - 1] = orig_size;
 
       /**
@@ -10221,24 +10282,64 @@ Dbtup::handle_size_change_after_update(Signal *signal,
        * Only LDM threads are allowed to perform Updates that will
        * change the size of pages and the free area. Thus only one
        * thread can be active on the fragment for updates. Readers can
-       * can execute in parallel with this on the fragment since
-       * they will only read the pointer to the varsized row part and
-       * it will be ok to see both the before value and the after
-       * value of the write of the index value. The index value is
-       * a 32-bit value which is atomic in that the CPU will see
-       * either the before value or the after value.
+       * execute in parallel with this on the fragment, the entry is
+       * grown in place and the row data doesn't move.
+       *
+       * The entry length is however the length of the committed row
+       * for readers, unless MM_GROWN is set, in which case they use
+       * the original size stored in the last word. So the grown
+       * length, the original size and MM_GROWN must become visible
+       * together. Query thread readers hold the TUP fragment mutex of
+       * the row's page while reading the header bits and the entry
+       * length (prepare_read), so we grow the entry and set MM_GROWN
+       * in the row under the same mutex. Setting MM_GROWN only in
+       * m_base_header_bits would leave a window until the caller
+       * writes it to the row, where a reader sees the grown length
+       * without MM_GROWN and reads the tail of the entry as row data.
        */
       Uint32 *new_var_part = pageP->get_ptr(oldref.m_page_idx);
+      /* Update bits as well, see the exclusive access case above. */
+      bits |= Tuple_header::MM_GROWN | Tuple_header::VAR_PART;
+      m_base_header_bits = bits;
       regFragPtr->m_varWordsFree -= pageP->free_space;
+      acquire_frag_mutex(regFragPtr, regOperPtr->fragPageId, jamBuffer());
       pageP->grow_entry(oldref.m_page_idx, add);
-      update_free_page_list(regFragPtr, pagePtr);
-      m_base_header_bits= bits |
-                          Tuple_header::MM_GROWN |
-                          Tuple_header::VAR_PART;
       new_var_part[needed-1]= orig_size;
+      const Uint32 old_header = org->m_header_bits;
+      org->m_header_bits = old_header |
+                           Tuple_header::MM_GROWN |
+                           Tuple_header::VAR_PART;
+      updateChecksum(org, regTabPtr, old_header, org->m_header_bits);
+      release_frag_mutex(regFragPtr, regOperPtr->fragPageId, jamBuffer());
+      update_free_page_list(regFragPtr, pagePtr);
+      undo_mm_grow_on_error = !mm_grown_on_entry;
     }
   }
   return 0;
+}
+
+/**
+ * Undo the MM varpart grow of handle_size_change_after_update when its DD
+ * part fails: shrink the entry back to the original size (or release the
+ * varpart if the row had none) and clear MM_GROWN, as the abort of the
+ * first operation would have done (do_tup_abort_operation). We take
+ * exclusive access to keep readers out while the row changes, and keep it
+ * for the error handling as the realloc failure above does.
+ */
+void Dbtup::undo_mm_grow(Tuple_header *org, Operationrec *regOperPtr,
+                         Fragrecord *regFragPtr, Tablerec *regTabPtr) {
+  jam();
+  c_lqh->upgrade_to_exclusive_frag_access();
+  Uint32 bits = org->m_header_bits;
+  ndbrequire(bits & Tuple_header::MM_GROWN);
+  shrink_grown_var_part(regFragPtr, regTabPtr, regOperPtr, org, bits);
+  bits &= ~(Uint32)Tuple_header::MM_GROWN;
+  org->m_header_bits = bits;
+  /* The varpart reference can change, recalculate the whole checksum. */
+  setChecksum(org, regTabPtr);
+  const Uint32 mm_bits = Tuple_header::MM_GROWN | Tuple_header::VAR_PART;
+  m_base_header_bits = (m_base_header_bits & ~mm_bits) | (bits & mm_bits);
+  c_lqh->reset_old_fragment_lock_status();
 }
 
 int Dbtup::optimize_var_part(KeyReqStruct* req_struct,
