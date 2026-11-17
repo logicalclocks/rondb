@@ -54,9 +54,18 @@ while ($count)
   --disable_abort_on_error
   SELECT b FROM qtdb.t1 WHERE a = 1;
   --enable_abort_on_error
-  if ($mysql_errno)
+  # Only the quota error counts as a throttle; anything else is a bug the
+  # result file surfaces loudly.
+  if ($mysql_errno == 1297)
   {
     inc $throttled;
+  }
+  if ($mysql_errno != 1297)
+  {
+    if ($mysql_errno)
+    {
+      --echo UNEXPECTED ERROR $mysql_errno
+    }
   }
   dec $count;
 }
@@ -84,9 +93,18 @@ while ($count)
   --disable_abort_on_error
   SELECT a, b FROM qtdb.t1;
   --enable_abort_on_error
-  if ($mysql_errno)
+  # Only the quota error counts as a throttle; anything else is a bug the
+  # result file surfaces loudly.
+  if ($mysql_errno == 1297)
   {
     inc $throttled;
+  }
+  if ($mysql_errno != 1297)
+  {
+    if ($mysql_errno)
+    {
+      --echo UNEXPECTED ERROR $mysql_errno
+    }
   }
   dec $count;
 }
@@ -124,6 +142,7 @@ while ($count)
   --enable_abort_on_error
   if ($mysql_errno)
   {
+    --echo UNEXPECTED ERROR $mysql_errno
     inc $after_drop;
   }
   dec $count;
@@ -156,9 +175,18 @@ while ($count)
   --disable_abort_on_error
   SELECT b FROM qtdb.t1 WHERE a = 1;
   --enable_abort_on_error
-  if ($mysql_errno)
+  # Only the quota error counts as a throttle; anything else is a bug the
+  # result file surfaces loudly.
+  if ($mysql_errno == 1297)
   {
     inc $throttled;
+  }
+  if ($mysql_errno != 1297)
+  {
+    if ($mysql_errno)
+    {
+      --echo UNEXPECTED ERROR $mysql_errno
+    }
   }
   dec $count;
 }
