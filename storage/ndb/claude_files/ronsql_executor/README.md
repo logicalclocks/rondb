@@ -225,6 +225,7 @@ T-1 contains O-7; C-15 overlaps T-3. J-2 has the same root cause as C-1.
    - X-16: PK lookups use an unhinted transaction.
    - O-12: the pass-through ORDER BY memory cap undercounts by up to 8x.
    - O-16: full sort for ORDER BY … LIMIT on aggregates.
+   - Per-character output (no review ID; found while reviewing the X-6/X-13 fix): `print_string` (`ResultPrinter.cpp`), which prints every string value in JSON and TEXT, does one `<<` per character, and `print_binary_tsv` and `print_json_ascii` one `put()` per byte. Each pays an ostream sentry and a virtual call into the stream's buffer, which is unbuffered in both callers (RDRS's `CappedStringBuf`, `ronsql_cli`'s `std::cout`); the `OutputCounter` of the X-6/X-13 fix adds a second virtual call. Fix as its own patch: write each run of characters that need no escaping with one `write()`, and measure with a large string pass-through over RDRS before and after.
 
 ## Duplicated code (ranked)
 
