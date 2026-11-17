@@ -73,20 +73,28 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string,
 RS_Status RDRSRonDBConnection::Connect() {
   checkMagic();
 
-  rdrs_logger::info(std::string("Connecting to ") + connection_string);
   {
     NdbMutex_Lock(connectionInfoMutex);
     if (unlikely(stats.is_shutdown || stats.is_shutting_down)) {
       NdbMutex_Unlock(connectionInfoMutex);
       return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_PROGRAMMING_CONNECTION_SHUTDOWN)));
     }
+    if (unlikely(m_stop_reconnecting)) {
+      NdbMutex_Unlock(connectionInfoMutex);
+      rdrs_logger::info(std::string("Not connecting to ") +
+                        connection_string + ": shutdown in progress.");
+      return RS_SERVER_ERROR(
+        std::string(rdrsErrorMessage(ERROR_RONDB_SHUTDOWN_IN_PROGRESS)));
+    }
     require(stats.connection_state != CONNECTED);
     NdbMutex_Unlock(connectionInfoMutex);
   }
+  rdrs_logger::info(std::string("Connecting to ") + connection_string);
   {
     NdbMutex_Lock(connectionMutex);
     require(ndbConnection == nullptr);
     int retCode = 0;
+    bool stopped = false;
     ndbConnection = new Ndb_cluster_connection(connection_string, m_node_id);
     /* Baseline for IsStranded(), taken before anything can move it: after
      * wait_until_ready() returns, the ClusterMgr thread may already have
@@ -94,16 +102,28 @@ RS_Status RDRSRonDBConnection::Connect() {
      * then would absorb that loss - CONNECTED with no reachable node and
      * equal counters, which is the stranded state made undetectable. */
     m_connect_count_last_healthy = ndbConnection->get_connect_count();
-    retCode = ndbConnection->connect(connection_retries,
-                                     connection_retry_delay_in_sec,
-                                     0);
+    retCode = ConnectToMgmd(&stopped);
+    if (unlikely(stopped)) {
+      NdbMutex_Unlock(connectionMutex);
+      rdrs_logger::info(std::string("Stopped connecting to ") +
+                        connection_string + ": shutdown in progress.");
+      return RS_SERVER_ERROR(
+        std::string(rdrsErrorMessage(ERROR_RONDB_SHUTDOWN_IN_PROGRESS)));
+    }
     if (unlikely(retCode != 0)) {
       NdbMutex_Unlock(connectionMutex);
       return RS_SERVER_ERROR(
         std::string(rdrsErrorMessage(ERROR_RONDB_MGM_CONNECT_FAILED))
         + std::string(" RetCode: ") + std::to_string(retCode));
     }
-    retCode = ndbConnection->wait_until_ready(30, 30);
+    retCode = WaitUntilReady(&stopped);
+    if (unlikely(stopped)) {
+      NdbMutex_Unlock(connectionMutex);
+      rdrs_logger::info(std::string("Stopped waiting for the data nodes of ") +
+                        connection_string + ": shutdown in progress.");
+      return RS_SERVER_ERROR(
+        std::string(rdrsErrorMessage(ERROR_RONDB_SHUTDOWN_IN_PROGRESS)));
+    }
     if (retCode == 1) {
       // Partial availability: at least one data node is connected but not all.
       // This is acceptable - the cluster can serve requests with partial nodes.
@@ -130,6 +150,64 @@ RS_Status RDRSRonDBConnection::Connect() {
   }
   rdrs_logger::info("RonDB connection and object pool initialized");
   return RS_OK;
+}
+
+bool RDRSRonDBConnection::IsStopping() const {
+  return m_stop_reconnecting.load(std::memory_order_acquire) ||
+         stats.is_shutting_down || stats.is_shutdown;
+}
+
+void RDRSRonDBConnection::StopReconnecting() {
+  m_stop_reconnecting.store(true, std::memory_order_release);
+}
+
+int RDRSRonDBConnection::ConnectToMgmd(bool *stopped) {
+  *stopped = false;
+  /* As connect(connection_retries, connection_retry_delay_in_sec, 0): one
+   * attempt plus connection_retries retries, connection_retry_delay_in_sec
+   * apart; a negative count retries forever. connect() returns 0 when
+   * connected, 1 on an error worth retrying and -1 on one that is not. */
+  const int retries = static_cast<int>(connection_retries);
+  for (int attempt = 0;; attempt++) {
+    if (IsStopping()) {
+      *stopped = true;
+      return 1;
+    }
+    const int ret = ndbConnection->connect(0, 0, 0);
+    if (ret != 1) {
+      return ret;
+    }
+    if (retries >= 0 && attempt >= retries) {
+      return ret;
+    }
+    for (Uint32 ms = 0; ms < connection_retry_delay_in_sec * 1000; ms += 100) {
+      if (IsStopping()) {
+        *stopped = true;
+        return ret;
+      }
+      NdbSleep_MilliSleep(100);
+    }
+  }
+}
+
+int RDRSRonDBConnection::WaitUntilReady(bool *stopped) {
+  *stopped = false;
+  /* As wait_until_ready(30, 30): up to 30 s for the first data node, then
+   * up to 30 s more for the others. The wait for the first node is made a
+   * second at a time so that a shutdown can stop it; once a node is up,
+   * the call that found it waits for the others as before. */
+  int ret = -1;
+  for (int second = 0; second < 30; second++) {
+    if (IsStopping()) {
+      *stopped = true;
+      return -1;
+    }
+    ret = ndbConnection->wait_until_ready(1, 30);
+    if (ret >= 0) {
+      return ret;
+    }
+  }
+  return ret;
 }
 
 RDRSRonDBConnection::~RDRSRonDBConnection() {
@@ -327,7 +405,7 @@ int RDRSRonDBConnection::GetNumReadyDataNodes() {
 bool RDRSRonDBConnection::IsStranded() {
   {
     /* Lock-free reads; see the stats declaration. */
-    const bool going_away = stats.is_shutdown || stats.is_shutting_down;
+    const bool going_away = IsStopping();
     const bool reconnecting = stats.is_reconnection_in_progress;
     const bool connected = stats.connection_state == CONNECTED;
     if (going_away || reconnecting) {
@@ -651,7 +729,7 @@ RS_Status RDRSRonDBConnection::Reconnect() {
     return RS_SERVER_ERROR(
       std::string(rdrsErrorMessage(ERROR_RONDB_RECONNECTION_IN_PROGRESS)));
   }
-  if (stats.is_shutting_down) {
+  if (IsStopping()) {
     NdbMutex_Unlock(connectionMutex);
     NdbMutex_Unlock(connectionInfoMutex);
     rdrs_logger::info(

@@ -144,6 +144,13 @@ RS_Status set_metadata_cluster_op_retry_props(
   const unsigned int jitter);
 
 /**
+ * First step of the process shutdown: stop starting RonDB reconnections,
+ * and stop one in progress. A no-op until the connection pool is fully
+ * initialized. Idempotent.
+ */
+RS_Status stop_reconnecting();
+
+/**
  * Shutdown connection
  */
 RS_Status shutdown_connection();

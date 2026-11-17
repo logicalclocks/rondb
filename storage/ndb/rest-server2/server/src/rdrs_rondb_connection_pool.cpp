@@ -172,6 +172,16 @@ void RDRSRonDBConnectionPool::StopReconnectWatchdog() {
   }
 }
 
+void RDRSRonDBConnectionPool::StopReconnecting() {
+  for (Uint32 i = 0; i < m_num_data_connections; i++) {
+    dataConnections[i]->StopReconnecting();
+  }
+  if (metadataConnection != nullptr &&
+      metadataConnection != dataConnections[0]) {
+    metadataConnection->StopReconnecting();
+  }
+}
+
 void RDRSRonDBConnectionPool::shutdown() {
   /* Before is_shutdown is published and the connections are deleted: the
    * watchdog dereferences them on every tick. */

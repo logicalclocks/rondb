@@ -2031,3 +2031,14 @@ Syntax error in SQL statement: Unexpected at this point
 !                                                          ^
 Error handling: RPE
 ronsql_cli caught exception: Syntax error.
+===== Unaliased output over 64 bytes followed by a lexer error =====
+Syntax error in SQL statement: Unaliased select expression too long. Use `AS` to add an alias no more than 64 bytes long.
+> select sum(b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b) union select 1;
+!        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+Syntax error in SQL statement: Unaliased select expression too long. Use `AS` to add an alias no more than 64 bytes long.
+> select sum(b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b) 99999999999999999999999 from tbl;
+!        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.

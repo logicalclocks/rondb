@@ -4,8 +4,8 @@ section (2000ms) and API node 12 section (5000ms)
 sleep 10 sec (more than 3 * the global HeartbeatIntervalDbApi),
 to show that the global HeartbeatIntervalDbApi is not in use (node is not disconnected)
 include/assert_grep.inc [No 'Node 12 Disconnected' message in the log]
-sleep 10 sec more (10sec + 10sec > 3 * the API node HeartbeatIntervalDbApi),
-the missing of 3 heartbeats will trigger the node to disconnect
+wait up to 20 sec more for the disconnect, which comes 15 to 20 sec
+after the block with the API node HeartbeatIntervalDbApi
 include/assert_grep.inc ['Node 12 Disconnected' message in the log]
 On data node 1, resume sending signals to API node 12
 Now, let's test communication in the opposite direction
@@ -13,7 +13,7 @@ On data node 1, block receiving signals from API node 11
 sleep 10 sec (more than 3 * the global HeartbeatIntervalDbApi),
 to show that the global HeartbeatIntervalDbApi is not in use (node is not disconnected)
 include/assert_grep.inc [No 'Node 11 declared dead due to missed heartbeat' message in the log]
-sleep 20 sec more (20sec + 10sec > 4 * the API node HeartbeatIntervalDbApi),
-the missing of 4 heartbeats will trigger the node to disconnect
+wait up to 30 sec more for the node to be declared dead, which happens
+20 to 25 sec after the block with the API node HeartbeatIntervalDbApi
 include/assert_grep.inc ['Node 11 declared dead due to missed heartbeat' message in the log]
 On data node 1, resume receiving signals from API node 11

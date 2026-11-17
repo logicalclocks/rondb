@@ -1,0 +1,217 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== vs-1: pass-through child keyed on DATETIME ===
+== Query ==
+WITH g AS (SELECT e_modified AS t, COUNT(*) AS n
+FROM evlog GROUP BY e_modified)
+SELECT e.e_id, g.t, g.n
+FROM evlog AS e JOIN g ON g.t = e.e_modified;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+
+=== vs-2: pass-through child keyed on DATETIME(6) ===
+== Query ==
+WITH g AS (SELECT e_logged AS t, COUNT(*) AS n
+FROM evlog GROUP BY e_logged)
+SELECT e.e_id, g.t, g.n
+FROM evlog AS e JOIN g ON g.t = e.e_logged;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+
+=== vs-3: pass-through child keyed on TIMESTAMP(6) ===
+== Query ==
+WITH g AS (SELECT e_stamp6 AS t, COUNT(*) AS n
+FROM evlog GROUP BY e_stamp6)
+SELECT e.e_id, g.t, g.n
+FROM evlog AS e JOIN g ON g.t = e.e_stamp6;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+
+=== vs-4: pass-through child keyed on TIME(3) ===
+== Query ==
+WITH g AS (SELECT e_split AS t, COUNT(*) AS n
+FROM evlog GROUP BY e_split)
+SELECT e.e_id, g.t, g.n
+FROM evlog AS e JOIN g ON g.t = e.e_split;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+
+=== vs-5: pass-through child keyed on DECIMAL(12,2) ===
+== Query ==
+WITH g AS (SELECT o_totalprice AS p, COUNT(*) AS n
+FROM orders GROUP BY o_totalprice)
+SELECT o.o_orderkey, g.p, g.n
+FROM orders AS o JOIN g ON g.p = o.o_totalprice
+WHERE o.o_orderkey <= 300;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+
+=== vs-6: lookupCte root on DATETIME ===
+== Query ==
+WITH g AS (SELECT e_modified AS t, COUNT(*) AS n
+           FROM evlog GROUP BY e_modified)
+SELECT t, n FROM g WHERE t = '2001-01-01 02:17:00';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT e_modified AS t, COUNT(*) AS n
+FROM evlog GROUP BY e_modified)
+SELECT t, n FROM g WHERE t = '2001-01-01 02:17:00'|
+t	n
+2001-01-01 02:17:00	1
+
+=== vs-7: lookupCte root on DATETIME(6) ===
+== Query ==
+WITH g AS (SELECT e_logged AS t, COUNT(*) AS n
+           FROM evlog GROUP BY e_logged)
+SELECT t, n FROM g WHERE t = '2001-06-15 12:01:29.123457';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT e_logged AS t, COUNT(*) AS n
+FROM evlog GROUP BY e_logged)
+SELECT t, n FROM g WHERE t = '2001-06-15 12:01:29.123457'|
+t	n
+2001-06-15 12:01:29.123457	1
+
+=== vs-8: lookupCte root on DECIMAL(12,2) ===
+== Query ==
+WITH g AS (SELECT o_totalprice AS p, COUNT(*) AS n
+FROM orders GROUP BY o_totalprice)
+SELECT p, n FROM g WHERE p = 93.59;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT o_totalprice AS p, COUNT(*) AS n
+FROM orders GROUP BY o_totalprice)
+SELECT p, n FROM g WHERE p = 93.59|
+p	n
+93.59	1
+
+=== vs-9: single-group root on DATETIME ===
+== Query ==
+WITH g AS (SELECT e_modified AS t, COUNT(*) AS n
+           FROM evlog WHERE e_modified = '2001-01-01 02:17:00'
+           GROUP BY e_modified)
+SELECT t, n FROM g;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT e_modified AS t, COUNT(*) AS n
+FROM evlog WHERE e_modified = '2001-01-01 02:17:00'
+           GROUP BY e_modified)
+SELECT t, n FROM g|
+t	n
+2001-01-01 02:17:00	1
+
+=== vs-10: pass-through child keyed on VARBINARY(32) ===
+== Query ==
+WITH g AS (SELECT v_var AS k, COUNT(*) AS n
+FROM vsbin GROUP BY v_var)
+SELECT v.v_id, g.k, g.n
+FROM vsbin AS v JOIN g ON g.k = v.v_var;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT v_var AS k, COUNT(*) AS n
+FROM vsbin GROUP BY v_var)
+SELECT v.v_id, g.k, g.n
+FROM vsbin AS v JOIN g ON g.k = v.v_var|
+v_id	k	n
+1	abcdefghijklmnopqrstu	3
+2	abcdefghijklmnopqrstu	3
+3	zyxwvutsrqponmlkjihgfedcba	2
+4	zyxwvutsrqponmlkjihgfedcba	2
+5	abcdefghijklmnopqrstu	3
+
+=== vs-11: pass-through child keyed on BINARY(20) ===
+== Query ==
+WITH g AS (SELECT v_fix AS k, COUNT(*) AS n
+FROM vsbin GROUP BY v_fix)
+SELECT v.v_id, g.k, g.n
+FROM vsbin AS v JOIN g ON g.k = v.v_fix;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT v_fix AS k, COUNT(*) AS n
+FROM vsbin GROUP BY v_fix)
+SELECT v.v_id, g.k, g.n
+FROM vsbin AS v JOIN g ON g.k = v.v_fix|
+v_id	k	n
+1	ABCDEFGHIJKLMNOPQRST	3
+2	TSRQPONMLKJIHGFEDCBA	2
+3	ABCDEFGHIJKLMNOPQRST	3
+4	TSRQPONMLKJIHGFEDCBA	2
+5	ABCDEFGHIJKLMNOPQRST	3
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_cte_dd_virtcol_sizes_jit_fallback_delta;
+ronsql_cte_dd_virtcol_sizes_jit_fallback_delta
+0

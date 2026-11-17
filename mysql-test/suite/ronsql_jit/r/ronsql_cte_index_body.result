@@ -98,6 +98,260 @@ k	total
 200	100
 300	130
 400	90
+
+=== CTE Boolean collection case 1 ===
+== Explain Query ==
+== Query ==
+WITH stats AS (
+  SELECT o_grp AS k, SUM(o_amt) AS total
+  FROM ix_orders FORCE INDEX (idx_grp)
+  WHERE NOT (o_id = 101 OR o_id = 102 OR o_id = 103 OR o_id = 104 OR
+      o_id = 105 OR o_id = 106 OR o_id = 107 OR o_id = 108 OR
+      o_id = 109 OR o_id = 110 OR o_id = 111 OR o_id = 112 OR
+      o_id = 113 OR o_id = 114 OR o_id = 115 OR o_id = 116 OR
+      o_id = 117 OR o_id = 118 OR o_id = 119 OR o_id = 120 OR
+      o_id = 121 OR o_id = 122 OR o_id = 123 OR o_id = 124 OR
+      o_id = 125 OR o_id = 126 OR o_id = 127 OR o_id = 128 OR
+      o_id = 129 OR o_id = 130 OR o_id = 131 OR o_id = 132 OR
+      o_id = 133 OR o_id = 134 OR o_id = 135 OR o_id = 136 OR
+      o_id = 137 OR o_id = 138 OR o_id = 139 OR o_id = 140 OR
+      o_id = 141 OR o_id = 142 OR o_id = 143 OR o_id = 144 OR
+      o_id = 145 OR o_id = 146 OR o_id = 147 OR o_id = 148 OR
+      o_id = 149 OR o_id = 150 OR o_id = 151 OR o_id = 152 OR
+      o_id = 153 OR o_id = 154 OR o_id = 155 OR o_id = 156 OR
+      o_id = 157 OR o_id = 158 OR o_id = 159 OR o_id = 160 OR
+      o_id = 161 OR o_id = 8)
+    AND o_grp >= 200
+  GROUP BY o_grp)
+SELECT k, total FROM stats;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== CTE Boolean collection case 2 ===
+== Explain Query ==
+== Query ==
+WITH stats AS (
+  SELECT o_grp AS k, SUM(o_amt) AS total
+  FROM ix_orders FORCE INDEX (idx_grp)
+  WHERE NOT (o_id = 101 OR o_id = 102 OR o_id = 103 OR o_id = 104 OR
+      o_id = 105 OR o_id = 106 OR o_id = 107 OR o_id = 108 OR
+      o_id = 109 OR o_id = 110 OR o_id = 111 OR o_id = 112 OR
+      o_id = 113 OR o_id = 114 OR o_id = 115 OR o_id = 116 OR
+      o_id = 117 OR o_id = 118 OR o_id = 119 OR o_id = 120 OR
+      o_id = 121 OR o_id = 122 OR o_id = 123 OR o_id = 124 OR
+      o_id = 125 OR o_id = 126 OR o_id = 127 OR o_id = 128 OR
+      o_id = 129 OR o_id = 130 OR o_id = 131 OR o_id = 132 OR
+      o_id = 133 OR o_id = 134 OR o_id = 135 OR o_id = 136 OR
+      o_id = 137 OR o_id = 138 OR o_id = 139 OR o_id = 140 OR
+      o_id = 141 OR o_id = 142 OR o_id = 143 OR o_id = 144 OR
+      o_id = 145 OR o_id = 146 OR o_id = 147 OR o_id = 148 OR
+      o_id = 149 OR o_id = 150 OR o_id = 151 OR o_id = 152 OR
+      o_id = 153 OR o_id = 154 OR o_id = 155 OR o_id = 156 OR
+      o_id = 157 OR o_id = 158 OR o_id = 159 OR o_id = 160 OR
+      o_id = 161 OR o_id = 162 OR o_id = 8)
+    AND o_grp >= 200
+  GROUP BY o_grp)
+SELECT k, total FROM stats;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== CTE Boolean collection case 3 ===
+== Explain Query ==
+== Query ==
+WITH stats AS (
+  SELECT o_grp AS k, SUM(o_amt) AS total
+  FROM ix_orders FORCE INDEX (idx_grp)
+  WHERE NOT (o_id = 101 OR o_id = 102 OR o_id = 103 OR o_id = 104 OR
+      o_id = 105 OR o_id = 106 OR o_id = 107 OR o_id = 108 OR
+      o_id = 109 OR o_id = 110 OR o_id = 111 OR o_id = 112 OR
+      o_id = 113 OR o_id = 114 OR o_id = 115 OR o_id = 116 OR
+      o_id = 117 OR o_id = 118 OR o_id = 119 OR o_id = 120 OR
+      o_id = 121 OR o_id = 122 OR o_id = 123 OR o_id = 124 OR
+      o_id = 125 OR o_id = 126 OR o_id = 127 OR o_id = 128 OR
+      o_id = 129 OR o_id = 130 OR o_id = 131 OR o_id = 132 OR
+      o_id = 133 OR o_id = 134 OR o_id = 135 OR o_id = 136 OR
+      o_id = 137 OR o_id = 138 OR o_id = 139 OR o_id = 140 OR
+      o_id = 141 OR o_id = 142 OR o_id = 143 OR o_id = 144 OR
+      o_id = 145 OR o_id = 146 OR o_id = 147 OR o_id = 148 OR
+      o_id = 149 OR o_id = 150 OR o_id = 151 OR o_id = 152 OR
+      o_id = 153 OR o_id = 154 OR o_id = 155 OR o_id = 156 OR
+      o_id = 157 OR o_id = 158 OR o_id = 159 OR o_id = 160 OR
+      o_id = 161 OR o_id = 162 OR o_id = 163 OR o_id = 8)
+    AND o_grp >= 200
+  GROUP BY o_grp)
+SELECT k, total FROM stats;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== CTE Boolean collection case 4 ===
+== Explain Query ==
+== Query ==
+WITH stats AS (
+  SELECT o_grp AS k, SUM(o_amt) AS total
+  FROM ix_orders FORCE INDEX (idx_grp)
+  WHERE NOT (o_id = 101 OR (o_id = 102 OR (o_id = 103 OR (o_id = 104 OR
+      (o_id = 105 OR (o_id = 106 OR (o_id = 107 OR (o_id = 108 OR
+      (o_id = 109 OR (o_id = 110 OR (o_id = 111 OR (o_id = 112 OR
+      (o_id = 113 OR (o_id = 114 OR (o_id = 115 OR (o_id = 116 OR
+      (o_id = 117 OR (o_id = 118 OR (o_id = 119 OR (o_id = 120 OR
+      (o_id = 121 OR (o_id = 122 OR (o_id = 123 OR (o_id = 124 OR
+      (o_id = 125 OR (o_id = 126 OR (o_id = 127 OR (o_id = 128 OR
+      (o_id = 129 OR (o_id = 130 OR (o_id = 131 OR (o_id = 132 OR
+      (o_id = 133 OR (o_id = 134 OR (o_id = 135 OR (o_id = 136 OR
+      (o_id = 137 OR (o_id = 138 OR (o_id = 139 OR (o_id = 140 OR
+      (o_id = 141 OR (o_id = 142 OR (o_id = 143 OR (o_id = 144 OR
+      (o_id = 145 OR (o_id = 146 OR (o_id = 147 OR (o_id = 148 OR
+      (o_id = 149 OR (o_id = 150 OR (o_id = 151 OR (o_id = 152 OR
+      (o_id = 153 OR (o_id = 154 OR (o_id = 155 OR (o_id = 156 OR
+      (o_id = 157 OR (o_id = 158 OR (o_id = 159 OR (o_id = 160 OR
+      (o_id = 161 OR (o_id = 162 OR (o_id = 163 OR (o_id = 8))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
+    AND o_grp >= 200
+  GROUP BY o_grp)
+SELECT k, total FROM stats;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== CTE Boolean collection case 5 ===
+== Explain Query ==
+== Query ==
+WITH stats AS (
+  SELECT o_grp AS k, SUM(o_amt) AS total
+  FROM ix_orders FORCE INDEX (idx_grp)
+  WHERE NOT (((((((o_id = 101 OR o_id = 102) OR (o_id = 103 OR o_id = 104)) OR
+      ((o_id = 105 OR o_id = 106) OR (o_id = 107 OR o_id = 108))) OR
+      (((o_id = 109 OR o_id = 110) OR (o_id = 111 OR o_id = 112)) OR
+      ((o_id = 113 OR o_id = 114) OR (o_id = 115 OR o_id = 116)))) OR
+      ((((o_id = 117 OR o_id = 118) OR (o_id = 119 OR o_id = 120)) OR
+      ((o_id = 121 OR o_id = 122) OR (o_id = 123 OR o_id = 124))) OR
+      (((o_id = 125 OR o_id = 126) OR (o_id = 127 OR o_id = 128)) OR
+      ((o_id = 129 OR o_id = 130) OR (o_id = 131 OR o_id = 132))))) OR
+      (((((o_id = 133 OR o_id = 134) OR (o_id = 135 OR o_id = 136)) OR
+      ((o_id = 137 OR o_id = 138) OR (o_id = 139 OR o_id = 140))) OR
+      (((o_id = 141 OR o_id = 142) OR (o_id = 143 OR o_id = 144)) OR
+      ((o_id = 145 OR o_id = 146) OR (o_id = 147 OR o_id = 148)))) OR
+      ((((o_id = 149 OR o_id = 150) OR (o_id = 151 OR o_id = 152)) OR
+      ((o_id = 153 OR o_id = 154) OR (o_id = 155 OR o_id = 156))) OR
+      (((o_id = 157 OR o_id = 158) OR (o_id = 159 OR o_id = 160)) OR
+      ((o_id = 161 OR o_id = 162) OR (o_id = 163 OR o_id = 8)))))))
+    AND o_grp >= 200
+  GROUP BY o_grp)
+SELECT k, total FROM stats;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== CTE Boolean collection case 6 ===
+== Explain Query ==
+== Query ==
+WITH stats AS (
+  SELECT o_grp AS k, SUM(o_amt) AS total
+  FROM ix_orders
+  WHERE NOT (o_id = 101 OR o_id = 102 OR o_id = 103 OR o_id = 104 OR
+      o_id = 105 OR o_id = 106 OR o_id = 107 OR o_id = 108 OR
+      o_id = 109 OR o_id = 110 OR o_id = 111 OR o_id = 112 OR
+      o_id = 113 OR o_id = 114 OR o_id = 115 OR o_id = 116 OR
+      o_id = 117 OR o_id = 118 OR o_id = 119 OR o_id = 120 OR
+      o_id = 121 OR o_id = 122 OR o_id = 123 OR o_id = 124 OR
+      o_id = 125 OR o_id = 126 OR o_id = 127 OR o_id = 128 OR
+      o_id = 129 OR o_id = 130 OR o_id = 131 OR o_id = 132 OR
+      o_id = 133 OR o_id = 134 OR o_id = 135 OR o_id = 136 OR
+      o_id = 137 OR o_id = 138 OR o_id = 139 OR o_id = 140 OR
+      o_id = 141 OR o_id = 142 OR o_id = 143 OR o_id = 144 OR
+      o_id = 145 OR o_id = 146 OR o_id = 147 OR o_id = 148 OR
+      o_id = 149 OR o_id = 150 OR o_id = 151 OR o_id = 152 OR
+      o_id = 153 OR o_id = 154 OR o_id = 155 OR o_id = 156 OR
+      o_id = 157 OR o_id = 158 OR o_id = 159 OR o_id = 160 OR
+      o_id = 161 OR o_id = 162 OR o_id = 163 OR o_id = 8)
+    AND o_grp >= 200
+  GROUP BY o_grp)
+SELECT k, total FROM stats;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== CTE Boolean collection case 7 ===
+== Explain Query ==
+== Query ==
+WITH stats AS (
+  SELECT o_grp AS k, SUM(o_amt) AS total
+  FROM ix_orders USE INDEX (idx_amt)
+  WHERE NOT (o_id = 101 OR o_id = 102 OR o_id = 103 OR o_id = 104 OR
+      o_id = 105 OR o_id = 106 OR o_id = 107 OR o_id = 108 OR
+      o_id = 109 OR o_id = 110 OR o_id = 111 OR o_id = 112 OR
+      o_id = 113 OR o_id = 114 OR o_id = 115 OR o_id = 116 OR
+      o_id = 117 OR o_id = 118 OR o_id = 119 OR o_id = 120 OR
+      o_id = 121 OR o_id = 122 OR o_id = 123 OR o_id = 124 OR
+      o_id = 125 OR o_id = 126 OR o_id = 127 OR o_id = 128 OR
+      o_id = 129 OR o_id = 130 OR o_id = 131 OR o_id = 132 OR
+      o_id = 133 OR o_id = 134 OR o_id = 135 OR o_id = 136 OR
+      o_id = 137 OR o_id = 138 OR o_id = 139 OR o_id = 140 OR
+      o_id = 141 OR o_id = 142 OR o_id = 143 OR o_id = 144 OR
+      o_id = 145 OR o_id = 146 OR o_id = 147 OR o_id = 148 OR
+      o_id = 149 OR o_id = 150 OR o_id = 151 OR o_id = 152 OR
+      o_id = 153 OR o_id = 154 OR o_id = 155 OR o_id = 156 OR
+      o_id = 157 OR o_id = 158 OR o_id = 159 OR o_id = 160 OR
+      o_id = 161 OR o_id = 162 OR o_id = 163 OR o_id = 8)
+    AND o_grp >= 200
+  GROUP BY o_grp)
+SELECT k, total FROM stats;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== CTE Boolean collection case 8: unusable FORCE INDEX ===
+Error handling: RPE
+ronsql_cli caught exception: FORCE INDEX 'idx_amt' cannot be used: no WHERE condition matches its leading column.
+
+=== CTE Boolean collection case 9: unusable FORCE INDEX ===
+Error handling: RPE
+ronsql_cli caught exception: FORCE INDEX 'idx_amt' cannot be used: no WHERE condition matches its leading column.
+
+=== CTE Boolean collection case 10: unusable FORCE INDEX ===
+Error handling: RPE
+ronsql_cli caught exception: FORCE INDEX 'idx_amt' cannot be used: no WHERE condition matches its leading column.
+
+=== CTE Boolean collection case 11: missing FORCE INDEX ===
+Error handling: RPE
+ronsql_cli caught exception: FORCE INDEX names 'no_such_idx', which is not an available ordered index on the scanned table.
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_index_body_jit_fallback_delta;
 ronsql_cte_index_body_jit_fallback_delta

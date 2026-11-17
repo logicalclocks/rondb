@@ -1,0 +1,173 @@
+# A join root whose WHERE fixes every primary key column with an equality
+# is read through an ordered index with those values as an equality bound
+# (RonSQLPreparer::emit_pk_equality_index_scan_root), when it cannot be a
+# readTuple: an aggregating query, or a scan child.
+#
+# QueryPlanner::findOrderedIndex accepts any ordered index whose first
+# columns are the primary key columns in any order, and the bound gives
+# its k:th value to the index's k:th column. The values were given in
+# primary key order, so with PRIMARY KEY (a, b) and an index on (b, a),
+# WHERE a = 1 AND b = 2 read the row a = 2, b = 1. With primary key
+# columns of different types the query failed instead ("Failed to create
+# root PK index scan."). The values are now given in index column order.
+#
+# jr_hash has a hash-only primary key, so ix_ba is the only ordered index
+# that qualifies. In jr_ord the result used to depend on whether PRIMARY
+# or ix_ba came first in the index list. jr_mixed has primary key columns
+# of different types and an index with an extra column after them.
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE jr_hash (
+  a INT NOT NULL,
+  b INT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY USING HASH (a, b),
+  INDEX ix_ba (b, a)
+) ENGINE=NDB;
+
+CREATE TABLE jr_ord (
+  a INT NOT NULL,
+  b INT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY (a, b),
+  INDEX ix_ba (b, a)
+) ENGINE=NDB;
+
+CREATE TABLE jr_mixed (
+  a INT NOT NULL,
+  b BIGINT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY USING HASH (a, b),
+  INDEX ix_bav (b, a, v)
+) ENGINE=NDB;
+
+CREATE TABLE jr_child (
+  id INT NOT NULL,
+  ra INT NOT NULL,
+  x  INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_ra (ra)
+) ENGINE=NDB;
+
+# The row (1, 2) and its mirror (2, 1) have different v and different
+# children, so reading the mirror shows in every column.
+INSERT INTO jr_hash VALUES (1,2,12),(2,1,21);
+INSERT INTO jr_ord VALUES (1,2,12),(2,1,21);
+INSERT INTO jr_mixed VALUES (1,2,12),(2,1,21);
+INSERT INTO jr_child VALUES (1,1,100),(2,2,200),(3,1,300);
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === jr-1: hash-only primary key, permuted index, aggregate ===
+let $QUERY=
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_hash AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2
+GROUP BY r.v;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_hash AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2
+GROUP BY r.v|
+
+--echo
+--echo === jr-2: as jr-1, equalities written in index column order ===
+let $QUERY=
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_hash AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.b = 2 AND r.a = 1
+GROUP BY r.v;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_hash AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.b = 2 AND r.a = 1
+GROUP BY r.v|
+
+--echo
+--echo === jr-3: hash-only primary key, permuted index, pass-through with a scan child ===
+let $QUERY=
+SELECT r.a, r.b, r.v, c.id, c.x
+FROM jr_hash AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT r.a, r.b, r.v, c.id, c.x
+FROM jr_hash AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2|
+
+--echo
+--echo === jr-4: as jr-1 with a residual condition on a non-key column ===
+let $QUERY=
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_hash AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2 AND r.v < 20
+GROUP BY r.v;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_hash AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2 AND r.v < 20
+GROUP BY r.v|
+
+--echo
+--echo === jr-5: ordered primary key plus a permuted index ===
+let $QUERY=
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_ord AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2
+GROUP BY r.v;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_ord AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2
+GROUP BY r.v|
+
+--echo
+--echo === jr-6: primary key columns of different types, index with an extra column ===
+let $QUERY=
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_mixed AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2
+GROUP BY r.v;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_mixed AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2
+GROUP BY r.v|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE jr_child;
+DROP TABLE jr_mixed;
+DROP TABLE jr_ord;
+DROP TABLE jr_hash;
+--enable_warnings
+--enable_query_log

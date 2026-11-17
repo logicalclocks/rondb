@@ -1,0 +1,37 @@
+--source include/have_multi_ndb.inc
+
+#
+# A database dropped with DROP DATABASE must stay dropped when the MySQL
+# Servers synchronize their databases with mysql.ndb_schema after a
+# cluster restart (Ndb_dd_sync::synchronize_databases).
+#
+# With lower_case_table_names=2 (the macOS default), CREATE DATABASE was
+# distributed under the name as typed and DROP DATABASE under the name
+# lowercased, so a name with upper case letters left two ndb_schema
+# rows. The synchronization replayed the CREATE row and the database
+# came back on every MySQL Server. With lower_case_table_names 0 or 1
+# both names are the same and the test passes either way.
+#
+
+CREATE DATABASE Ndb_Sync_Case_Db;
+DROP DATABASE Ndb_Sync_Case_Db;
+
+--echo # Normal restart of all data nodes
+--exec $NDB_MGM -e "ALL RESTART -N" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --not-started >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "ALL START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+
+--echo # The database must not come back on either MySQL Server
+--connection server1
+--source include/ndb_not_readonly.inc
+SELECT COUNT(*) AS db_exists FROM information_schema.SCHEMATA
+  WHERE LOWER(SCHEMA_NAME) = 'ndb_sync_case_db';
+
+--connection server2
+--source include/ndb_not_readonly.inc
+SELECT COUNT(*) AS db_exists FROM information_schema.SCHEMATA
+  WHERE LOWER(SCHEMA_NAME) = 'ndb_sync_case_db';
+
+--connection server1
+--remove_file $NDB_TOOLS_OUTPUT

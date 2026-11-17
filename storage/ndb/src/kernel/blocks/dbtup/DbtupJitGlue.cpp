@@ -22,6 +22,7 @@
 #include <ndb_global.h>
 #include <my_byteorder.h>      /* sint8korr / sint4korr / ... */
 #include <AttributeDescriptor.hpp>  /* column type decode for READ_ATTR */
+#include <AttributeHeader.hpp>      /* ROWID (NDB_JIT_ATTR_ROWID check) */
 #include <CteLinkedAttr.hpp>        /* linked-attr metadata words (5F-2) */
 
 #include <atomic>              /* observability counters */
@@ -48,6 +49,11 @@ extern "C" {
 #include "jit/jit_progcache.h"    /* program-reuse cache (Phase 8 Slice 3) */
 #include "jit/ndb_jit_platform.h" /* NDB_JIT_HAVE_BACKEND */
 }
+
+/* The C bridge cannot include AttributeHeader.hpp. */
+static_assert(NDB_JIT_ATTR_ROWID == AttributeHeader::ROWID,
+              "the bridge's ROWID guard admission names the ROWID pseudo"
+              " column");
 
 #ifndef ZAGG_MATH_OVERFLOW
 #define ZAGG_MATH_OVERFLOW 1860

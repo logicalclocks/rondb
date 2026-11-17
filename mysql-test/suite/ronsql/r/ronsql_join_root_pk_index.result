@@ -1,0 +1,133 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== jr-1: hash-only primary key, permuted index, aggregate ===
+== Query ==
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_hash AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2
+GROUP BY r.v;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_hash AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2
+GROUP BY r.v|
+v	COUNT(*)	SUM(c.x)
+12	2	400
+
+=== jr-2: as jr-1, equalities written in index column order ===
+== Query ==
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_hash AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.b = 2 AND r.a = 1
+GROUP BY r.v;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_hash AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.b = 2 AND r.a = 1
+GROUP BY r.v|
+v	COUNT(*)	SUM(c.x)
+12	2	400
+
+=== jr-3: hash-only primary key, permuted index, pass-through with a scan child ===
+== Query ==
+SELECT r.a, r.b, r.v, c.id, c.x
+FROM jr_hash AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT r.a, r.b, r.v, c.id, c.x
+FROM jr_hash AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2|
+a	b	v	id	x
+1	2	12	1	100
+1	2	12	3	300
+
+=== jr-4: as jr-1 with a residual condition on a non-key column ===
+== Query ==
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_hash AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2 AND r.v < 20
+GROUP BY r.v;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_hash AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2 AND r.v < 20
+GROUP BY r.v|
+v	COUNT(*)	SUM(c.x)
+12	2	400
+
+=== jr-5: ordered primary key plus a permuted index ===
+== Query ==
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_ord AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2
+GROUP BY r.v;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_ord AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2
+GROUP BY r.v|
+v	COUNT(*)	SUM(c.x)
+12	2	400
+
+=== jr-6: primary key columns of different types, index with an extra column ===
+== Query ==
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_mixed AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2
+GROUP BY r.v;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT r.v, COUNT(*), SUM(c.x)
+FROM jr_mixed AS r JOIN jr_child AS c ON c.ra = r.a
+WHERE r.a = 1 AND r.b = 2
+GROUP BY r.v|
+v	COUNT(*)	SUM(c.x)
+12	2	400

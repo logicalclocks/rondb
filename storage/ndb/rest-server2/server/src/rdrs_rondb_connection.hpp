@@ -106,7 +106,24 @@ class RDRSRonDBConnection {
    * been) torn down and must be returned to the pool, never reused. */
   std::atomic<Uint64> m_generation{0};
 
+  /* Set by StopReconnecting() when the process shutdown starts: from then
+   * on no reconnection starts, and a Connect() in progress stops trying. */
+  std::atomic<bool> m_stop_reconnecting{false};
+
   inline void checkMagic() { require(magic == expectedMagic); }
+
+  /* True once the process shutdown has started: StopReconnecting() or
+   * Shutdown(true). Lock-free. */
+  bool IsStopping() const;
+
+  /* The connect() and wait_until_ready() calls of Connect(), with the same
+   * retries and timeouts, but made in steps that check IsStopping() in
+   * between. Connect() holds connectionMutex throughout, so a reconnection
+   * that was still trying when the shutdown started would otherwise keep
+   * Shutdown(true) waiting for all of its attempts. Each returns the NDB
+   * API's return code, and sets *stopped when the shutdown cut it short. */
+  int ConnectToMgmd(bool *stopped);
+  int WaitUntilReady(bool *stopped);
 
  public:
   RDRSRonDBConnection(const char *connection_string,
@@ -192,6 +209,18 @@ class RDRSRonDBConnection {
    */
   typedef void (*ReconnectListener)();
   static void RegisterReconnectListener(ReconnectListener listener);
+
+  /**
+   * First step of the process shutdown, before the request handlers,
+   * caches and background threads are stopped: no reconnection starts
+   * from now on, and one in progress stops connecting. Without this, a
+   * reconnection started when the cluster went away just before the
+   * shutdown (the watchdog does that, and mtr stops the cluster first)
+   * kept retrying against a management server that was already gone,
+   * holding connectionMutex, and the shutdown waited for it until the
+   * process was killed. Idempotent; lock-free.
+   */
+  void StopReconnecting();
 
   /**
    * Starts reconnection thread which calls the ReconnectHandler

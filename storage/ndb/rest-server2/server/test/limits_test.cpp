@@ -213,6 +213,12 @@ TEST(Limits, WorstCaseAllColumnsRequestFitsMinReqBuffer) {
 TEST(Limits, WidestWriteRequestBoundHoldsAndFits) {
   const std::string db = name_of_max_length('d');
   const std::string table = name_of_max_length('t');
+  /* The column names must outlive params: PKReadFilter::column is a
+   * string_view. */
+  std::vector<std::string> key_names;
+  std::vector<std::string> col_names;
+  key_names.reserve(MAX_ATTRIBUTES_IN_INDEX);
+  col_names.reserve(MAX_ATTRIBUTES_IN_TABLE);
   PKReadParams params;
   params.path.db = db;
   params.path.table = table;
@@ -223,14 +229,16 @@ TEST(Limits, WidestWriteRequestBoundHoldsAndFits) {
     const Uint32 cols_left = MAX_ATTRIBUTES_IN_INDEX - i;
     const Uint32 share = (key_bytes_left + cols_left - 1) / cols_left;
     key_bytes_left -= share;
+    key_names.push_back(name_of_max_length(static_cast<char>('a' + (i % 26))));
     PKReadFilter filter;
-    filter.column = name_of_max_length(static_cast<char>('a' + (i % 26)));
+    filter.column = key_names.back();
     filter.value.assign(share, 'k');
     params.filters.push_back(filter);
   }
   for (Uint32 i = 0; i < MAX_ATTRIBUTES_IN_TABLE; i++) {
+    col_names.push_back(name_of_max_length(static_cast<char>('A' + (i % 26))));
     PKReadFilter column;
-    column.column = name_of_max_length(static_cast<char>('A' + (i % 26)));
+    column.column = col_names.back();
     /* 255 bytes per value: more than the row limit lets every column hold
      * at once, so this over-covers any non-blob write. */
     column.value.assign(255, 'v');

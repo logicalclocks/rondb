@@ -112,7 +112,14 @@ NdbMutex *globalConfigsMutex = nullptr;
 static volatile sig_atomic_t g_in_exit = 0;
 
 static void do_exit() {
-  // todo Set shutdown flag in RDRS2 connection pool
+  /* Before anything else is stopped: no RonDB reconnection may start, or
+   * keep trying, from now on. The components stopped below can wait for
+   * a connection that a reconnection holds, and the last step,
+   * shutdown_connection(), waits for the reconnection itself. When the
+   * cluster went away just before the shutdown (mtr stops it first), a
+   * reconnection retrying against a management server that was gone kept
+   * the process from exiting until it was killed. */
+  stop_reconnecting();
   if (g_drogon_running) {
     if (g_ronsql_worker_pool != nullptr) {
       /* While the IO loops still run: queued RonSQL requests get a 503 and

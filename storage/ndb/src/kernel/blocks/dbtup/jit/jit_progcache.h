@@ -107,7 +107,7 @@ typedef int (*NjpCompileFn)(void *cb_ctx, const uint8_t *key,
 
 /* Default idle budget per cache: unpinned entries retained at refcount 0
  * (spread over the shards). Compiled blobs are at most
- * NDB_JIT_CODEMEM_MAX_BLOB (8 KB) and typically a few hundred bytes, so
+ * NDB_JIT_CODEMEM_MAX_BLOB (64 KB) and typically a few hundred bytes, so
  * 1024 retained blobs stay well inside the 16 MB default code memory;
  * the NOMEM sweep covers the rest. 0 restores evict-at-refcount-0. */
 #define NJP_IDLE_LIMIT_DEFAULT 1024u

@@ -1,0 +1,15 @@
+!include ../my.cnf
+
+# Identical to the ndb suite my.cnf except TransactionInactiveTimeout,
+# which is the maximum (10 minutes) instead of the default 60 seconds.
+#
+# The "after retries" cases hold a row lock in an idle MySQL transaction
+# while ndb_restore applies log entries for the locked rows. Each entry is
+# attempted 11 times, and each attempt waits TransactionDeadlockDetectionTimeout
+# (3 seconds) before it gets error 266 and then sleeps 100 + 300 * n ms,
+# which takes 50-60 seconds in all. With the default timeout the idle
+# transaction is aborted before that, the lock goes away and the restore
+# succeeds instead of failing.
+
+[cluster_config.1]
+TransactionInactiveTimeout=600000
