@@ -55,7 +55,17 @@ Pool_context test_context(Uint32 pages) {
   Pool_context pc;
   pc.m_block = &block;
 
-  Resource_limit rl;
+  /**
+   * Resource_limit has no constructor; set_resource_limit also takes
+   * m_max_high_prio and m_prio_memory from it.  The tests have no priority
+   * levels and never set the priority free limits (low and medium start at
+   * UINT32_MAX): every resource group may use all shared memory, with no
+   * high priority limit.  Left uninitialized, these two fields decided by
+   * chance whether a pool could get a page.
+   */
+  Resource_limit rl{};
+  rl.m_max_high_prio = Resource_limit::HIGHEST_LIMIT;
+  rl.m_prio_memory = Resource_limit::ULTRA_HIGH_PRIO_MEMORY;
   for (Uint32 resid = 1; resid < RG_COUNT; resid++) {
     rl.m_min = 0;
     rl.m_max = Resource_limit::HIGHEST_LIMIT;
