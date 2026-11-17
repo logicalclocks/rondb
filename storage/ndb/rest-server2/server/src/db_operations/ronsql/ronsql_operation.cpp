@@ -38,6 +38,27 @@
 
 #include "storage/ndb/src/ronsql/RonSQLPerf.hpp"
 
+/*
+ * X-14: a failure of ronsql_op that no RonSQL exception describes gets the
+ * response of a RonSQLPermanentError of class INTERNAL (HTTP 500, error class
+ * "internal", " Please report a bug." appended), so that RDRS goes on serving
+ * other requests.
+ */
+static RS_Status ronsql_op_internal_error(RonSQLExecParams& params,
+                                          const char* msg,
+                                          int line) {
+  const RonSQLErrorClass cls = RonSQLErrorClass::INTERNAL;
+  const char* cls_name = ronsql_error_class_name(cls);
+  const std::string what = std::string(msg) + " Please report a bug.";
+  *params.err_stream << "[" << cls_name << "] " << what << "\n";
+  params.error_class = cls_name;
+  params.error_ndb_code = 0;
+  return __RS_ERROR(ronsql_http_code_for(cls, what.c_str()), -1, -1, 0, -1,
+                    std::string(rdrsErrorMessage(ERROR_RONSQL_PERMANENT)) +
+                    " [" + cls_name + "] Detail: " + what,
+                    line, __MYFILENAME__);
+}
+
 HTTP_CODE ronsql_http_code_for(RonSQLErrorClass cls, const char* what) {
   switch (cls) {
   case RonSQLErrorClass::SYNTAX:
@@ -158,11 +179,19 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
                         __LINE__, __MYFILENAME__);
     }
     catch (...) {
-      // This should never happen
-      abort();
+      /*
+       * X-14: the preparer turns every exception into one of the three types
+       * above (handle_ronsql_exception), so only an exception thrown while it
+       * handles another, a std::bad_alloc from the heap say, gets here. Fail
+       * the request, not RDRS.
+       */
+      DEB_TRACE();
+      return ronsql_op_internal_error(
+          params, "An unexpected exception reached ronsql_op.", __LINE__);
     }
   }
-  // Should be unreachable
+  // Unreachable: every arm returns on the last attempt.
   DEB_TRACE();
-  abort();
+  return ronsql_op_internal_error(
+      params, "ronsql_op ran out of attempts without a result.", __LINE__);
 }

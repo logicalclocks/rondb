@@ -580,8 +580,20 @@ void RonSQLRequest::execute(Uint32 ndb_thread_index) {
       }
       break;
     default:
-      // Should be unreachable
-      abort();
+      /*
+       * X-14: unreachable, ronsql_validate_and_init_params sets one of the
+       * four formats above.  Fail the request as an internal error, as
+       * ronsql_op does, instead of stopping RDRS.
+       */
+      DEB_TRACE();
+      resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
+      resp->setContentTypeCodeAndCustomString(
+        drogon::CT_TEXT_PLAIN, "content-type: text/plain; charset=utf-8; \r\n");
+      resp->addHeader("X-RonSQL-Error-Class", "internal");
+      resp->setBody("[internal] The RonSQL output format is unknown."
+                    " Please report a bug.\n");
+      callback(resp);
+      return;
     }
     DEB_TRACE();
 #ifdef RONSQL_PHASE_STATS
