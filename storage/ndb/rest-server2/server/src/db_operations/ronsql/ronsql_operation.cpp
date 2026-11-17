@@ -151,7 +151,16 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
         err << "[resource] Caught RonSQLRetryableError after " << max_attempts
             << " attempts: " << e.what() << ".\n";
         params.error_class = "resource";
-        return __RS_ERROR(SERVICE_UNAVAILABLE, -1, -1, -1, -1,
+        /*
+         * X-8: the last attempt's NDB error, for X-RonSQL-NDB-Error and
+         * for ReturnNdbObject, which reconnects after 4009, 4035 and 4040
+         * (ndb_error_cluster_unavailable).  These are retried now, so
+         * the code must survive the retries.
+         */
+        params.error_ndb_code = e.ndb_error_code();
+        return __RS_ERROR(SERVICE_UNAVAILABLE, -1, -1,
+                          e.ndb_error_code() != 0 ? e.ndb_error_code() : -1,
+                          -1,
                           std::string(rdrsErrorMessage(ERROR_RONSQL_TEMPORARY)) +
                           " Detail: " + e.what(),
                           __LINE__, __MYFILENAME__);

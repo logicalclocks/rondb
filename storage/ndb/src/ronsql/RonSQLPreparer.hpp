@@ -817,10 +817,11 @@ private:
                                          const char* what);
   // Raise the error of one failed operation or pushed query by its NDB
   // classification, as handle_ronsql_exception does for a transaction
-  // error: rate limit (RLE), temporary (RRE, unless rows were already
+  // error: rate limit (RLE), retryable (RRE, unless rows were already
   // streamed) or permanent with its error class and code (RPE).  Only a
-  // temporary error is retried; an internal error is not.  `where`
-  // labels the err-stream line.  Callers route schema errors first.
+  // temporary error or an unavailable cluster (X-8) is retried; an
+  // internal error is not.  `where` labels the err-stream line.  Callers
+  // route schema errors first.
   [[noreturn]] void throw_classified_ndb_error(const NdbError& err,
                                                const char* what,
                                                const char* where);

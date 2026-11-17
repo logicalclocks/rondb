@@ -488,7 +488,16 @@ struct CorrelatedPair {
  *   RateLimitError or a PermanentError.
  */
 class RonSQLRetryableError : public std::runtime_error {
+ public:
   using std::runtime_error::runtime_error;
+  // X-8: the NDB error code of the failed attempt (0 if none), so that the
+  // caller can report it, and RDRS reconnect after a lost cluster, when
+  // the retries run out.
+  RonSQLRetryableError(const std::string& msg, int ndb_error_code)
+    : std::runtime_error(msg), m_ndb_error_code(ndb_error_code) {}
+  int ndb_error_code() const { return m_ndb_error_code; }
+ private:
+  int m_ndb_error_code = 0;
 };
 
 /*

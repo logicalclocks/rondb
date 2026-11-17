@@ -16267,6 +16267,76 @@ is_rate_limit_error(int ndb_error_code)
 }
 
 /*
+ * X-8: NDB errors that say, at once and before anything ran, that the
+ * cluster cannot serve this API node now:
+ *  - 4009 and 4035-4041: startTransaction() found no data node to use
+ *    (none connected, or all starting, shutting down, in single user mode,
+ *    of an incompatible version or without a free connection record).
+ *    ndberror.cpp classifies them UnknownResultError, whose status is
+ *    neither temporary nor permanent, so they were not retried and the
+ *    class switch made them INTERNAL (HTTP 500).
+ *  - 281 (a cluster shutdown is in progress) and 299 (single user mode,
+ *    for another API node).  ndberror.cpp classifies them
+ *    ApplicationError, so they were SEMANTIC (HTTP 400), although nothing
+ *    in the statement causes them.
+ * RonSQL only reads, so running the statement again is safe, and it
+ * succeeds once the cluster serves this node again.
+ */
+static inline bool
+is_cluster_unavailable_error(const NdbError& err)
+{
+  switch (err.code) {
+  case 281:   // Operation not allowed due to cluster shutdown in progress
+  case 299:   // Operation not allowed or aborted due to single user mode
+  case 4009:  // No data node(s) available
+  case 4035:  // Data node(s) started, no connection record available
+  case 4036:  // Data node(s) alive, no connection record available
+  case 4037:  // Data node(s) are starting
+  case 4038:  // Data node(s) are using incompatible version
+  case 4039:  // Data node(s) are shutting down
+  case 4040:  // No data node(s) ever connected
+  case 4041:  // Data node(s) are in single user mode
+    return true;
+  default:
+    return false;
+  }
+}
+
+/*
+ * Whether an NDB error lets RonSQL run the statement again (unless output
+ * already went out): a temporary error, a lock wait timeout (as mysqld
+ * does) or an unavailable cluster (X-8).  Rate limit and schema errors are
+ * decided before this.
+ */
+static inline bool
+is_retryable_ndb_error(const NdbError& err)
+{
+  return err.status == NdbError::TemporaryError ||
+         err.mysql_code == HA_ERR_LOCK_WAIT_TIMEOUT ||
+         is_cluster_unavailable_error(err);
+}
+
+/*
+ * X-8: an NDB error that ends the statement without the statement or
+ * RonSQL being at fault is a RESOURCE error (HTTP 503, try again later),
+ * not INTERNAL (500) or SEMANTIC (400):
+ *  - a retryable error that the ",od" rule makes permanent (rows already
+ *    reached the output);
+ *  - the other unknown-result errors, 4008 (Receive from NDB failed) and
+ *    4012 (Request ndbd time-out).  The API reports them after it waited
+ *    its whole timeout for the data nodes (120 s or more), so they are not
+ *    retried: ten RDRS attempts would hold a worker for twenty minutes.
+ * When the retries of a retryable error run out, ronsql_op reports
+ * RESOURCE too.
+ */
+static inline bool
+is_resource_ndb_error(const NdbError& err)
+{
+  return is_retryable_ndb_error(err) ||
+         err.classification == NdbError::UnknownResultError;
+}
+
+/*
  * WP-F: raise one key read's own error.  In a batch of key reads the
  * transaction error can belong to another read (626 for a missing key),
  * so the failing read's error is classified here the way
@@ -16298,11 +16368,10 @@ RonSQLPreparer::throw_classified_ndb_error(const NdbError& op_err,
     err << "->RLE\n" << op_err << '\n';
     throw RonSQLRateLimitError(what, op_err.code);
   }
-  if (op_err.status == NdbError::TemporaryError ||
-      op_err.mysql_code == HA_ERR_LOCK_WAIT_TIMEOUT) {
+  if (is_retryable_ndb_error(op_err)) {
     if (!m_output_started) {
       err << "->RRE\n" << op_err << '\n';
-      throw RonSQLRetryableError(what);
+      throw RonSQLRetryableError(what, op_err.code);
     }
     // Rows already reached out_stream; a retry would repeat them.
     err << ",od";
@@ -16325,6 +16394,9 @@ RonSQLPreparer::throw_classified_ndb_error(const NdbError& op_err,
   default:
     break;
   }
+  if (is_resource_ndb_error(op_err)) {
+    cls = RonSQLErrorClass::RESOURCE;  // X-8
+  }
   throw RonSQLPermanentError(cls, what, op_err.code);
 }
 
@@ -16344,8 +16416,9 @@ RonSQLPreparer::throw_classified_ndb_error(const NdbError& op_err,
  *    for the root and CTE-body index scans as for a child: unload_schema
  *    snapshots the tables and indexes of every scope and compares each
  *    index's table id and version with its table's, the 4809 condition.
- *  - A schema error and a temporary error go the way a transaction's go
- *    (none of the builder's errors is one today).
+ *  - A schema error, a temporary error, an unavailable cluster and an
+ *    unknown result go the way a transaction's go (none of the builder's
+ *    errors is one today).
  *  - QRY_DEFINITION_TOO_LARGE (4812): the query exceeds a size limit of a
  *    pushed query, such as 64K words for the definition or one range
  *    (check_pushed_query_size refuses more than 32 operations before the
@@ -16375,7 +16448,7 @@ RonSQLPreparer::throw_query_builder_error(const NdbQueryBuilder* qb,
     err << "Error handling: query builder->RMS\n" << qb_err << '\n';
     throw RonSQLMaybeStaleSchema(msg);
   }
-  if (qb_err.status == NdbError::TemporaryError) {
+  if (is_resource_ndb_error(qb_err)) {
     throw_classified_ndb_error(qb_err, msg.c_str(), "query builder");
   }
   RonSQLErrorClass cls = RonSQLErrorClass::INTERNAL;
@@ -16519,10 +16592,10 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
       // Try to reload the schema. If changes were detected then we treat the
       // error as temporary.
       temporary = unload_schema();
-    } else if (ndb_err.status == NdbError::Status::TemporaryError ||
-               ndb_err.mysql_code == HA_ERR_LOCK_WAIT_TIMEOUT) {
+    } else if (is_retryable_ndb_error(ndb_err)) {
       DEB_TRACE(); err << ",nu";
-      // Treat error as temporary, no unloading of schema.
+      // Treat error as temporary, no unloading of schema.  X-8: this
+      // includes an unavailable cluster.
       temporary = true;
     }
     if (temporary && m_output_started) {
@@ -16536,7 +16609,7 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     if (temporary) {
       DEB_TRACE();
       err << "->RRE\n" << ndb_err_text.str() << '\n';
-      throw RonSQLRetryableError(e.what());
+      throw RonSQLRetryableError(e.what(), ndb_err.code);
     }
     DEB_TRACE();
     err << "->RPE\n" << ndb_err_text.str() << '\n';
@@ -16559,6 +16632,9 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
       break;
     default:
       break;
+    }
+    if (is_resource_ndb_error(ndb_err)) {
+      cls = RonSQLErrorClass::RESOURCE;  // X-8
     }
     throw RonSQLPermanentError(cls, e.what(), ndb_err.code);
   }
