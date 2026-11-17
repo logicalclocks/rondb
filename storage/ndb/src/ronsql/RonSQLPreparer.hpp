@@ -595,11 +595,18 @@ private:
   // path in execute_join() and skips ResultPrinter::compile() (which
   // requires every SELECT-list column to appear in GROUP BY).
   bool m_is_aggregate_query = true;
-  /* Set once a pass-through header or row has been written to
-   * out_stream.  The stream cannot be rewound, so a failure after that
-   * point must not be retried: a transparent retry repeats the rows
-   * already delivered (RONDB-1120 finding F-6). */
+  /* Set once execute() has written, or is about to write, to out_stream.
+   * The stream cannot be rewound, so a failure after that point must not
+   * be retried unless the caller discards the output: a transparent retry
+   * repeats what was already delivered (RONDB-1120 finding F-6).
+   * X-13: every site that hands out_stream to a printer, or writes to it
+   * itself, sets this first (the streaming drains when they print their
+   * header). */
   bool m_output_started = false;
+  // X-6: true when output went out and the caller keeps it
+  // (RonSQLExecParams::output_discardable is false), so that a retry
+  // would repeat it.
+  bool retry_would_repeat_output() const;
 
   // One QueryScope per CTE in ast_root.cte_list, in declaration order.
   // Pointers because QueryScope holds a DynamicArray — non-trivially-copyable.

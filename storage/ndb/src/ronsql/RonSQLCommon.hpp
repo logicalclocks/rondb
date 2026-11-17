@@ -188,6 +188,13 @@ struct RonSQLExecParams
   };
   ExplainMode explain_mode = ExplainMode::ALLOW;
   std::basic_ostream<char>* out_stream = NULL;
+  // X-6: the caller discards out_stream when the statement fails, as
+  // execute_subqueries does with the private buffer of a subquery.  A
+  // retryable error then stays retryable after output was written: the
+  // retry cannot repeat anything that reached a client.  RDRS and
+  // ronsql_cli keep what was written (RDRS does not rewind its buffer
+  // between attempts, X-7), so they leave it false.
+  bool output_discardable = false;
   enum class OutputFormat
   {
     JSON,          // Output a JSON representation of the result set or EXPLAIN

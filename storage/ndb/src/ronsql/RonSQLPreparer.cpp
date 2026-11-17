@@ -9328,6 +9328,11 @@ RonSQLPreparer::execute_subqueries()
       inner_params.ndb = m_conf.ndb;
       inner_params.output_format = RonSQLExecParams::OutputFormat::TEXT_NOHEADER;
       inner_params.out_stream = &oss;
+      // X-6: oss is dropped when the inner statement fails, and the outer
+      // statement has written nothing yet (subqueries run first), so a
+      // temporary error after the inner wrote rows stays retryable: the
+      // outer statement rethrows it below and is run again.
+      inner_params.output_discardable = true;
       inner_params.err_stream = &ess;
       inner_params.explain_mode = RonSQLExecParams::ExplainMode::FORBID;
       // RONSQL-49: the subquery's transactions count against the caller's
@@ -10193,6 +10198,17 @@ RonSQLPreparer::fold_where_after_substitution()
   fold_where_conjuncts(scope.body_toplevel_conditions);
 }
 
+/*
+ * X-6: the ",od" rule.  Output that reached a stream the caller keeps
+ * cannot be taken back, so a retry would repeat it; output the caller
+ * discards on failure (a subquery's private buffer) does not count.
+ */
+bool
+RonSQLPreparer::retry_would_repeat_output() const
+{
+  return m_output_started && !m_conf.output_discardable;
+}
+
 void
 RonSQLPreparer::execute()
 {
@@ -10214,6 +10230,7 @@ RonSQLPreparer::execute()
       case RonSQLExecParams::OutputFormat::TEXT:
         [[fallthrough]];
       case RonSQLExecParams::OutputFormat::TEXT_NOHEADER:
+        m_output_started = true;  // X-13
         print();
         break;
       case RonSQLExecParams::OutputFormat::JSON:
@@ -10312,6 +10329,7 @@ RonSQLPreparer::execute()
 
     // Print results
     STAT_TS(m_conf.phase_stats, s_print_start);
+    m_output_started = true;  // X-13
     m_resultprinter->print_result(&aggregator, m_conf.out_stream);
     STAT_TS(m_conf.phase_stats, s_print_end);
     STAT_SET(m_conf.phase_stats, print_us, s_print_start, s_print_end);
@@ -10548,6 +10566,7 @@ RonSQLPreparer::execute_count_star_shortcut()
   STAT_SET(m_conf.phase_stats, firstbatch_us, s_agg_start, s_agg_end);
 
   STAT_TS(m_conf.phase_stats, s_print_start);
+  m_output_started = true;  // X-13
   m_resultprinter->print_count_star_result(total, m_conf.out_stream);
   STAT_TS(m_conf.phase_stats, s_print_end);
   STAT_SET(m_conf.phase_stats, print_us, s_print_start, s_print_end);
@@ -11101,6 +11120,7 @@ RonSQLPreparer::execute_api_side_aggregate()
   execute_single_table_passthrough(&api_rows);
   aggregator.PrepareResults();
   STAT_TS(m_conf.phase_stats, s_print_start);
+  m_output_started = true;  // X-13
   m_resultprinter->print_result(&aggregator, m_conf.out_stream);
   STAT_TS(m_conf.phase_stats, s_print_end);
   STAT_SET(m_conf.phase_stats, print_us, s_print_start, s_print_end);
@@ -11528,6 +11548,8 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
         rows_to_print++;
       }
     }
+    // X-13: the rows are printed from here on.
+    if (api_rows == NULL) m_output_started = true;
     Uint32 row_count = 0;
     if (is_json && api_rows == NULL) {
       m_resultprinter->print_passthrough_header(op_attrs, num_cols,
@@ -11725,6 +11747,7 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
     // of an empty result (LIMIT 0), which reads the column descriptors
     // from `attrs`, is emitted first.
     if (is_json && !header_emitted && api_rows == NULL) {
+      m_output_started = true;  // X-13
       m_resultprinter->print_passthrough_header(attrs, num_cols,
                                                 m_conf.out_stream);
       header_emitted = true;
@@ -11749,6 +11772,7 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
     // Phase 3: sort the buffered rows and print the first
     // min(limit, n).  The deferred header (TSV or JSON) is emitted on the
     // first printed row.
+    m_output_started = true;  // X-13
     sort_and_print_passthrough_rows(sort_buf, sort_keys, n_sort_keys,
                                     num_cols, limit, m_amalloc,
                                     m_resultprinter, header_emitted,
@@ -11756,6 +11780,7 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
   }
   if (api_rows != NULL) return;
   if (is_json && !header_emitted) {
+    m_output_started = true;  // X-13
     m_resultprinter->print_passthrough_header(attrs, num_cols,
                                               m_conf.out_stream);
     header_emitted = true;
@@ -12585,6 +12610,7 @@ RonSQLPreparer::execute_join()
     NdbAggregator* resultAgg = query->getAggregator();
     ronsql_require_bug(resultAgg != NULL,
                        "A join aggregate query has no result aggregator.");
+    m_output_started = true;  // X-13
     m_resultprinter->print_result(resultAgg, m_conf.out_stream);
     PERF_TS(t_result_done);
     PERF_LOG("  print results", t_result_start, t_result_done);
@@ -12987,13 +13013,13 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
     // classification; a temporary error after rows were delivered is
     // permanent, since a retry would repeat them.
     if (err.classification == NdbError::SchemaError) {
-      throw RonSQLMaybeStaleSchema(m_output_started
+      throw RonSQLMaybeStaleSchema(retry_would_repeat_output()
                                        ? "Pass-through drain failed after "
                                          "rows were delivered."
                                        : "Pass-through drain failed.");
     }
     throw_classified_ndb_error(err,
-                               m_output_started
+                               retry_would_repeat_output()
                                    ? "Pass-through drain failed after rows "
                                      "were delivered."
                                    : "Pass-through drain failed.",
@@ -13004,12 +13030,14 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
     // Phase 3: sort the buffered rows and print the first
     // min(limit, n).  The deferred header (TSV or JSON) is emitted on the
     // first printed row.
+    m_output_started = true;  // X-13
     sort_and_print_passthrough_rows(sort_buf, sort_keys, n_sort_keys,
                                     num_cols, limit, m_amalloc,
                                     m_resultprinter, header_emitted,
                                     m_conf.out_stream);
   }
   if (is_json && !header_emitted) {
+    m_output_started = true;  // X-13
     m_resultprinter->print_passthrough_header(
         const_cast<const NdbRecAttr* const*>(attrs), num_cols,
         m_conf.out_stream);
@@ -16369,11 +16397,12 @@ RonSQLPreparer::throw_classified_ndb_error(const NdbError& op_err,
     throw RonSQLRateLimitError(what, op_err.code);
   }
   if (is_retryable_ndb_error(op_err)) {
-    if (!m_output_started) {
+    if (!retry_would_repeat_output()) {
       err << "->RRE\n" << op_err << '\n';
       throw RonSQLRetryableError(what, op_err.code);
     }
-    // Rows already reached out_stream; a retry would repeat them.
+    // Output already reached out_stream, which the caller keeps; a retry
+    // would repeat it.
     err << ",od";
   }
   err << "->RPE\n" << op_err << '\n';
@@ -16493,8 +16522,18 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
   catch (const RonSQLRetryableError& e) {
     // This exception type inherits from std::runtime_error, but we don't want
     // it caught below.
-    DEB_TRACE(); err << "Error handling: RRE\n";
+    DEB_TRACE(); err << "Error handling: RRE";
     cleanup_trans();
+    // X-6: the retryable error of an inner subquery, whose own output is
+    // discarded, reaches this statement as it is.  It stays retryable
+    // only while this statement has written nothing it keeps (subqueries
+    // run before any output, so this does not fire today).
+    if (retry_would_repeat_output()) {
+      DEB_TRACE(); err << ",od->RPE\n";
+      throw RonSQLPermanentError(RonSQLErrorClass::RESOURCE, e.what(),
+                                 e.ndb_error_code());
+    }
+    err << '\n';
     throw;
   }
   catch (const RonSQLPermanentError& e) {
@@ -16510,13 +16549,15 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     // RonSQLPermanentError.
     cleanup_trans();
     err << "Error handling: RMS";
-    // Reload the schema either way; retry only if nothing was streamed yet.
+    // Reload the schema either way; retry only if no kept output went out
+    // yet (X-13: a printer can raise this after it wrote a header and
+    // rows).
     const bool schema_changed = unload_schema();
-    if (schema_changed && !m_output_started) {
+    if (schema_changed && !retry_would_repeat_output()) {
       DEB_TRACE(); err << "->RRE\n";
       throw RonSQLRetryableError(e.what());
     }
-    if (m_output_started) { DEB_TRACE(); err << ",od"; }
+    if (retry_would_repeat_output()) { DEB_TRACE(); err << ",od"; }
     DEB_TRACE(); err << "->RPE\n";
     throw RonSQLPermanentError(e.what());
   }
@@ -16598,9 +16639,11 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
       // includes an unavailable cluster.
       temporary = true;
     }
-    if (temporary && m_output_started) {
+    if (temporary && retry_would_repeat_output()) {
       // Rows already reached out_stream (pass-through drains stream as
-      // they go); a retry would repeat them (RONDB-1120 finding F-6).
+      // they go), which the caller keeps; a retry would repeat them
+      // (RONDB-1120 finding F-6).  X-6: an inner subquery's output is
+      // discarded, so its errors stay retryable.
       DEB_TRACE(); err << ",od";
       temporary = false;
     }
@@ -20852,9 +20895,12 @@ RonSQLPreparer::print()
           out << ")\n";
           break;
         }
-        require_run(m_main_scope.agg != NULL,
-                    "EXPLAIN: aggregate output without an aggregation "
-                    "program.  Please report a bug.");
+        // X-13: a broken invariant, not an NDB error: require_run would
+        // let the handler classify it by whatever error the Ndb object
+        // last kept, after part of the plan was printed.
+        ronsql_require_bug(m_main_scope.agg != NULL,
+                           "EXPLAIN: aggregate output without an aggregation "
+                           "program.");
         const Uint32 aggregate_index = register_simple_aggregate(
             *m_main_scope.agg, outputs->aggregate.fun, outputs->aggregate.arg);
         out << "A" << aggregate_index << ":";
