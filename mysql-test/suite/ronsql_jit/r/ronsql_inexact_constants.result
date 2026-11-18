@@ -470,8 +470,11 @@ n	s
 2	4
 
 === tc-11: index bound, dtx = '... 10:00:00.5' ===
+== RonSQL alone, index bound ==
+n	s
+0	NULL
 == Query ==
-SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dtx = '2025-01-01 10:00:00.5';
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc IGNORE INDEX (ix_tc_dtx) WHERE dtx = '2025-01-01 10:00:00.5';
 
 Number of output lines, including header: 2
 
@@ -481,7 +484,7 @@ Number of output lines, including header: 2
 
 
 == Expected result ==
-SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dtx = '2025-01-01 10:00:00.5'|
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc IGNORE INDEX (ix_tc_dtx) WHERE dtx = '2025-01-01 10:00:00.5'|
 n	s
 0	NULL
 

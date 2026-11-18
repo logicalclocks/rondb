@@ -48,7 +48,9 @@
 # engine_condition_pushdown off: ha_ndbcluster stores the constant of a
 # pushed condition in the column's type (Item::save_in_field, which
 # rounds and accepts a truncation note), so with the pushdown mysqld
-# over NDB gives the rounded comparison, not MySQL's.
+# over NDB gives the rounded comparison, not MySQL's.  mysqld's ref access
+# rounds a DATETIME key the same way, so tc-11 compares with mysqld only
+# with IGNORE INDEX (see there).
 
 --source include/have_ndb.inc
 
@@ -372,13 +374,25 @@ SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE '2025-01-01 10:00:00.5' > dt|
 
 --echo
 --echo === tc-11: index bound, dtx = '... 10:00:00.5' ===
+# Not compared with mysqld as it is: mysqld's ref access on ix_tc_dtx
+# stores the literal in the key, rounded to 10:00:01 without a note, so
+# ref_lookup_subsumes_comparison drops the comparison and mysqld returns
+# row 2 (a mysqld bug; without the index it returns no row, as in tc-1).
+# RonSQL runs it alone, on the index bound; the same query with IGNORE
+# INDEX is then compared with mysqld.
+--echo == RonSQL alone, index bound ==
 --write_file $QUERY_FILE
 SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dtx = '2025-01-01 10:00:00.5';
+EOF
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test < '$QUERY_FILE'
+--remove_file $QUERY_FILE
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc IGNORE INDEX (ix_tc_dtx) WHERE dtx = '2025-01-01 10:00:00.5';
 EOF
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
-SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dtx = '2025-01-01 10:00:00.5'|
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc IGNORE INDEX (ix_tc_dtx) WHERE dtx = '2025-01-01 10:00:00.5'|
 
 --echo
 --echo === tc-12: index bound, dtx >= '... 10:00:00.5' ===
