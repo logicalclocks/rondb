@@ -1350,8 +1350,11 @@ DELIMITER ;|
 --disable_query_log
 DROP INDEX idx_k_li_order ON k_lineitem;
 CREATE INDEX idx_k_li_order_qty ON k_lineitem (order_id, qty);
-# Allow NDB dictionary cache on REST server to refresh after schema change
---sleep 3
+# No sleep (T-6): the query below reaches RDRS right after the DDL, so a
+# table, index or index list RDRS still holds from before it goes through
+# the stale-schema paths (QRY_UNRELATED_INDEX 4809, the schema reload and
+# retry, the schema cache refresh on the table's new version) instead of
+# being waited out.
 --enable_query_log
 DELIMITER |;
 

@@ -1988,9 +1988,13 @@ RonSQLPreparer::load_single_table()
   std::basic_ostream<char>& err = *m_conf.err_stream;
   // Populate m_main_scope.table
   m_main_scope.table = DBG(m_dict->getTable(DBG(m_context.ast_root.table.c_str())));
-  require_prm(m_main_scope.table != NULL,
-              "Failed to get table. Note that RonSQL only supports tables"
-              " with ENGINE=NDB.");
+  if (m_main_scope.table == NULL) {
+    // X-9: the dictionary's error decides; 723 (no such table) is a
+    // semantic error, a temporary error is retried.
+    throw RonSQLDictionaryError("Failed to get table. Note that RonSQL only"
+                                " supports tables with ENGINE=NDB.",
+                                m_dict->getNdbError());
+  }
   // Populate m_indexes — use schema cache if available to skip listIndexes()
   ronsql_require_bug(m_dict != NULL,
                      "load() has no dictionary.");
@@ -2004,14 +2008,17 @@ RonSQLPreparer::load_single_table()
       : nullptr;
 
   NdbDictionary::Dictionary::List index_list;
-  if (cached_indexes == nullptr) {
-    require_sch(m_dict->listIndexes(index_list, *m_main_scope.table) == 0,
-                "Failed to list indexes.");
+  if (cached_indexes == nullptr &&
+      m_dict->listIndexes(index_list, *m_main_scope.table) != 0) {
+    // X-9: listIndexes() does not fail for a schema change (a dropped
+    // table has no indexes), so its error is a temporary one (retried),
+    // an unknown result or an internal one.
+    throw RonSQLDictionaryError("Failed to list indexes.",
+                                m_dict->getNdbError());
   }
 
   // Iterate: either cached index names or the raw list
   Uint32 idx_count = cached_indexes ? cached_indexes->size() : index_list.count;
-  bool err_failed_to_get_index = false;
   bool err_object_status_not_retrieved = false;
   bool err_table_verid_mismatch = false;
   for (Uint32 i = 0; i < idx_count; i++) {
@@ -2041,7 +2048,22 @@ RonSQLPreparer::load_single_table()
                 "Unexpected index type.");
     const NdbDictionary::Index* index = m_dict->getIndex(idx_name, *m_main_scope.table);
     if (index == NULL) {
-      err_failed_to_get_index = true;
+      const NdbError& dict_err = m_dict->getNdbError();
+      if (dict_err.code != 4243 /* Index not found */ &&
+          dict_err.classification != NdbError::SchemaError) {
+        // X-9: the dictionary could not answer; a temporary error is
+        // retried.
+        throw RonSQLDictionaryError("Failed to get index.", dict_err);
+      }
+      // X-10: the list names an index the dictionary does not have (4243,
+      // or 241 for one built for an earlier incarnation of the table): it
+      // was dropped after the list was made.  The RDRS schema cache keeps
+      // a table's list while the table's id and version are unchanged
+      // (and its TTL has not run out), and dropping an index through the
+      // NDB API leaves them so.  m_indexes does not get the index, so
+      // unload_schema would find no change: it reports one for this
+      // flag, invalidates the cache entry, and the statement runs again.
+      m_load_found_dropped_index = true;
       DEB_TRACE();
       continue;
     }
@@ -2060,7 +2082,7 @@ RonSQLPreparer::load_single_table()
   require_sch(DBG(m_main_scope.table->getObjectStatus()) ==
               NdbDictionary::Object::Status::Retrieved,
               "Schema cache for table not up to date.");
-  if (err_failed_to_get_index) {
+  if (m_load_found_dropped_index) {
     DEB_TRACE();
     throw RonSQLMaybeStaleSchema("Failed to get index.");
   }
@@ -6456,8 +6478,11 @@ RonSQLPreparer::decorrelate_exists()
     // Look up inner table in dictionary
     const NdbDictionary::Table* inner_table =
         m_dict->getTable(inner_stmt->table.c_str());
-    require_prm(inner_table != NULL,
-                "EXISTS subquery references unknown table.");
+    if (inner_table == NULL) {
+      // X-9: classified by the dictionary's error.
+      throw RonSQLDictionaryError("EXISTS subquery references unknown table.",
+                                  m_dict->getNdbError());
+    }
 
     // Flatten inner WHERE
     ConditionalExpression* inner_conjuncts[MAX_WHERE_CONJUNCTS];
@@ -12580,7 +12605,16 @@ RonSQLPreparer::start_transaction() {
   ronsql_require_bug(m_trans == NULL,
                      "A transaction was started while another is open.");
   m_trans = DBG(ndb->startTransaction());
-  require_run(m_trans != NULL, "Failed to start transaction.");
+  if (m_trans == NULL) {
+    // X-9: startTransaction() clears the Ndb object's error and leaves its
+    // own there, so this is the error of the call that failed (4009 and
+    // 4035-4041 are retried).  handle_ronsql_exception does not read the
+    // Ndb object's error: with no transaction it can be an earlier
+    // statement's.
+    throw_classified_ndb_error(ndb->getNdbError(),
+                               "Failed to start transaction.",
+                               "start transaction");
+  }
   if (m_conf.rate_limit_identity != NULL) {
     /*
      * RONDB-978: tag the transaction so the data nodes account this query's
@@ -17837,6 +17871,24 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     DEB_TRACE(); err << "->RPE\n";
     throw RonSQLPermanentError(e.what());
   }
+  catch (const RonSQLDictionaryError& e) {
+    // This exception type inherits from std::runtime_error, but we don't want
+    // it caught below.  X-9: a dictionary call failed, and its own error,
+    // read right after the call, decides.  An error that says NDB could not
+    // answer now goes as a transaction's does (throw_classified_ndb_error):
+    // a temporary error or an unavailable cluster is retried, an unknown
+    // result is a resource error.  Any other (723, no such table) fails the
+    // statement with the class its message gives, as before, and the code.
+    DEB_TRACE();
+    cleanup_trans();
+    const NdbError& dict_err = e.ndb_error();
+    if (is_resource_ndb_error(dict_err)) {
+      throw_classified_ndb_error(dict_err, e.what(), "dictionary");
+    }
+    err << "Error handling: dictionary->RPE\n" << dict_err << '\n';
+    throw RonSQLPermanentError(ronsql_classify_message(e.what()), e.what(),
+                               dict_err.code);
+  }
   catch (const std::bad_alloc&)
   {
     // Out of memory while processing the query (ArenaMalloc::alloc_exc /
@@ -17866,8 +17918,20 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
       ndbrequire(ndb != NULL);
       ndb_err = m_trans->getNdbError();
     } else if (ndb != NULL) {
-      DEB_TRACE(); err << ",oe";
-      ndb_err = DBG(ndb->getNdbError());
+      /*
+       * X-9: no transaction, so no NDB error of this statement to
+       * investigate.  The Ndb object's error is not one: it persists until
+       * the next startTransaction(), and RDRS hands pooled Ndb objects from
+       * request to request, so it can be an earlier statement's (1860 from
+       * Ndb::getNdbError(code) after a failed merge, or a failed
+       * startTransaction()'s).  A failed startTransaction() raises its own
+       * error (start_transaction) and a failed dictionary call
+       * RonSQLDictionaryError, so this is a broken invariant: an internal
+       * error without an NDB code.
+       */
+      DEB_TRACE(); err << ",nt->RPE\n";
+      cleanup_trans();
+      throw RonSQLPermanentError(RonSQLErrorClass::INTERNAL, e.what());
     } else {
       DEB_TRACE(); err << ",nn\n";
       cleanup_trans();
@@ -18171,6 +18235,16 @@ RonSQLPreparer::unload_schema() {
   if (m_main_scope.table == NULL) {
     DEB_TRACE();
     RETURN_UNLOAD_SCHEMA(false);
+  }
+  // X-10: load_single_table found an index of the table's index list that
+  // the dictionary no longer has, so the list was older than the schema.
+  // m_indexes lacks that index, as does a fresh listIndexes(), so the
+  // comparison below would find no change and make the error permanent.
+  // The table's schema cache entry is invalidated on the way out, so the
+  // next attempt lists the indexes afresh.
+  if (m_load_found_dropped_index) {
+    DEB_TRACE();
+    RETURN_UNLOAD_SCHEMA(true);
   }
   // Save table object ID and version
   typedef std::pair<int, int> Idver;

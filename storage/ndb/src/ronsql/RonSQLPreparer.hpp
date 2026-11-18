@@ -399,6 +399,11 @@ private:
   QueryScope m_main_scope;
 
   DynamicArray<const NdbDictionary::Index*> m_indexes;
+  // X-10: load_single_table found an index in the table's index list (the
+  // RDRS schema cache's, or listIndexes()) that the dictionary no longer
+  // has, so the list is older than the schema; unload_schema reports a
+  // schema change.
+  bool m_load_found_dropped_index = false;
   NdbTransaction* m_trans = NULL;
   yyscan_t m_scanner;
   YY_BUFFER_STATE m_buf;

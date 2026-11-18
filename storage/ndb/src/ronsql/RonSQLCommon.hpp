@@ -487,7 +487,7 @@ struct CorrelatedPair {
   SubqueryResult val;
 };
 
-/* RonSQL uses 5 types of exceptions:
+/* RonSQL uses 6 types of exceptions:
  * - RonSQLRetryableError indicates that the RonSQL query might be worth
  *   retrying.
  * - RonSQLPermanentError indicates that the RonSQL query is not worth retrying.
@@ -505,10 +505,15 @@ struct CorrelatedPair {
  *   RetryableError, otherwise as a PermanentError. In particular, this is used
  *   for operations that can fail due to stale schema without causing any Ndb
  *   errors, such as RonSQL type checking.
+ * - RonSQLDictionaryError is used internally when a dictionary call failed. It
+ *   carries the dictionary's error, which decides whether it is rethrown as a
+ *   RetryableError or a PermanentError (X-9).
  * - std::runtime_error is used internally to indicate errors where it's unknown
- *   whether they should be retried. This will cause an investigation of Ndb
- *   error codes. Then, it will be rethrown as a RetryableError, a
- *   RateLimitError or a PermanentError.
+ *   whether they should be retried. This will cause an investigation of the
+ *   open transaction's Ndb error code. Then, it will be rethrown as a
+ *   RetryableError, a RateLimitError or a PermanentError. With no open
+ *   transaction there is no error of this statement to investigate, and it is
+ *   an internal PermanentError (X-9).
  */
 class RonSQLRetryableError : public std::runtime_error {
  public:
@@ -628,6 +633,26 @@ class RonSQLRateLimitError : public std::runtime_error {
 };
 class RonSQLMaybeStaleSchema : public std::runtime_error {
   using std::runtime_error::runtime_error;
+};
+/*
+ * X-9: a dictionary call (getTable, getIndex, listIndexes) failed.  It
+ * carries the dictionary's own error, read right after the call, so that
+ * handle_ronsql_exception classifies the error of the call that failed, not
+ * one the transaction or the Ndb object holds: a temporary error or an
+ * unavailable cluster is retried, an unknown result is a resource error,
+ * and any other error (723, no such table) fails the statement with the
+ * class its message gives and the NDB code.
+ */
+class RonSQLDictionaryError : public std::runtime_error {
+ public:
+  RonSQLDictionaryError(const std::string& msg, const NdbError& ndb_error)
+    : std::runtime_error(msg), m_ndb_error(ndb_error) {
+    // The details can point into storage the dictionary owns.
+    m_ndb_error.details = nullptr;
+  }
+  const NdbError& ndb_error() const { return m_ndb_error; }
+ private:
+  NdbError m_ndb_error;
 };
 
 /*

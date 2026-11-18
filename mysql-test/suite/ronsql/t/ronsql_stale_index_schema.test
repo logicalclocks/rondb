@@ -1,0 +1,166 @@
+# An index dropped while RDRS's schema cache lists it.
+#
+# README finding X-10: RDRS keeps each table's index list in its schema
+# cache (RdrsSchemaCache) while the table's id and schema version are
+# unchanged and the TTL (Internal.SchemaCacheTTLSecs, 10 s) has not run
+# out.  load_single_table fetches every listed ordered index; one that
+# was dropped since the list was made is not found, and the statement
+# failed with "Failed to get index." (a stale schema), but unload_schema
+# compared the loaded indexes, which lack it, with a fresh list, which
+# lacks it too, found no change and made the error permanent: HTTP 400
+# [semantic], once per stale list.  load_single_table now records that
+# the list named an index the dictionary does not have (4243, or 241),
+# unload_schema reports a schema change for it and invalidates the cache
+# entry, and the statement runs again with a fresh list.
+#
+# Through mysqld every index DDL is an ALTER TABLE that bumps the
+# table's version, so RDRS refreshes the list at once: sx-2..sx-4 run the
+# query right after the DDL, with no sleep (T-6), and expect the result
+# of mysqld.  The NDB API drops an index without touching its table
+# (ndb_drop_index), which leaves the cached list stale: sx-5 is the X-10
+# case.  ronsql_cli has no schema cache.
+#
+# README finding X-9: the dictionary's own error now classifies a failed
+# dictionary call (a temporary one is retried); before, a missing table
+# was a permanent semantic error whatever the dictionary said.  No error
+# insert makes a dictionary call fail temporarily as the API sees it
+# (DBDICT's Busy is retried inside the NDB API), so sx-6 shows the
+# dictionary's code on a missing table.
+#
+#   sx-1  control: the query through RDRS and ronsql_cli, compared with
+#         mysqld; RDRS's schema cache now lists sx_c
+#   sx-2  DROP INDEX through mysqld, then the query through RDRS at once:
+#         HTTP 200, the result of mysqld, at most one retry
+#   sx-3  CREATE INDEX through mysqld, then the same
+#   sx-4  DROP INDEX and CREATE INDEX of the same name through mysqld,
+#         then the same
+#   sx-5  ndb_drop_index sx_c, then the query through RDRS at once:
+#         HTTP 200 and the result of mysqld after exactly one retry
+#         (before: HTTP 400, [semantic] Failed to get index.);
+#         ronsql_cli gives the result of mysqld
+#   sx-6  a table that does not exist: HTTP 400, class semantic, and the
+#         dictionary's error 723 (no such table) in X-RonSQL-NDB-Error
+#         (before: no NDB error)
+#
+# Expected results come from mysqld (strict_diff).
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE sx_t (
+  id INT NOT NULL,
+  c  INT NOT NULL,
+  v  INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX sx_c (c)
+) ENGINE=NDB;
+INSERT INTO sx_t VALUES
+  (1, 1, 10), (2, 2, 20), (3, 2, 30), (4, 3, 40), (5, 3, 50), (6, 4, 60);
+--enable_warnings
+--enable_query_log
+
+# The query of every case: a range on c, which RonSQL reads through sx_c
+# while it exists.
+--exec printf '{"query":"SELECT c, COUNT(*) AS n, SUM(v) AS s FROM sx_t WHERE c >= 2 GROUP BY c;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/sx-body
+
+DELIMITER |;
+
+--echo
+--echo === sx-1: control; RDRS's schema cache lists sx_c ===
+let $QUERY= SELECT c, COUNT(*) AS n, SUM(v) AS s FROM sx_t WHERE c >= 2 GROUP BY c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT c, COUNT(*) AS n, SUM(v) AS s FROM sx_t WHERE c >= 2 GROUP BY c|
+
+DELIMITER ;|
+
+--echo
+--echo === sx-2: DROP INDEX through mysqld, the query through RDRS at once ===
+DROP INDEX sx_c ON sx_t;
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/sx-hdrs -o $MYSQL_TMP_DIR/sx-rdrs.out -X POST -H "Content-Type: application/json" -H "x-ronsql-phases: 1" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/sx-body
+--exec (head -n 1 $MYSQL_TMP_DIR/sx-rdrs.out && tail -n +2 $MYSQL_TMP_DIR/sx-rdrs.out | sort) > $MYSQL_TMP_DIR/sx-rdrs.sorted
+--exec $MYSQL -D test -e 'SELECT c, COUNT(*) AS n, SUM(v) AS s FROM sx_t WHERE c >= 2 GROUP BY c' > $MYSQL_TMP_DIR/sx-mysql.out
+--exec (head -n 1 $MYSQL_TMP_DIR/sx-mysql.out && tail -n +2 $MYSQL_TMP_DIR/sx-mysql.out | sort) > $MYSQL_TMP_DIR/sx-mysql.sorted
+--echo == Diff with mysqld ==
+--exec diff -u --label mysql.out $MYSQL_TMP_DIR/sx-mysql.sorted --label ronsql.out $MYSQL_TMP_DIR/sx-rdrs.sorted
+--echo == At most one retry (must be 1) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/sx-hdrs | tr -d '\r' | grep -cE ',attempts=[12],'
+
+--echo
+--echo === sx-3: CREATE INDEX through mysqld, the query through RDRS at once ===
+CREATE INDEX sx_c ON sx_t (c);
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/sx-hdrs -o $MYSQL_TMP_DIR/sx-rdrs.out -X POST -H "Content-Type: application/json" -H "x-ronsql-phases: 1" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/sx-body
+--exec (head -n 1 $MYSQL_TMP_DIR/sx-rdrs.out && tail -n +2 $MYSQL_TMP_DIR/sx-rdrs.out | sort) > $MYSQL_TMP_DIR/sx-rdrs.sorted
+--exec $MYSQL -D test -e 'SELECT c, COUNT(*) AS n, SUM(v) AS s FROM sx_t WHERE c >= 2 GROUP BY c' > $MYSQL_TMP_DIR/sx-mysql.out
+--exec (head -n 1 $MYSQL_TMP_DIR/sx-mysql.out && tail -n +2 $MYSQL_TMP_DIR/sx-mysql.out | sort) > $MYSQL_TMP_DIR/sx-mysql.sorted
+--echo == Diff with mysqld ==
+--exec diff -u --label mysql.out $MYSQL_TMP_DIR/sx-mysql.sorted --label ronsql.out $MYSQL_TMP_DIR/sx-rdrs.sorted
+--echo == At most one retry (must be 1) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/sx-hdrs | tr -d '\r' | grep -cE ',attempts=[12],'
+
+--echo
+--echo === sx-4: DROP INDEX and CREATE INDEX of the same name through mysqld, the query through RDRS at once ===
+DROP INDEX sx_c ON sx_t;
+CREATE INDEX sx_c ON sx_t (c);
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/sx-hdrs -o $MYSQL_TMP_DIR/sx-rdrs.out -X POST -H "Content-Type: application/json" -H "x-ronsql-phases: 1" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/sx-body
+--exec (head -n 1 $MYSQL_TMP_DIR/sx-rdrs.out && tail -n +2 $MYSQL_TMP_DIR/sx-rdrs.out | sort) > $MYSQL_TMP_DIR/sx-rdrs.sorted
+--exec $MYSQL -D test -e 'SELECT c, COUNT(*) AS n, SUM(v) AS s FROM sx_t WHERE c >= 2 GROUP BY c' > $MYSQL_TMP_DIR/sx-mysql.out
+--exec (head -n 1 $MYSQL_TMP_DIR/sx-mysql.out && tail -n +2 $MYSQL_TMP_DIR/sx-mysql.out | sort) > $MYSQL_TMP_DIR/sx-mysql.sorted
+--echo == Diff with mysqld ==
+--exec diff -u --label mysql.out $MYSQL_TMP_DIR/sx-mysql.sorted --label ronsql.out $MYSQL_TMP_DIR/sx-rdrs.sorted
+--echo == At most one retry (must be 1) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/sx-hdrs | tr -d '\r' | grep -cE ',attempts=[12],'
+
+# sx-5 must follow sx-4 within the cache's TTL (10 s): the query of sx-4
+# put the list with the new sx_c into RDRS's schema cache, and
+# ndb_drop_index leaves the table's version as it is, so the list stays.
+# mysqld still has sx_c in its data dictionary and would read through it,
+# so the result of mysqld is the one of sx-4 (the rows are the same).
+--echo
+--echo === sx-5: ndb_drop_index, the query through RDRS at once ===
+--exec $NDB_DROP_INDEX -d test sx_t sx_c >> $NDB_TOOLS_OUTPUT
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/sx-hdrs -o $MYSQL_TMP_DIR/sx-rdrs.out -X POST -H "Content-Type: application/json" -H "x-ronsql-phases: 1" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/sx-body
+--exec (head -n 1 $MYSQL_TMP_DIR/sx-rdrs.out && tail -n +2 $MYSQL_TMP_DIR/sx-rdrs.out | sort) > $MYSQL_TMP_DIR/sx-rdrs.sorted
+--echo == Diff with mysqld ==
+--exec diff -u --label mysql.out $MYSQL_TMP_DIR/sx-mysql.sorted --label ronsql.out $MYSQL_TMP_DIR/sx-rdrs.sorted
+--echo == The first attempt found the cached list stale: two attempts (must be 1) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/sx-hdrs | tr -d '\r' | grep -cE ',attempts=2,'
+--echo == ronsql_cli, which lists the indexes itself ==
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c, COUNT(*) AS n, SUM(v) AS s FROM sx_t WHERE c >= 2 GROUP BY c;' > $MYSQL_TMP_DIR/sx-cli.out
+--exec (head -n 1 $MYSQL_TMP_DIR/sx-cli.out && tail -n +2 $MYSQL_TMP_DIR/sx-cli.out | sort) > $MYSQL_TMP_DIR/sx-cli.sorted
+--exec diff -u --label mysql.out $MYSQL_TMP_DIR/sx-mysql.sorted --label ronsql-cli.out $MYSQL_TMP_DIR/sx-cli.sorted
+
+--echo
+--echo === sx-6: a table that does not exist ===
+--exec printf '{"query":"SELECT COUNT(*) AS n FROM sx_none;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/sx-body
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/sx-hdrs -o $MYSQL_TMP_DIR/sx-rdrs.out -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/sx-body
+--exec grep -i '^x-ronsql-' $MYSQL_TMP_DIR/sx-hdrs | tr -d '\r' | tr '[:upper:]' '[:lower:]' | sort
+--exec grep -oF '[semantic] Caught exception: Failed to get table.' $MYSQL_TMP_DIR/sx-rdrs.out
+
+--remove_file $MYSQL_TMP_DIR/sx-body
+--remove_file $MYSQL_TMP_DIR/sx-hdrs
+--remove_file $MYSQL_TMP_DIR/sx-rdrs.out
+--remove_file $MYSQL_TMP_DIR/sx-rdrs.sorted
+--remove_file $MYSQL_TMP_DIR/sx-mysql.out
+--remove_file $MYSQL_TMP_DIR/sx-mysql.sorted
+--remove_file $MYSQL_TMP_DIR/sx-cli.out
+--remove_file $MYSQL_TMP_DIR/sx-cli.sorted
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE sx_t;
+--enable_warnings
+--enable_query_log
+--remove_file $NDB_TOOLS_OUTPUT
