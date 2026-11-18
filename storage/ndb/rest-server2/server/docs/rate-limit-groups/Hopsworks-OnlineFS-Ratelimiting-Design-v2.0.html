@@ -780,7 +780,21 @@ USER ALIAS SET Recommender2_onlinefs --target=recommender2_rl</code></pre>
     A changed budget becomes <code>USER ALTER</code>; a deleted group becomes
     <code>USER DROP</code> plus <code>USER ALIAS DROP</code> for its accounts; a member
     who left loses their aliases; a member who moved between groups gets
-    <code>USER ALIAS DROP</code> then <code>SET</code> (13.3).</li>
+    <code>USER ALIAS DROP</code> then <code>SET</code> (13.3). The diff is per name, and
+    nothing is dropped to be re-added: editing a Who list from {Mary, Mike} to {Mary, Sam}
+    sends one <code>USER ALIAS DROP Marketing_mike7c3d</code> and one
+    <code>USER ALIAS SET Sales_sam00035 --target=mary_mike_rl</code>, and Mary&rsquo;s alias
+    is not touched, so she is metered throughout.
+    <strong>Order on each cluster:</strong> alias drops, then <code>USER DROP</code>s, then
+    <code>USER SET</code> / <code>ALTER</code> in group-id order, then alias
+    <code>SET</code>s in group-id order. Drops go first because a moved alias must be
+    dropped before its <code>SET</code> (13.3), and because every alias and
+    <code>USER</code> holds a dictionary object slot (13.5): freeing slots before taking
+    new ones keeps a pass that replaces many members from running out midway. Aliases carry
+    no budget, so their order never affects the 50% cap; budget changes keep group-id
+    order so a cap refusal always lands on the same group. Version 1.0 ran the drops last,
+    behind a two-run grace, because several writers could hold stale snapshots; a single
+    grounded writer needs neither.</li>
     <li><strong>Record the state</strong> per (group, cluster) in
     <code>rate_limit_group_cluster_state</code>: <em>installed</em> on success,
     <em>refused</em> when the cluster rejects the rate (50% cap), <em>pending</em>
@@ -812,10 +826,20 @@ USER ALIAS SET Recommender2_onlinefs --target=recommender2_rl</code></pre>
   <li><strong>Deletes are grounded, not grace-counted.</strong> The installer reads the
   group tables in the same transaction-consistent store it is about to reconcile from,
   so &ldquo;absent from desired state&rdquo; is a fact, not a possibly stale snapshot. Two rules
-  survive from v1.0 unchanged: never drop a name that is not derivable from the group
-  rows (a <code>USER</code> an operator created by hand is not the installer&rsquo;s
-  property), and never drop anything in a pass whose reads failed; an unreachable
-  cluster or a failed query skips the cluster and leaves state <em>pending</em>.</li>
+  carry over from v1.0: drop only what the installer owns, and never drop anything in a
+  pass whose reads failed; an unreachable cluster or a failed query skips the cluster and
+  leaves state <em>pending</em>.</li>
+  <li><strong>Ownership is decided against the group table.</strong> A
+  <code>USER</code> is the installer&rsquo;s when its name is a
+  <code>rate_limit_group.name</code>; an alias is the installer&rsquo;s when its
+  <em>target</em> is. That is what lets an edit drop a removed member: Mike&rsquo;s Who row
+  is gone after the edit, but his alias still points at <code>mary_mike_rl</code>, which
+  is in the table, so the pass drops it. A <code>USER</code> or alias an operator created
+  by hand, naming or targeting something outside the table, is never touched. The same
+  rule cannot see a deleted group, whose name has left the table: only the delete&rsquo;s
+  own immediate pass, which the controller hands the deleted name, drops its
+  <code>USER</code> and aliases, and a cluster that pass cannot reach keeps them
+  (<a href="#open">section 16</a>).</li>
   <li><strong>Propagation delay.</strong> A saved group is live after its immediate pass
   plus the client name-cache refresh (up to 60 s, section 13). A new member is live after
   the operation-log handler fires. Until then that traffic runs unlimited and the page
@@ -986,6 +1010,29 @@ The refusal protects against an out-of-order writer: a command that would silent
 repoint a person&rsquo;s budget must instead fail loudly and be reconciled.
 <code>DROP</code> drops the alias. The management-server side mirrors the existing
 <code>set user</code> family in <code>Services.cpp</code>.</p>
+<p><code>GET</code> shows one alias. <code>LIST</code> takes no arguments and shows every
+alias on the cluster, in object-id order; there is no filter by target. The installer
+reconciles every group of the cluster in one pass and needs the whole set, including
+aliases whose target is no longer wanted; the operation-log handler never lists, because
+it already knows the one account it changes. Over the management API the list is paged
+one alias per round trip (<code>ndb_mgm_list_user_aliases(handle, &amp;nextAliasId,
+&amp;buf)</code> until <code>nextAliasId</code> is <code>RNIL</code>), so its cost grows
+with the alias count: 64&nbsp;ms for 306 objects on a debug build (13.5).
+<code>USER LIST</code> excludes aliases, so the two lists never overlap. Proposed output,
+mirroring <code>USER LIST</code>&rsquo;s rows (the branch still prints the v1.0 rule form,
+<code>numRules</code> plus one <code>--target=</code> line per rule); ids are
+illustrative and the listing is cut to three of section 10&rsquo;s seven aliases:</p>
+<pre><code>ndb_mgm&gt; USER ALIAS LIST
+User alias Recommender_alice4f2
+  aliasId = 412
+  target = recommender_team_rl
+User alias Marketing_mary01ab
+  aliasId = 415
+  target = mary_mike_rl
+User alias Recommender2_rosa9e1f
+  aliasId = 418
+  target = recommender2_rl
+User Alias List command completed</code></pre>
 
 <h3>13.4 What the other components do</h3>
 <div class="tablewrap"><table>
@@ -1152,6 +1199,14 @@ required.</p>
   identity (13.4). Confirm the exclusion list and this split.</li>
   <li><strong>A tie created by a membership change</strong> (section 11): refuse the
   change, or accept it and mark both groups conflicting. Refusing is the proposal.</li>
+  <li><strong>Deleting a group while a cluster is unreachable</strong> (section 10): the
+  ownership rule cannot see a deleted group, so a cluster the delete&rsquo;s own pass cannot
+  reach keeps the group&rsquo;s <code>USER</code> and aliases. The members stay limited
+  there and the budget stays counted against the 50% cap: a limit outliving its group,
+  the failure mode section 10 rules out. Either keep a record of deleted groups per
+  (group, cluster) until each targeted cluster confirms the drop, or mark the installer&rsquo;s
+  objects on the cluster itself (a reserved name prefix or an object flag) so the
+  reconciler can find orphans. Decide before the installer is built.</li>
   <li><strong>Ingestion coverage</strong> (13.4): ClusterJ tagging and the OnlineFS
   change are in scope (decided 2026-11-18; the writes were untagged and unmetered in
   v1.0). Residual question: a project group covering the project&rsquo;s ingestion is
