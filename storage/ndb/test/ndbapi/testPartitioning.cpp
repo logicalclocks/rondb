@@ -2014,6 +2014,11 @@ static int run_fanout_system_restart(NDBT_Context *ctx, NDBT_Step *step) {
                            false /* abort */) != 0)
     return NDBT_FAILED;
   if (restarter.waitClusterStarted() != 0) return NDBT_FAILED;
+  /* waitClusterStarted() sees the cluster started through the management
+   * server; our own API node reconnects to the data nodes a little later,
+   * and until then startTransaction() fails with 4009.
+   */
+  if (GETNDB(step)->waitUntilReady(60) != 0) return NDBT_FAILED;
 
   if (run_fanout_verify_data(ctx, step) != NDBT_OK) return NDBT_FAILED;
   if (run_fanout_interval_scan(ctx, step) != NDBT_OK) return NDBT_FAILED;

@@ -627,19 +627,26 @@ static_assert(!less_bits(0x13345668, 0x9bbcdee0,  5));
  * Given the index for the last jam event for a signal, return the index for
  * the first. Both the argument and the return value is in the range
  * dumpJam_oldest <= X < dumpJam_oldest + EMULATED_JAM_SIZE
+ *
+ * The scan stops at dumpJam_oldest before decrementing. A loop condition of
+ * dumpJam_oldest <= idx is always true when dumpJam_oldest is 0, so idx
+ * wrapped around and the scan went on from the newest end of the buffer.
  */
 Uint32
 ErrorReporter::startOfJamSignal(Uint32 endIndex)
 {
-  for(Uint32 idx = endIndex; dumpJam_oldest <= idx; idx--)
+  for (Uint32 idx = endIndex;; idx--)
   {
     JamEvent::JamEventType type = dumpJam_buffer[idx & JAM_MASK].getType();
-    if(type == JamEvent::STARTOFSIG || type == JamEvent::STARTOFPACKEDSIG)
+    if (type == JamEvent::STARTOFSIG || type == JamEvent::STARTOFPACKEDSIG)
     {
       return idx;
     }
+    if (idx == dumpJam_oldest)
+    {
+      return dumpJam_oldest;
+    }
   }
-  return dumpJam_oldest;
 }
 
 /**

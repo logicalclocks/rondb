@@ -2229,6 +2229,18 @@ bool TransporterFacade::is_poll_owner_thread() const {
 /******************************************************************************
  * SEND SIGNAL METHODS
  *****************************************************************************/
+
+/**
+ * Used in the asserts after prepareSend() returned SEND_OK: apart from
+ * the API_REGREQ handshake, signals are only sent to confirmed nodes.
+ * The ClusterMgr poll thread can disconnect the node before we read its
+ * state without any lock, so a node that is no longer connected is also
+ * accepted.
+ */
+static inline bool confirmed_or_disconnected(const trp_node &node) {
+  return node.is_confirmed() || !node.is_connected();
+}
+
 int TransporterFacade::sendSignal(trp_client *clnt, const NdbApiSignal *aSignal,
                                   NodeId aNode) {
   assert(clnt == m_poll_owner || is_poll_owner_thread() == false);
@@ -2253,7 +2265,7 @@ int TransporterFacade::sendSignal(trp_client *clnt, const NdbApiSignal *aSignal,
         tDataPtr, aNode, trp_id, (LinearSectionPtr *)nullptr);
     // if (ss != SEND_OK) ndbout << ss << endl;
     if (ss == SEND_OK) {
-      assert(theClusterMgr->getNodeInfo(aNode).is_confirmed() ||
+      assert(confirmed_or_disconnected(theClusterMgr->getNodeInfo(aNode)) ||
              aSignal->readSignalNumber() == GSN_API_REGREQ ||
              (aSignal->readSignalNumber() == GSN_CLOSE_COMREQ &&
               aNode == ownId()));
@@ -2430,7 +2442,7 @@ int TransporterFacade::sendFragmentedSignal(trp_client *clnt,
             clnt, &tmp_signal, 1, /*JBB*/
             tmp_signal_data, aNode, trp_id, &tmp_ptr[start_i]);
         if (likely(ss == SEND_OK)) {
-          assert(theClusterMgr->getNodeInfo(aNode).is_confirmed() ||
+          assert(confirmed_or_disconnected(theClusterMgr->getNodeInfo(aNode)) ||
                  tmp_signal.readSignalNumber() == GSN_API_REGREQ);
         } else {
           if (unlikely(ss == SEND_MESSAGE_TOO_BIG)) {
@@ -2481,7 +2493,7 @@ int TransporterFacade::sendFragmentedSignal(trp_client *clnt,
         clnt, aSignal, 1 /*JBB*/, aSignal->getConstDataPtrSend(), aNode, trp_id,
         &tmp_ptr[start_i]);
     if (likely(ss == SEND_OK)) {
-      assert(theClusterMgr->getNodeInfo(aNode).is_confirmed() ||
+      assert(confirmed_or_disconnected(theClusterMgr->getNodeInfo(aNode)) ||
              aSignal->readSignalNumber() == GSN_API_REGREQ);
       ret = 0;
     } else {
@@ -2593,7 +2605,7 @@ int TransporterFacade::sendSignal(trp_client *clnt, const NdbApiSignal *aSignal,
       aSignal->getConstDataPtrSend(), aNode, trp_id, ptr);
   const_cast<NdbApiSignal *>(aSignal)->m_noOfSections = save;
   if (likely(ss == SEND_OK)) {
-    assert(theClusterMgr->getNodeInfo(aNode).is_confirmed() ||
+    assert(confirmed_or_disconnected(theClusterMgr->getNodeInfo(aNode)) ||
            aSignal->readSignalNumber() == GSN_API_REGREQ);
     return 0;
   }
@@ -2627,7 +2639,7 @@ int TransporterFacade::sendSignal(trp_client *clnt, const NdbApiSignal *aSignal,
       aSignal->getConstDataPtrSend(), aNode, trp_id, ptr);
   int ret;
   if (ss == SEND_OK) {
-    assert(theClusterMgr->getNodeInfo(aNode).is_confirmed() ||
+    assert(confirmed_or_disconnected(theClusterMgr->getNodeInfo(aNode)) ||
            aSignal->readSignalNumber() == GSN_API_REGREQ);
     ret = 0;
   } else {

@@ -105,6 +105,57 @@ void Dbtup::execTUP_ABORTREQ(Signal *signal) {
   do_tup_abortreq(signal, 0);
 }
 
+/**
+ * A MM_GROWN tuple was relocated with a bigger size in preparation for
+ * commit, so we need to shrink it back. The original size is stored in
+ * the last word of the relocated (oversized) tuple. If the original size
+ * is 0 the tuple had no varpart, then the varpart is released and
+ * VAR_PART is cleared in bits.
+ *
+ * The caller clears MM_GROWN and writes the header bits to the row.
+ * Readers must not run concurrently, the caller has exclusive access to
+ * the fragment.
+ */
+void Dbtup::shrink_grown_var_part(Fragrecord *fragPtrP, Tablerec *tablePtrP,
+                                  Operationrec *opPtrP,
+                                  Tuple_header *tuple_ptr, Uint32 &bits) {
+  Ptr<Page> vpage;
+
+  ndbassert(!(tuple_ptr->m_header_bits & Tuple_header::COPY_TUPLE));
+
+  Var_part_ref *ref = tuple_ptr->get_var_part_ref_ptr(tablePtrP);
+
+  Local_key tmp;
+  ref->copyout(&tmp);
+
+  Uint32 idx = tmp.m_page_idx;
+  Uint32 *var_part = get_ptr(&vpage, *ref);
+  Var_page *pageP = (Var_page *)vpage.p;
+  Uint32 len = pageP->get_entry_len(idx) & ~Var_page::CHAIN;
+
+  ndbassert(len > 0);
+  Uint32 orig_sz = var_part[len - 1];
+  ndbassert(orig_sz < len);
+  if (orig_sz) {
+    jam();
+    ndbassert(fragPtrP->m_varWordsFree >= pageP->free_space);
+    fragPtrP->m_varWordsFree -= pageP->free_space;
+    pageP->shrink_entry(idx, orig_sz);
+    // Adds the new free space value for the page to the fragment total.
+    update_free_page_list(fragPtrP, vpage);
+  } else {
+    jam();
+    free_var_part(fragPtrP, vpage, tmp.m_page_idx);
+    tmp.m_page_no = RNIL;
+    ref->assign(&tmp);
+    bits &= ~(Uint32)Tuple_header::VAR_PART;
+    DEB_LCP(("MM_SHRINK ABORT: tab(%u,%u) row(%u,%u)",
+             fragPtrP->fragTableId, fragPtrP->fragmentId,
+             opPtrP->m_tuple_location.m_page_no,
+             opPtrP->m_tuple_location.m_page_idx));
+  }
+}
+
 void
 Dbtup::do_tup_abort_operation(Signal* signal,
                               Tuple_header *tuple_ptr,
@@ -195,48 +246,7 @@ Dbtup::do_tup_abort_operation(Signal* signal,
        * of the extended page entry.
        */
       jam();
-      Ptr<Page> vpage;
-      Uint32 idx = opPtrP->m_tuple_location.m_page_idx;
-      Uint32 *var_part;
-
-      ndbassert(!(tuple_ptr->m_header_bits & Tuple_header::COPY_TUPLE));
-
-      Var_part_ref *ref = tuple_ptr->get_var_part_ref_ptr(tablePtrP);
-
-      Local_key tmp;
-      ref->copyout(&tmp);
-
-      idx = tmp.m_page_idx;
-      var_part = get_ptr(&vpage, *ref);
-      Var_page *pageP = (Var_page *)vpage.p;
-      Uint32 len = pageP->get_entry_len(idx) & ~Var_page::CHAIN;
-
-      /*
-        A MM_GROWN tuple was relocated with a bigger size in preparation for
-        commit, so we need to shrink it back. The original size is stored in
-        the last word of the relocated (oversized) tuple.
-      */
-      ndbassert(len > 0);
-      Uint32 orig_sz = var_part[len - 1];
-      ndbassert(orig_sz < len);
-      if (orig_sz) {
-        jam();
-        ndbassert(fragPtrP->m_varWordsFree >= pageP->free_space);
-        fragPtrP->m_varWordsFree -= pageP->free_space;
-        pageP->shrink_entry(idx, orig_sz);
-        // Adds the new free space value for the page to the fragment total.
-        update_free_page_list(fragPtrP, vpage);
-      } else {
-        jam();
-        free_var_part(fragPtrP, vpage, tmp.m_page_idx);
-        tmp.m_page_no = RNIL;
-        ref->assign(&tmp);
-        bits &= ~(Uint32)Tuple_header::VAR_PART;
-        DEB_LCP(("MM_SHRINK ABORT: tab(%u,%u) row(%u,%u)",
-                 fragPtrP->fragTableId, fragPtrP->fragmentId,
-                 opPtrP->m_tuple_location.m_page_no,
-                 opPtrP->m_tuple_location.m_page_idx));
-      }
+      shrink_grown_var_part(fragPtrP, tablePtrP, opPtrP, tuple_ptr, bits);
       tuple_ptr->m_header_bits = bits & ~Tuple_header::MM_GROWN;
     }
   } else if (opPtrP->is_first_operation()) {
