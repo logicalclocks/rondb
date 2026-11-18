@@ -1,0 +1,41 @@
+# This file is part of the RonDB REST API Server
+# Copyright (c) 2026 Hopsworks AB
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+Log ENOTCONN from shutdown() as a warning in trantor
+
+When the peer has already disconnected, Socket::closeWrite() gets
+ENOTCONN from shutdown(). That is expected and harmless, so this patch
+logs it as a warning instead of as a system error (RONDB-1033).
+
+diff --git a/storage/ndb/rest-server2/extra/drogon/trantor-1.5.21/trantor/net/inner/Socket.cc b/storage/ndb/rest-server2/extra/drogon/trantor-1.5.21/trantor/net/inner/Socket.cc
+index 2aff5a03953..bbb1a4a2b4e 100755
+--- a/storage/ndb/rest-server2/extra/drogon/trantor-1.5.21/trantor/net/inner/Socket.cc
++++ b/storage/ndb/rest-server2/extra/drogon/trantor-1.5.21/trantor/net/inner/Socket.cc
+@@ -107,7 +107,14 @@ void Socket::closeWrite()
+     if (::shutdown(sockFd_, SD_SEND) < 0)
+ #endif
+     {
+-        LOG_SYSERR << "sockets::shutdownWrite";
++        if (errno == ENOTCONN)
++        {
++            LOG_WARN << "sockets::shutdownWrite - peer already disconnected";
++        }
++        else
++        {
++            LOG_SYSERR << "sockets::shutdownWrite";
++        }
+     }
+ }
+ int Socket::read(char *buffer, uint64_t len)

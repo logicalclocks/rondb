@@ -1,0 +1,41 @@
+# This file is part of the RonDB REST API Server
+# Copyright (c) 2026 Hopsworks AB
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+Send Content-Type application/json for CT_APPLICATION_OCTET_STREAM
+
+rdrs2 sets CT_APPLICATION_OCTET_STREAM on JSON responses that drogon
+must not compress, because drogon never compresses a response whose
+content type code is CT_APPLICATION_OCTET_STREAM or higher (see
+HttpResponseImpl::shouldBeCompressed). This patch makes that code render
+as "application/json; charset=utf-8", so that the client still gets a
+JSON Content-Type (RONDB-813).
+
+With this patch two content type codes map to application/json, and
+drogon's own unit tests ContentTypeTest and MultiPartParser fail.
+
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/lib/src/HttpUtils.cc b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/lib/src/HttpUtils.cc
+index 5cfcbb7d256..ea06579b70e 100644
+--- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/lib/src/HttpUtils.cc
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/lib/src/HttpUtils.cc
+@@ -35,7 +35,8 @@ static const std::unordered_map<
+     std::pair<std::vector<std::string_view>, std::string_view>>
+     mimeTypeDatabase_{
+         {CT_NONE, {{""}, ""}},
+-        {CT_APPLICATION_OCTET_STREAM, {{"application/octet-stream"}, ""}},
++        {CT_APPLICATION_OCTET_STREAM,
++         {{"application/json"}, "application/json; charset=utf-8"}},
+         {CT_APPLICATION_X_FORM, {{"application/x-www-form-urlencoded"}, ""}},
+         {CT_MULTIPART_FORM_DATA, {{"multipart/form-data"}, ""}},
+         {CT_APPLICATION_GZIP, {{"application/gzip"}, ""}},
