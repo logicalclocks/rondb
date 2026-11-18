@@ -4481,6 +4481,18 @@ int MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
             CAST_CONSTPTR(AllocNodeIdRef, signal->getDataPtr());
         last_ref_error = ref->errorCode;
         if (ref->errorCode == AllocNodeIdRef::NotMaster &&
+            free_node_id != 0 &&
+            refToNode(ref->masterRef) == free_node_id) {
+          /*
+            The data node still has the previous start of the node id
+            we allocate as its president: it has not handled the failure
+            of that node yet, e.g. while it waits for arbitration. Same as
+            NodeFailureHandlingNotCompleted from the master, the node id
+            must not be given locally at the deadline.
+          */
+          last_ref_error = AllocNodeIdRef::NodeFailureHandlingNotCompleted;
+        }
+        if (ref->errorCode == AllocNodeIdRef::NotMaster &&
             refToNode(ref->masterRef) == 0xFFFF) {
           /*
             This data node is not aware of who is the president (yet)
