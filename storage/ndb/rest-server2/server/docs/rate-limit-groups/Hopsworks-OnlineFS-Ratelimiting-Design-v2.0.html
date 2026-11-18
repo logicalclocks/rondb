@@ -184,8 +184,8 @@ a set of people may use. It has four properties: a <strong>name</strong> (the id
 RonDB meters), a <strong>budget</strong> as a percentage of a data node&rsquo;s
 database-work capacity, a <strong>Who</strong> list (named login users and/or whole
 projects), and a <strong>cluster</strong> (one by name, or every cluster). The budget
-covers everything those people do on that cluster: every entry point (REST, SQL and,
-for a project group, the project&rsquo;s OnlineFS ingestion), every account they hold, own
+covers everything those people do on that cluster: every entry point (REST, SQL,
+ClusterJ and, from phase 2, a project group&rsquo;s OnlineFS ingestion), every account they hold, own
 data and data shared with them alike.</p>
 <figure class="erd"><img src="img/v2/group-concept.png" alt="Two rate limit groups: recommender_team_rl, 20% on every cluster, shared by project Recommender; and mary_mike_rl, 2%, shared by Mary and Mike."><figcaption>The concept. A group is a name, a budget, a Who list and a cluster. The first group covers everything its members do, on every cluster; the second caps two named people.</figcaption></figure>
 <p>What a group deliberately is <em>not</em> bounds the whole design. It is not a
@@ -249,10 +249,11 @@ deliberate: an alias arriving late only delays metering, while a limit outliving
 group would throttle someone wrongly, and the reconciler exists to prevent the
 second.</p>
 <p><strong>The request flow (&#9318;&ndash;&#9322;).</strong> A request is authenticated
-and authorized exactly as today (&#9318;). RDRS, the MySQL server and OnlineFS ingestion
-(through ClusterJ) tag the transaction with the caller&rsquo;s account name, once per
-transaction (&#9319;); the same person is the same string on every entry point, and an
-ingestion write carries the owning project&rsquo;s OnlineFS account (13.4). Dbtc resolves the tagged name at admission, and when
+and authorized exactly as today (&#9318;). RDRS, the MySQL server and ClusterJ
+applications tag the transaction with the caller&rsquo;s account name, once per
+transaction (&#9319;); the same person is the same string on every entry point, and from
+phase 2 an OnlineFS ingestion write carries the owning project&rsquo;s OnlineFS account
+(13.4). Dbtc resolves the tagged name at admission, and when
 the name is an alias, swaps it for the group&rsquo;s <code>USER</code>, one pointer
 dereference (&#9320;). Dblqh charges the work to that budget per row operation
 (&#9321;); sustained excess queues and then rejects, 429 on REST and error 1297 on SQL
@@ -314,7 +315,8 @@ the document: each row says where the part is described and whether it is implem
     <tr><td>Hopsworks speaks the management-server protocol; cluster discovery by namespace label</td><td><strong>Implemented</strong> (quotas; backups)</td><td>Hopsworks</td><td><a href="#today">5.4</a></td></tr>
     <tr><td>The two group tables and the admin page</td><td><em>New</em></td><td>Hopsworks</td><td><a href="#tables">7</a>, <a href="#admin">3</a></td></tr>
     <tr><td>The alias object: tagged name &rarr; group, for all paths</td><td><em>New</em></td><td>Dbdict, Dbtc, mgm server</td><td><a href="#sql">9</a>, <a href="#kernel">13</a></td></tr>
-    <tr><td>Transaction tagging from OnlineFS ingestion (ClusterJ exposes <code>setUserId</code>; the app tags the project&rsquo;s OnlineFS account)</td><td><em>New</em></td><td>ClusterJ, <a href="https://github.com/logicalclocks/clusterj-onlinefs">clusterj-onlinefs</a></td><td><a href="#today">5.2</a>, <a href="#kernel">13.4</a></td></tr>
+    <tr><td>Transaction tagging from ClusterJ (a session setting that reaches <code>setUserId</code>)</td><td><em>New</em></td><td>ClusterJ, ndbjtie</td><td><a href="#today">5.2</a>, <a href="#kernel">13.4</a></td></tr>
+    <tr><td>OnlineFS ingestion tags the project&rsquo;s OnlineFS account</td><td><em>New</em>, phase 2</td><td><a href="https://github.com/logicalclocks/clusterj-onlinefs">clusterj-onlinefs</a></td><td><a href="#today">5.2</a>, <a href="#kernel">13.4</a></td></tr>
     <tr><td>The installer and reconciler that turn rows into <code>USER</code> and <code>USER ALIAS</code> objects on the right cluster</td><td><em>New</em></td><td>Hopsworks</td><td><a href="#install">10</a></td></tr>
     <tr><td>Turning the switches on (<code>ndb_user_rate_limits</code>, <code>ActivateRateLimits</code>)</td><td><em>New</em> configuration</td><td>rondb-helm</td><td><a href="#build">15</a></td></tr>
   </tbody>
@@ -376,11 +378,13 @@ the NDB transactions it starts:</p>
 <p>Online ingestion (<code>onlinefs</code>) writes through ClusterJ and tags nothing today.
 The NDB API call exists (<code>NdbTransaction::setUserId</code>,
 <code>NdbTransaction.hpp:573</code>; it is what mysqld and RDRS use), but ClusterJ does
-not expose it to Java. This design brings the path in scope: ClusterJ gains a way to set
-the tag per transaction, and the OnlineFS application
+not expose it to Java. This design brings the path in scope in two phases. Phase 1:
+ClusterJ gains a session setting for the tag (13.4), with tests that drive a
+rate-limited cluster from Java. Phase 2: the OnlineFS application
 (<a href="https://github.com/logicalclocks/clusterj-onlinefs">clusterj-onlinefs</a>) tags
-each write transaction with the owning project&rsquo;s OnlineFS account (13.4), so ingestion
-work is metered through the same alias mechanism as REST and SQL.</p>
+each write transaction with the owning project&rsquo;s OnlineFS account, so ingestion work
+is metered through the same alias mechanism as REST and SQL. Until phase 2, ingestion
+runs unmetered, as today.</p>
 
 <h3>5.3 Hopsworks creates one MySQL account per project member</h3>
 <p>When a project&rsquo;s online feature store is first used, and again whenever a member is
@@ -579,7 +583,8 @@ tables. Column definitions are in the <a href="#appendix">appendix</a>.</p>
   on every team and carry ordinary roles. One of them comes back in deliberately: a
   project row also covers the project&rsquo;s <em>ingestion</em>, so the installer adds one
   alias for the project&rsquo;s OnlineFS account (<code>clip31(project + "_onlinefs")</code>),
-  under which the OnlineFS service tags the project&rsquo;s writes (13.4).
+  under which the OnlineFS service tags the project&rsquo;s writes from phase 2 (13.4);
+  until then the alias is installed but no traffic carries its name.
   <code>srvmanager</code> stays out entirely. Membership changes
   write nothing here: when Bob joins Recommender he is covered after the next install
   pass, and when Ava leaves she drops out the same way (section 10).</li>
@@ -673,13 +678,14 @@ tables, the Hopsworks membership expansion and an event-driven cache of them, wh
 Hopsworks-metadata cache rebuilt inside mysqld (the closest existing template, the
 index-statistics listener on <code>ndb_index_stat_head</code>,
 <code>ha_ndb_index_stat.cc:1839</code>, shows it can be done and how much machinery it
-is). ClusterJ, whose ingestion writes are metered too (5.2), would need a second copy. And the tag is
+is). ClusterJ, which is metered too (5.2), would need a second copy. And the tag is
 fixed once per transaction (5.2), so whatever mapping is used must be a property of the
 name, not of the statement.</p>
 
 <h3>9.2 What every path has in common: the tagged name</h3>
 <p>Every entry point tags the transaction with the same kind of string, a project-scoped
-account name: REST and SQL tag the caller&rsquo;s project-user account, ingestion tags the
+account name: REST and SQL tag the caller&rsquo;s project-user account, and a ClusterJ
+application tags the name it sets, which for OnlineFS ingestion (phase 2) is the
 project&rsquo;s OnlineFS account. The data nodes resolve that name to a dictionary object at
 every admission point. So the one place a &ldquo;this person&rsquo;s work charges that group&rdquo;
 mapping covers REST, SQL and ClusterJ at once is the dictionary itself: an object under
@@ -718,7 +724,7 @@ other sessions:</p>
 
 <h3>9.4 One mechanism for every entry point</h3>
 <p>The decision of 2026-11-13 (one mechanism must cover both entry points; no REST-only
-intermediate step) carries over unchanged and now extends to ingestion (5.2, 13.4), and
+intermediate step) carries over unchanged and now extends to ClusterJ (5.2, 13.4), and
 this version makes it cheaper: with
 budgets no longer scoped to data, the alias needs no rules, Dbtc needs no per-table
 state, and the mapping each cluster holds is exactly one pointer per member account.
@@ -757,7 +763,7 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     <code>project_team</code> rows; a project row becomes the same for every member,
     excluding the <code>onlinefs</code> and <code>srvmanager</code> service users, plus
     one alias for the project&rsquo;s OnlineFS account so ingestion charges the group
-    too (7.2).</li>
+    too once OnlineFS tags its writes (phase 2, 7.2).</li>
     <li><strong>Convert each percentage</strong> using this cluster&rsquo;s data-node thread
     count: with 20 threads, 20% &rarr; 4,000,000 (section 14). The thread count is read
     once per pass from the cluster itself (its <code>ndbinfo.threads</code> over the
@@ -1041,8 +1047,8 @@ User Alias List command completed</code></pre>
     <tr><td>MySQL server</td><td>None. <code>ndb_user_rate_limits</code> must be on; it is read-only at runtime, so it is set in the server configuration by rondb-helm.</td></tr>
     <tr><td>Data nodes</td><td><code>ActivateRateLimits=true</code> in the cluster configuration.</td></tr>
     <tr><td>RDRS</td><td>Tag REST transactions with the project-user string (username mode). No group code of any kind (section 8).</td></tr>
-    <tr><td>ClusterJ</td><td>Expose the transaction tag to Java: a session or transaction property that reaches <code>NdbTransaction::setUserId</code> through <code>ndbjtie</code>. Settable per transaction, because one OnlineFS process writes for many projects.</td></tr>
-    <tr><td>OnlineFS (<a href="https://github.com/logicalclocks/clusterj-onlinefs">clusterj-onlinefs</a>)</td><td>Tag each write transaction with the owning project&rsquo;s OnlineFS account, <code>clip31(project + "_onlinefs")</code>; the project is known from the topic being consumed. The installer aliases that account for any group whose Who names the project (7.2), so ingestion charges the project&rsquo;s group. No alias installed means the write runs unmetered, exactly as today.</td></tr>
+    <tr><td>ClusterJ</td><td>Phase 1. <code>Session.setRateLimitUser(String name)</code>, with its getter, sets the name every transaction the session starts afterwards carries, explicit or autocommit; <code>null</code> clears it, and a change takes effect at the next transaction, so one process can tag each transaction differently (OnlineFS writes for many projects). clusterj-tie applies the name in <code>DbImpl.enlist</code> right after <code>Ndb.startTransaction</code> (<code>DbImpl.java:294</code>, <code>:321</code>, <code>:324</code>) through a new <code>NdbTransaction.setUserId</code> binding in <code>ndbjtie</code>. Two details. <code>setUserId</code> keeps the caller&rsquo;s pointer, and <code>rateOverflowError()</code> reads it after the call returns (<code>NdbTransaction.cpp:525</code>, <code>:516</code>), so the binding passes a direct <code>ByteBuffer</code> the session owns, never a JNI-converted <code>String</code>, which is freed when the call returns. And a session handed back to the session cache (<code>closeCache</code>) clears its name, so the next <code>getSession</code> does not inherit it. A name RonDB does not know runs unmetered; a name over the size limit fails the transaction start with the NDB error. A throttled operation fails with NDB error 243 (write) or 2203 (read) (<code>ndberror.cpp:360</code>) as a <code>ClusterJDatastoreException</code>.</td></tr>
+    <tr><td>OnlineFS (<a href="https://github.com/logicalclocks/clusterj-onlinefs">clusterj-onlinefs</a>)</td><td>Phase 2. Until then ingestion runs unmetered; the installer already aliases the account in phase 1, so phase 2 changes only this application. Tag each write transaction with the owning project&rsquo;s OnlineFS account, <code>clip31(project + "_onlinefs")</code>; the project is known from the topic being consumed. The installer aliases that account for any group whose Who names the project (7.2), so ingestion charges the project&rsquo;s group. No alias installed means the write runs unmetered, exactly as today.</td></tr>
     <tr><td>NDB API</td><td>None; <code>setUserId</code> exists.</td></tr>
   </tbody>
 </table></div>
@@ -1174,12 +1180,12 @@ required.</p>
     <code>MaxNoOfTables</code>; and a clean, constant-cost refusal when the object pool
     is exhausted, with an MTR test that drives creates past the limit (today exhaustion
     escalates per attempt and ends in a watchdog kill of the data node).</td></tr>
-    <tr><td>ClusterJ</td><td>new</td><td>Section 13.4: expose the per-transaction tag to Java (a session or transaction property reaching <code>NdbTransaction::setUserId</code> through <code>ndbjtie</code>). Unit test beside the existing ClusterJ test suites.</td></tr>
-    <tr><td>OnlineFS ingestion</td><td>new</td><td>Section 13.4: <a href="https://github.com/logicalclocks/clusterj-onlinefs">clusterj-onlinefs</a> sets the tag per write transaction to the owning project&rsquo;s OnlineFS account; the installer&rsquo;s Who expansion adds that account&rsquo;s alias for project groups (7.2, 10).</td></tr>
+    <tr><td>ClusterJ</td><td>new, phase 1</td><td>Section 13.4: <code>Session.setRateLimitUser</code> in clusterj-api and clusterj-core, applied in <code>DbImpl.enlist</code>, the <code>setUserId</code> binding in <code>ndbjtie</code> over a session-owned direct buffer, and the reset on <code>closeCache</code>. Tests: a <code>RateLimitTest</code> class in clusterj-test, run by a new <code>ndb_quota</code> MTR test that turns rate limits on, sets <code>USER</code> and <code>USER ALIAS</code> entries through <code>ndb_mgm</code> and runs <code>AllTests -n RateLimitTest</code>. The class carries <code>@Ignore</code>, so the plain <code>ndb.clusterj</code> run, which has rate limits off, skips it, while a run that names it still executes it (<code>AllTests.java:96-98</code>, <code>:139-145</code>). Cases: a tagged session is throttled (243 / 2203) and an untagged session on the same table is not; a tag naming an alias charges the alias&rsquo;s target; an unknown name runs unmetered; explicit and autocommit transactions are both tagged; a new name takes effect at the next transaction; a session back from the cache carries no name; a name over the limit fails the transaction start.</td></tr>
+    <tr><td>OnlineFS ingestion</td><td>new, phase 2</td><td>Section 13.4: <a href="https://github.com/logicalclocks/clusterj-onlinefs">clusterj-onlinefs</a> sets the tag per write transaction to the owning project&rsquo;s OnlineFS account; the installer&rsquo;s Who expansion adds that account&rsquo;s alias for project groups (7.2, 10).</td></tr>
     <tr><td>MySQL server</td><td>exists</td><td>Nothing to code. Enable <code>ndb_user_rate_limits</code> through rondb-helm.</td></tr>
     <tr><td>Data nodes</td><td>exists</td><td><code>ActivateRateLimits=true</code> in the cluster configuration.</td></tr>
     <tr><td>Testing without a Hopsworks deployment</td><td>new tests</td><td>RonDB&rsquo;s rigs replicate the installer&rsquo;s mechanics: MTR and the rdrs2 C++ tests issue the same <code>USER</code> / <code>USER ALIAS</code> sequences the installer would, against a live cluster, and assert enforcement, restart survival and the 50%-cap refusal order. Hopsworks unit tests mock the management client; the end-to-end check on a deployed cluster drives the admin page and reads the state table.</td></tr>
-    <tr><td>Unmetered paths</td><td>open</td><td>Rondis traffic (never tagged) and RDRS&rsquo;s own metadata reads run unmetered; <code>srvmanager</code> stays excluded by design. OnlineFS ingestion, unmetered in v1.0, is now tagged and covered by project groups (13.4). Decide whether the remaining paths should ever be metered.</td></tr>
+    <tr><td>Unmetered paths</td><td>open</td><td>Rondis traffic (never tagged) and RDRS&rsquo;s own metadata reads run unmetered; <code>srvmanager</code> stays excluded by design. OnlineFS ingestion stays unmetered until phase 2, when it is tagged and covered by project groups (13.4). Decide whether the remaining paths should ever be metered.</td></tr>
     <tr><td>Several clusters</td><td>new, small</td><td>Section 12: the cluster column, the picker, per-cluster endpoints. No override table, no location data.</td></tr>
   </tbody>
 </table></div>
@@ -1207,8 +1213,8 @@ required.</p>
   (group, cluster) until each targeted cluster confirms the drop, or mark the installer&rsquo;s
   objects on the main cluster itself (a reserved name prefix or an object flag) so the
   reconciler can find orphans. Decide before the installer is built.</li>
-  <li><strong>Ingestion coverage</strong> (13.4): ClusterJ tagging and the OnlineFS
-  change are in scope (decided 2026-11-18; the writes were untagged and unmetered in
+  <li><strong>Ingestion coverage</strong> (13.4): the ClusterJ tag is phase 1, the
+  OnlineFS change phase 2 (decided 2026-11-18; the writes were untagged and unmetered in
   v1.0). Residual question: a project group covering the project&rsquo;s ingestion is
   always-on in this design; decide whether it should instead be a per-group option on
   the admin page.</li>
