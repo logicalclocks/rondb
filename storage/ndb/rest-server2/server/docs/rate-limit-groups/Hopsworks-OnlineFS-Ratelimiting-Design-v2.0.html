@@ -772,9 +772,11 @@ USER SET mary_mike_rl        --rate-per-sec=400000
 USER SET recommender2_rl     --rate-per-sec=1000000
 USER ALIAS SET Recommender_alice4f2  --target=recommender_team_rl
 USER ALIAS SET Recommender_ava3b7c0  --target=recommender_team_rl
+USER ALIAS SET Recommender_onlinefs  --target=recommender_team_rl
 USER ALIAS SET Marketing_mary01ab    --target=mary_mike_rl
 USER ALIAS SET Marketing_mike7c3d    --target=mary_mike_rl
-USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
+USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl
+USER ALIAS SET Recommender2_onlinefs --target=recommender2_rl</code></pre>
     A changed budget becomes <code>USER ALTER</code>; a deleted group becomes
     <code>USER DROP</code> plus <code>USER ALIAS DROP</code> for its accounts; a member
     who left loses their aliases; a member who moved between groups gets
