@@ -562,6 +562,18 @@ ResultPrinter::compile()
         cmd.print_group_by_column.float_display =
             m_column_metadata != NULL &&
             m_column_metadata[o->column.col_idx].float_display;
+        // O-3: a CTE MIN / MAX of a temporal column is a Bigunsigned key
+        // holding the packed value, decoded as print_passthrough_value
+        // and print_aggregate_result do.
+        cmd.print_group_by_column.temporal = TemporalDisplay::NONE;
+        cmd.print_group_by_column.temporal_fsp = 0;
+        if (m_column_metadata != NULL &&
+            m_column_metadata[o->column.col_idx].has_metadata) {
+          cmd.print_group_by_column.temporal =
+              m_column_metadata[o->column.col_idx].temporal;
+          cmd.print_group_by_column.temporal_fsp =
+              m_column_metadata[o->column.col_idx].temporal_fsp;
+        }
         m_program.push(cmd);
         break;
       }
@@ -735,6 +747,11 @@ ResultPrinter::store_record(NdbAggregator::ResultRecord& record)
   return row;
 }
 
+// Defined with the pass-through printers below.
+static void print_temporal_packed(std::ostream& out, Uint64 w,
+                                  ResultPrinter::TemporalDisplay temporal,
+                                  int fsp, const char* quote);
+
 void
 ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
 {
@@ -790,7 +807,14 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
           out << column.data_int64();
           break;
         case NdbDictionary::Column::Type::Bigunsigned:
-          out << column.data_uint64();
+          // O-3: a packed CTE MIN / MAX temporal key.
+          if (cmd.print_group_by_column.temporal != TemporalDisplay::NONE)
+            print_temporal_packed(out, column.data_uint64(),
+                                  cmd.print_group_by_column.temporal,
+                                  cmd.print_group_by_column.temporal_fsp,
+                                  m_quote);
+          else
+            out << column.data_uint64();
           break;
         case NdbDictionary::Column::Type::Float:
           print_float_or_double(out, column.data_float(), true);
@@ -2038,7 +2062,14 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
           out << column.data_int64();
           break;
         case NdbDictionary::Column::Type::Bigunsigned:   ///< 64 Bit. 8 byte unsigned integer
-          out << column.data_uint64();
+          // O-3: a packed CTE MIN / MAX temporal key.
+          if (cmd.print_group_by_column.temporal != TemporalDisplay::NONE)
+            print_temporal_packed(out, column.data_uint64(),
+                                  cmd.print_group_by_column.temporal,
+                                  cmd.print_group_by_column.temporal_fsp,
+                                  m_quote);
+          else
+            out << column.data_uint64();
           break;
         case NdbDictionary::Column::Type::Float:         ///< 32-bit float. 4 bytes float
           print_float_or_double(out, column.data_float(), true);
@@ -2759,13 +2790,39 @@ ResultPrinter::aggregate_uses_float_display(const Outputs* out) const
   if (out == NULL || out->type != Outputs::Type::AGGREGATE ||
       (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX))
     return false;
-  const AggregationAPICompiler::Expr* arg = out->aggregate.arg;
   // Arithmetic expressions have their own result type; only a column
-  // MIN/MAX preserves FLOAT display.
-  if (arg == NULL || !arg->isLoad() || m_column_metadata == NULL ||
-      m_column_names == NULL || arg->getLoadIdx() >= m_column_names->size())
-    return false;
-  return m_column_metadata[arg->getLoadIdx()].float_display;
+  // MIN/MAX preserves FLOAT display, and a GREATEST / LEAST of FLOAT
+  // columns (O-10: a watermark over FLOAT scalar-CTE outputs).
+  bool any_column = false;
+  bool all_float = true;
+  expr_float_display(out->aggregate.arg, any_column, all_float);
+  return any_column && all_float;
+}
+
+void
+ResultPrinter::expr_float_display(const AggregationAPICompiler::Expr* e,
+                                  bool& any_column, bool& all_float) const
+{
+  if (e == NULL) {
+    all_float = false;
+    return;
+  }
+  if (e->isLoad()) {
+    any_column = true;
+    if (m_column_metadata == NULL || m_column_names == NULL ||
+        e->getLoadIdx() >= m_column_names->size() ||
+        !m_column_metadata[e->getLoadIdx()].float_display)
+      all_float = false;
+    return;
+  }
+  // FLOAT and an integer literal (LONGLONG) aggregate to FLOAT in MySQL.
+  if (e->isLoadConstantInt()) return;
+  if (e->isGreatest2() || e->isLeast2()) {
+    expr_float_display(e->getLeft(), any_column, all_float);
+    expr_float_display(e->getRight(), any_column, all_float);
+    return;
+  }
+  all_float = false;
 }
 
 CHARSET_INFO*
@@ -2900,10 +2957,35 @@ ResultPrinter::aggregate_arg_temporal(const Outputs* out, int& fsp) const
     return TemporalDisplay::NONE;
   if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX)
     return TemporalDisplay::NONE;
-  AggregationAPICompiler::Expr* arg = out->aggregate.arg;
-  if (arg == NULL || !arg->isLoad())
+  // O-10: also a GREATEST / LEAST watermark over temporal scalar-CTE
+  // outputs, as aggregate_arg_scale follows it (D8).
+  return expr_temporal(out->aggregate.arg, fsp);
+}
+
+ResultPrinter::TemporalDisplay
+ResultPrinter::expr_temporal(const AggregationAPICompiler::Expr* e,
+                             int& fsp) const
+{
+  fsp = 0;
+  if (e == NULL)
     return TemporalDisplay::NONE;
-  Uint32 col_idx = arg->getLoadIdx();
+  if (e->isGreatest2() || e->isLeast2())
+  {
+    // The preparer refuses operands of different temporal types
+    // (check_cte_temporal_outputs); NONE keeps any other mix numeric.
+    int left_fsp = 0;
+    int right_fsp = 0;
+    const TemporalDisplay left = expr_temporal(e->getLeft(), left_fsp);
+    const TemporalDisplay right = expr_temporal(e->getRight(), right_fsp);
+    if (left == TemporalDisplay::NONE || left != right ||
+        left_fsp != right_fsp)
+      return TemporalDisplay::NONE;
+    fsp = left_fsp;
+    return left;
+  }
+  if (!e->isLoad())
+    return TemporalDisplay::NONE;
+  Uint32 col_idx = e->getLoadIdx();
   if (m_column_names == NULL || col_idx >= m_column_names->size())
     return TemporalDisplay::NONE;
   if (m_column_metadata == NULL ||

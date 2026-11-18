@@ -156,6 +156,8 @@ private:
         int precision;
         int scale;
         bool float_display;
+        TemporalDisplay temporal; // O-3: a packed CTE MIN/MAX temporal key
+        int temporal_fsp;
       } print_group_by_column;
       struct
       {
@@ -280,6 +282,16 @@ private:
   // precision for DATETIME2 / TIME2.
   TemporalDisplay aggregate_arg_temporal(const Outputs* out,
                                          int& fsp) const;
+  // O-10 = D-7: the temporal decode of a MIN / MAX argument that is a
+  // column or a GREATEST / LEAST of columns, the decode every operand
+  // column has (NONE when they differ or an operand is not a column).
+  TemporalDisplay expr_temporal(const AggregationAPICompiler_Expr* e,
+                                int& fsp) const;
+  // O-10 = D-7: whether such an argument is a FLOAT in MySQL: every
+  // operand column has the FLOAT display (an integer constant beside them
+  // keeps the FLOAT type).  Sets any_column when a column was found.
+  void expr_float_display(const AggregationAPICompiler_Expr* e,
+                          bool& any_column, bool& all_float) const;
   // SQL three-valued logic for HAVING; a group is kept only when TRUE.
   enum HavingTruth { HAVING_FALSE, HAVING_TRUE, HAVING_UNKNOWN };
   HavingTruth evaluate_having(const ConditionalExpression* expr);

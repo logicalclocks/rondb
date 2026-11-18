@@ -327,6 +327,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     if (m_has_ctes) {
       validate_cte_execution_shapes();
       check_cte_groupby_key_types();
+      check_cte_temporal_outputs();
     }
     if (m_cte_scopes.size() > 0 && is_join_query())
       check_pushed_query_size();
@@ -9128,6 +9129,43 @@ RonSQLPreparer::build_result_column_metadata()
             column_metadata[col_idx].has_metadata = true;
           }
         }
+        // O-3: a MIN / MAX of a temporal column passed on by a further
+        // CTE has no plumbed dict_column either; its Bigunsigned value
+        // is the packed temporal value, decoded like one CTE up.
+        bool packed = false;
+        const NdbDictionary::Column* tsrc =
+            temporal_cte_source(m_main_scope, col_idx, packed);
+        if (tsrc != NULL && packed) {
+          column_metadata[col_idx].temporal_fsp = 0;
+          switch (tsrc->getType()) {
+          case NdbDictionary::Column::Date:
+            column_metadata[col_idx].temporal =
+                ResultPrinter::TemporalDisplay::DATE;
+            break;
+          case NdbDictionary::Column::Year:
+            column_metadata[col_idx].temporal =
+                ResultPrinter::TemporalDisplay::YEAR;
+            break;
+          case NdbDictionary::Column::Datetime2:
+            column_metadata[col_idx].temporal =
+                ResultPrinter::TemporalDisplay::DATETIME2;
+            column_metadata[col_idx].temporal_fsp = tsrc->getPrecision();
+            break;
+          case NdbDictionary::Column::Time2:
+            column_metadata[col_idx].temporal =
+                ResultPrinter::TemporalDisplay::TIME2;
+            column_metadata[col_idx].temporal_fsp = tsrc->getPrecision();
+            break;
+          case NdbDictionary::Column::Timestamp2:
+            column_metadata[col_idx].temporal =
+                ResultPrinter::TemporalDisplay::TIMESTAMP2;
+            column_metadata[col_idx].temporal_fsp = tsrc->getPrecision();
+            break;
+          default:
+            break;
+          }
+          column_metadata[col_idx].has_metadata = true;
+        }
       }
       continue;
     }
@@ -14909,6 +14947,486 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
   }
 }
 
+/*
+ * C-6, O-3, O-10 = D-7: the kernel computes a MIN or MAX over a DATE,
+ * DATETIME, TIME, TIMESTAMP or YEAR column on the column's packed value
+ * (its stored bytes read as an unsigned integer, little-endian for DATE
+ * and YEAR, big-endian for the others, which orders like the values), and
+ * a CTE carries that result as a Bigunsigned virtual column.  The stored
+ * temporal column a CTE output stands for, followed through the CTE
+ * outputs that are a column or a MIN / MAX of a column, as
+ * resolve_chained_column_type follows them; NULL for any other output.
+ * `packed` is set when a MIN or MAX was crossed: the output's virtual
+ * column then holds the packed value instead of the column's own type.
+ */
+const NdbDictionary::Column*
+RonSQLPreparer::temporal_cte_source(const QueryScope& scope, Uint32 col_idx,
+                                    bool& packed) const
+{
+  packed = false;
+  if (scope.resolved_columns == NULL || col_idx >= m_columns.size())
+    return NULL;
+  const QueryScope::ResolvedColumnRef* ref = &scope.resolved_columns[col_idx];
+  if (ref->kind != QueryScope::ResolvedColumnRef::Kind::CteResultColumn)
+    return NULL;
+  for (Uint32 hops = 0; hops <= m_cte_scopes.size(); hops++) {
+    if (ref->kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn) {
+      const NdbDictionary::Column* col = ref->dict_column;
+      if (col == NULL) return NULL;
+      switch (col->getType()) {
+      case NdbDictionary::Column::Date:
+      case NdbDictionary::Column::Year:
+      case NdbDictionary::Column::Datetime2:
+      case NdbDictionary::Column::Time2:
+      case NdbDictionary::Column::Timestamp2:
+        return col;
+      default:
+        return NULL;
+      }
+    }
+    const Outputs* o = ref->cte_output;
+    if (ref->kind != QueryScope::ResolvedColumnRef::Kind::CteResultColumn ||
+        o == NULL || ref->cte_def_idx >= m_cte_scopes.size())
+      return NULL;
+    const QueryScope* cs = m_cte_scopes[ref->cte_def_idx];
+    if (cs == NULL || cs->resolved_columns == NULL) return NULL;
+    Uint32 src_col_idx = 0;
+    if (o->type == Outputs::Type::COLUMN) {
+      src_col_idx = o->column.col_idx;
+    } else if (o->type == Outputs::Type::AGGREGATE &&
+               (o->aggregate.fun == T_MIN || o->aggregate.fun == T_MAX) &&
+               o->aggregate.arg != NULL && o->aggregate.arg->isLoad()) {
+      src_col_idx = o->aggregate.arg->getLoadIdx();
+      packed = true;
+    } else {
+      return NULL;  // COUNT, SUM, AVG, expressions: not temporal
+    }
+    if (src_col_idx >= m_columns.size()) return NULL;
+    ref = &cs->resolved_columns[src_col_idx];
+  }
+  return NULL;
+}
+
+static const char* const CTE_TEMPORAL_EXPR_UNSUPPORTED =
+    "A CTE output that is a MIN or MAX of a DATE, DATETIME, TIME, "
+    "TIMESTAMP or YEAR column can be used in an aggregate only as the "
+    "argument of MIN or MAX, or in a GREATEST or LEAST whose arguments are "
+    "all CTE outputs of the same temporal type and fractional precision.";
+
+/*
+ * O-10: such an output reaches an aggregation program as its packed
+ * value.  MIN, MAX and COUNT of it, and GREATEST / LEAST between packed
+ * values of one type and precision, are exact; SUM, AVG, arithmetic and a
+ * GREATEST / LEAST with a constant or another type would compute on the
+ * packed integer (MySQL computes on the value as a number, YYYYMMDD for
+ * a DATE, or compares as DATETIME), so refuse them, as GroupBy() and the
+ * aggregator refuse SUM and AVG of a stored temporal column.  A GREATEST
+ * or LEAST compared with a string in WHERE is lowered to one comparison
+ * per argument; MySQL compares a GREATEST of TIME values with a string as
+ * strings, so refuse that for a TIME output.
+ */
+void
+RonSQLPreparer::check_cte_temporal_outputs()
+{
+  Uint32 c = 0;
+  for (const CteDefinition* cte = m_context.ast_root.cte_list;
+       cte != NULL && c < m_cte_scopes.size(); cte = cte->next, c++) {
+    if (m_cte_scopes[c] != NULL)
+      check_cte_temporal_outputs(*m_cte_scopes[c], cte->stmt);
+  }
+  check_cte_temporal_outputs(m_main_scope, &m_context.ast_root);
+}
+
+void
+RonSQLPreparer::check_cte_temporal_outputs(const QueryScope& scope,
+                                           const SelectStatement* stmt)
+{
+  if (stmt == NULL || scope.resolved_columns == NULL) return;
+  for (const Outputs* o = stmt->outputs; o != NULL; o = o->next) {
+    if (o->type == Outputs::Type::AGGREGATE) {
+      check_cte_temporal_agg_arg(scope, o->aggregate.fun, o->aggregate.arg);
+    } else if (o->type == Outputs::Type::AVG) {
+      check_cte_temporal_agg_arg(scope, T_AVG, o->avg.arg);
+    }
+  }
+  check_cte_temporal_where(scope, stmt->where_expression);
+}
+
+void
+RonSQLPreparer::check_cte_temporal_agg_arg(
+    const QueryScope& scope,
+    TokenKind fun,
+    const AggregationAPICompiler::Expr* arg) const
+{
+  if (fun == T_COUNT || arg == NULL) return;
+  if (!expr_has_packed_temporal(scope, arg)) return;
+  if (fun == T_MIN || fun == T_MAX) {
+    if (arg->isLoad()) return;
+    const NdbDictionary::Column* first = NULL;
+    if ((arg->isGreatest2() || arg->isLeast2()) &&
+        pair_op_temporal_operands(scope, arg, first))
+      return;
+  }
+  throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
+                             CTE_TEMPORAL_EXPR_UNSUPPORTED);
+}
+
+bool
+RonSQLPreparer::expr_has_packed_temporal(
+    const QueryScope& scope,
+    const AggregationAPICompiler::Expr* e) const
+{
+  if (e == NULL) return false;
+  if (e->isLoad()) {
+    bool packed = false;
+    const NdbDictionary::Column* src =
+        temporal_cte_source(scope, e->getLoadIdx(), packed);
+    return src != NULL && packed;
+  }
+  return expr_has_packed_temporal(scope, e->getLeft()) ||
+         expr_has_packed_temporal(scope, e->getRight());
+}
+
+// True when every operand of the GREATEST / LEAST tree `e` is a CTE output
+// of a temporal column, all of the type and precision of `first` (set from
+// the first operand when NULL).  A column a CTE passes on and a MIN / MAX
+// of such a column load the same value into a register.
+bool
+RonSQLPreparer::pair_op_temporal_operands(
+    const QueryScope& scope,
+    const AggregationAPICompiler::Expr* e,
+    const NdbDictionary::Column*& first) const
+{
+  if (e == NULL) return false;
+  if (e->isGreatest2() || e->isLeast2())
+    return pair_op_temporal_operands(scope, e->getLeft(), first) &&
+           pair_op_temporal_operands(scope, e->getRight(), first);
+  if (!e->isLoad()) return false;
+  bool packed = false;
+  const NdbDictionary::Column* src =
+      temporal_cte_source(scope, e->getLoadIdx(), packed);
+  if (src == NULL) return false;
+  if (first == NULL) {
+    first = src;
+    return true;
+  }
+  return src->getType() == first->getType() &&
+         src->getPrecision() == first->getPrecision();
+}
+
+void
+RonSQLPreparer::check_cte_temporal_where(const QueryScope& scope,
+                                         const ConditionalExpression* ce) const
+{
+  if (ce == NULL) return;
+  const bool is_cmp = (ce->op == T_EQUALS || ce->op == T_NOT_EQUALS ||
+                       ce->op == T_LT || ce->op == T_LE ||
+                       ce->op == T_GT || ce->op == T_GE);
+  if (is_cmp && ce->args.left != NULL && ce->args.right != NULL) {
+    const ConditionalExpression* mm = NULL;
+    const ConditionalExpression* other = NULL;
+    if (ce->args.left->op == T_GREATEST || ce->args.left->op == T_LEAST) {
+      mm = ce->args.left;
+      other = ce->args.right;
+    } else if (ce->args.right->op == T_GREATEST ||
+               ce->args.right->op == T_LEAST) {
+      mm = ce->args.right;
+      other = ce->args.left;
+    }
+    if (mm != NULL && other->op == T_STRING) {
+      // The argument list as rewrite_minmax_comparison walks it.
+      for (const ConditionalExpression* node = mm->args.left; node != NULL;
+           node = node->args.right) {
+        const ConditionalExpression* elem = node->args.left;
+        if (elem == NULL || elem->op != T_IDENTIFIER) continue;
+        bool packed = false;
+        const NdbDictionary::Column* src =
+            temporal_cte_source(scope, elem->col_idx, packed);
+        require_unsupported(
+            src == NULL || !packed ||
+            src->getType() != NdbDictionary::Column::Time2,
+            "GREATEST or LEAST of a CTE output that is a MIN or MAX of a "
+            "TIME column, compared with a string, is not supported. "
+            "Compare with an integer hhmmss, or compare each CTE output "
+            "with the string.");
+      }
+    }
+  }
+  const ConditionChildren children = condition_children(*ce);
+  check_cte_temporal_where(scope, children.first);
+  check_cte_temporal_where(scope, children.second);
+}
+
+static const char* const CTE_TEMPORAL_CONSTANT_UNSUPPORTED =
+    "A CTE output that is a MIN or MAX of a DATE, DATETIME, TIME, TIMESTAMP "
+    "or YEAR column can be compared only with a valid date or time string "
+    "(a TIME string with at most the column's fractional digits), or with "
+    "an integer written YYYYMMDD for a DATE, YYYYMMDDhhmmss for a DATETIME "
+    "or TIMESTAMP, hhmmss for a TIME and YYYY for a YEAR.";
+
+// The bytes of a temporal column value as the kernel loads them into a
+// MIN / MAX register: most significant byte first (AggColumnLoad.hpp).
+static Uint64
+ronsql_fold_big_endian(const uchar* bytes, Uint32 n)
+{
+  Uint64 v = 0;
+  for (Uint32 i = 0; i < n; i++)
+    v = (v << 8) | static_cast<Uint64>(bytes[i]);
+  return v;
+}
+
+/*
+ * C-6: `ce`, compared with a CTE output that is a MIN / MAX of the
+ * temporal column `src`, as the packed value of `src`'s type that such an
+ * output holds.  mysqld compares the derived table's column of that type:
+ * a DATE, DATETIME or TIMESTAMP with a string as DATETIME, at full
+ * precision (Arg_comparator::compare_datetime); with an integer, a TIME
+ * with a string or an integer, and a YEAR with an integer after storing
+ * the constant in the column's type (convert_constant_item).  Returns
+ * false when the constant lies strictly between two values of the type,
+ * a DATE compared with a time of day or a DATETIME(n) / TIMESTAMP(n) with
+ * more fractional digits; `packed` is then the value below it.
+ *
+ * Accepted are the constants for which that also equals the numeric
+ * comparison MySQL makes when the column is an argument of a GREATEST /
+ * LEAST that rewrite_minmax_comparison lowers to one comparison per
+ * argument: an integer written YYYYMMDD for a DATE, YYYYMMDDhhmmss for a
+ * DATETIME or TIMESTAMP, hhmmss for a TIME, YYYY (or 0) for a YEAR, and
+ * strings.  A TIME string must not have more fractional digits than the
+ * column, which mysqld would round.  Anything else is refused.
+ */
+bool
+RonSQLPreparer::cte_temporal_constant(const NdbDictionary::Column* src,
+                                      const ConditionalExpression* ce,
+                                      Uint64& packed) const
+{
+  const NdbDictionary::Column::Type type = src->getType();
+  const bool has_fsp = (type == NdbDictionary::Column::Datetime2 ||
+                        type == NdbDictionary::Column::Time2 ||
+                        type == NdbDictionary::Column::Timestamp2);
+  const Uint32 fsp = has_fsp ? static_cast<Uint32>(src->getPrecision()) : 0;
+  require_unsupported(fsp <= 6, CTE_TEMPORAL_CONSTANT_UNSUPPORTED);
+  MYSQL_TIME mt;
+  memset(&mt, 0, sizeof(mt));
+  uchar bytes[8];
+  memset(bytes, 0, sizeof(bytes));
+  switch (type) {
+  case NdbDictionary::Column::Year:
+  {
+    // Field_year::store: 0 is 0000, 1901..2155 the year; the byte holds
+    // year - 1900.
+    require_unsupported(ce->op == T_INT &&
+                        (ce->constant_integer == 0 ||
+                         (ce->constant_integer >= 1901 &&
+                          ce->constant_integer <= 2155)),
+                        CTE_TEMPORAL_CONSTANT_UNSUPPORTED);
+    packed = (ce->constant_integer == 0)
+        ? 0 : static_cast<Uint64>(ce->constant_integer - 1900);
+    return true;
+  }
+  case NdbDictionary::Column::Time2:
+  {
+    if (ce->op == T_STRING) {
+      MYSQL_TIME_STATUS status;
+      const bool err = str_to_time(ce->string.str, ce->string.len, &mt,
+                                   &status, 0);
+      require_unsupported(
+          !err && status.warnings == 0 && status.nanoseconds == 0 &&
+          status.fractional_digits <= fsp &&
+          status.m_deprecation.m_kind ==
+              MYSQL_TIME_STATUS::DEPRECATION::DP_NONE &&
+          mt.time_type == MYSQL_TIMESTAMP_TIME &&
+          !check_time_range_quick(mt),
+          CTE_TEMPORAL_CONSTANT_UNSUPPORTED);
+    } else if (ce->op == T_INT) {
+      int warnings = 0;
+      const bool err = number_to_time(ce->constant_integer, &mt, &warnings);
+      require_unsupported(!err && warnings == 0 &&
+                          mt.time_type == MYSQL_TIMESTAMP_TIME,
+                          CTE_TEMPORAL_CONSTANT_UNSUPPORTED);
+    } else {
+      require_unsupported(false, CTE_TEMPORAL_CONSTANT_UNSUPPORTED);
+    }
+    my_time_packed_to_binary(TIME_to_longlong_time_packed(mt), bytes, fsp);
+    packed = ronsql_fold_big_endian(bytes, 3 + (fsp + 1) / 2);
+    return true;
+  }
+  case NdbDictionary::Column::Date:
+  case NdbDictionary::Column::Datetime2:
+  case NdbDictionary::Column::Timestamp2:
+    break;
+  default:
+    require_unsupported(false, CTE_TEMPORAL_CONSTANT_UNSUPPORTED);
+  }
+
+  const my_time_flags_t flags = TIME_NO_ZERO_IN_DATE | TIME_NO_ZERO_DATE;
+  if (ce->op == T_STRING) {
+    MYSQL_TIME_STATUS status;
+    const bool err = str_to_datetime(ce->string.str, ce->string.len, &mt,
+                                     flags, &status);
+    require_unsupported(
+        !err && status.warnings == 0 && status.nanoseconds == 0 &&
+        status.m_deprecation.m_kind ==
+            MYSQL_TIME_STATUS::DEPRECATION::DP_NONE &&
+        (mt.time_type == MYSQL_TIMESTAMP_DATE ||
+         mt.time_type == MYSQL_TIMESTAMP_DATETIME),
+        CTE_TEMPORAL_CONSTANT_UNSUPPORTED);
+  } else if (ce->op == T_INT) {
+    const Int64 v = ce->constant_integer;
+    const bool form_ok = (type == NdbDictionary::Column::Date)
+        ? (v >= 10000101LL && v <= 99991231LL)
+        : (v >= 10000101000000LL && v <= 99991231235959LL);
+    int was_cut = 0;
+    require_unsupported(form_ok &&
+                        number_to_datetime(v, &mt, flags, &was_cut) != -1LL &&
+                        was_cut == 0,
+                        CTE_TEMPORAL_CONSTANT_UNSUPPORTED);
+  } else {
+    require_unsupported(false, CTE_TEMPORAL_CONSTANT_UNSUPPORTED);
+  }
+
+  if (type == NdbDictionary::Column::Date) {
+    // uint3korr of the 3-byte DATE: (year << 9) | (month << 5) | day.
+    packed = (static_cast<Uint64>(mt.year) << 9) |
+             (static_cast<Uint64>(mt.month) << 5) |
+             static_cast<Uint64>(mt.day);
+    return mt.hour == 0 && mt.minute == 0 && mt.second == 0 &&
+           mt.second_part == 0;
+  }
+
+  // DATETIME(n) / TIMESTAMP(n): truncate to n fractional digits.
+  unsigned long unit = 1;
+  for (Uint32 i = fsp; i < 6; i++) unit *= 10;
+  const unsigned long frac = mt.second_part - mt.second_part % unit;
+  const bool exact = (frac == mt.second_part);
+  mt.second_part = frac;
+  mt.time_type = MYSQL_TIMESTAMP_DATETIME;
+  if (type == NdbDictionary::Column::Datetime2) {
+    my_datetime_packed_to_binary(TIME_to_longlong_datetime_packed(mt), bytes,
+                                 fsp);
+    packed = ronsql_fold_big_endian(bytes, 5 + (fsp + 1) / 2);
+    return exact;
+  }
+  // TIMESTAMP2 holds the UTC epoch; RonSQL works in UTC, as encode_constant.
+  struct tm time_info;
+  memset(&time_info, 0, sizeof(time_info));
+  time_info.tm_year = static_cast<int>(mt.year) - 1900;
+  time_info.tm_mon = static_cast<int>(mt.month) - 1;
+  time_info.tm_mday = static_cast<int>(mt.day);
+  time_info.tm_hour = static_cast<int>(mt.hour);
+  time_info.tm_min = static_cast<int>(mt.minute);
+  time_info.tm_sec = static_cast<int>(mt.second);
+  const time_t epoch = timegm(&time_info);
+  require_unsupported(epoch >= 1 && epoch <= 2147483647,
+                      "A TIMESTAMP CTE output compared with a constant out "
+                      "of the TIMESTAMP range ('1970-01-01 00:00:01' UTC to "
+                      "'2038-01-19 03:14:07' UTC) is not supported.");
+  my_timeval tv{epoch, static_cast<Int32>(mt.second_part)};
+  my_timestamp_to_binary(&tv, bytes, fsp);
+  packed = ronsql_fold_big_endian(bytes, 4 + (fsp + 1) / 2);
+  return exact;
+}
+
+/*
+ * C-6: one `col OP const` atom of a CTE_LOOKUP filter whose column is a
+ * CTE output holding a packed temporal value (temporal_cte_source).  The
+ * constant goes through cte_temporal_constant instead of encode_constant,
+ * which took it as a plain number (packed 1995-01-01 is 1021473, so
+ * `>= 19950101` rejected every row) or refused a string.  A constant
+ * between two values of the type, `c.d >= '1995-01-01 10:00:00'` on a
+ * DATE, becomes `c.d > '1995-01-01'`; `=` with it is never TRUE and `!=`
+ * TRUE for every non-NULL value.
+ */
+void
+RonSQLPreparer::emit_cte_temporal_filter_atom(
+    NdbInterpretedCode& code,
+    Uint32 position,
+    const NdbDictionary::Column* src,
+    const ConditionalExpression* const_side,
+    TokenKind op,
+    bool swapped,
+    Uint32 fail_label)
+{
+  if (swapped) {  // `const OP col` reads `col OP' const`
+    switch (op) {
+    case T_LT: op = T_GT; break;
+    case T_LE: op = T_GE; break;
+    case T_GT: op = T_LT; break;
+    case T_GE: op = T_LE; break;
+    default: break;
+    }
+  }
+  if (const_side->op == T_NULL) {
+    // A comparison with NULL is UNKNOWN: never accepted.
+    require_prm(code.branch_label(fail_label) == 0,
+                "CTE_LOOKUP filter: failed to emit temporal branch.");
+    return;
+  }
+  Uint64 value = 0;
+  const bool exact = cte_temporal_constant(src, const_side, value);
+  if (!exact) {
+    switch (op) {
+    case T_EQUALS:
+      require_prm(code.branch_label(fail_label) == 0,
+                  "CTE_LOOKUP filter: failed to emit temporal branch.");
+      return;
+    case T_NOT_EQUALS:
+      require_prm(code.branch_linked_isnull(position, fail_label) == 0,
+                  "CTE_LOOKUP filter: failed to emit comparison NULL "
+                  "guard.");
+      return;
+    case T_LT:
+    case T_LE:
+      op = T_LE;
+      break;
+    case T_GT:
+    case T_GE:
+      op = T_GT;
+      break;
+    default:
+      break;
+    }
+  }
+  require_prm(code.branch_linked_isnull(position, fail_label) == 0,
+              "CTE_LOOKUP filter: failed to emit comparison NULL guard.");
+  Uint64* val = m_amalloc->alloc_exc<Uint64>(1);
+  *val = value;
+  const Uint32 type_id = static_cast<Uint32>(NdbDictionary::Column::Bigunsigned);
+  const Uint32 size = static_cast<Uint32>(sizeof(Uint64));
+  // The inline branches are named for the case that rejects the row, as
+  // in emit_cte_lookup_filter.
+  int rc = -1;
+  switch (op) {
+  case T_EQUALS:
+    rc = code.branch_linked_inline_ne(position, type_id, size, 0, val, size,
+                                      fail_label);
+    break;
+  case T_NOT_EQUALS:
+    rc = code.branch_linked_inline_eq(position, type_id, size, 0, val, size,
+                                      fail_label);
+    break;
+  case T_LT:
+    rc = code.branch_linked_inline_le(position, type_id, size, 0, val, size,
+                                      fail_label);
+    break;
+  case T_LE:
+    rc = code.branch_linked_inline_lt(position, type_id, size, 0, val, size,
+                                      fail_label);
+    break;
+  case T_GT:
+    rc = code.branch_linked_inline_ge(position, type_id, size, 0, val, size,
+                                      fail_label);
+    break;
+  case T_GE:
+    rc = code.branch_linked_inline_gt(position, type_id, size, 0, val, size,
+                                      fail_label);
+    break;
+  default:
+    require_prm(false, "Unsupported CTE_LOOKUP filter operator (temporal).");
+  }
+  require_prm(rc == 0, "CTE_LOOKUP filter: failed to emit temporal branch.");
+}
+
 // Compile a main-query WHERE filter on a CTE_LOOKUP child into an
 // NdbInterpretedCode program of branch_linked_* instructions.  The
 // filter evaluates against DBLQH's linked-attr buffer for the CTE
@@ -15573,6 +16091,18 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
         // opcode emit below derives the correct columnSize and
         // csNumber from the virt-table column for these types.
         NdbDictionary::Column::Type vt = vtcol->getType();
+        // C-6: a MIN / MAX of a temporal column holds the packed value;
+        // the constant is converted to that value, not taken as a number.
+        bool packed_temporal = false;
+        const NdbDictionary::Column* temporal_src =
+            temporal_cte_source(scope, col_idx, packed_temporal);
+        if (temporal_src != NULL && packed_temporal &&
+            vt == NdbDictionary::Column::Bigunsigned) {
+          emit_cte_temporal_filter_atom(code, position, temporal_src,
+                                        const_side, atom->op, swapped,
+                                        fail_label);
+          return;
+        }
         require_prm(vt == NdbDictionary::Column::Bigint ||
                     vt == NdbDictionary::Column::Bigunsigned ||
                     vt == NdbDictionary::Column::Double ||

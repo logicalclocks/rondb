@@ -1042,6 +1042,44 @@ private:
   void check_cte_groupby_key_types(QueryScope& scope,
                                    const GroupbyColumns* groupby);
   /**
+   * C-6, O-3, O-10: the stored DATE, DATETIME, TIME, TIMESTAMP or YEAR
+   * column a CTE output stands for, through CTE outputs that are a column
+   * or a MIN / MAX of a column; NULL otherwise.  `packed` is set when a
+   * MIN / MAX was crossed, so that the output holds the packed value in a
+   * Bigunsigned virtual column.
+   */
+  const NdbDictionary::Column* temporal_cte_source(const QueryScope& scope,
+                                                   Uint32 col_idx,
+                                                   bool& packed) const;
+  /**
+   * O-10: refuse, as unsupported, SUM, AVG, arithmetic and a mixed
+   * GREATEST / LEAST over a packed temporal CTE output, which would
+   * compute on the packed integer, and a WHERE GREATEST / LEAST of a TIME
+   * one compared with a string, which MySQL compares as strings.
+   */
+  void check_cte_temporal_outputs();
+  void check_cte_temporal_outputs(const QueryScope& scope,
+                                  const SelectStatement* stmt);
+  void check_cte_temporal_agg_arg(const QueryScope& scope, TokenKind fun,
+                                  const AggregationAPICompiler::Expr* arg)
+      const;
+  bool expr_has_packed_temporal(const QueryScope& scope,
+                                const AggregationAPICompiler::Expr* e) const;
+  bool pair_op_temporal_operands(const QueryScope& scope,
+                                 const AggregationAPICompiler::Expr* e,
+                                 const NdbDictionary::Column*& first) const;
+  void check_cte_temporal_where(const QueryScope& scope,
+                                const struct ConditionalExpression* ce) const;
+  /**
+   * C-6: the packed value of a constant compared with a packed temporal
+   * CTE output of `src`'s type, as mysqld compares it; false when the
+   * constant lies between two values of the type (`packed` is then the
+   * one below).  Refuses the constants it cannot compare exactly.
+   */
+  bool cte_temporal_constant(const NdbDictionary::Column* src,
+                             const struct ConditionalExpression* ce,
+                             Uint64& packed) const;
+  /**
    * J-6 = C-9: refuse, with a limit error, a join query whose CTE
    * subtrees and main plan need more than the 32 operations of one
    * pushed query, before execute_join builds it.
@@ -1205,6 +1243,15 @@ private:
                               Uint32 op_idx,
                               NdbDictionary::Table* virtTab,
                               struct ConditionalExpression* where_ce);
+  // C-6: one CTE_LOOKUP filter atom on a packed temporal CTE output.
+  void emit_cte_temporal_filter_atom(
+      NdbInterpretedCode& code,
+      Uint32 position,
+      const NdbDictionary::Column* src,
+      const struct ConditionalExpression* const_side,
+      TokenKind op,
+      bool swapped,
+      Uint32 fail_label);
   // Part B of join_nest_semantics_plan.md: join-condition LEFT->INNER
   // promotion over the flat AST join list, run in parse() before the
   // non-aggregate gate and before everything that consumes join types
