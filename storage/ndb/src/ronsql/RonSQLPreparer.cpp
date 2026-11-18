@@ -7949,6 +7949,27 @@ is_having_aggregate_reference(const ConditionalExpression* ce)
        ce->op == T_MAX || ce->op == T_AVG || ce->op == T_IDENTIFIER);
 }
 
+/*
+ * O-8: a MIN or MAX, or the alias of a SELECT-list subquery aggregate,
+ * beside which HAVING takes a string: ResultPrinter compares the string
+ * with a string MIN / MAX in its collation, and with a DATE, DATETIME or
+ * TIMESTAMP one as a datetime, and refuses it beside any other type.
+ */
+static bool
+is_having_min_max(const ConditionalExpression* ce)
+{
+  return ce != NULL &&
+      (ce->op == T_MIN || ce->op == T_MAX || ce->op == T_IDENTIFIER);
+}
+
+static bool
+is_having_string_operand(const ConditionalExpression* operand,
+                         const ConditionalExpression* other)
+{
+  return operand != NULL && operand->op == T_STRING &&
+      is_having_min_max(other);
+}
+
 static void
 validate_having_numeric_expression(const ConditionalExpression* ce)
 {
@@ -8001,8 +8022,11 @@ validate_having_predicate(const ConditionalExpression* ce, bool negated)
   case T_GE:
   case T_LT:
   case T_LE:
-    validate_having_numeric_expression(ce->args.left);
-    validate_having_numeric_expression(ce->args.right);
+    // O-8: a string literal only as the other operand of a MIN or MAX.
+    if (!is_having_string_operand(ce->args.left, ce->args.right))
+      validate_having_numeric_expression(ce->args.left);
+    if (!is_having_string_operand(ce->args.right, ce->args.left))
+      validate_having_numeric_expression(ce->args.right);
     return;
   case T_IS:
     require_unsupported(
@@ -10434,7 +10458,8 @@ RonSQLPreparer::is_subquery_value(const ConditionalExpression* ce) const
 void
 RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
                                                int polarity,
-                                               bool is_condition)
+                                               bool is_condition,
+                                               bool string_operand)
 {
   ConditionalExpression* ce = *ce_ptr;
   if (ce == NULL) return;
@@ -10716,8 +10741,9 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
           substitute_condition_result(ce, result);
           return;
         }
-        // HAVING compares in DOUBLE and takes no string.
-        if (result.is_string && !m_substituting_where)
+        // O-8: HAVING takes a string only beside a MIN or MAX, as it
+        // takes a string literal (validate_having_support).
+        if (result.is_string && !m_substituting_where && !string_operand)
         {
           throw RonSQLPermanentError(
               "Subquery returned a non-numeric result.");
@@ -10800,11 +10826,17 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
   case T_NULL:
     return;
   default:
+  {
     // Other binary/unary operators (comparisons, arithmetic) need the
-    // exact value of an operand: recurse into both sides
-    substitute_subquery_results_ce(&ce->args.left, 0);
-    substitute_subquery_results_ce(&ce->args.right, 0);
+    // exact value of an operand: recurse into both sides.  O-8: an
+    // operand of a comparison beside a MIN or MAX may be a string.
+    const bool cmp = is_comparison_op(ce->op);
+    substitute_subquery_results_ce(&ce->args.left, 0, false,
+                                   cmp && is_having_min_max(ce->args.right));
+    substitute_subquery_results_ce(&ce->args.right, 0, false,
+                                   cmp && is_having_min_max(ce->args.left));
     return;
+  }
   }
 }
 
@@ -12300,6 +12332,10 @@ struct PassthroughSortKey {
   Uint32 slot;                        // index into the stored row array
   bool ascending;
   const NdbDictionary::Column* col;   // type + charset for the comparator
+  // O-9: a DOUBLE that is a DECIMAL in MySQL (a SUM, MIN, MAX or AVG
+  // output of a CTE over an integer or DECIMAL) compares at this scale;
+  // 0 compares the values as they are.
+  int decimal_scale;
 };
 
 struct PassthroughSortBuffer {
@@ -12332,6 +12368,14 @@ compare_passthrough_rows(const PassthroughValue* const* a,
     if (a_null && b_null) continue;
     if (a_null) return k.ascending ? -1 : 1;
     if (b_null) return k.ascending ? 1 : -1;
+    if (k.decimal_scale > 0)
+    {
+      const int cmp = ronsql_compare_at_scale(va->double_value(),
+                                              vb->double_value(),
+                                              k.decimal_scale);
+      if (cmp != 0) return k.ascending ? cmp : -cmp;
+      continue;
+    }
     const NdbSqlUtil::Type& sqlType =
         NdbSqlUtil::getType(static_cast<Uint32>(k.col->getType()));
     int cmp = (*sqlType.m_cmp)(k.col->getCharset(),
@@ -12821,6 +12865,8 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
       sort_keys[n_sort_keys].slot = slot;
       sort_keys[n_sort_keys].ascending = ob->ascending;
       sort_keys[n_sort_keys].col = kcol;
+      // O-9: a stored DOUBLE column is no DECIMAL.
+      sort_keys[n_sort_keys].decimal_scale = 0;
       n_sort_keys++;
     }
   }
@@ -13977,10 +14023,17 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
     for (const OrderbyColumns* ob = m_context.ast_root.orderby_columns;
          ob != NULL; ob = ob->next) {
       Uint32 slot;
+      // O-9: the column whose metadata gives a DECIMAL scale.
+      Uint32 key_col_idx = ob->col_idx;
       if (ob->kind == OrderbyColumns::Kind::OUTPUT_REF) {
         require_prm(ob->output_idx < num_cols,
                     "ORDER BY alias resolves outside the SELECT outputs.");
         slot = ob->output_idx;
+        const Outputs* o = m_context.ast_root.outputs;
+        for (Uint32 oi = 0; oi < slot && o != NULL; oi++) o = o->next;
+        ronsql_require_bug(o != NULL,
+                           "An ORDER BY alias has no SELECT output.");
+        key_col_idx = o->column.col_idx;
       } else {
         const QueryScope::ResolvedColumnRef& R =
             m_main_scope.resolved_columns[ob->col_idx];
@@ -14036,6 +14089,11 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
       sort_keys[n_sort_keys].slot = slot;
       sort_keys[n_sort_keys].ascending = ob->ascending;
       sort_keys[n_sort_keys].col = kcol;
+      // O-9: a SUM over a DECIMAL of a CTE is a DOUBLE virtual column.
+      sort_keys[n_sort_keys].decimal_scale =
+          (kcol->getType() == NdbDictionary::Column::Double)
+              ? m_resultprinter->double_sort_scale(key_col_idx)
+              : 0;
       n_sort_keys++;
     }
   }

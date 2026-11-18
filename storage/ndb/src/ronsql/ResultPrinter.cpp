@@ -37,6 +37,7 @@
 #include "decimal.h"
 #include <decimal_utils.hpp>
 #include "my_time.h"
+#include "mysql/strings/m_ctype.h"
 #include "my_byteorder.h"
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
@@ -285,6 +286,7 @@ ResultPrinter::validate_orderby_columns()
             spec.groupby_idx = i;
             spec.ascending = ob->ascending;
             spec.charset = charset;
+            spec.decimal_scale = double_sort_scale(col_idx);
             m_orderby_specs.push(spec);
             found = true;
             break;
@@ -310,6 +312,7 @@ ResultPrinter::validate_orderby_columns()
         spec.avg_sum_idx = out->avg.agg_index_sum;
         spec.avg_count_idx = out->avg.agg_index_count;
         spec.avg_scale = avg_arg_scale(out);
+        spec.decimal_scale = 0;
         m_orderby_specs.push(spec);
       }
       else if (out->type == Outputs::Type::AGGREGATE ||
@@ -326,6 +329,15 @@ ResultPrinter::validate_orderby_columns()
         spec.charset = out->type == Outputs::Type::AGGREGATE
             ? aggregate_arg_charset(out)
             : NULL;
+        // O-9: a SUM, MIN or MAX over a DECIMAL column is a DOUBLE here.
+        spec.decimal_scale = 0;
+        if (out->type == Outputs::Type::AGGREGATE &&
+            out->aggregate.fun != T_COUNT)
+        {
+          const int scale = exact_arg_scale(out->aggregate.arg);
+          if (scale > 0)
+            spec.decimal_scale = scale;
+        }
         m_orderby_specs.push(spec);
       }
     }
@@ -350,6 +362,7 @@ ResultPrinter::validate_orderby_columns()
           spec.groupby_idx = i;
           spec.ascending = ob->ascending;
           spec.charset = charset;
+          spec.decimal_scale = double_sort_scale(col_idx);
           m_orderby_specs.push(spec);
           found = true;
           break;
@@ -1047,6 +1060,15 @@ ResultPrinter::compare_rows(StoredRow& a, StoredRow& b)
               (res_a.data_uint64() > res_b.data_uint64()) ? 1 : 0;
         break;
       case NdbDictionary::Column::Double:
+        if (spec.decimal_scale > 0)
+        {
+          // O-9: as the DECIMAL it is in MySQL, so that sums that print
+          // alike tie and the next ORDER BY key decides.
+          cmp = ronsql_compare_at_scale(res_a.data_double(),
+                                        res_b.data_double(),
+                                        spec.decimal_scale);
+          break;
+        }
         cmp = (res_a.data_double() < res_b.data_double()) ? -1 :
               (res_a.data_double() > res_b.data_double()) ? 1 : 0;
         break;
@@ -1134,6 +1156,17 @@ ResultPrinter::compare_rows(StoredRow& a, StoredRow& b)
       if (col_a.is_null() && col_b.is_null()) continue;
       if (col_a.is_null()) return spec.ascending ? -1 : 1;
       if (col_b.is_null()) return spec.ascending ? 1 : -1;
+      if (spec.decimal_scale > 0 &&
+          col_a.type() == NdbDictionary::Column::Double)
+      {
+        // O-9: a DECIMAL-derived CTE output, as in the AGGREGATE arm.
+        const int cmp = ronsql_compare_at_scale(col_a.data_double(),
+                                                col_b.data_double(),
+                                                spec.decimal_scale);
+        if (cmp != 0)
+          return spec.ascending ? cmp : -cmp;
+        continue;
+      }
       switch (col_a.type())
       {
       case NdbDictionary::Column::Char:
@@ -3257,8 +3290,458 @@ ResultPrinter::scan_having_max_agg(const ConditionalExpression* expr,
   }
 }
 
-double
-ResultPrinter::evaluate_having_value(const ConditionalExpression* expr)
+/*
+ * O-8: one HAVING operand, typed as MySQL types it.  HAVING compared and
+ * computed every operand as a double: a BIGINT above 2^53 equalled its
+ * neighbours, a SUM over a DECIMAL of 0.10 and 0.20 was not 0.3, a
+ * temporal MIN / MAX was its packed integer, and a string MIN / MAX failed
+ * as a bug.  An operand is now
+ *  - EXACT, an integer or a DECIMAL (MySQL's INT_RESULT and
+ *    DECIMAL_RESULT), held as a decimal: COUNT, a SUM, MIN or MAX the data
+ *    nodes return as an integer, a SUM, MIN or MAX over an integer or
+ *    DECIMAL column that they return as a double (taken at the column's
+ *    scale, as print_fixed_scale() prints it), AVG over either, an
+ *    integer literal, a literal with a fraction (a DECIMAL in MySQL; the
+ *    lexer has no exponent form) and a number a subquery returned (its
+ *    exact digits, X-4);
+ *  - APPROX, a FLOAT or DOUBLE (REAL_RESULT): an aggregate over a FLOAT or
+ *    DOUBLE column, and one over an expression whose result is a double
+ *    (its type is not known here);
+ *  - STRING: a string MIN / MAX, a string literal, or a string a subquery
+ *    returned;
+ *  - TEMPORAL: a MIN / MAX over a DATE, DATETIME, TIMESTAMP, TIME or YEAR
+ *    column, decoded from the packed value the data nodes return;
+ *  - or NULL.
+ */
+struct HavingValue
+{
+  enum class Kind { NULL_VALUE, EXACT, APPROX, STRING, TEMPORAL };
+  Kind kind = Kind::NULL_VALUE;
+  // EXACT: dec over digits, 81 digits as in a my_decimal.  A copy keeps
+  // the buf of the original, so decimal() sets it before every use.
+  decimal_digit_t digits[9];
+  decimal_t dec;
+  // APPROX
+  double dbl = 0.0;
+  // STRING: the bytes, in the charset of the MIN / MAX they come from, or
+  // for a constant (charset NULL) in UTF-8, the string of node.
+  const char* str = NULL;
+  Uint32 len = 0;
+  CHARSET_INFO* charset = NULL;
+  const ConditionalExpression* node = NULL;
+  // TEMPORAL: the decoded value; a YEAR sets only time.year.
+  ResultPrinter::TemporalDisplay temporal =
+      ResultPrinter::TemporalDisplay::NONE;
+  MYSQL_TIME time;
+
+  decimal_t* decimal()
+  {
+    dec.buf = digits;
+    return &dec;
+  }
+  // Makes this an EXACT value for a decimal function to write.
+  decimal_t* exact()
+  {
+    kind = Kind::EXACT;
+    dec.len = 9;
+    return decimal();
+  }
+  // decimal_cmp() refuses a negative zero, which a truncated quotient
+  // can be.
+  void clear_negative_zero()
+  {
+    if (dec.sign && decimal_is_zero(decimal()))
+      dec.sign = false;
+  }
+};
+
+// The DECIMAL that format_fixed_scale() prints for value: its shortest
+// digits rounded HALF_UP at scale.  False for Inf and NaN, and for a value
+// whose digits do not fit to (9 words).
+static bool
+double_to_decimal_at_scale(double value, int scale, decimal_t* to)
+{
+  if (!std::isfinite(value))
+    return false;
+  return double2decimal(value, to) <= E_DEC_TRUNCATED &&
+         decimal_round(to, to, scale, HALF_UP) == E_DEC_OK;
+}
+
+/*
+ * O-9: a SUM over a DECIMAL accumulates as a DOUBLE on the data nodes, so
+ * sums that are equal DECIMALs in MySQL can differ in their last bits
+ * (0.10 + 0.20 is 0.30000000000000004, 0.30 is 0.29999999999999999), and
+ * ORDER BY sorted such groups by those bits instead of by its next key.
+ * Compare the values that print at the scale, as avg_sort_key() does for
+ * AVG.  Rounding keeps the order, so only doubles less than two units of
+ * the scale apart can round to the same value: the others compare as
+ * they are, without formatting.
+ */
+int
+ronsql_compare_at_scale(double a, double b, int scale)
+{
+  if (a == b)
+    return 0;
+  const int raw = (a < b) ? -1 : 1;
+  if (!(std::fabs(a - b) < 2 * std::pow(10.0, -scale)))
+    return raw;
+  decimal_digit_t digits_a[9];
+  decimal_digit_t digits_b[9];
+  decimal_t dec_a;
+  decimal_t dec_b;
+  dec_a.len = 9;
+  dec_a.buf = digits_a;
+  dec_b.len = 9;
+  dec_b.buf = digits_b;
+  if (!double_to_decimal_at_scale(a, scale, &dec_a) ||
+      !double_to_decimal_at_scale(b, scale, &dec_b))
+    return raw;
+  const int cmp = decimal_cmp(&dec_a, &dec_b);
+  return (cmp < 0) ? -1 : (cmp > 0) ? 1 : 0;
+}
+
+int
+ResultPrinter::double_sort_scale(Uint32 col_idx) const
+{
+  if (m_column_metadata == NULL || m_column_names == NULL ||
+      col_idx >= m_column_names->size())
+    return 0;
+  const ColumnMetadata& meta = m_column_metadata[col_idx];
+  // avg_scale is -1 for a FLOAT or DOUBLE source.
+  if (!meta.has_metadata || meta.avg_scale < 0 ||
+      meta.temporal != TemporalDisplay::NONE || meta.scale <= 0)
+    return 0;
+  return meta.scale;
+}
+
+int
+ResultPrinter::exact_arg_scale(const AggregationAPICompiler::Expr* arg) const
+{
+  // A column, or a GREATEST / LEAST watermark over columns (D8).
+  const AggregationAPICompiler::Expr* load = ronsql_first_load_in_expr(arg);
+  if (load == NULL)
+    return -1;
+  const Uint32 col_idx = load->getLoadIdx();
+  if (m_column_metadata == NULL || m_column_names == NULL ||
+      col_idx >= m_column_names->size())
+    return -1;
+  const ColumnMetadata& meta = m_column_metadata[col_idx];
+  // avg_scale is -1 for a FLOAT or DOUBLE column, also a CTE output.
+  if (!meta.has_metadata || meta.avg_scale < 0 || meta.charset != NULL ||
+      meta.temporal != TemporalDisplay::NONE)
+    return -1;
+  return meta.scale;
+}
+
+CHARSET_INFO*
+ResultPrinter::string_arg_charset(const AggregationAPICompiler::Expr* arg)
+    const
+{
+  if (arg != NULL && arg->isCase())
+  {
+    // As aggregate_arg_charset(): either arm's column.
+    CHARSET_INFO* cs = load_arg_charset(arg->getLeft());
+    return cs != NULL ? cs : load_arg_charset(arg->getRight());
+  }
+  return load_arg_charset(arg);
+}
+
+// O-8: the value of a packed temporal MIN / MAX, decoded as
+// print_temporal_packed() decodes it for printing.
+static void
+decode_temporal_packed(Uint64 w, ResultPrinter::TemporalDisplay temporal,
+                       int fsp, MYSQL_TIME* mt)
+{
+  using TemporalDisplay = ResultPrinter::TemporalDisplay;
+  memset(mt, 0, sizeof(*mt));
+  Uint8 bytes[8];
+  const Uint32 flen = (1u + static_cast<Uint32>(fsp)) / 2u;
+  switch (temporal)
+  {
+  case TemporalDisplay::DATE:
+    mt->day = static_cast<unsigned int>(w & 31);
+    mt->month = static_cast<unsigned int>((w >> 5) & 15);
+    mt->year = static_cast<unsigned int>(w >> 9);
+    mt->time_type = MYSQL_TIMESTAMP_DATE;
+    return;
+  case TemporalDisplay::YEAR:
+    // 0 is 0000, any other byte the year - 1900.
+    mt->year = (w == 0) ? 0 : static_cast<unsigned int>(w + 1900);
+    mt->time_type = MYSQL_TIMESTAMP_NONE;
+    return;
+  case TemporalDisplay::DATETIME2:
+  {
+    const Uint32 n = 5u + flen;
+    for (Uint32 i = 0; i < n; i++)
+      bytes[i] = static_cast<Uint8>((w >> (8u * (n - 1u - i))) & 0xFFu);
+    TIME_from_longlong_datetime_packed(
+        mt, my_datetime_packed_from_binary(bytes, fsp));
+    return;
+  }
+  case TemporalDisplay::TIME2:
+  {
+    const Uint32 n = 3u + flen;
+    for (Uint32 i = 0; i < n; i++)
+      bytes[i] = static_cast<Uint8>((w >> (8u * (n - 1u - i))) & 0xFFu);
+    TIME_from_longlong_time_packed(mt, my_time_packed_from_binary(bytes, fsp));
+    return;
+  }
+  case TemporalDisplay::TIMESTAMP2:
+  {
+    // In UTC, as it prints.
+    const Uint32 n = 4u + flen;
+    for (Uint32 i = 0; i < n; i++)
+      bytes[i] = static_cast<Uint8>((w >> (8u * (n - 1u - i))) & 0xFFu);
+    my_timeval tv{};
+    my_timestamp_from_binary(&tv, bytes, fsp);
+    ronsql_timestamp_tv_to_TIME(tv, mt);
+    return;
+  }
+  case TemporalDisplay::NONE:
+    break;
+  }
+  ronsql_bug("A temporal HAVING value has no temporal type.");
+}
+
+// O-8: a temporal value where MySQL takes a number: a YEAR is its year;
+// a DATE is YYYYMMDD, a DATETIME or TIMESTAMP YYYYMMDDhhmmss and a TIME
+// [-]hhmmss, with the fraction of a second.  exact: as the DECIMAL that
+// MySQL computes with; otherwise as the DOUBLE that MySQL compares a
+// temporal MIN / MAX with a number as (a YEAR is an integer).
+static void
+having_temporal_to_number(HavingValue& v, bool exact)
+{
+  const MYSQL_TIME& t = v.time;
+  if (v.temporal == ResultPrinter::TemporalDisplay::YEAR)
+  {
+    longlong2decimal(static_cast<longlong>(t.year), v.exact());
+    return;
+  }
+  if (!exact)
+  {
+    const double d = TIME_to_double(t);
+    v.kind = HavingValue::Kind::APPROX;
+    v.dbl = t.neg ? -d : d;
+    return;
+  }
+  char text[48];
+  const int len =
+      snprintf(text, sizeof(text), "%s%llu.%06lu", t.neg ? "-" : "",
+               static_cast<unsigned long long>(TIME_to_ulonglong(t)),
+               static_cast<unsigned long>(t.second_part));
+  ronsql_require_bug(len > 0 && static_cast<size_t>(len) < sizeof(text),
+                     "A temporal HAVING value does not fit its number.");
+  const char* end = text + len;
+  ronsql_require_bug(string2decimal(text, v.exact(), &end) == E_DEC_OK,
+                     "A temporal HAVING value is not a number.");
+  v.clear_negative_zero();
+}
+
+static double
+having_double(HavingValue& v)
+{
+  if (v.kind == HavingValue::Kind::APPROX)
+    return v.dbl;
+  double d = 0.0;
+  decimal2double(v.decimal(), &d);
+  return d;
+}
+
+// O-8: an operand of + - * / and unary minus.  A temporal value is its
+// number, exactly, as MySQL computes with it.
+static void
+having_arithmetic_operand(HavingValue& v)
+{
+  if (v.kind == HavingValue::Kind::TEMPORAL)
+  {
+    having_temporal_to_number(v, true);
+  }
+  else if (v.kind == HavingValue::Kind::STRING)
+  {
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "HAVING does not support arithmetic on a string.");
+  }
+}
+
+static void
+having_negate(HavingValue& v)
+{
+  if (v.kind == HavingValue::Kind::NULL_VALUE)
+    return;
+  having_arithmetic_operand(v);
+  if (v.kind == HavingValue::Kind::EXACT)
+  {
+    if (!decimal_is_zero(v.decimal()))
+      v.dec.sign = !v.dec.sign;
+    return;
+  }
+  v.dbl = -v.dbl;
+}
+
+/*
+ * O-8: + - * / as MySQL computes them: exactly, as DECIMAL, when both
+ * operands are integers or DECIMALs, where / keeps four more fractional
+ * digits (div_precision_increment) and truncates the quotient at a word
+ * of nine digits, as my_decimal_div() does; in DOUBLE when an operand is
+ * a FLOAT or DOUBLE.  Division by zero is NULL.  Not as MySQL: an integer
+ * result that leaves the BIGINT range (MAX(bigint) + 1 at 2^63 - 1) fails
+ * in MySQL, which computes integers as BIGINT, and is exact here.
+ */
+static void
+having_arithmetic(TokenKind op, HavingValue& left, HavingValue& right,
+                  HavingValue& out)
+{
+  if (left.kind == HavingValue::Kind::NULL_VALUE ||
+      right.kind == HavingValue::Kind::NULL_VALUE)
+  {
+    out.kind = HavingValue::Kind::NULL_VALUE;
+    return;
+  }
+  having_arithmetic_operand(left);
+  having_arithmetic_operand(right);
+  if (left.kind == HavingValue::Kind::EXACT &&
+      right.kind == HavingValue::Kind::EXACT)
+  {
+    int err = E_DEC_OK;
+    switch (op)
+    {
+    case T_PLUS:
+      err = decimal_add(left.decimal(), right.decimal(), out.exact());
+      break;
+    case T_MINUS:
+      err = decimal_sub(left.decimal(), right.decimal(), out.exact());
+      break;
+    case T_MULTIPLY:
+      err = decimal_mul(left.decimal(), right.decimal(), out.exact());
+      break;
+    default:
+      if (decimal_is_zero(right.decimal()))
+      {
+        out.kind = HavingValue::Kind::NULL_VALUE;
+        return;
+      }
+      err = decimal_div(left.decimal(), right.decimal(), out.exact(), 4);
+      break;
+    }
+    if (err > E_DEC_TRUNCATED)
+    {
+      throw RonSQLPermanentError(
+          RonSQLErrorClass::LIMIT,
+          "A HAVING expression is out of the DECIMAL range.");
+    }
+    out.clear_negative_zero();
+    return;
+  }
+  const double l = having_double(left);
+  const double r = having_double(right);
+  double result = 0.0;
+  switch (op)
+  {
+  case T_PLUS:
+    result = l + r;
+    break;
+  case T_MINUS:
+    result = l - r;
+    break;
+  case T_MULTIPLY:
+    result = l * r;
+    break;
+  default:
+    if (r == 0)
+    {
+      out.kind = HavingValue::Kind::NULL_VALUE;
+      return;
+    }
+    result = l / r;
+    break;
+  }
+  if (std::isnan(result))
+  {
+    out.kind = HavingValue::Kind::NULL_VALUE;
+    return;
+  }
+  out.kind = HavingValue::Kind::APPROX;
+  out.dbl = result;
+}
+
+void
+ResultPrinter::having_aggregate_value(TokenKind fun,
+                                      const AggregationAPICompiler::Expr* arg,
+                                      Uint32 agg_index,
+                                      HavingValue& out)
+{
+  NdbAggregator::Result& result = m_regs_a[agg_index];
+  if (result.is_null())
+  {
+    out.kind = HavingValue::Kind::NULL_VALUE;
+    return;
+  }
+  switch (result.type())
+  {
+  case NdbDictionary::Column::Bigint:
+    longlong2decimal(result.data_int64(), out.exact());
+    return;
+  case NdbDictionary::Column::Bigunsigned:
+  {
+    // A temporal MIN / MAX is its packed value, as print_aggregate_result()
+    // finds it.
+    int fsp = 0;
+    const TemporalDisplay temporal = (fun == T_MIN || fun == T_MAX)
+        ? expr_temporal(arg, fsp)
+        : TemporalDisplay::NONE;
+    if (temporal != TemporalDisplay::NONE)
+    {
+      out.kind = HavingValue::Kind::TEMPORAL;
+      out.temporal = temporal;
+      decode_temporal_packed(result.data_uint64(), temporal, fsp, &out.time);
+      return;
+    }
+    ulonglong2decimal(result.data_uint64(), out.exact());
+    return;
+  }
+  case NdbDictionary::Column::Double:
+  {
+    // Over an integer or DECIMAL column it is a DECIMAL in MySQL: the
+    // double at the column's scale.  Beyond about 15 digits the double
+    // has lost digits of the DECIMAL (Q-6).
+    const int scale = (fun == T_COUNT) ? -1 : exact_arg_scale(arg);
+    if (scale >= 0 &&
+        double_to_decimal_at_scale(result.data_double(), scale, out.exact()))
+      return;
+    out.kind = HavingValue::Kind::APPROX;
+    out.dbl = result.data_double();
+    return;
+  }
+  case NdbDictionary::Column::Char:
+  case NdbDictionary::Column::Varchar:
+  case NdbDictionary::Column::Longvarchar:
+  {
+    CHARSET_INFO* cs = string_arg_charset(arg);
+    require_sch(cs != nullptr,
+                "Could not find charset for string aggregation result");
+    Uint32 len = 0;
+    const char* data = result.data_str(&len);
+    if (result.type() == NdbDictionary::Column::Char)
+    {
+      // MySQL reads a CHAR without its trailing spaces.
+      len = static_cast<Uint32>(cs->cset->lengthsp(cs, data, len));
+    }
+    out.kind = HavingValue::Kind::STRING;
+    out.str = data;
+    out.len = len;
+    out.charset = cs;
+    out.node = NULL;
+    return;
+  }
+  default:
+    bug("Unexpected data type in an aggregate result of HAVING.");
+  }
+}
+
+void
+ResultPrinter::evaluate_having_value(const ConditionalExpression* expr,
+                                     HavingValue& out)
 {
   switch (expr->op)
   {
@@ -3266,44 +3749,95 @@ ResultPrinter::evaluate_having_value(const ConditionalExpression* expr)
   case T_COUNT:
   case T_MIN:
   case T_MAX:
-    return convert_result_to_double(m_regs_a[expr->having_agg.agg_index]);
+    having_aggregate_value(expr->op, expr->having_agg.arg,
+                           expr->having_agg.agg_index, out);
+    return;
   case T_AVG:
   {
-    double numerator =
-      convert_result_to_double(m_regs_a[expr->having_agg.agg_index]);
-    double denominator =
-      convert_result_to_double(m_regs_a[expr->having_agg.agg_index2]);
-    return numerator / denominator;
+    // SUM / COUNT, divided as MySQL divides an AVG: exactly over an
+    // integer or DECIMAL (my_decimal_div() with div_precision_increment).
+    HavingValue sum;
+    HavingValue count;
+    having_aggregate_value(T_SUM, expr->having_agg.arg,
+                           expr->having_agg.agg_index, sum);
+    having_aggregate_value(T_COUNT, NULL, expr->having_agg.agg_index2,
+                           count);
+    having_arithmetic(T_SLASH, sum, count, out);
+    return;
+  }
+  case T_IDENTIFIER:
+  {
+    // The alias of a SELECT-list subquery aggregate, an AGGREGATE output
+    // since RonSQLPreparer::compile(), which has its function and
+    // argument.
+    const Outputs* alias = NULL;
+    for (Uint32 i = 0; i < m_outputs.size() && alias == NULL; i++)
+    {
+      const Outputs* o = m_outputs[i];
+      if (o->type == Outputs::Type::AGGREGATE &&
+          o->aggregate.agg_index == expr->having_agg.agg_index)
+        alias = o;
+    }
+    having_aggregate_value(alias != NULL ? alias->aggregate.fun : T_SUM,
+                           alias != NULL ? alias->aggregate.arg : NULL,
+                           expr->having_agg.agg_index, out);
+    return;
   }
   case T_INT:
-    return static_cast<double>(expr->constant_integer);
+    longlong2decimal(expr->constant_integer, out.exact());
+    return;
   case T_FLOAT:
-    return expr->constant_float.dbl;
+  {
+    // A literal with a fraction is a DECIMAL in MySQL, and a number that
+    // a subquery returned has its exact digits as its text (X-4).  A
+    // subquery number without text keeps its double's digits.
+    const LexString text = expr->constant_float.ls;
+    const char* end = (text.str != NULL) ? text.str + text.len : NULL;
+    if (text.str == NULL || text.len == 0 ||
+        string2decimal(text.str, out.exact(), &end) > E_DEC_TRUNCATED ||
+        end != text.str + text.len)
+    {
+      if (double2decimal(expr->constant_float.dbl, out.exact()) >
+          E_DEC_TRUNCATED)
+      {
+        out.kind = HavingValue::Kind::APPROX;
+        out.dbl = expr->constant_float.dbl;
+        return;
+      }
+    }
+    out.clear_negative_zero();
+    return;
+  }
+  case T_STRING:
+    // A literal (the preparer allows one only beside a MIN or MAX), or a
+    // string a subquery returned.
+    out.kind = HavingValue::Kind::STRING;
+    out.str = expr->string.str;
+    out.len = static_cast<Uint32>(expr->string.len);
+    out.charset = NULL;
+    out.node = expr;
+    return;
   case T_NULL:
-    // Scalar-subquery NULL uses the same marker as NULL aggregate results.
-    return std::numeric_limits<double>::quiet_NaN();
-  case T_IDENTIFIER:
-    // Output alias mapped to agg_index — same as aggregate result
-    return convert_result_to_double(m_regs_a[expr->having_agg.agg_index]);
+    // Also a scalar subquery's NULL.
+    out.kind = HavingValue::Kind::NULL_VALUE;
+    return;
   case T_PLUS:
-    return evaluate_having_value(expr->args.left) +
-           evaluate_having_value(expr->args.right);
   case T_MINUS:
-    if (expr->args.left == NULL)
-      return -evaluate_having_value(expr->args.right);
-    return evaluate_having_value(expr->args.left) -
-           evaluate_having_value(expr->args.right);
   case T_MULTIPLY:
-    return evaluate_having_value(expr->args.left) *
-           evaluate_having_value(expr->args.right);
   case T_SLASH:
   {
-    const double numerator = evaluate_having_value(expr->args.left);
-    const double denominator = evaluate_having_value(expr->args.right);
-    // Division by zero gives NULL in MySQL, not an infinity.
-    if (denominator == 0)
-      return std::numeric_limits<double>::quiet_NaN();
-    return numerator / denominator;
+    if (expr->op == T_MINUS && expr->args.left == NULL)
+    {
+      evaluate_having_value(expr->args.right, out);
+      having_negate(out);
+      return;
+    }
+    HavingValue left;
+    HavingValue right;
+    evaluate_having_value(expr->args.left, left);
+    evaluate_having_value(expr->args.right, right);
+    having_arithmetic(expr->op, left, right, out);
+    return;
   }
   default:
     throw RonSQLPermanentError(
@@ -3311,7 +3845,199 @@ ResultPrinter::evaluate_having_value(const ConditionalExpression* expr)
   }
 }
 
-// A comparison with a NULL (NaN) operand is UNKNOWN, NOT keeps UNKNOWN, and
+static bool
+temporal_with_date(ResultPrinter::TemporalDisplay temporal)
+{
+  return temporal == ResultPrinter::TemporalDisplay::DATE ||
+         temporal == ResultPrinter::TemporalDisplay::DATETIME2 ||
+         temporal == ResultPrinter::TemporalDisplay::TIMESTAMP2;
+}
+
+// O-8: two temporal MIN / MAX values: dates, datetimes and timestamps as
+// datetimes (Arg_comparator::compare_datetime), a TIME with a TIME and a
+// YEAR with a YEAR.  MySQL casts a TIME compared with a date to a
+// datetime of the current day; that and a YEAR beside another type are
+// refused.
+static int
+compare_having_temporals(const HavingValue& a, const HavingValue& b)
+{
+  using TemporalDisplay = ResultPrinter::TemporalDisplay;
+  longlong x = 0;
+  longlong y = 0;
+  if (temporal_with_date(a.temporal) && temporal_with_date(b.temporal))
+  {
+    x = TIME_to_longlong_datetime_packed(a.time);
+    y = TIME_to_longlong_datetime_packed(b.time);
+  }
+  else if (a.temporal == TemporalDisplay::TIME2 &&
+           b.temporal == TemporalDisplay::TIME2)
+  {
+    x = TIME_to_longlong_time_packed(a.time);
+    y = TIME_to_longlong_time_packed(b.time);
+  }
+  else if (a.temporal == TemporalDisplay::YEAR &&
+           b.temporal == TemporalDisplay::YEAR)
+  {
+    x = a.time.year;
+    y = b.time.year;
+  }
+  else
+  {
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "HAVING compares a TIME only with a TIME, and a YEAR only with a "
+        "YEAR or a number.");
+  }
+  return (x < y) ? -1 : (x > y) ? 1 : 0;
+}
+
+// O-8: a string compared with a DATE, DATETIME or TIMESTAMP is a datetime
+// (Arg_comparator::get_date_from_const()); RonSQL takes only a valid one,
+// as for a WHERE on a temporal CTE output.
+static void
+having_string_to_datetime(const HavingValue& s, MYSQL_TIME* mt)
+{
+  MYSQL_TIME_STATUS status;
+  const my_time_flags_t flags = TIME_NO_ZERO_IN_DATE | TIME_NO_ZERO_DATE;
+  if (str_to_datetime(s.str, s.len, mt, flags, &status) ||
+      status.warnings != 0 || status.nanoseconds != 0 ||
+      status.m_deprecation.m_kind !=
+          MYSQL_TIME_STATUS::DEPRECATION::DP_NONE ||
+      (mt->time_type != MYSQL_TIMESTAMP_DATE &&
+       mt->time_type != MYSQL_TIMESTAMP_DATETIME))
+  {
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "HAVING compares a DATE, DATETIME or TIMESTAMP only with a string "
+        "that is a valid date or datetime.");
+  }
+}
+
+LexString
+ResultPrinter::having_constant_in_charset(const HavingValue& constant,
+                                          CHARSET_INFO* cs)
+{
+  // A constant is UTF-8.  As RonSQLPreparer::literal_in_column_charset()
+  // converts a literal compared with a column (RONSQL-13), once per
+  // constant and character set.
+  const LexString text(constant.str, constant.len);
+  if (text.len == 0 || my_charset_same(cs, &my_charset_utf8mb4_bin))
+    return text;
+  if (cs->mbminlen == 1 && (cs->state & MY_CS_NONASCII) == 0)
+  {
+    // ASCII text has the same bytes in an ASCII-based character set.
+    size_t i = 0;
+    while (i < text.len && static_cast<Uint8>(text.str[i]) < 0x80) i++;
+    if (i == text.len)
+      return text;
+  }
+  for (const HavingConstant* c = m_having_constants; c != NULL; c = c->next)
+  {
+    if (c->node == constant.node && c->charset == cs)
+      return c->text;
+  }
+  ronsql_require_bug(text.len <= UINT32_MAX / cs->mbmaxlen,
+                     "A HAVING string constant is too long to convert.");
+  const Uint32 cap = static_cast<Uint32>(text.len * cs->mbmaxlen);
+  char* buf = m_amalloc->alloc_exc<char>(cap);
+  uint errors = 0;
+  const size_t len = my_convert(buf, cap, cs, text.str, text.len,
+                                &my_charset_utf8mb4_bin, &errors);
+  if (errors != 0)
+  {
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::SEMANTIC,
+        std::string("HAVING compares a string constant with a MIN or MAX "
+                    "in character set ") + cs->csname +
+        ", which cannot hold one of its characters.");
+  }
+  HavingConstant* c = m_amalloc->alloc_exc<HavingConstant>(1);
+  c->node = constant.node;
+  c->charset = cs;
+  c->text = LexString(buf, len);
+  c->next = m_having_constants;
+  m_having_constants = c;
+  return c->text;
+}
+
+// O-8: two strings, in the collation of the MIN / MAX (which wins over a
+// constant's in MySQL); MySQL refuses two different collations.
+int
+ResultPrinter::compare_having_strings(HavingValue& left, HavingValue& right)
+{
+  CHARSET_INFO* cs = (left.charset != NULL) ? left.charset : right.charset;
+  if (cs == NULL ||
+      (left.charset != NULL && right.charset != NULL &&
+       left.charset != right.charset))
+  {
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "HAVING compares a string only with a MIN or MAX of the same "
+        "collation.");
+  }
+  const LexString a = (left.charset != NULL)
+      ? LexString(left.str, left.len)
+      : having_constant_in_charset(left, cs);
+  const LexString b = (right.charset != NULL)
+      ? LexString(right.str, right.len)
+      : having_constant_in_charset(right, cs);
+  const int cmp = cs->coll->strnncollsp(
+      cs, pointer_cast<const uchar*>(a.str), a.len,
+      pointer_cast<const uchar*>(b.str), b.len);
+  return (cmp < 0) ? -1 : (cmp > 0) ? 1 : 0;
+}
+
+/*
+ * O-8: two non-NULL HAVING values compared as MySQL compares them
+ * (Arg_comparator::set_cmp_func()): two integers or DECIMALs exactly,
+ * any other two numbers as doubles; strings in a collation; a DATE,
+ * DATETIME or TIMESTAMP with another or with a string as datetimes; a
+ * temporal value with a number as a double of its number (a YEAR as an
+ * integer).  A string beside a number, a TIME or a YEAR is refused: MySQL
+ * converts it with a warning.
+ */
+int
+ResultPrinter::compare_having_values(HavingValue& left, HavingValue& right)
+{
+  using Kind = HavingValue::Kind;
+  if (left.kind == Kind::STRING || right.kind == Kind::STRING)
+  {
+    if (left.kind == Kind::STRING && right.kind == Kind::STRING)
+      return compare_having_strings(left, right);
+    const bool string_left = (left.kind == Kind::STRING);
+    const HavingValue& str = string_left ? left : right;
+    const HavingValue& other = string_left ? right : left;
+    if (other.kind != Kind::TEMPORAL || !temporal_with_date(other.temporal))
+    {
+      throw RonSQLPermanentError(
+          RonSQLErrorClass::UNSUPPORTED,
+          "HAVING compares a string only with the MIN or MAX of a string, "
+          "DATE, DATETIME or TIMESTAMP column.");
+    }
+    MYSQL_TIME parsed;
+    having_string_to_datetime(str, &parsed);
+    const longlong x = TIME_to_longlong_datetime_packed(other.time);
+    const longlong y = TIME_to_longlong_datetime_packed(parsed);
+    const int cmp = (x < y) ? -1 : (x > y) ? 1 : 0;
+    return string_left ? -cmp : cmp;
+  }
+  if (left.kind == Kind::TEMPORAL && right.kind == Kind::TEMPORAL)
+    return compare_having_temporals(left, right);
+  if (left.kind == Kind::TEMPORAL)
+    having_temporal_to_number(left, false);
+  if (right.kind == Kind::TEMPORAL)
+    having_temporal_to_number(right, false);
+  if (left.kind == Kind::EXACT && right.kind == Kind::EXACT)
+  {
+    const int cmp = decimal_cmp(left.decimal(), right.decimal());
+    return (cmp < 0) ? -1 : (cmp > 0) ? 1 : 0;
+  }
+  const double l = having_double(left);
+  const double r = having_double(right);
+  return (l < r) ? -1 : (l > r) ? 1 : 0;
+}
+
+// A comparison with a NULL operand is UNKNOWN, NOT keeps UNKNOWN, and
 // AND / OR follow SQL, so that e.g. a NULL MAX under `!= 5` or `NOT (> 5)`
 // drops the group as in MySQL.
 ResultPrinter::HavingTruth
@@ -3376,19 +4102,24 @@ ResultPrinter::evaluate_having(const ConditionalExpression* expr)
   case T_EQUALS:
   case T_NOT_EQUALS:
   {
-    const double left = evaluate_having_value(expr->args.left);
-    const double right = evaluate_having_value(expr->args.right);
-    if (std::isnan(left) || std::isnan(right))
+    // O-8: compared as MySQL compares the two types.
+    HavingValue left;
+    HavingValue right;
+    evaluate_having_value(expr->args.left, left);
+    evaluate_having_value(expr->args.right, right);
+    if (left.kind == HavingValue::Kind::NULL_VALUE ||
+        right.kind == HavingValue::Kind::NULL_VALUE)
       return HAVING_UNKNOWN;
+    const int cmp = compare_having_values(left, right);
     bool result = false;
     switch (expr->op)
     {
-    case T_GT: result = left > right; break;
-    case T_GE: result = left >= right; break;
-    case T_LT: result = left < right; break;
-    case T_LE: result = left <= right; break;
-    case T_EQUALS: result = left == right; break;
-    default: result = left != right; break;
+    case T_GT: result = cmp > 0; break;
+    case T_GE: result = cmp >= 0; break;
+    case T_LT: result = cmp < 0; break;
+    case T_LE: result = cmp <= 0; break;
+    case T_EQUALS: result = cmp == 0; break;
+    default: result = cmp != 0; break;
     }
     return result ? HAVING_TRUE : HAVING_FALSE;
   }

@@ -730,22 +730,26 @@ cond_expr:
                                             default: ronsql_bug("An aggregate function in a condition is not"
                                                                 " SUM, MIN or MAX.");
                                           }
+                                          $$->having_agg.arg = $3;
                                         }
 | T_COUNT T_LEFT arith_expr T_RIGHT   {
                                           initptr($$);
                                           $$->op = T_COUNT;
                                           $$->having_agg.agg_index = context->get_agg()->Count($3);
+                                          $$->having_agg.arg = $3;
                                         }
 | T_COUNT T_LEFT T_MULTIPLY T_RIGHT   {
                                           initptr($$);
                                           $$->op = T_COUNT;
                                           $$->having_agg.agg_index = context->get_agg()->Count(context->get_agg()->ConstantInteger(1));
+                                          $$->having_agg.arg = NULL;
                                         }
 | T_AVG T_LEFT arith_expr T_RIGHT     {
                                           initptr($$);
                                           $$->op = T_AVG;
                                           $$->having_agg.agg_index = context->get_agg()->Sum($3);
                                           $$->having_agg.agg_index2 = context->get_agg()->Count($3);
+                                          $$->having_agg.arg = $3;
                                         }
 | T_EXISTS T_LEFT subquery T_RIGHT    {
                                           initptr($$);

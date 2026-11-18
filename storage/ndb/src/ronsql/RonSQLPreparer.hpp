@@ -1222,9 +1222,12 @@ private:
   // 0 where the exact truth value matters (XOR, IS, comparisons).
   // is_condition: ce is the whole WHERE or an operand of AND, OR, XOR or
   // NOT, so a scalar subquery there is a condition, not a value (S-2).
+  // string_operand: ce is compared with a MIN or MAX, so in HAVING a
+  // scalar subquery there may return a string (O-8).
   void substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
                                       int polarity = 1,
-                                      bool is_condition = false);
+                                      bool is_condition = false,
+                                      bool string_operand = false);
   // S-2: replaces a scalar subquery used as a condition by TRUE, FALSE or
   // UNKNOWN, in the forms fold_where_after_substitution() folds.
   void substitute_condition_result(ConditionalExpression* ce,

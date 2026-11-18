@@ -85,6 +85,9 @@ private:
 static_assert(sizeof(PassthroughValue) % 8 == 0,
               "PassthroughValue data must stay 8-byte aligned");
 
+// O-8: one HAVING operand, typed as MySQL types it (ResultPrinter.cpp).
+struct HavingValue;
+
 class ResultPrinter
 {
 public:
@@ -220,6 +223,11 @@ private:
     Uint32 avg_sum_idx;
     Uint32 avg_count_idx;
     int avg_scale;
+    // O-9: GROUPBY_COL and AGGREGATE: a DOUBLE that is a DECIMAL in MySQL
+    // (a SUM, MIN or MAX over a DECIMAL, or such a CTE output) sorts by
+    // its value at this scale, as MySQL sorts the DECIMAL; 0 compares the
+    // doubles.
+    int decimal_scale;
   };
   struct StoredRow {
     NdbAggregator::Column* cols;    // array of m_num_groupby_cols Column objects
@@ -300,8 +308,37 @@ private:
   // SQL three-valued logic for HAVING; a group is kept only when TRUE.
   enum HavingTruth { HAVING_FALSE, HAVING_TRUE, HAVING_UNKNOWN };
   HavingTruth evaluate_having(const ConditionalExpression* expr);
-  // NaN stands for NULL.
-  double evaluate_having_value(const ConditionalExpression* expr);
+  // O-8: HAVING compares and computes with typed values, as MySQL does,
+  // not with doubles.
+  void evaluate_having_value(const ConditionalExpression* expr,
+                             HavingValue& out);
+  // The value of an aggregate fun(arg) in register agg_index.
+  void having_aggregate_value(TokenKind fun,
+                              const AggregationAPICompiler_Expr* arg,
+                              Uint32 agg_index,
+                              HavingValue& out);
+  // The scale of the integer (0) or DECIMAL column an aggregate argument
+  // loads, so that a DOUBLE result over it is a DECIMAL at that scale;
+  // -1 for any other argument.
+  int exact_arg_scale(const AggregationAPICompiler_Expr* arg) const;
+  // The charset of a string MIN / MAX argument (a column, or the arms of
+  // a CASE).
+  CHARSET_INFO* string_arg_charset(const AggregationAPICompiler_Expr* arg)
+      const;
+  // -1, 0 or 1 as left is less than, equal to or greater than right.
+  int compare_having_values(HavingValue& left, HavingValue& right);
+  int compare_having_strings(HavingValue& left, HavingValue& right);
+  // A string constant of HAVING in the character set cs, converted once.
+  LexString having_constant_in_charset(const HavingValue& constant,
+                                       CHARSET_INFO* cs);
+  struct HavingConstant
+  {
+    const ConditionalExpression* node;
+    CHARSET_INFO* charset;
+    LexString text;
+    HavingConstant* next;
+  };
+  HavingConstant* m_having_constants = NULL;
   void scan_having_max_agg(const ConditionalExpression* expr,
                            Uint32& max_idx);
 public:
@@ -352,6 +389,11 @@ public:
   // `decoder`; `handles` is indexed by output position (see m_avro_handles).
   void set_avro_decoder(RonSQLAvroDecoder* decoder,
                         const void* const* handles);
+  // O-9: the scale of the DECIMAL that column col_idx is in MySQL when
+  // RonSQL carries it as a DOUBLE (a SUM, MIN, MAX or AVG output of a CTE
+  // over an integer or DECIMAL), at which ORDER BY compares it; 0 for any
+  // other column.
+  int double_sort_scale(Uint32 col_idx) const;
   void explain(std::basic_ostream<char>* out_stream);
 private:
   void setup_output_format();
@@ -397,5 +439,11 @@ void ronsql_print_json_string(std::ostream& out,
                               const char* str,
                               size_t len,
                               RonSQLExecParams::OutputFormat format);
+
+// O-9: -1, 0 or 1 as the DECIMAL that a is in MySQL is less than, equal
+// to or greater than the one b is, both carried as doubles, at scale
+// (> 0) fractional digits: values that print alike at the scale are
+// equal.
+int ronsql_compare_at_scale(double a, double b, int scale);
 
 #endif

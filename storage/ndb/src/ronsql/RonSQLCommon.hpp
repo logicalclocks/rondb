@@ -342,6 +342,11 @@ struct ConditionalExpression
     {
       Uint32 agg_index;   // register in m_regs_a (SUM, COUNT, MIN, MAX, or AVG sum)
       Uint32 agg_index2;  // only for AVG: the count register
+      // O-8: SUM, COUNT, MIN, MAX and AVG: the argument, from whose
+      // column ResultPrinter takes the type HAVING compares the result
+      // as; NULL for COUNT(*).  Not set for an output alias
+      // (T_IDENTIFIER), whose output has it.
+      AggregationAPICompiler_Expr* arg;
     } having_agg;
     struct
     {
