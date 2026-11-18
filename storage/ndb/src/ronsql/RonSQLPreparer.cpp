@@ -18823,6 +18823,37 @@ RonSQLPreparer::embedded_filter_expr_word_count(QueryScope& scope,
                 "stored-table column.");
     require_prm(ref.dict_column != NULL,
                 "Cross-table WHERE filter: unresolved column.");
+    if (ref.join_op_idx == leaf_idx) {
+      // F-8: READ_ATTR_INTO_REG types the register of an integer, FLOAT
+      // or DOUBLE column.  It loads any other column of 1 or 2 words as
+      // its raw bytes into an integer register, so a DECIMAL, temporal,
+      // string or BIT column was compared as those bits.  Refused here,
+      // before any word of the filter is emitted.  (A linked column
+      // must be an integer, see emit_embedded_filter_expr.)
+      switch (ref.dict_column->getType()) {
+      case NdbDictionary::Column::Tinyint:
+      case NdbDictionary::Column::Tinyunsigned:
+      case NdbDictionary::Column::Smallint:
+      case NdbDictionary::Column::Smallunsigned:
+      case NdbDictionary::Column::Mediumint:
+      case NdbDictionary::Column::Mediumunsigned:
+      case NdbDictionary::Column::Int:
+      case NdbDictionary::Column::Unsigned:
+      case NdbDictionary::Column::Bigint:
+      case NdbDictionary::Column::Bigunsigned:
+      case NdbDictionary::Column::Float:
+      case NdbDictionary::Column::Double:
+        break;
+      default:
+        throw RonSQLPermanentError(
+            RonSQLErrorClass::UNSUPPORTED,
+            std::string("Column '") + m_columns[cidx].c_str() +
+            "' in a WHERE condition that compares columns of two tables: "
+            "only integer, FLOAT and DOUBLE columns of the aggregated "
+            "table are supported there, not DECIMAL, DATE, DATETIME, "
+            "TIMESTAMP, TIME, YEAR, CHAR, VARCHAR, BINARY or BIT.");
+      }
+    }
     // One typed load word (leaf READ_ATTR_INTO_REG / linked
     // READ_LINKED_COLUMN_TO_REG) plus a NULL-guard word for nullable
     // columns — UNKNOWN must reject the atom instead of erroring the

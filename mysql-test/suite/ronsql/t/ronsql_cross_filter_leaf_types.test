@@ -1,0 +1,117 @@
+# Column types in a WHERE condition that compares columns of two joined
+# tables (a cross-table filter of the join aggregation program).
+#
+# README finding F-8: the filter loads a column of the aggregated (leaf)
+# table with READ_ATTR_INTO_REG, which types the register of an integer,
+# FLOAT or DOUBLE column only.  Any other column of one or two words was
+# loaded as its raw bytes into an integer register, so a DECIMAL, DATE or
+# short VARCHAR column was compared as those bits, giving another result
+# than MySQL's.  Such a column is now refused (UNSUPPORTED) before the
+# filter is emitted.  A column of the other table is linked and must be
+# an integer, as before.
+#
+# xt_o has 3 rows (lim 10, 20, -5), xt_l 6, two per order; l is the
+# aggregated table.
+#
+#   xf-1  DOUBLE leaf column > INT column of the other table
+#   xf-2  nullable FLOAT leaf column > INT column
+#   xf-3  DOUBLE leaf column < INT column, GROUP BY
+#   xf-e1 DECIMAL leaf column: refused (before: compared as raw bytes)
+#   xf-e2 DATE leaf column: refused
+#   xf-e3 VARCHAR leaf column: refused
+#
+# Expected results come from mysqld (strict_diff).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE xt_o (
+  id  INT NOT NULL,
+  lim INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE xt_l (
+  id    INT NOT NULL,
+  oid   INT NOT NULL,
+  dbl   DOUBLE NOT NULL,
+  flt   FLOAT NULL,
+  price DECIMAL(10,2) NOT NULL,
+  d     DATE NOT NULL,
+  nm    VARCHAR(10) NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_xt_l_oid (oid)
+) ENGINE=NDB;
+INSERT INTO xt_o VALUES (1, 10), (2, 20), (3, -5);
+INSERT INTO xt_l VALUES
+  (1, 1, 9.5, 10.5, 9.50, '2025-01-01', 'a'),
+  (2, 1, 10.25, 9.75, 10.25, '2025-01-02', 'b'),
+  (3, 2, 19.5, NULL, 19.50, '2025-01-03', 'c'),
+  (4, 2, 25, 25, 25.00, '2025-01-04', 'd'),
+  (5, 3, -5.5, -4.5, -5.50, '2025-01-05', 'e'),
+  (6, 3, -4.5, -5, -4.50, '2025-01-06', 'f');
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === xf-1: DOUBLE leaf column > INT column of the other table ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(l.id) AS s FROM xt_o AS o JOIN xt_l AS l ON l.oid = o.id WHERE l.dbl > o.lim;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(l.id) AS s FROM xt_o AS o JOIN xt_l AS l ON l.oid = o.id WHERE l.dbl > o.lim|
+
+--echo
+--echo === xf-2: nullable FLOAT leaf column > INT column ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(l.id) AS s FROM xt_o AS o JOIN xt_l AS l ON l.oid = o.id WHERE l.flt > o.lim;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(l.id) AS s FROM xt_o AS o JOIN xt_l AS l ON l.oid = o.id WHERE l.flt > o.lim|
+
+--echo
+--echo === xf-3: DOUBLE leaf column < INT column, GROUP BY ===
+let $QUERY=
+SELECT o.id AS id, COUNT(*) AS n, SUM(l.id) AS s FROM xt_o AS o JOIN xt_l AS l ON l.oid = o.id WHERE l.dbl < o.lim GROUP BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS id, COUNT(*) AS n, SUM(l.id) AS s FROM xt_o AS o JOIN xt_l AS l ON l.oid = o.id WHERE l.dbl < o.lim GROUP BY o.id|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--echo
+--echo === xf-e1: DECIMAL leaf column is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM xt_o AS o JOIN xt_l AS l ON l.oid = o.id WHERE l.price > o.lim;' 2>&1
+
+--echo
+--echo === xf-e2: DATE leaf column is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM xt_o AS o JOIN xt_l AS l ON l.oid = o.id WHERE l.d > o.lim;' 2>&1
+
+--echo
+--echo === xf-e3: VARCHAR leaf column is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM xt_o AS o JOIN xt_l AS l ON l.oid = o.id WHERE l.nm > o.lim;' 2>&1
+
+--disable_query_log
+--disable_warnings
+DROP TABLE xt_l;
+DROP TABLE xt_o;
+--enable_warnings
+--enable_query_log
