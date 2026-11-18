@@ -5,7 +5,7 @@ SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 ############################################################
 #
 # DBTUP creates the aggregation interpreter of a pushed single-table
-# aggregation when a fragment scan starts. ERROR_INSERT 4044 makes
+# aggregation when a fragment scan starts. ERROR_INSERT 4046 makes
 # its Init fail as if QueryMemory had run out. The query must fail
 # with the temporary error 1870, the data node must stay up, and the
 # same queries must succeed once the error insert is cleared.
@@ -35,7 +35,7 @@ SELECT COUNT(*), SUM(v), MIN(v), MAX(v) FROM t1;
 COUNT(*)	SUM(v)	MIN(v)	MAX(v)
 10	550	10	100
 ############################################################
-# B: ERROR_INSERT 4044, the interpreter's Init fails
+# B: ERROR_INSERT 4046, the interpreter's Init fails
 ############################################################
 SELECT g, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t1 GROUP BY g;
 ERROR HY000: Got temporary error 1870 'Failed to allocate memory, check error log on data node for more details' from NDBCLUSTER

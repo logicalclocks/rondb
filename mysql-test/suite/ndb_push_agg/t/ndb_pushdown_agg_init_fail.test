@@ -7,7 +7,7 @@
 --echo ############################################################
 --echo #
 --echo # DBTUP creates the aggregation interpreter of a pushed single-table
---echo # aggregation when a fragment scan starts. ERROR_INSERT 4044 makes
+--echo # aggregation when a fragment scan starts. ERROR_INSERT 4046 makes
 --echo # its Init fail as if QueryMemory had run out. The query must fail
 --echo # with the temporary error 1870, the data node must stay up, and the
 --echo # same queries must succeed once the error insert is cleared.
@@ -43,9 +43,9 @@ SET ndb_pushdown_aggregate = ON;
 --eval $q_scalar
 
 --echo ############################################################
---echo # B: ERROR_INSERT 4044, the interpreter's Init fails
+--echo # B: ERROR_INSERT 4046, the interpreter's Init fails
 --echo ############################################################
---exec $NDB_MGM -e "all error 4044" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4046" >> $NDB_TOOLS_OUTPUT
 --error ER_GET_TEMPORARY_ERRMSG
 --eval $q_group
 --error ER_GET_TEMPORARY_ERRMSG

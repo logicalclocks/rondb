@@ -128,7 +128,7 @@ class PushdownInterpreterFactory {
    * nullptr (the scan fails with an error) instead of stopping the node;
    * *out_of_memory tells the allocation failure (a temporary error) from
    * a rejected program.  fail_init makes Init fail as when query memory
-   * runs out (error insert 4044).
+   * runs out (error insert 4046).
    */
   static PushdownCreateResult Create(const Uint32* prog, Uint32 prog_len,
                                      Int64 table_id, Int64 frag_id,

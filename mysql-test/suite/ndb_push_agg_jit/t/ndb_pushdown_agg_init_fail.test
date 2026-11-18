@@ -7,7 +7,7 @@
 # aggregation, scan filter — one count per compile attempt) is
 # counted. A change in EITHER direction is a coverage change:
 # investigate, then re-record deliberately. An interpreter whose Init
-# fails under ERROR_INSERT 4044 is never compiled.
+# fails under ERROR_INSERT 4046 is never compiled.
 SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 --source suite/ndb_push_agg/t/ndb_pushdown_agg_init_fail.test
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)

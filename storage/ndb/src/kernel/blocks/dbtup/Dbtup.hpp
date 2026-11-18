@@ -3633,7 +3633,7 @@ private:
   }
 #endif
 
-  /* Error insert 4044, see DbtupExecQuery.cpp. False in release builds. */
+  /* Error insert 4046, see DbtupExecQuery.cpp. False in release builds. */
   bool pushdownInitErrorInserted() const;
 
   // Read only PK attributes, without AttributeHeader.

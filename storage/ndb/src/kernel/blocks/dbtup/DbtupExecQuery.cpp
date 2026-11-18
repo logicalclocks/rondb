@@ -979,7 +979,7 @@ Uint32 Dbtup::keyCopyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal) {
 }
 
 /*
- * Error insert 4044: the interpreter of a pushed aggregation or vector
+ * Error insert 4046: the interpreter of a pushed aggregation or vector
  * search fails Init as when query memory runs out.  ALL ERROR reaches the
  * DBTUP instances of the LDM threads only, so a scan or key read running
  * in a query thread checks the LDM instance whose fragment it accesses.
@@ -989,7 +989,7 @@ bool Dbtup::pushdownInitErrorInserted() const {
   const Dbtup* ldm = (m_ldm_instance_used != nullptr)
                          ? m_ldm_instance_used
                          : this;
-  return ldm->jit_error_inserted(4044);
+  return ldm->jit_error_inserted(4046);
 #else
   return false;
 #endif

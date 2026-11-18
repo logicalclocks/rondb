@@ -84,7 +84,7 @@ continues both lists. Their status is in `../ronsql_executor/README.md`.
 | 16 | Null charset on string slots created by redistribution | Fixed | `9a0fffe7475` |
 
 New error codes and inserts added by these fixes:
-- error insert DBTUP 4044 (bug 13): fails the pushed interpreter's `Init` as
+- error insert DBTUP 4046 (bug 13): fails the pushed interpreter's `Init` as
   if QueryMemory ran out;
 - 1256 `ZJOIN_AGG_RESULT_TOO_LARGE`, now only for the 16-bit length limit;
 - `kErrMixedStringCaseArms` in `NdbAggregator`.
@@ -259,7 +259,7 @@ re-verified against the current code. Re-read the code first.
   - `ndbrequire(regTcPtr->opExec)` in `execSCAN_FRAGREQ` (DblqhMain.cpp:25882)
     still stops the node when SCAN_FRAGREQ has the aggregation flag but no
     interpreted program (API-controlled). Fix: refuse it with SCAN_FRAGREF.
-  - The primary-key read path (`handleAggReadRow`) has no MTR test for 4044,
+  - The primary-key read path (`handleAggReadRow`) has no MTR test for 4046,
     because RonSQL retries temporary errors. A block or NDB API test is needed.
   - The next-range path needs no change: the interpreter exists by then.
 - **Bug 16 leftover.** In the NULL-row evaluator,
