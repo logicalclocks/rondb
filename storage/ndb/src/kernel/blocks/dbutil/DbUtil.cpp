@@ -2540,14 +2540,19 @@ void DbUtil::execTRANSID_AI(Signal *signal) {
   }
 
   bool validSignal = false;
-  Operation *opP;
+  Operation *opP = nullptr;
   TransactionPtr transPtr;
   do {
     /* Lookup op record carefully, it may have been released if the
-     * transaction was aborted and the TRANSID_AI was delayed
+     * transaction was aborted and the TRANSID_AI was delayed. With
+     * ARRAY_GUARD getPtr fails for a released record, otherwise its
+     * transPtrI is RNIL.
      */
     OperationPtr opPtr;
-    ndbrequire(c_operationPool.getPtr(opPtr, opI));
+    if (unlikely(!c_operationPool.getPtr(opPtr, opI))) {
+      jam();
+      break;
+    }
     opP = opPtr.p;
 
     /* Use transPtrI == RNIL as test of op record validity */
