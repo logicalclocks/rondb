@@ -1038,11 +1038,21 @@ private:
   void resolve_cte_output_columns();
   void resolve_cte_output_columns_for_scope(QueryScope& scope);
   /**
+   * C-1, J-2: refuse, as unsupported, a CTE whose outputs are not its
+   * GROUP BY columns, in GROUP BY order, followed by its aggregates, each
+   * once: the one layout in which the data nodes and the API number the
+   * columns of a CTE row alike.  Called by validate_cte_execution_shapes().
+   */
+  void check_cte_output_layouts();
+  void check_cte_output_layout(const CteDefinition* cte,
+                               const QueryScope& scope);
+  /**
    * Reject CTE shapes the kernel/SPJ doesn't currently support:
    * CTE_SCAN as an outer-join child (a defensive tripwire — the
    * planner doesn't emit it; see cte_filter_phase_g.md) and an index
    * or table scan below a CTE_SCAN root (RONDB-1121 F18: unfinished
-   * Phase N.1, wrong results).
+   * Phase N.1, wrong results).  Then the order of each CTE's outputs
+   * (check_cte_output_layouts).
    */
   void validate_cte_execution_shapes();
   /**

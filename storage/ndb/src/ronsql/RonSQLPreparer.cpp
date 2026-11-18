@@ -8197,7 +8197,173 @@ RonSQLPreparer::resolve_cte_output_columns()
   resolve_cte_output_columns_for_scope(m_main_scope);
 }
 
+// A column as the statement names it, `q.name` or `name`, for a message.
+static std::string
+column_text(const LexCString& qualifier, const LexCString& name)
+{
+  std::string text = "`";
+  if (qualifier.c_str() != NULL)
+  {
+    text.append(qualifier.str, qualifier.len);
+    text += ".";
+  }
+  text.append(name.str, name.len);
+  text += "`";
+  return text;
+}
+
+/*
+ * C-1, J-2: one CTE row, two layouts.  The API numbers the columns of a
+ * CTE's virtual table in output order (build_cte_virtual_tables), and so
+ * do the readers of the row: lookup_relation_column,
+ * programAggregator_join, emit_cte_lookup_filter and the lookupCte keys
+ * of emit_root_op, taken from the virtual primary key columns in virtual
+ * column order.  The data nodes number the materialized row as the GROUP
+ * BY keys in GROUP BY order, then one aggregate result per slot of the
+ * body's program (Dblqh::emitCteGroupOutput, buildCteLinkedBuffer), and
+ * the body's aggregate compiler gives an aggregate the slot of its first
+ * use.  The two agree only when the outputs are the GROUP BY columns, in
+ * GROUP BY order, followed by the aggregates, each once.  Any other layout
+ * swapped or shifted the columns or read a repeated aggregate as NULL,
+ * and a root lookup keyed on permuted outputs probed another group (J-2).
+ * Such a CTE is refused here, before any program is built; reading other
+ * layouts needs a virtual table in the data nodes' order and a map from
+ * the outputs to it.
+ *
+ * Accepted:
+ *  - with GROUP BY: output i is GROUP BY column i written as the GROUP BY
+ *    writes it (the same col_idx, which is how build_cte_virtual_tables
+ *    and cte_key_coverage find the virtual primary key columns), for each
+ *    GROUP BY column; the outputs after them are aggregates in slots 0,
+ *    1, 2, ... (an AVG is one slot in a CTE body, its hidden COUNT comes
+ *    after the visible slots, and so does the hidden sentinel COUNT of a
+ *    cross-table filter);
+ *  - without GROUP BY (a scalar body): aggregates in slots 0, 1, 2, ...;
+ *  - a single-row body (not checked): its columns are kept in output
+ *    order, one GroupBy() per output.
+ * rewrite_lastn_cte_bodies() makes a last-N body GROUP BY every output, in
+ * output order, and appends COUNT(*), which is accepted.
+ *
+ * The check also covers the key of a CTE lookup (J-2).  The virtual
+ * primary key columns are then outputs 0..n-1 in GROUP BY order, so the
+ * lookupCte key that emit_root_op builds from getPrimaryKey(k), for a
+ * root whose WHERE binds every key and for a single-group (G4) root, is in
+ * the order of the group key the data nodes compare.  A CTE_LOOKUP child's
+ * key, which cte_key_coverage puts in GROUP BY order, binds to the virtual
+ * primary key column of the same position, and so of the same type.
+ */
+void
+RonSQLPreparer::check_cte_output_layouts()
+{
+  Uint32 c = 0;
+  for (const CteDefinition* cte = m_context.ast_root.cte_list;
+       cte != NULL && c < m_cte_scopes.size(); cte = cte->next, c++) {
+    if (m_cte_scopes[c] != NULL && !cte->stmt->is_single_row_cte) {
+      check_cte_output_layout(cte, *m_cte_scopes[c]);
+    }
+  }
+}
+
+void
+RonSQLPreparer::check_cte_output_layout(const CteDefinition* cte,
+                                        const QueryScope& scope)
+{
+  const SelectStatement* stmt = cte->stmt;
+  const GroupbyColumns* gb = stmt->groupby_columns;
+  Uint32 next_slot = 0;
+  Uint32 pos = 1;
+  std::string reason;
+  for (const Outputs* o = stmt->outputs; o != NULL && reason.empty();
+       o = o->next, pos++) {
+    const std::string output =
+        "output " + std::to_string(pos) + " (`" +
+        std::string(o->output_name.str, o->output_name.len) + "`)";
+    if (o->type == Outputs::Type::COLUMN) {
+      const Uint32 col = o->column.col_idx;
+      if (gb == NULL) {
+        reason = output + " is the column " +
+                 column_text(m_column_qualifiers[col], m_columns[col]) +
+                 " after the GROUP BY columns";
+      } else if (col != gb->col_idx) {
+        const std::string gb_text =
+            column_text(m_column_qualifiers[gb->col_idx],
+                        m_columns[gb->col_idx]);
+        const std::string col_text =
+            column_text(m_column_qualifiers[col], m_columns[col]);
+        if (scope.resolved_columns != NULL &&
+            same_resolved_column(scope.resolved_columns[col],
+                                 scope.resolved_columns[gb->col_idx])) {
+          reason = output + " is GROUP BY column " + gb_text +
+                   " written as " + col_text +
+                   "; write it as the GROUP BY does";
+        } else {
+          reason = output + " is the column " + col_text +
+                   " where GROUP BY column " + gb_text + " is expected";
+        }
+      } else {
+        gb = gb->next;
+      }
+      continue;
+    }
+    if (gb != NULL) {
+      reason = output + " is an aggregate where GROUP BY column " +
+               column_text(m_column_qualifiers[gb->col_idx],
+                           m_columns[gb->col_idx]) +
+               " is expected";
+      continue;
+    }
+    Uint32 slot = 0;
+    switch (o->type) {
+    case Outputs::Type::AGGREGATE:
+      slot = o->aggregate.agg_index;
+      break;
+    case Outputs::Type::AVG:
+      slot = o->avg.agg_index_sum;
+      break;
+    default:
+      // register_cte_outputs() refuses a subquery output.
+      ronsql_bug("A CTE output has an unknown type.");
+    }
+    if (slot == next_slot) {
+      next_slot++;
+      continue;
+    }
+    // Every slot below next_slot belongs to an earlier output; a slot
+    // above it was taken by an aggregate that is not an output.
+    reason = output + " does not get the aggregate result of its position:"
+             " the body has an aggregate that is not an output";
+    Uint32 first_pos = 1;
+    for (const Outputs* p = stmt->outputs; p != o;
+         p = p->next, first_pos++) {
+      const bool same_slot =
+          (p->type == Outputs::Type::AGGREGATE &&
+           p->aggregate.agg_index == slot) ||
+          (p->type == Outputs::Type::AVG && p->avg.agg_index_sum == slot);
+      if (same_slot) {
+        reason = output + " repeats the aggregate of output " +
+                 std::to_string(first_pos) + " (`" +
+                 std::string(p->output_name.str, p->output_name.len) + "`)";
+        break;
+      }
+    }
+  }
+  if (reason.empty() && gb != NULL) {
+    reason = "GROUP BY column " +
+             column_text(m_column_qualifiers[gb->col_idx],
+                         m_columns[gb->col_idx]) +
+             " is not an output";
+  }
+  if (reason.empty()) return;
+  throw RonSQLPermanentError(
+      RonSQLErrorClass::UNSUPPORTED,
+      std::string("The outputs of CTE '") + cte->name.c_str() +
+      "' must be its GROUP BY columns, in GROUP BY order, and then its"
+      " aggregates, each aggregate once: " + reason + ".");
+}
+
 // Reject CTE shapes that aren't supported end-to-end.
+//
+// The order of a CTE's outputs: see check_cte_output_layouts().
 //
 // CTE_SCAN as an outer-join child: a defensive tripwire for a shape
 // the planner doesn't currently produce (CTE children always become
@@ -8270,6 +8436,7 @@ RonSQLPreparer::validate_cte_execution_shapes()
       check_plan(m_cte_scopes[c]->join_plan, cte);
     }
   }
+  check_cte_output_layouts();
 }
 
 /*
