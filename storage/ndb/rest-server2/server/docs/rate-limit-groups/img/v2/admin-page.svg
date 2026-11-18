@@ -87,17 +87,16 @@
   <text x="52" y="728" class="h" font-size="19">Delete recommender2_rl?</text>
   <text x="52" y="760" class="t">Hopsworks deletes the group, then removes it from every cluster it is installed on</text>
   <text x="52" y="780" class="t">(main, rondb-m, rondb-s, rondb-r), aliases first:</text>
-  <rect x="52" y="794" width="722" height="84" rx="6" fill="#f1f3f5" stroke="#d7e0e5"/>
+  <rect x="52" y="794" width="722" height="60" rx="6" fill="#f1f3f5" stroke="#d7e0e5"/>
   <text x="66" y="818" class="mono">USER ALIAS DROP Recommender2_rosa9e1f</text><text x="430" y="818" class="m">Rosa's account in Recommender2</text>
-  <text x="66" y="842" class="mono">USER ALIAS DROP Recommender2_onlinefs</text><text x="430" y="842" class="m">the project's ingestion (OnlineFS)</text>
-  <text x="66" y="866" class="mono">USER DROP recommender2_rl</text><text x="430" y="866" class="m">the 5% budget</text>
-  <rect x="52" y="892" width="722" height="56" rx="6" class="note"/>
-  <rect x="52" y="892" width="4" height="56" fill="#b67a12"/>
-  <text x="68" y="915" class="t">Afterwards Rosa's REST and SQL work and Recommender2's ingestion run unmetered,</text>
-  <text x="68" y="937" class="t">as before the group existed. 5% of the 50% is freed (27% → 22%).</text>
-  <text x="52" y="972" class="m">Writes</text>
-  <text x="52" y="992" class="c">DELETE FROM rate_limit_group WHERE name = 'recommender2_rl'</text>
-  <text x="52" y="1010" class="c">Who and state rows go with it (ON DELETE CASCADE).</text>
+  <text x="66" y="842" class="mono">USER DROP recommender2_rl</text><text x="430" y="842" class="m">the 5% budget</text>
+  <rect x="52" y="868" width="722" height="56" rx="6" class="note"/>
+  <rect x="52" y="868" width="4" height="56" fill="#b67a12"/>
+  <text x="68" y="891" class="t">Afterwards Rosa's work runs unmetered, as before the group existed.</text>
+  <text x="68" y="913" class="t">5% of the 50% is freed (27% → 22%).</text>
+  <text x="52" y="956" class="m">Writes</text>
+  <text x="52" y="976" class="c">DELETE FROM rate_limit_group WHERE name = 'recommender2_rl'</text>
+  <text x="52" y="994" class="c">Who and state rows go with it (ON DELETE CASCADE).</text>
   <rect x="546" y="1016" width="90" height="38" rx="6" fill="#fff" stroke="#8aa5a3"/>
   <text x="591" y="1041" class="t" text-anchor="middle">Cancel</text>
   <rect x="650" y="1016" width="124" height="38" rx="6" class="red"/>
