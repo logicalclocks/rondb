@@ -210,6 +210,9 @@ SELECT id FROM st_n USE INDEX () WHERE NOT (v <> (SELECT AVG(v) FROM st_n))|
 
 --echo
 --echo === st-9: the subquery on the left, AVG(v) < v ===
+# v is named in the subquery before the outer query names it; the outer
+# v stayed an inner column, unresolved, and the index bound on it failed
+# ("Index scan bound requires a stored-table column").
 let $QUERY=
 SELECT id FROM st_n WHERE (SELECT AVG(v) FROM st_n) < v;|
 --source suite/ronsql/include/ronsql_compare.inc

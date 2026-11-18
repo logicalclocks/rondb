@@ -23213,6 +23213,10 @@ RonSQLPreparer::Context::intern_column(
         (qualified ? qualifiers[i] == table_qualifier
                    : qualifiers[i].c_str() == NULL))
     {
+      // A column first seen in a subquery and then in the outer query is
+      // an outer column too: `(SELECT AVG(v) FROM t) < v` left the outer
+      // v inner, unresolved, and its index bound failed.
+      if (!in_subquery) is_inner[i] = false;
       return i;
     }
   }
