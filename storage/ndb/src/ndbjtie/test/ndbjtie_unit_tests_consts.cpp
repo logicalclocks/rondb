@@ -370,6 +370,27 @@ static Constant constants[] = {
     {"com.mysql.ndbjtie.ndbapi.NdbOperation$OperationOptionsConst$Flags.OO_"
      "CUSTOMDATA",
      NdbOperation::OperationOptions::/*_enum Flags_*/ OO_CUSTOMDATA},
+    {"com.mysql.ndbjtie.ndbapi.NdbOperation$OperationOptionsConst$Flags.OO_"
+     "LOCKHANDLE",
+     NdbOperation::OperationOptions::/*_enum Flags_*/ OO_LOCKHANDLE},
+    {"com.mysql.ndbjtie.ndbapi.NdbOperation$OperationOptionsConst$Flags.OO_"
+     "QUEUABLE",
+     NdbOperation::OperationOptions::/*_enum Flags_*/ OO_QUEUABLE},
+    {"com.mysql.ndbjtie.ndbapi.NdbOperation$OperationOptionsConst$Flags.OO_"
+     "NOT_QUEUABLE",
+     NdbOperation::OperationOptions::/*_enum Flags_*/ OO_NOT_QUEUABLE},
+    {"com.mysql.ndbjtie.ndbapi.NdbOperation$OperationOptionsConst$Flags.OO_"
+     "DEFERRED_CONSTAINTS",
+     NdbOperation::OperationOptions::/*_enum Flags_*/ OO_DEFERRED_CONSTAINTS},
+    {"com.mysql.ndbjtie.ndbapi.NdbOperation$OperationOptionsConst$Flags.OO_"
+     "DISABLE_FK",
+     NdbOperation::OperationOptions::/*_enum Flags_*/ OO_DISABLE_FK},
+    {"com.mysql.ndbjtie.ndbapi.NdbOperation$OperationOptionsConst$Flags.OO_"
+     "RING_BUFFER_OP",
+     NdbOperation::OperationOptions::/*_enum Flags_*/ OO_RING_BUFFER_OP},
+    {"com.mysql.ndbjtie.ndbapi.NdbOperation$OperationOptionsConst$Flags.OO_"
+     "RING_BUFFER_SHOW_META",
+     NdbOperation::OperationOptions::/*_enum Flags_*/ OO_RING_BUFFER_SHOW_META},
     {"com.mysql.ndbjtie.ndbapi.NdbOperationConst$AbortOption."
      "DefaultAbortOption",
      NdbOperation::/*_enum AbortOption_*/ DefaultAbortOption},
