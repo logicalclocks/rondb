@@ -1,0 +1,87 @@
+digraph lifecycle {
+  rankdir=TB;
+  graph [fontname="Helvetica", fontsize=11, pad=0.3, nodesep=0.5, ranksep=0.45, bgcolor="white", compound=true, newrank=true];
+  node  [shape=plaintext, fontname="Helvetica", fontsize=11];
+  edge  [fontname="Helvetica", fontsize=9, color="#096b67", arrowsize=0.7, penwidth=1.1];
+
+  subgraph cluster_install {
+    label=<<B>Install flow</B> (control plane; runs on save, on membership change, and on the reconciler timer)>; fontsize=12; color="#8aa5a3"; style="rounded"; margin=14;
+    s1 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>&#9312;&nbsp; Admin page</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">save a group:<BR ALIGN="LEFT"/>name &middot; budget % &middot; who &middot; cluster</TD></TR>
+</TABLE>>];
+    s2 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>&#9313;&nbsp; Hopsworks tables</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9">rate_limit_group</FONT><BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="9">rate_limit_group_user</FONT></TD></TR>
+</TABLE>>];
+    s3 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>&#9314;&nbsp; Installer pass</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">discover clusters (namespace label)<BR ALIGN="LEFT"/>expand who &rarr; account names<BR ALIGN="LEFT"/>percent &rarr; rate (thread count)</TD></TR>
+</TABLE>>];
+    s4 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>&#9315;&nbsp; mgmd, per cluster</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9">USER SET &lt;group&gt; --rate-per-sec=&hellip;</FONT><BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="9">USER ALIAS SET &lt;account&gt; --target=&lt;group&gt;</FONT></TD></TR>
+</TABLE>>];
+    s5 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>&#9316;&nbsp; Dbdict objects</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><B>USER</B> (budgeted, one per group)<BR ALIGN="LEFT"/><B>USER ALIAS</B> (free, one per member account)</TD></TR>
+</TABLE>>];
+    s1 -> s2 [label="writes"];
+    s2 -> s3 [label="reads"];
+    s3 -> s4 [label="mgm protocol"];
+    s4 -> s5 [label="schema transaction"];
+
+    state [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>&#9317;&nbsp; State written back</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9">rate_limit_group_cluster_state</FONT><BR ALIGN="LEFT"/>installed / pending / refused,<BR ALIGN="LEFT"/>shown on the admin page</TD></TR>
+</TABLE>>];
+    s5 -> state [label="per (group, cluster)", style=dashed, color="#566574"];
+  }
+
+  subgraph cluster_request {
+    label=<<B>Request flow</B> (data plane; every transaction, both entry points)>; fontsize=12; color="#8aa5a3"; style="rounded"; margin=14;
+    r1 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>&#9318;&nbsp; Request</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">REST (API key) or<BR ALIGN="LEFT"/>SQL (login account)</TD></TR>
+</TABLE>>];
+    r2 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>&#9319;&nbsp; Tag</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">RDRS / mysqld tag the caller&apos;s<BR ALIGN="LEFT"/>account name, once per transaction<BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="9">Marketing_mary01ab</FONT></TD></TR>
+</TABLE>>];
+    r3 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>&#9320;&nbsp; Dbtc admission</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">alias &rarr; its target USER<BR ALIGN="LEFT"/>(one indirection)<BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="9">&rarr; mary_mike_rl</FONT></TD></TR>
+</TABLE>>];
+    r4 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>&#9321;&nbsp; Dblqh</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">charges the group&apos;s budget<BR ALIGN="LEFT"/>per row operation</TD></TR>
+</TABLE>>];
+    r5 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>&#9322;&nbsp; Over budget</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">queue, then reject:<BR ALIGN="LEFT"/>429 (REST) &middot; 1297 (SQL)</TD></TR>
+</TABLE>>];
+    r1 -> r2 [label="authN / authZ as today"];
+    r2 -> r3 [label="tagged id"];
+    r3 -> r4;
+    r4 -> r5 [label="sustained excess", style=dashed, color="#566574"];
+  }
+
+  s5 -> r3 [label="resolved at admission", style=dashed, color="#566574", constraint=false];
+
+  { rank=same; s1; r1; }
+  { rank=same; s2; r2; }
+  { rank=same; s3; r3; }
+  { rank=same; s4; r4; }
+  { rank=same; s5; r5; }
+}

@@ -35,8 +35,14 @@
   .lead { font-size: 1.18rem; line-height: 1.6; max-width: 64ch; }
   .meta, figcaption, caption { color: var(--muted); font-size: .88rem; }
   nav { padding: 1.2rem 0; border-bottom: 1px solid var(--line); }
-  nav ol { display: grid; grid-template-columns: 1fr 1fr; gap: .35rem 2rem; padding-left: 1.3rem; margin: 0; font-size: .92rem; }
+  nav ol { display: grid; grid-template-columns: 1fr 1fr; gap: .35rem 2rem; padding-left: 1.3rem; margin: 0 0 .4rem; font-size: .92rem; }
   nav li { margin: 0; }
+  .navhead { margin: 1rem 0 .4rem; font-weight: 650; font-size: .92rem; color: var(--accent); }
+  nav .navhead:first-child { margin-top: 0; }
+  .part { margin: 4rem 0 0; padding: 1.3rem 1.5rem; background: var(--soft); border-left: 4px solid var(--accent); border-radius: 5px; }
+  .part .eyebrow { margin: 0; }
+  .part h2 { margin: .25rem 0 .45rem; }
+  .part p { margin: 0; color: var(--muted); font-size: .95rem; max-width: 70ch; }
   code, pre { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: .87em; }
   code { background: var(--code); border-radius: 3px; padding: .12em .3em; overflow-wrap: anywhere; }
   pre { background: var(--code); border: 1px solid var(--line); border-radius: 6px; padding: 1rem; overflow-x: auto; line-height: 1.55; margin: 1rem 0; }
@@ -78,6 +84,7 @@
     nav { display: none; }
     h2, h3 { break-after: avoid; }
     h2 { margin-top: 1.8rem; }
+    .part { break-before: page; }
     tr, .note, .example, figure { break-inside: avoid; }
     .tablewrap { overflow: visible; }
     pre { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -102,11 +109,17 @@
   key or through the MySQL server with a database account, is tagged with the caller&rsquo;s
   account name, and a RonDB <em>alias</em> maps that name to the group&rsquo;s budget, which
   RonDB charges using the per-name rate limiting it already has.</p>
-  <p>The document is built around one worked example, four projects sharing a single
-  RonDB cluster, introduced in <a href="#scenario">section 3</a>. Deployments with one
-  RonDB cluster per project are covered in <a href="#deploy">section 11</a>. The customer
-  white paper <em>Hopsworks OnlineFS Ratelimiting</em> (version 2.0) describes the same
-  feature without the internals.</p>
+  <p>The document is written for a system architect, in three parts of increasing depth.
+  <strong>Part&nbsp;I</strong> is the bird&rsquo;s-eye view: the feature, the end-to-end flow,
+  and the admin page. <strong>Part&nbsp;II</strong> is the design: the existing machinery
+  it stands on, the data model, both request paths, the installer, the save rules, and
+  multi-cluster deployments. <strong>Part&nbsp;III</strong> is the technical reference:
+  the kernel changes, the enforcement mechanics, the build plan, the open decisions and
+  the exact definitions. Each part is self-contained enough to stop after. The document
+  is built around one worked example, four projects sharing a single RonDB cluster,
+  introduced in <a href="#scenario">section 6</a>. The customer white paper
+  <em>Hopsworks OnlineFS Ratelimiting</em> (version 2.0) describes the same feature
+  without the internals.</p>
   <p class="meta">Version 2.0, 2026-11-17, supersedes version 1.0 on two decisions taken
   with the design history in hand. <strong>First, budgets no longer scope to data.</strong>
   Version 1.0 let a group cover named feature groups and feature stores; that dimension
@@ -128,54 +141,150 @@
 </header>
 
 <nav aria-label="Contents">
+  <p class="navhead">Part I &mdash; The design at a glance</p>
   <ol>
+    <li><a href="#feature">The feature</a></li>
+    <li><a href="#flow">The flow, end to end</a></li>
+    <li><a href="#admin">The admin page</a></li>
     <li><a href="#glance">What exists and what is new</a></li>
+  </ol>
+  <p class="navhead">Part II &mdash; The design</p>
+  <ol start="5">
     <li><a href="#today">What exists today</a></li>
     <li><a href="#scenario">The scenario, and what Hopsworks already stores</a></li>
     <li><a href="#tables">The new tables</a></li>
     <li><a href="#rest">The REST path (RDRS): tag the account name, nothing else</a></li>
     <li><a href="#sql">The SQL path, and why RonDB maps the name</a></li>
-    <li><a href="#kernel">RonDB changes: the alias</a></li>
     <li><a href="#install">Hopsworks installs the groups</a></li>
     <li><a href="#rules">Rules when saving and deleting</a></li>
-    <li><a href="#admin">The admin page</a></li>
     <li><a href="#deploy">One cluster or several</a></li>
+  </ol>
+  <p class="navhead">Part III &mdash; Technical reference</p>
+  <ol start="13">
+    <li><a href="#kernel">RonDB changes: the alias</a></li>
+    <li><a href="#reference">How RonDB enforces a limit</a></li>
     <li><a href="#build">What needs to be built, and how</a></li>
-    <li><a href="#reference">Reference: how RonDB enforces a limit</a></li>
     <li><a href="#open">Open decisions</a></li>
     <li><a href="#appendix">Appendix: table definitions and commands</a></li>
   </ol>
 </nav>
 
+<div class="part">
+  <p class="eyebrow">Part I</p>
+  <h2>The design at a glance</h2>
+  <p>What the feature is, how it works end to end, and what the administrator sees.
+  Enough to evaluate the shape of the design; every claim here is grounded in a Part II
+  or Part III section that carries the detail.</p>
+</div>
+
+<section id="feature">
+<h2>1. The feature</h2>
+<p>A <strong>rate limit group</strong> is a named ceiling on how much of a RonDB cluster
+a set of people may use. It has four properties: a <strong>name</strong> (the identity
+RonDB meters), a <strong>budget</strong> as a percentage of a data node&rsquo;s
+database-work capacity, a <strong>Who</strong> list (named login users and/or whole
+projects), and a <strong>cluster</strong> (one by name, or every cluster). The budget
+covers everything those people do on that cluster: both entry points (REST and SQL),
+every account they hold, own data and data shared with them alike.</p>
+<figure class="erd"><img src="img/v2/group-concept.png" alt="Two rate limit groups: recommender_team_rl, 20% on every cluster, shared by project Recommender; and mary_mike_rl, 2%, shared by Mary and Mike."><figcaption>The concept. A group is a name, a budget, a Who list and a cluster. The first group covers everything its members do, on every cluster; the second caps two named people.</figcaption></figure>
+<p>What a group deliberately is <em>not</em> bounds the whole design. It is not a
+permission: listing someone in a group does not let them read anything new. It is not a
+reservation: 20% is a ceiling, not guaranteed capacity. And it has no data dimension: a
+group never names a feature group or a feature store, so there is no per-table state
+anywhere, and a person is in at most one group per cluster, so there is never a choice
+of which budget to charge. (Version 1.0 had the data dimension; the header note records
+why it is gone.)</p>
+</section>
+
+<section id="flow">
+<h2>2. The flow, end to end</h2>
+<p>Two flows make the feature, and they meet only inside the data nodes. The
+<strong>install flow</strong> is the control plane: it turns saved group rows into RonDB
+dictionary objects, and all of it runs in Hopsworks. The <strong>request flow</strong>
+is the data plane: it runs on every transaction, almost all of it already exists from
+the per-identity rate limiting of RONDB-978, and this design adds exactly one
+indirection to it (step &#9320;).</p>
+<figure class="erd"><img src="img/v2/lifecycle.png" alt="Numbered end-to-end flow. Install flow: admin page writes the group tables, the installer pass expands and converts them, the mgmd applies USER and USER ALIAS commands, Dbdict holds the objects, state is written back. Request flow: a REST or SQL request is tagged with the account name, Dbtc swaps the alias for its target USER, Dblqh charges, sustained excess rejects with 429 or 1297."><figcaption>The design and implementation flow. &#9312;&ndash;&#9317; the install flow: a saved group becomes <code>USER</code> and <code>USER ALIAS</code> objects on each targeted cluster, and the outcome is written back for the admin page. &#9318;&ndash;&#9322; the request flow: every transaction is tagged with the caller&rsquo;s account name and the work is charged to the group&rsquo;s budget.</figcaption></figure>
+<p><strong>The install flow (&#9312;&ndash;&#9317;).</strong> An administrator saves a
+group on the admin page (&#9312;); the save writes rows into two <code>hopsworks</code>
+tables (&#9313;) and triggers an immediate install pass (&#9314;). The installer, inside
+Hopsworks, discovers the clusters by namespace label, expands the Who list into the
+members&rsquo; MySQL-account names, and converts the percentage into a RonDB rate using each
+cluster&rsquo;s own thread count. It then issues <code>USER SET</code> (the group&rsquo;s budget,
+one per group) and <code>USER ALIAS SET</code> (one per member account, pointing at the
+group) through each targeted cluster&rsquo;s management server (&#9315;), which stores them
+as dictionary objects on the data nodes (&#9316;). The outcome per (group, cluster) is
+written back to a state table (&#9317;), which is what the admin page shows. The same
+pass re-runs when project membership changes and on a primary-gated timer, so every
+cluster converges back to the tables after a missed event, a restore or an outage
+(<a href="#install">section 10</a>).</p>
+<p><strong>The request flow (&#9318;&ndash;&#9322;).</strong> A request is authenticated
+and authorized exactly as today (&#9318;). RDRS and the MySQL server tag the transaction
+with the caller&rsquo;s account name, once per transaction (&#9319;); the same person is the
+same string on both entry points. Dbtc resolves the tagged name at admission, and when
+the name is an alias, swaps it for the group&rsquo;s <code>USER</code>, one pointer
+dereference (&#9320;). Dblqh charges the work to that budget per row operation
+(&#9321;); sustained excess queues and then rejects, 429 on REST and error 1297 on SQL
+(&#9322;). A name with no alias runs unmetered, which is today&rsquo;s behavior, so the
+feature is inert until groups are installed.</p>
+<figure class="erd"><img src="img/v2/architecture.png" alt="Hopsworks tables feed a Hopsworks installer that installs USER and USER ALIAS objects through each cluster's management server; REST, SQL and ClusterJ requests all reach Dbtc admission, which swaps the alias for its target USER and hands it to Dblqh."><figcaption>The same two flows as components. The installer (left, in Hopsworks) turns group rows into <code>USER</code> and <code>USER ALIAS</code> objects on each targeted cluster. The request paths (right) tag transactions with the account name; Dbtc swaps the alias for its group; Dblqh charges it.</figcaption></figure>
+<p>The component view places the new work: everything new on the Hopsworks side is the
+page, the tables and the installer; everything new on the RonDB side is the alias object
+and its one-step resolution. RDRS and the MySQL server only tag, and carry no group
+logic of any kind.</p>
+</section>
+
+<section id="admin">
+<h2>3. The admin page</h2>
+<p>One page: a list of groups on the left, and a form for the selected group on the
+right. Each form field writes to exactly one table, shown in the right margin. The list
+also shows the per-cluster install state written back by the installer
+(<a href="#install">section 10</a>), so an administrator can see when a saved group has
+actually been installed.</p>
+<figure class="erd"><img src="img/v2/admin-page.png" alt="Mockup of the admin page: a list of the three example groups with their cluster state, the edit form for recommender2_rl, and callouts naming the table and column each field writes."><figcaption>Editing <code>recommender2_rl</code>. &ldquo;Every cluster&rdquo; is the default; naming one cluster scopes the budget to it. The right margin names the table and column each field writes.</figcaption></figure>
+<p>Three details carried from the design sections: the name is read-only after creation
+(renaming would drop and recreate the RonDB entry); the budget field shows the converted
+<code>rate-per-sec</code> per targeted cluster so the administrator sees what each
+cluster will receive; and the sentence preview restates the group in words, which is the
+quickest check that Who and the cluster were filled in as intended. The cluster picker
+is fed from the live discovery (<a href="#today">5.4</a>), so it offers exactly the
+clusters that exist.</p>
+</section>
+
 <section id="glance">
-<h2>1. What exists and what is new</h2>
+<h2>4. What exists and what is new</h2>
 <p>The feature is mostly assembly of parts that already exist. The table is the map of
 the document: each row says where the part is described and whether it is implemented.</p>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col">Part</th><th scope="col">Status</th><th scope="col">Where</th><th scope="col">Section</th></tr></thead>
   <tbody>
-    <tr><td>Per-name rate limiting in the data nodes (<code>USER SET</code>, cost metering, queueing and rejection, the 50% cap)</td><td><strong>Implemented</strong>, RonDB 26.02</td><td>Dbdict, Dbtc, Dblqh, mgm server</td><td><a href="#today">2.1</a>, <a href="#reference">13</a></td></tr>
-    <tr><td>Transaction tagging from RDRS by API key</td><td><strong>Implemented</strong>, 26.02-main</td><td>RDRS</td><td><a href="#today">2.2</a></td></tr>
-    <tr><td>Transaction tagging from RDRS by project-user name (username mode)</td><td><strong>Implemented</strong> on branch <code>RONDB-1158</code> (merged from <code>RONDB-978-Cont</code>)</td><td>RDRS</td><td><a href="#today">2.2</a></td></tr>
-    <tr><td>Transaction tagging from the MySQL server by login account</td><td><strong>Implemented</strong>, 26.02; off by default</td><td><code>ha_ndbcluster</code></td><td><a href="#today">2.2</a></td></tr>
-    <tr><td>One MySQL account per project member, named <code>Project_username</code></td><td><strong>Implemented</strong></td><td>Hopsworks</td><td><a href="#today">2.3</a></td></tr>
-    <tr><td>Hopsworks speaks the management-server protocol; cluster discovery by namespace label</td><td><strong>Implemented</strong> (quotas; backups)</td><td>Hopsworks</td><td><a href="#today">2.4</a></td></tr>
-    <tr><td>The two group tables and the admin page</td><td><em>New</em></td><td>Hopsworks</td><td><a href="#tables">4</a>, <a href="#admin">10</a></td></tr>
-    <tr><td>The alias object: tagged name &rarr; group, for all paths</td><td><em>New</em></td><td>Dbdict, Dbtc, mgm server</td><td><a href="#sql">6</a>, <a href="#kernel">7</a></td></tr>
-    <tr><td>The installer and reconciler that turn rows into <code>USER</code> and <code>USER ALIAS</code> objects on the right cluster</td><td><em>New</em></td><td>Hopsworks</td><td><a href="#install">8</a></td></tr>
-    <tr><td>Turning the switches on (<code>ndb_user_rate_limits</code>, <code>ActivateRateLimits</code>)</td><td><em>New</em> configuration</td><td>rondb-helm</td><td><a href="#build">12</a></td></tr>
+    <tr><td>Per-name rate limiting in the data nodes (<code>USER SET</code>, cost metering, queueing and rejection, the 50% cap)</td><td><strong>Implemented</strong>, RonDB 26.02</td><td>Dbdict, Dbtc, Dblqh, mgm server</td><td><a href="#today">5.1</a>, <a href="#reference">14</a></td></tr>
+    <tr><td>Transaction tagging from RDRS by API key</td><td><strong>Implemented</strong>, 26.02-main</td><td>RDRS</td><td><a href="#today">5.2</a></td></tr>
+    <tr><td>Transaction tagging from RDRS by project-user name (username mode)</td><td><strong>Implemented</strong> on branch <code>RONDB-1158</code> (merged from <code>RONDB-978-Cont</code>)</td><td>RDRS</td><td><a href="#today">5.2</a></td></tr>
+    <tr><td>Transaction tagging from the MySQL server by login account</td><td><strong>Implemented</strong>, 26.02; off by default</td><td><code>ha_ndbcluster</code></td><td><a href="#today">5.2</a></td></tr>
+    <tr><td>One MySQL account per project member, named <code>Project_username</code></td><td><strong>Implemented</strong></td><td>Hopsworks</td><td><a href="#today">5.3</a></td></tr>
+    <tr><td>Hopsworks speaks the management-server protocol; cluster discovery by namespace label</td><td><strong>Implemented</strong> (quotas; backups)</td><td>Hopsworks</td><td><a href="#today">5.4</a></td></tr>
+    <tr><td>The two group tables and the admin page</td><td><em>New</em></td><td>Hopsworks</td><td><a href="#tables">7</a>, <a href="#admin">3</a></td></tr>
+    <tr><td>The alias object: tagged name &rarr; group, for all paths</td><td><em>New</em></td><td>Dbdict, Dbtc, mgm server</td><td><a href="#sql">9</a>, <a href="#kernel">13</a></td></tr>
+    <tr><td>The installer and reconciler that turn rows into <code>USER</code> and <code>USER ALIAS</code> objects on the right cluster</td><td><em>New</em></td><td>Hopsworks</td><td><a href="#install">10</a></td></tr>
+    <tr><td>Turning the switches on (<code>ndb_user_rate_limits</code>, <code>ActivateRateLimits</code>)</td><td><em>New</em> configuration</td><td>rondb-helm</td><td><a href="#build">15</a></td></tr>
   </tbody>
 </table></div>
-<figure class="erd"><img src="img/v2/group-concept.png" alt="Two rate limit groups: recommender_team_rl, 20% on every cluster, shared by project Recommender; and mary_mike_rl, 2%, shared by Mary and Mike."><figcaption>The concept. A group is a name, a budget, a Who list and a cluster. The first group covers everything its members do, on every cluster; the second caps two named people.</figcaption></figure>
-<p>Two things a group is <em>not</em>: it is not a permission (listing someone in a
-group does not let them read anything new), and it is not a reservation (20% is a
-ceiling, not guaranteed capacity).</p>
 </section>
 
-<section id="today">
-<h2>2. What exists today</h2>
+<div class="part">
+  <p class="eyebrow">Part II</p>
+  <h2>The design</h2>
+  <p>The existing machinery the feature stands on, the worked example, the data model,
+  both request paths, the installer, the rules Hopsworks enforces on save, and what
+  changes when a deployment has several RonDB clusters. Each decision is stated with the
+  alternative it displaced.</p>
+</div>
 
-<h3>2.1 RonDB meters work per name</h3>
+<section id="today">
+<h2>5. What exists today</h2>
+
+<h3>5.1 RonDB meters work per name</h3>
 <p>Since RonDB 26.02 the data nodes can put a budget on a name:</p>
 <pre><code>ndb_mgm&gt; USER SET etl_jobs --rate-per-sec=10000</code></pre>
 <p>All database work tagged <code>etl_jobs</code> may then use 10,000 microseconds of
@@ -188,16 +297,16 @@ refreshed every 60 s) and sends only the id; Dbtc admits or queues at
 <code>TCKEYREQ</code>, <code>SCAN_TABREQ</code> and <code>TCINDXREQ</code>; Dblqh charges
 per row operation (<code>update_rate_usage</code>, <code>DblqhMain.cpp:40541</code>). An
 unknown name runs unmetered. The full mechanics, the cost model and the 50% cap are in
-<a href="#reference">section 13</a>.</p>
+<a href="#reference">section 14</a>.</p>
 
-<h3>2.2 Two entry points, one identity</h3>
+<h3>5.2 Two entry points, one identity</h3>
 <p>Data in the online feature store is reached through two servers, and each already tags
 the NDB transactions it starts:</p>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col">Entry point</th><th scope="col">Caller identified by</th><th scope="col">What is tagged today</th><th scope="col">Status</th></tr></thead>
   <tbody>
     <tr><td>REST server (RDRS)</td><td>API key &rarr; <code>api_key.user_id</code> &rarr; login user; project memberships from <code>project_team</code> by the user&rsquo;s email</td><td>The API key (apikey mode), or the project-user name <code>clip31(ProjectName_username)</code> (username mode)</td><td>apikey mode merged on 26.02-main; username mode on the <code>RONDB-1158</code> branch</td></tr>
-    <tr><td>MySQL server</td><td>The login account, one per project member (2.3)</td><td>The account name, no host: <code>security_context()-&gt;user()</code> in <code>ha_ndbcluster::set_user_id</code> (<code>ha_ndbcluster.cc:7756</code>)</td><td>26.02; behind the read-only server variable <code>ndb_user_rate_limits</code>, default OFF</td></tr>
+    <tr><td>MySQL server</td><td>The login account, one per project member (5.3)</td><td>The account name, no host: <code>security_context()-&gt;user()</code> in <code>ha_ndbcluster::set_user_id</code> (<code>ha_ndbcluster.cc:7756</code>)</td><td>26.02; behind the read-only server variable <code>ndb_user_rate_limits</code>, default OFF</td></tr>
   </tbody>
 </table></div>
 <p>Three properties of the MySQL server&rsquo;s tagging shape everything that follows:</p>
@@ -218,7 +327,7 @@ the NDB transactions it starts:</p>
 <p>Online ingestion (<code>onlinefs</code>) writes through ClusterJ and tags nothing today.
 <code>NdbTransaction::setUserId</code> is available to it if that is ever wanted.</p>
 
-<h3>2.3 Hopsworks creates one MySQL account per project member</h3>
+<h3>5.3 Hopsworks creates one MySQL account per project member</h3>
 <p>When a project&rsquo;s online feature store is first used, and again whenever a member is
 added, Hopsworks creates a MySQL account for each member
 (<code>OnlineFeaturestoreController.createDatabaseUser</code>). The name is the project
@@ -230,7 +339,7 @@ scientist <code>SELECT</code>. A share grants <code>SELECT</code> on the owner&r
 or table to the <em>receiving</em> project&rsquo;s member accounts, so a reader of shared data
 always connects as their own project&rsquo;s account.</p>
 <div class="tablewrap"><table class="rows">
-  <caption>Accounts for the cast of section 3 <span>(usernames are the generated 8-character handles; illustrative)</span></caption>
+  <caption>Accounts for the cast of section 6 <span>(usernames are the generated 8-character handles; illustrative)</span></caption>
   <thead><tr><th scope="col">Person</th><th scope="col">users.username</th><th scope="col">Project</th><th scope="col">MySQL account</th><th scope="col">Grants</th></tr></thead>
   <tbody>
     <tr><td>Mary (1001)</td><td><code>mary01ab</code></td><td>Marketing (11)</td><td><code>Marketing_mary01ab</code></td><td>ALL on <code>marketing.*</code></td></tr>
@@ -276,9 +385,9 @@ own preview and feature-group DDL on the caller&rsquo;s behalf. Only administrat
 <code>INFORMATION_SCHEMA</code>, tracing and ingestion-result reads) runs as the admin
 account, which is never metered.</p>
 
-<h3>2.4 Hopsworks already talks to every RonDB cluster&rsquo;s management server</h3>
+<h3>5.4 Hopsworks already talks to every RonDB cluster&rsquo;s management server</h3>
 <p>New in this revision: the inventory of the Hopsworks-side machinery that
-<a href="#install">section 8</a> builds on. All of it is in production today.</p>
+<a href="#install">section 10</a> builds on. All of it is in production today.</p>
 <ul>
   <li><strong>The management-server client.</strong>
   <code>RonDbManagementClient</code> (<code>hopsworks-common/&hellip;/util/RonDbManagementClient.java:52</code>,
@@ -305,7 +414,7 @@ account, which is never metered.</p>
   configuration. For externally-managed RonDB, the chart renders an
   <code>ExternalName</code> Service <code>mgm</code> pointing at the external mgmd
   (<code>templates/mgmd.yaml:147</code>), reachable only if the deployment&rsquo;s networking
-  allows it (<a href="#open">section 14</a>).</li>
+  allows it (<a href="#open">section 16</a>).</li>
   <li><strong>Reacting to membership changes.</strong> Hopsworks already runs an async
   operation log with retries for exactly the events a group cares about: the
   <code>OnlinefsOperationHandler</code> CDI interface
@@ -326,7 +435,7 @@ account, which is never metered.</p>
 </section>
 
 <section id="scenario">
-<h2>3. The scenario, and what Hopsworks already stores</h2>
+<h2>6. The scenario, and what Hopsworks already stores</h2>
 <p>In Hopsworks a <strong>project</strong> is a team&rsquo;s workspace: it has members and owns a
 <strong>feature store</strong>, the project&rsquo;s collection of <strong>feature groups</strong>
 (tables of features). A project can share its whole store, or single feature groups, with
@@ -368,11 +477,11 @@ and third requirements to named data (&ldquo;2% on <code>marketing_clicks</code>
 Marketing store&rdquo;); in this version a budget bounds <em>people on a cluster</em>, not
 people on data, and the per-cluster form of the third requirement (&ldquo;5% of
 <em>Marketing&rsquo;s</em> cluster&rdquo;) is written with the cluster column in
-<a href="#deploy">section 11</a>.</p>
+<a href="#deploy">section 12</a>.</p>
 </section>
 
 <section id="tables">
-<h2>4. The new tables</h2>
+<h2>7. The new tables</h2>
 <p>Two tables in the <code>hopsworks</code> database, plus one state table the installer
 writes. They refer to the existing rows above by id and change nothing in the existing
 tables. Column definitions are in the <a href="#appendix">appendix</a>.</p>
@@ -387,22 +496,22 @@ tables. Column definitions are in the <a href="#appendix">appendix</a>.</p>
 <p>Here is every row written for the three requirements:</p>
 <figure class="erd"><img src="img/v2/new-tables.png" alt="Every row written for the three requirements (teal headers) and the existing rows they reference (grey headers), with arrows from each foreign key to the row it names."><figcaption>Seven rows. Teal headers are new rows, grey headers existing rows. Arrows point from a foreign key to the row it names. <code>cluster</code> NULL means every cluster. The three budgets add up to 27%, under the 50% cap.</figcaption></figure>
 
-<h3>4.1 <code>rate_limit_group</code></h3>
+<h3>7.1 <code>rate_limit_group</code></h3>
 <ul>
   <li><code>name</code> is the string RonDB meters: each targeted cluster gets a
-  <code>USER SET &lt;name&gt;</code> entry (section 8). Unique. Renaming would mean
+  <code>USER SET &lt;name&gt;</code> entry (section 10). Unique. Renaming would mean
   dropping and recreating the RonDB entry, so the UI does not allow it.</li>
   <li><code>budget_percent</code> is a share of a data node&rsquo;s capacity. It is stored as
   a percentage, not as a RonDB rate, and converted at install time, because each cluster
-  converts with its own thread count (section 11).</li>
+  converts with its own thread count (section 12).</li>
   <li><code>cluster</code> is NULL (&ldquo;every cluster&rdquo;) or one cluster&rsquo;s name, which is its
-  Kubernetes namespace (2.4): the main cluster&rsquo;s install namespace or a satellite&rsquo;s
+  Kubernetes namespace (5.4): the main cluster&rsquo;s install namespace or a satellite&rsquo;s
   labeled namespace. The admin page offers the live list; a name that matches no
   discovered cluster installs nowhere and shows as <em>pending</em>, never an error, so
   a group can be created before its cluster.</li>
 </ul>
 
-<h3>4.2 <code>rate_limit_group_user</code></h3>
+<h3>7.2 <code>rate_limit_group_user</code></h3>
 <p>A row sets <code>uid</code> or <code>project_id</code>, never both.</p>
 <ul>
   <li>A <strong>uid row</strong> names exactly one login user. Nothing is interpreted.
@@ -414,7 +523,7 @@ tables. Column definitions are in the <a href="#appendix">appendix</a>.</p>
   <code>srvmanager</code> are excluded by username: they are on every team, carry
   ordinary roles, and their traffic is platform work, not the team&rsquo;s. Membership changes
   write nothing here: when Bob joins Recommender he is covered after the next install
-  pass, and when Ava leaves she drops out the same way (section 8).</li>
+  pass, and when Ava leaves she drops out the same way (section 10).</li>
 </ul>
 <p><strong>A group covers people, and a person is covered with every account they
 hold.</strong> Alice in a group means: her account in every project she is a member of
@@ -427,16 +536,16 @@ key 502 and the key Alice creates tomorrow. Keys never appear in the new tables.
 <strong>Why people and not accounts?</strong> The account is derived from (project, user)
 and is recomputed by the installer; storing it would be a second copy that drifts.</p>
 
-<h3>4.3 <code>rate_limit_group_cluster_state</code></h3>
+<h3>7.3 <code>rate_limit_group_cluster_state</code></h3>
 <p>One row per (group, cluster) the installer has acted on: <em>pending</em>,
 <em>installed</em>, <em>refused</em> (the 50% cap is full,
 <code>CreateDbNoAvailableRates</code>), with a timestamp. The installer writes it in the
-same pass that issues the commands (section 8), the admin page reads it (section 10).
+same pass that issues the commands (section 10), the admin page reads it (section 3).
 Version 1.0 left &ldquo;where the state is stored&rdquo; open because RDRS, in C++, would have had
 to write it back over an NDB connection; with Hopsworks as the installer it is an
 ordinary JPA row.</p>
 
-<h3>4.4 Who gets charged for what</h3>
+<h3>7.4 Who gets charged for what</h3>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col">Who reads what</th><th scope="col">Charged to</th><th scope="col">Why</th></tr></thead>
   <tbody>
@@ -452,25 +561,25 @@ ordinary JPA row.</p>
 </table></div>
 <p><strong>One person, one group per cluster.</strong> Mary draws from
 <code>mary_mike_rl</code> for everything; if Marketing also wanted a project-wide group
-containing Mary, the two would tie and Hopsworks refuses the save (section 9). The only
+containing Mary, the two would tie and Hopsworks refuses the save (section 11). The only
 sanctioned overlap is across clusters: a group that names a cluster beats a group that
 covers every cluster, <em>on that cluster only</em>, which is how &ldquo;20% everywhere but
-30% on cluster M&rdquo; is written (section 11). The precedence is resolved by the installer
+30% on cluster M&rdquo; is written (section 12). The precedence is resolved by the installer
 when it writes the aliases; the kernel never weighs two candidates
-(<a href="#kernel">section 7</a>).</p>
+(<a href="#kernel">section 13</a>).</p>
 </section>
 
 <section id="rest">
-<h2>5. The REST path (RDRS): tag the account name, nothing else</h2>
+<h2>8. The REST path (RDRS): tag the account name, nothing else</h2>
 <p>RDRS authenticates an API key and authorizes the read exactly as today, using the
 Hopsworks tables it already caches per key prefix (<code>api_key.hpp:175</code>,
 refreshed every <code>CacheRefreshIntervalMS</code>, default 180 s, with an NDB event
 watch on <code>api_key</code>). In username mode it then tags the transaction with the
 caller&rsquo;s project-user string, the same string the person&rsquo;s MySQL account is named
-(2.3). That is the whole REST-path contribution to this feature:
+(5.3). That is the whole REST-path contribution to this feature:
 <strong>RDRS carries no group code.</strong> It does not read the group tables, holds no
 group cache, and runs no sync loop; the alias installed by Hopsworks
-(<a href="#install">section 8</a>) maps the tagged name to the group inside RonDB.</p>
+(<a href="#install">section 10</a>) maps the tagged name to the group inside RonDB.</p>
 <pre><code>POST /0.1.0/marketing/marketing_clicks_1/pk-read
 X-API-KEY: Qk3mZx8pL2vN7bRt.&lt;64-character secret&gt;</code></pre>
 <div class="tablewrap"><table>
@@ -480,14 +589,14 @@ X-API-KEY: Qk3mZx8pL2vN7bRt.&lt;64-character secret&gt;</code></pre>
     <tr><td>2</td><td>1004 &rarr; <code>users.email</code> &rarr; every <code>project_team</code> row with that <code>team_member</code>, any role.</td><td>member of project 13</td><td>exists</td></tr>
     <tr><td>3</td><td>The request names database <code>marketing</code> and table <code>marketing_clicks_1</code>: is project 13 allowed to read it? Not a member of project 11; <code>shared_feature_store</code> has 21 &rarr; 13.</td><td>allowed</td><td>exists</td></tr>
     <tr><td>4</td><td><code>setUserId("Recommender_alice4f2")</code> on the transaction (username mode: <code>clip31</code> of the caller&rsquo;s own project and username).</td><td>tagged</td><td>exists on the branch</td></tr>
-    <tr><td>5</td><td>Inside RonDB: the name resolves to Alice&rsquo;s alias; the alias&rsquo;s target is the <code>USER recommender_team_rl</code>; the work is charged there.</td><td>metered</td><td>new (sections 6, 7)</td></tr>
+    <tr><td>5</td><td>Inside RonDB: the name resolves to Alice&rsquo;s alias; the alias&rsquo;s target is the <code>USER recommender_team_rl</code>; the work is charged there.</td><td>metered</td><td>new (sections 9, 13)</td></tr>
   </tbody>
 </table></div>
 <p>The other keys of the cast walk the same way: keys 501 and 502 both belong to Alice
 and land on the same alias, as will a third key she creates tomorrow. Where one person&rsquo;s
 store share is received into several of their projects, the username branch tags the
 lowest recipient project id; since every one of the person&rsquo;s accounts carries an alias
-to the same group (4.2), whichever account is tagged lands on the same budget, and the
+to the same group (7.2), whichever account is tagged lands on the same budget, and the
 v1.0 open decision about that interaction disappears.</p>
 <p>Version 1.0 carried an alternative here: RDRS reads the group tables, builds
 person-to-group and data-to-group maps, and picks the group per request. It was rejected
@@ -496,29 +605,29 @@ version; the v1.0 document records it.</p>
 </section>
 
 <section id="sql">
-<h2>6. The SQL path, and why RonDB maps the name</h2>
+<h2>9. The SQL path, and why RonDB maps the name</h2>
 
-<h3>6.1 The MySQL server cannot pick the group</h3>
-<p>The server tags the account name, and the account decodes to (project, user) (2.3).
+<h3>9.1 The MySQL server cannot pick the group</h3>
+<p>The server tags the account name, and the account decodes to (project, user) (5.3).
 But the server cannot decide which group that person is in: it would need the group
 tables, the Hopsworks membership expansion and an event-driven cache of them, which is a
 Hopsworks-metadata cache rebuilt inside mysqld (the closest existing template, the
 index-statistics listener on <code>ndb_index_stat_head</code>,
 <code>ha_ndb_index_stat.cc:1839</code>, shows it can be done and how much machinery it
 is). ClusterJ, if ingestion is ever metered, would need a second copy. And the tag is
-fixed once per transaction (2.2), so whatever mapping is used must be a property of the
+fixed once per transaction (5.2), so whatever mapping is used must be a property of the
 name, not of the statement.</p>
 
-<h3>6.2 What every path has in common: the tagged name</h3>
+<h3>9.2 What every path has in common: the tagged name</h3>
 <p>Both entry points tag the transaction with the same string: the caller&rsquo;s
 project-user account name. The data nodes resolve that name to a dictionary object at
 every admission point. So the one place a &ldquo;this person&rsquo;s work charges that group&rdquo;
 mapping covers REST, SQL and ClusterJ at once is the dictionary itself: an object under
 the person&rsquo;s account name whose only job is to point at the group&rsquo;s <code>USER</code>.
-That is the <strong>alias</strong>, specified in <a href="#kernel">section 7</a>.</p>
+That is the <strong>alias</strong>, specified in <a href="#kernel">section 13</a>.</p>
 <figure class="erd"><img src="img/v2/kernel-resolution.png" alt="Dbtc resolves the tagged account name Marketing_mary01ab through its alias to the USER mary_mike_rl; a second example resolves Recommender_alice4f2 to recommender_team_rl."><figcaption>What the data node does with Mary&rsquo;s tag and with Alice&rsquo;s. An alias names one target <code>USER</code>; the work is charged there. A plain <code>USER</code> has no alias step and is charged directly.</figcaption></figure>
 
-<h3>6.3 Mary&rsquo;s statement, step by step</h3>
+<h3>9.3 Mary&rsquo;s statement, step by step</h3>
 <pre><code>mysql -u Marketing_mary01ab -p &hellip;
 mysql&gt; SELECT * FROM marketing.marketing_clicks_1 WHERE click_id = 42;</code></pre>
 <div class="tablewrap"><table>
@@ -547,160 +656,49 @@ other sessions:</p>
   </tbody>
 </table></div>
 
-<h3>6.4 One mechanism for both entry points</h3>
+<h3>9.4 One mechanism for both entry points</h3>
 <p>The decision of 2026-11-13 (one mechanism must cover both entry points; no REST-only
 intermediate step) carries over unchanged, and this version makes it cheaper: with
 budgets no longer scoped to data, the alias needs no rules, Dbtc needs no per-table
 state, and the mapping each cluster holds is exactly one pointer per member account.
-The whole flow:</p>
-<figure class="erd"><img src="img/v2/architecture.png" alt="Hopsworks tables feed a Hopsworks installer that installs USER and USER ALIAS objects through each cluster's management server; REST, SQL and ClusterJ requests all reach Dbtc admission, which swaps the alias for its target USER and hands it to Dblqh."><figcaption>Two flows. The installer (left, in Hopsworks) turns group rows into <code>USER</code> and <code>USER ALIAS</code> objects on each targeted cluster. The request paths (right) tag transactions with the account name; Dbtc swaps the alias for its group; Dblqh charges it.</figcaption></figure>
-</section>
-
-<section id="kernel">
-<h2>7. RonDB changes: the alias</h2>
-<p>Everything in this section is new. It builds on four facts about the 26.02
-implementation:</p>
-<ul>
-  <li>Names resolve on the client. <code>ClusterMgr::retrieveUserId</code> keeps a hash
-  filled from a <code>LIST_DATABASE</code> walk with <code>is_user=1</code>, kept current
-  by <code>CREATE/DROP_DATABASE_REP</code> and a full re-list every 60 seconds. Only a
-  32-bit object id and version go on the wire (<code>TcKeyReq</code> bit 29,
-  <code>ScanTabReq</code> bit 5). An unknown name returns <code>RNIL</code> and the
-  transaction runs unmetered, once the first list walk has completed; before that,
-  <code>setUserId</code> pays one blocking <code>GET_DATABASE_REQ</code> round trip
-  (<code>NdbTransaction.cpp:546-570</code>), and after a write-rate abort the client
-  refuses that name for one second (<code>ClusterMgr.cpp:1574-1578</code>).</li>
-  <li>Dbdict stores a <code>USER</code> as <code>$name</code>, in the same namespace and
-  id space as <code>DATABASE QUOTA</code> objects; 126 usable characters (the
-  <code>$</code> takes one byte of <code>MAX_DB_NAME_SIZE</code>), and a name may not
-  itself begin with <code>$</code>.</li>
-  <li>Dbtc keeps the first record a transaction touches in
-  <code>ApiConnectRecord::m_queuedDatabasePtrI</code> (<code>DbtcMain.cpp:28676</code>,
-  <code>:16330</code>) and forwards the user id to Dblqh only when that record is a user
-  (<code>LQHKEYREQ</code> bit 9, <code>SCAN_FRAGREQ</code> bit 27). Dbspj copies it into
-  every child operation.</li>
-  <li>Object ids are reused lowest-first after a drop, so any state that holds a target
-  by id must be refreshed when the target is dropped and recreated; the alias therefore
-  stores its target by <em>name</em> and re-resolves (7.1).</li>
-</ul>
-
-<h3>7.1 The object</h3>
-<p>A <code>USER ALIAS</code> is a Dbdict object stored like a <code>USER</code>
-(<code>$name</code>), flagged as an alias, with <strong>no budget</strong> and
-<strong>one target</strong>: the name of a <code>USER</code>. Resolution is a single
-indirection; there are no rules, no scopes and no ordering. No alias means the
-transaction runs unmetered, which is today&rsquo;s unknown-name behavior.</p>
-<div class="tablewrap"><table>
-  <thead><tr><th scope="col">Property</th><th scope="col">Behavior</th></tr></thead>
-  <tbody>
-    <tr><td>Budget</td><td>None. Aliases are excluded from <code>m_current_allocated_rate</code> and never count toward the 50% cap (section 13). A thousand aliases cost the pool nothing.</td></tr>
-    <tr><td>Target</td><td>Stored as the target&rsquo;s <em>name</em>, resolved to its object id when the alias is set and re-resolved whenever a <code>USER</code> with that name is created, so a dropped-and-recreated group picks its aliases back up (object ids are reused; a stale id would silently point elsewhere). An alias whose target does not exist currently charges nothing.</td></tr>
-    <tr><td>Name cache</td><td>The <code>LIST_DATABASE</code> walk returns aliases alongside users, so mysqld, RDRS and ClusterJ resolve an alias name to its id with no NDB API change.</td></tr>
-    <tr><td>Persistence</td><td>Stored in the schema file like quota objects, recreated on system restart, included in <code>USER BACKUP</code> / restore.</td></tr>
-    <tr><td>Name rules</td><td>Same as <code>USER</code>: at most 126 characters, no leading <code>$</code>, exact case-sensitive match. An alias and a user may not share a name.</td></tr>
-  </tbody>
-</table></div>
-
-<h3>7.2 Dbtc</h3>
-<p>At each admission point (<code>TCKEYREQ</code> <code>DbtcMain.cpp:3726</code>,
-<code>SCAN_TABREQ</code> <code>:16290</code>, <code>TCINDXREQ</code> <code>:22518</code>),
-after the tagged id is resolved to a record: if the record is an alias, its target
-<code>USER</code> replaces it as the sticky record and in what Dbtc forwards to Dblqh and
-Dbspj. One pointer dereference; Dblqh and Dbspj are unchanged; plain <code>USER</code>s
-pay nothing new. There is no per-table state in Dbtc for this feature, no attach or
-detach on DDL, and no precedence: whatever two-group arithmetic exists (a named-cluster
-group overriding an every-cluster group, 4.4) was already resolved by the installer
-before the alias was written.</p>
-<p>One adjacent gap: query threads hold no user records in 26.02, because
-<code>CREATE_DB_REQ</code> is routed only to the LDM workers
-(<code>DblqhProxy.cpp:2080</code>), so user-tagged reads executed by query threads
-under-charge. This is a RONDB-978 defect, not part of the alias; the fix (resolve the
-user by raw id at charge time under the owning LDM&rsquo;s hash mutex) is built and under
-review on the <code>RONDB-1158-query-threads</code> branch. Group budgets inherit
-whichever behavior that review lands.</p>
-
-<h3>7.3 Management commands</h3>
-<pre><code>ndb_mgm&gt; USER ALIAS SET  Marketing_mary01ab    --target=mary_mike_rl
-ndb_mgm&gt; USER ALIAS SET  Recommender_alice4f2  --target=recommender_team_rl
-ndb_mgm&gt; USER ALIAS DROP Marketing_mary01ab
-ndb_mgm&gt; USER ALIAS GET  Marketing_mary01ab
-ndb_mgm&gt; USER ALIAS LIST</code></pre>
-<p>A <code>SET</code> creates the alias or confirms it: repeating a <code>SET</code> with
-the same target is a no-op, and a <code>SET</code> naming a <em>different</em> target for
-an existing alias is refused, so moving an account between groups is an explicit
-<code>DROP</code> followed by a <code>SET</code> (the installer computes that diff).
-The refusal protects against an out-of-order writer: a command that would silently
-repoint a person&rsquo;s budget must instead fail loudly and be reconciled.
-<code>DROP</code> drops the alias. The management-server side mirrors the existing
-<code>set user</code> family in <code>Services.cpp</code>.</p>
-
-<h3>7.4 What the other components do</h3>
-<div class="tablewrap"><table>
-  <thead><tr><th scope="col">Component</th><th scope="col">Change</th></tr></thead>
-  <tbody>
-    <tr><td>MySQL server</td><td>None. <code>ndb_user_rate_limits</code> must be on; it is read-only at runtime, so it is set in the server configuration by rondb-helm.</td></tr>
-    <tr><td>Data nodes</td><td><code>ActivateRateLimits=true</code> in the cluster configuration.</td></tr>
-    <tr><td>RDRS</td><td>Tag REST transactions with the project-user string (username mode). No group code of any kind (section 5).</td></tr>
-    <tr><td>ClusterJ / onlinefs</td><td>Optional: call <code>setUserId</code> with the service&rsquo;s account name. Not in a first version; service accounts are excluded from groups regardless (4.2).</td></tr>
-    <tr><td>NDB API</td><td>None.</td></tr>
-  </tbody>
-</table></div>
-
-<h3>7.5 To verify before committing</h3>
-<ul>
-  <li>Dictionary object limits: aliases scale as members &times; projects per member.
-  Six in the example; hundreds to a few thousand in a large deployment, none budgeted.</li>
-  <li>Restart and backup paths for a new object flag, including that restore re-resolves
-  targets by name.</li>
-  <li>The cost of the one extra indirection on the <code>TCKEYREQ</code> path, and
-  sign-off on the new management syntax.</li>
-  <li>The 60-second client re-list: a recreated alias is invisible to a connected mysqld
-  for up to a minute.</li>
-  <li>The query-thread gap of 7.2 (its own branch and review).</li>
-  <li>Install mechanics at scale: the management server under the installer&rsquo;s combined
-  <code>USER LIST</code> / <code>USER ALIAS LIST</code> and command rate during a full
-  reconcile of a large deployment. RonDB&rsquo;s own test rigs (MTR
-  <code>suite/ndb_quota</code>, the rdrs2 C++ test binary) drive the same command
-  sequences the installer issues, so kernel enforcement and install mechanics are tested
-  inside RonDB without a Hopsworks deployment.</li>
-</ul>
+The whole flow is the pair of pictures in <a href="#flow">section 2</a>.</p>
 </section>
 
 <section id="install">
-<h2>8. Hopsworks installs the groups</h2>
+<h2>10. Hopsworks installs the groups</h2>
 <p>Tagging a transaction <code>Recommender_alice4f2</code> does nothing unless the
 cluster has that alias, and the alias charges nothing unless the cluster has the group&rsquo;s
 <code>USER</code>. The rows in Hopsworks therefore have to become management commands on
 the right clusters, and this is part of the design.</p>
 <p><strong>Hopsworks is the installer.</strong> It owns the tables, it already speaks
 the management protocol to RonDB in production, it already discovers every cluster, and
-it already has the retry and reconcile frameworks (2.4). One primary-gated writer
+it already has the retry and reconcile frameworks (5.4). One primary-gated writer
 replaces the leaderless fleet of RDRS sync loops that version 1.0 coordinated with
 version counters, two-run delete grace and idempotent-conflict rules; most of that
 section disappears because its problem (many concurrent writers with possibly stale
 snapshots) no longer exists. Version 1.0&rsquo;s stated reasons for RDRS, no cluster registry
 and no Hopsworks-to-cluster path, were both wrong by the time they were written: the
 namespace label and <code>RonDbManagementClient</code> predate the design
-(header note; 2.4).</p>
+(header note; 5.4).</p>
 <p>The install pass, given a cluster and the group rows:</p>
 <div class="example">
   <ol>
     <li><strong>Discover the clusters.</strong> The main cluster
     (<code>HOPS_HELM_INSTALL_NAMESPACE</code>) plus every namespace labeled
-    <code>hopsworks.ai/onlinefs-cluster</code> (2.4). Each cluster&rsquo;s mgmd endpoint is
+    <code>hopsworks.ai/onlinefs-cluster</code> (5.4). Each cluster&rsquo;s mgmd endpoint is
     <code>headless-mgmds.&lt;namespace&gt;.svc:1186</code>.</li>
     <li><strong>Pick this cluster&rsquo;s groups.</strong> Groups whose <code>cluster</code>
     is NULL or equal to this cluster&rsquo;s name. Where one person is covered by both a
     named-cluster group and an every-cluster group, the named one wins on this cluster
-    (4.4): the person&rsquo;s aliases here point at it.</li>
+    (7.4): the person&rsquo;s aliases here point at it.</li>
     <li><strong>Expand Who into account names.</strong> A uid row becomes every account
     that user holds, <code>clip31(projectname + "_" + username)</code> for each of their
     <code>project_team</code> rows; a project row becomes the same for every member,
-    excluding the <code>onlinefs</code> and <code>srvmanager</code> service users (4.2).</li>
+    excluding the <code>onlinefs</code> and <code>srvmanager</code> service users (7.2).</li>
     <li><strong>Convert each percentage</strong> using this cluster&rsquo;s data-node thread
-    count: with 20 threads, 20% &rarr; 4,000,000 (section 13). The thread count is read
+    count: with 20 threads, 20% &rarr; 4,000,000 (section 14). The thread count is read
     once per pass from the cluster itself (its <code>ndbinfo.threads</code> over the
-    per-cluster JDBC connection Hopsworks already holds, 2.4; or a mgm config read
+    per-cluster JDBC connection Hopsworks already holds, 5.4; or a mgm config read
     through the same client; implementation&rsquo;s choice) and never cached across passes,
     so a resized cluster converts correctly on the next pass.</li>
     <li><strong>Read back and fix the differences</strong>, in group-id order so a 50%-cap
@@ -717,7 +715,7 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
     A changed budget becomes <code>USER ALTER</code>; a deleted group becomes
     <code>USER DROP</code> plus <code>USER ALIAS DROP</code> for its accounts; a member
     who left loses their aliases; a member who moved between groups gets
-    <code>USER ALIAS DROP</code> then <code>SET</code> (7.3).</li>
+    <code>USER ALIAS DROP</code> then <code>SET</code> (13.3).</li>
     <li><strong>Record the state</strong> per (group, cluster) in
     <code>rate_limit_group_cluster_state</code>: <em>installed</em> on success,
     <em>refused</em> when the cluster rejects the rate (50% cap), <em>pending</em>
@@ -726,16 +724,16 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
 </div>
 <p>When the pass runs:</p>
 <ul>
-  <li><strong>On save and delete</strong> of a group (section 9): the controller triggers
+  <li><strong>On save and delete</strong> of a group (section 11): the controller triggers
   an immediate pass for the affected clusters; the admin sees <em>installed</em> within
   seconds, not at the next tick.</li>
-  <li><strong>On membership change</strong>: the operation-log handler (2.4) receives the
+  <li><strong>On membership change</strong>: the operation-log handler (5.4) receives the
   member account&rsquo;s create or remove with the account name already computed, checks
   whether any group covers that person, and issues just the affected
   <code>USER ALIAS</code> commands, with the framework&rsquo;s retries. A group covering the
   project picks up the new member here, minutes before any periodic pass.</li>
   <li><strong>On a timer</strong>: the reconciler (TrinoReconciler pattern, primary-gated
-  <code>@Singleton</code>, 2.4) replays the full pass on every cluster, repairing
+  <code>@Singleton</code>, 5.4) replays the full pass on every cluster, repairing
   entries lost to a cluster restore, a manual drop, a missed event or a cluster that was
   unreachable earlier, and installing groups onto a satellite that has just appeared
   under the label.</li>
@@ -754,24 +752,24 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
   property), and never drop anything in a pass whose reads failed; an unreachable
   cluster or a failed query skips the cluster and leaves state <em>pending</em>.</li>
   <li><strong>Propagation delay.</strong> A saved group is live after its immediate pass
-  plus the client name-cache refresh (up to 60 s, section 7). A new member is live after
+  plus the client name-cache refresh (up to 60 s, section 13). A new member is live after
   the operation-log handler fires. Until then that traffic runs unlimited and the page
   shows <em>pending</em>; a limit appearing late is the designed failure mode, a limit
   outliving its group is not.</li>
   <li><strong>Unreachable clusters.</strong> A cluster whose mgmd Hopsworks cannot reach,
   which includes externally-managed RonDB without network access to its mgmd, keeps its
   groups <em>pending</em> and is retried by the reconciler. This matches what database
-  quotas already do for such clusters (<a href="#open">section 14</a>).</li>
+  quotas already do for such clusters (<a href="#open">section 16</a>).</li>
 </ul>
 </section>
 
 <section id="rules">
-<h2>9. Rules when saving and deleting</h2>
+<h2>11. Rules when saving and deleting</h2>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col">Rule checked by Hopsworks on save</th><th scope="col">Example</th></tr></thead>
   <tbody>
     <tr><td>A Who row names a person or a project, not both; a group has at least one Who row.</td><td>A row with <code>uid = 1001</code> and <code>project_id = 11</code>. Rejected.</td></tr>
-    <tr><td>No ties: two groups with the same cluster scope may not cover the same person. A person is &ldquo;covered&rdquo; by a project row if they have any <code>project_team</code> row for that project. A named-cluster group and an every-cluster group may overlap: the named one wins on its cluster (4.4).</td><td>Group X: {Mary}, every cluster. Group Y: {project 11}, every cluster. Mary is in both. Rejected.<br><br>Group X: {project 13}, every cluster, 20%. Group Z: {project 13}, cluster M, 30%. Allowed: on M the members charge Z, elsewhere X.</td></tr>
+    <tr><td>No ties: two groups with the same cluster scope may not cover the same person. A person is &ldquo;covered&rdquo; by a project row if they have any <code>project_team</code> row for that project. A named-cluster group and an every-cluster group may overlap: the named one wins on its cluster (7.4).</td><td>Group X: {Mary}, every cluster. Group Y: {project 11}, every cluster. Mary is in both. Rejected.<br><br>Group X: {project 13}, every cluster, 20%. Group Z: {project 13}, cluster M, 30%. Allowed: on M the members charge Z, elsewhere X.</td></tr>
     <tr><td>Budget between 0 and 50. RonDB will not accept one entry above 50%.</td><td>A group at 60%. Rejected.</td></tr>
     <tr><td>The cluster name, when set, should name a discovered cluster; a free-text name is accepted but flagged.</td><td>A group on cluster <code>mrketing</code> (typo). Saved, shown <em>pending</em> with a &ldquo;no such cluster&rdquo; hint.</td></tr>
   </tbody>
@@ -802,37 +800,22 @@ With no data rows there is no such cascade and no column: a group&rsquo;s covera
 change through its Who list.</p>
 </section>
 
-<section id="admin">
-<h2>10. The admin page</h2>
-<p>One page: a list of groups on the left, and a form for the selected group on the
-right. Each form field writes to exactly one table, shown in the right margin. The list
-also shows the cluster state from section 8, so an administrator can see when a saved
-group has actually been installed.</p>
-<figure class="erd"><img src="img/v2/admin-page.png" alt="Mockup of the admin page: a list of the three example groups with their cluster state, the edit form for recommender2_rl, and callouts naming the table and column each field writes."><figcaption>Editing <code>recommender2_rl</code>. &ldquo;Every cluster&rdquo; is the default; naming one cluster scopes the budget to it. The right margin names the table and column each field writes.</figcaption></figure>
-<p>Three details carried from earlier sections: the name is read-only after creation
-(renaming would drop and recreate the RonDB entry); the budget field shows the converted
-<code>rate-per-sec</code> per targeted cluster so the administrator sees what each
-cluster will receive; and the sentence preview restates the group in words, which is the
-quickest check that Who and the cluster were filled in as intended. The cluster picker
-is fed from the live discovery (2.4), so it offers exactly the clusters that exist.</p>
-</section>
-
 <section id="deploy">
-<h2>11. One cluster or several</h2>
+<h2>12. One cluster or several</h2>
 <p>Everything above is written for the single-cluster case: one RonDB cluster holds the
 <code>hopsworks</code> database and every project&rsquo;s online data, one RDRS and one set of
 MySQL servers sit in front of it. Some deployments add a RonDB cluster per large project
-(a <em>satellite</em>: a full RonDB cluster in its own labeled namespace, 2.4). The
+(a <em>satellite</em>: a full RonDB cluster in its own labeled namespace, 5.4). The
 design is the same; this section says what differs.</p>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col"></th><th scope="col">One cluster</th><th scope="col">Several clusters (main + satellites)</th></tr></thead>
   <tbody>
     <tr><td>Where the <code>hopsworks</code> database lives</td><td>on the cluster</td><td>on the main cluster only; the group tables live with it, and only Hopsworks reads them</td></tr>
     <tr><td>Where a project&rsquo;s online database lives</td><td>on the cluster</td><td>on the project&rsquo;s satellite (or on main)</td></tr>
-    <tr><td>How a cluster is named</td><td>its namespace; the column can stay NULL</td><td>the labeled namespace (2.4); the admin page&rsquo;s cluster picker lists them</td></tr>
-    <tr><td>Which groups are installed where</td><td>all of them</td><td>per cluster: groups naming it, plus every-cluster groups (minus the per-person overrides of 4.4)</td></tr>
+    <tr><td>How a cluster is named</td><td>its namespace; the column can stay NULL</td><td>the labeled namespace (5.4); the admin page&rsquo;s cluster picker lists them</td></tr>
+    <tr><td>Which groups are installed where</td><td>all of them</td><td>per cluster: groups naming it, plus every-cluster groups (minus the per-person overrides of 7.4)</td></tr>
     <tr><td>What a percentage means</td><td>% of this cluster&rsquo;s data nodes</td><td>a named-cluster group: % of that cluster; an every-cluster group: N% of <em>each</em> cluster</td></tr>
-    <tr><td>Percent &rarr; rate</td><td>this cluster&rsquo;s thread count</td><td>each cluster&rsquo;s own thread count, read from that cluster (section 8)</td></tr>
+    <tr><td>Percent &rarr; rate</td><td>this cluster&rsquo;s thread count</td><td>each cluster&rsquo;s own thread count, read from that cluster (section 10)</td></tr>
     <tr><td>The 50% cap</td><td>one pool</td><td>one pool per cluster; install in group-id order so a refusal is deterministic; the state table shows the refusal per cluster</td></tr>
     <tr><td>Where Alice&rsquo;s request for Marketing&rsquo;s data arrives</td><td>the cluster</td><td>the RDRS or MySQL server in front of the cluster holding Marketing&rsquo;s data; routing a request to the right cluster is a pre-existing platform question</td></tr>
   </tbody>
@@ -847,33 +830,132 @@ needed:</p>
 <p>Version 1.0 expressed &ldquo;20% of M&rdquo; by scoping the group to data hosted on M, because no
 row could name a cluster, and reserved an override table for per-cluster sizes of ALL
 groups. The cluster column is both: a named-cluster group <em>is</em> the override
-(4.4), and the override table is gone. Two v1.0 rules survive with the installer:
+(7.4), and the override table is gone. Two v1.0 rules survive with the installer:
 never <code>USER DROP</code> on a cluster because a read failed, and never decide from a
 stored copy of where data lives; the only cluster facts used are the live namespace list
 and the live thread count.</p>
 </section>
 
-<section id="build">
-<h2>12. What needs to be built, and how</h2>
+<div class="part">
+  <p class="eyebrow">Part III</p>
+  <h2>Technical reference</h2>
+  <p>The kernel changes and the enforcement machinery they hand the work to, the build
+  plan, the open decisions, and the exact table definitions and management commands.
+  For implementers and reviewers.</p>
+</div>
+
+<section id="kernel">
+<h2>13. RonDB changes: the alias</h2>
+<p>Everything in this section is new. It builds on four facts about the 26.02
+implementation:</p>
+<ul>
+  <li>Names resolve on the client. <code>ClusterMgr::retrieveUserId</code> keeps a hash
+  filled from a <code>LIST_DATABASE</code> walk with <code>is_user=1</code>, kept current
+  by <code>CREATE/DROP_DATABASE_REP</code> and a full re-list every 60 seconds. Only a
+  32-bit object id and version go on the wire (<code>TcKeyReq</code> bit 29,
+  <code>ScanTabReq</code> bit 5). An unknown name returns <code>RNIL</code> and the
+  transaction runs unmetered, once the first list walk has completed; before that,
+  <code>setUserId</code> pays one blocking <code>GET_DATABASE_REQ</code> round trip
+  (<code>NdbTransaction.cpp:546-570</code>), and after a write-rate abort the client
+  refuses that name for one second (<code>ClusterMgr.cpp:1574-1578</code>).</li>
+  <li>Dbdict stores a <code>USER</code> as <code>$name</code>, in the same namespace and
+  id space as <code>DATABASE QUOTA</code> objects; 126 usable characters (the
+  <code>$</code> takes one byte of <code>MAX_DB_NAME_SIZE</code>), and a name may not
+  itself begin with <code>$</code>.</li>
+  <li>Dbtc keeps the first record a transaction touches in
+  <code>ApiConnectRecord::m_queuedDatabasePtrI</code> (<code>DbtcMain.cpp:28676</code>,
+  <code>:16330</code>) and forwards the user id to Dblqh only when that record is a user
+  (<code>LQHKEYREQ</code> bit 9, <code>SCAN_FRAGREQ</code> bit 27). Dbspj copies it into
+  every child operation.</li>
+  <li>Object ids are reused lowest-first after a drop, so any state that holds a target
+  by id must be refreshed when the target is dropped and recreated; the alias therefore
+  stores its target by <em>name</em> and re-resolves (13.1).</li>
+</ul>
+
+<h3>13.1 The object</h3>
+<p>A <code>USER ALIAS</code> is a Dbdict object stored like a <code>USER</code>
+(<code>$name</code>), flagged as an alias, with <strong>no budget</strong> and
+<strong>one target</strong>: the name of a <code>USER</code>. Resolution is a single
+indirection; there are no rules, no scopes and no ordering. No alias means the
+transaction runs unmetered, which is today&rsquo;s unknown-name behavior.</p>
 <div class="tablewrap"><table>
-  <thead><tr><th scope="col">Area</th><th scope="col">Status</th><th scope="col">Work, and how</th></tr></thead>
+  <thead><tr><th scope="col">Property</th><th scope="col">Behavior</th></tr></thead>
   <tbody>
-    <tr><td>Hopsworks tables</td><td>new</td><td>Flyway migration with the two group tables and the state table (appendix); JPA entities; the save rules of section 9 in the controller; re-check &ldquo;no ties&rdquo; in the project-membership path (<code>ProjectController</code>, where <code>createDatabaseUser</code> is already called on member add).</td></tr>
-    <tr><td>Hopsworks installer</td><td>new</td><td>Section 8: extend <code>RonDbManagementClient</code> with the <code>USER</code> / <code>USER ALIAS</code> command family (same framing as its quota commands) and per-cluster endpoints from the namespace discovery; the expansion of Who rows into account names (the clip is <code>OnlineFeaturestoreController.onlineDbUsername</code>&rsquo;s); an <code>OnlinefsOperationHandler</code> implementation for membership churn; a primary-gated reconciler on the <code>TrinoReconciler</code> template; state rows per (group, cluster).</td></tr>
-    <tr><td>Hopsworks admin page</td><td>new</td><td>Section 10: list + form, cluster picker from discovery, per-cluster state badges, converted rate shown per cluster.</td></tr>
-    <tr><td>RDRS</td><td>exists</td><td>Username mode (merged on the ticket branch): tag the project-user name. <strong>No group code.</strong></td></tr>
-    <tr><td>RonDB kernel</td><td>new</td><td>Section 7: alias flag and single target (by name) on the <code>$name</code> object in Dbdict (not budgeted, persisted, backed up, re-resolved on target recreate); the alias-to-target swap at the three Dbtc admission points; <code>USER ALIAS SET/DROP/GET/LIST</code> in the mgm server (<code>Services.cpp</code>) and client; MTR tests in <code>suite/ndb_quota</code>: lifecycle, enforcement through an alias on both key and scan paths, restart and backup/restore, target drop and recreate.</td></tr>
-    <tr><td>MySQL server</td><td>exists</td><td>Nothing to code. Enable <code>ndb_user_rate_limits</code> through rondb-helm.</td></tr>
-    <tr><td>Data nodes</td><td>exists</td><td><code>ActivateRateLimits=true</code> in the cluster configuration.</td></tr>
-    <tr><td>Testing without a Hopsworks deployment</td><td>new tests</td><td>RonDB&rsquo;s rigs replicate the installer&rsquo;s mechanics: MTR and the rdrs2 C++ tests issue the same <code>USER</code> / <code>USER ALIAS</code> sequences the installer would, against a live cluster, and assert enforcement, restart survival and the 50%-cap refusal order. Hopsworks unit tests mock the management client; the end-to-end check on a deployed cluster drives the admin page and reads the state table.</td></tr>
-    <tr><td>Unmetered paths</td><td>open</td><td>Unchanged from v1.0: Rondis traffic (never tagged) and RDRS&rsquo;s own metadata reads run unmetered; service accounts are excluded by design. Decide whether any should ever be metered.</td></tr>
-    <tr><td>Several clusters</td><td>new, small</td><td>Section 11: the cluster column, the picker, per-cluster endpoints. No override table, no location data.</td></tr>
+    <tr><td>Budget</td><td>None. Aliases are excluded from <code>m_current_allocated_rate</code> and never count toward the 50% cap (section 14). A thousand aliases cost the pool nothing.</td></tr>
+    <tr><td>Target</td><td>Stored as the target&rsquo;s <em>name</em>, resolved to its object id when the alias is set and re-resolved whenever a <code>USER</code> with that name is created, so a dropped-and-recreated group picks its aliases back up (object ids are reused; a stale id would silently point elsewhere). An alias whose target does not exist currently charges nothing.</td></tr>
+    <tr><td>Name cache</td><td>The <code>LIST_DATABASE</code> walk returns aliases alongside users, so mysqld, RDRS and ClusterJ resolve an alias name to its id with no NDB API change.</td></tr>
+    <tr><td>Persistence</td><td>Stored in the schema file like quota objects, recreated on system restart, included in <code>USER BACKUP</code> / restore.</td></tr>
+    <tr><td>Name rules</td><td>Same as <code>USER</code>: at most 126 characters, no leading <code>$</code>, exact case-sensitive match. An alias and a user may not share a name.</td></tr>
   </tbody>
 </table></div>
+
+<h3>13.2 Dbtc</h3>
+<p>At each admission point (<code>TCKEYREQ</code> <code>DbtcMain.cpp:3726</code>,
+<code>SCAN_TABREQ</code> <code>:16290</code>, <code>TCINDXREQ</code> <code>:22518</code>),
+after the tagged id is resolved to a record: if the record is an alias, its target
+<code>USER</code> replaces it as the sticky record and in what Dbtc forwards to Dblqh and
+Dbspj. One pointer dereference; Dblqh and Dbspj are unchanged; plain <code>USER</code>s
+pay nothing new. There is no per-table state in Dbtc for this feature, no attach or
+detach on DDL, and no precedence: whatever two-group arithmetic exists (a named-cluster
+group overriding an every-cluster group, 7.4) was already resolved by the installer
+before the alias was written.</p>
+<p>One adjacent gap: query threads hold no user records in 26.02, because
+<code>CREATE_DB_REQ</code> is routed only to the LDM workers
+(<code>DblqhProxy.cpp:2080</code>), so user-tagged reads executed by query threads
+under-charge. This is a RONDB-978 defect, not part of the alias; the fix (resolve the
+user by raw id at charge time under the owning LDM&rsquo;s hash mutex) is built and under
+review on the <code>RONDB-1158-query-threads</code> branch. Group budgets inherit
+whichever behavior that review lands.</p>
+
+<h3>13.3 Management commands</h3>
+<pre><code>ndb_mgm&gt; USER ALIAS SET  Marketing_mary01ab    --target=mary_mike_rl
+ndb_mgm&gt; USER ALIAS SET  Recommender_alice4f2  --target=recommender_team_rl
+ndb_mgm&gt; USER ALIAS DROP Marketing_mary01ab
+ndb_mgm&gt; USER ALIAS GET  Marketing_mary01ab
+ndb_mgm&gt; USER ALIAS LIST</code></pre>
+<p>A <code>SET</code> creates the alias or confirms it: repeating a <code>SET</code> with
+the same target is a no-op, and a <code>SET</code> naming a <em>different</em> target for
+an existing alias is refused, so moving an account between groups is an explicit
+<code>DROP</code> followed by a <code>SET</code> (the installer computes that diff).
+The refusal protects against an out-of-order writer: a command that would silently
+repoint a person&rsquo;s budget must instead fail loudly and be reconciled.
+<code>DROP</code> drops the alias. The management-server side mirrors the existing
+<code>set user</code> family in <code>Services.cpp</code>.</p>
+
+<h3>13.4 What the other components do</h3>
+<div class="tablewrap"><table>
+  <thead><tr><th scope="col">Component</th><th scope="col">Change</th></tr></thead>
+  <tbody>
+    <tr><td>MySQL server</td><td>None. <code>ndb_user_rate_limits</code> must be on; it is read-only at runtime, so it is set in the server configuration by rondb-helm.</td></tr>
+    <tr><td>Data nodes</td><td><code>ActivateRateLimits=true</code> in the cluster configuration.</td></tr>
+    <tr><td>RDRS</td><td>Tag REST transactions with the project-user string (username mode). No group code of any kind (section 8).</td></tr>
+    <tr><td>ClusterJ / onlinefs</td><td>Optional: call <code>setUserId</code> with the service&rsquo;s account name. Not in a first version; service accounts are excluded from groups regardless (7.2).</td></tr>
+    <tr><td>NDB API</td><td>None.</td></tr>
+  </tbody>
+</table></div>
+
+<h3>13.5 To verify before committing</h3>
+<ul>
+  <li>Dictionary object limits: aliases scale as members &times; projects per member.
+  Six in the example; hundreds to a few thousand in a large deployment, none budgeted.</li>
+  <li>Restart and backup paths for a new object flag, including that restore re-resolves
+  targets by name.</li>
+  <li>The cost of the one extra indirection on the <code>TCKEYREQ</code> path, and
+  sign-off on the new management syntax.</li>
+  <li>The 60-second client re-list: a recreated alias is invisible to a connected mysqld
+  for up to a minute.</li>
+  <li>The query-thread gap of 13.2 (its own branch and review).</li>
+  <li>Install mechanics at scale: the management server under the installer&rsquo;s combined
+  <code>USER LIST</code> / <code>USER ALIAS LIST</code> and command rate during a full
+  reconcile of a large deployment. RonDB&rsquo;s own test rigs (MTR
+  <code>suite/ndb_quota</code>, the rdrs2 C++ test binary) drive the same command
+  sequences the installer issues, so kernel enforcement and install mechanics are tested
+  inside RonDB without a Hopsworks deployment.</li>
+</ul>
 </section>
 
 <section id="reference">
-<h2>13. Reference: how RonDB enforces a limit</h2>
+<h2>14. How RonDB enforces a limit</h2>
 <p>Nothing here is new; it is the machinery a group name is handed to.</p>
 <h3>A limit measures work, not requests</h3>
 <p>A limit is CPU microseconds of accounted work per second on each data node. Dblqh
@@ -936,24 +1018,43 @@ installing the group on the cluster and installing its members&rsquo; aliases ar
 required.</p>
 </section>
 
+<section id="build">
+<h2>15. What needs to be built, and how</h2>
+<div class="tablewrap"><table>
+  <thead><tr><th scope="col">Area</th><th scope="col">Status</th><th scope="col">Work, and how</th></tr></thead>
+  <tbody>
+    <tr><td>Hopsworks tables</td><td>new</td><td>Flyway migration with the two group tables and the state table (appendix); JPA entities; the save rules of section 11 in the controller; re-check &ldquo;no ties&rdquo; in the project-membership path (<code>ProjectController</code>, where <code>createDatabaseUser</code> is already called on member add).</td></tr>
+    <tr><td>Hopsworks installer</td><td>new</td><td>Section 10: extend <code>RonDbManagementClient</code> with the <code>USER</code> / <code>USER ALIAS</code> command family (same framing as its quota commands) and per-cluster endpoints from the namespace discovery; the expansion of Who rows into account names (the clip is <code>OnlineFeaturestoreController.onlineDbUsername</code>&rsquo;s); an <code>OnlinefsOperationHandler</code> implementation for membership churn; a primary-gated reconciler on the <code>TrinoReconciler</code> template; state rows per (group, cluster).</td></tr>
+    <tr><td>Hopsworks admin page</td><td>new</td><td>Section 3: list + form, cluster picker from discovery, per-cluster state badges, converted rate shown per cluster.</td></tr>
+    <tr><td>RDRS</td><td>exists</td><td>Username mode (merged on the ticket branch): tag the project-user name. <strong>No group code.</strong></td></tr>
+    <tr><td>RonDB kernel</td><td>new</td><td>Section 13: alias flag and single target (by name) on the <code>$name</code> object in Dbdict (not budgeted, persisted, backed up, re-resolved on target recreate); the alias-to-target swap at the three Dbtc admission points; <code>USER ALIAS SET/DROP/GET/LIST</code> in the mgm server (<code>Services.cpp</code>) and client; MTR tests in <code>suite/ndb_quota</code>: lifecycle, enforcement through an alias on both key and scan paths, restart and backup/restore, target drop and recreate.</td></tr>
+    <tr><td>MySQL server</td><td>exists</td><td>Nothing to code. Enable <code>ndb_user_rate_limits</code> through rondb-helm.</td></tr>
+    <tr><td>Data nodes</td><td>exists</td><td><code>ActivateRateLimits=true</code> in the cluster configuration.</td></tr>
+    <tr><td>Testing without a Hopsworks deployment</td><td>new tests</td><td>RonDB&rsquo;s rigs replicate the installer&rsquo;s mechanics: MTR and the rdrs2 C++ tests issue the same <code>USER</code> / <code>USER ALIAS</code> sequences the installer would, against a live cluster, and assert enforcement, restart survival and the 50%-cap refusal order. Hopsworks unit tests mock the management client; the end-to-end check on a deployed cluster drives the admin page and reads the state table.</td></tr>
+    <tr><td>Unmetered paths</td><td>open</td><td>Unchanged from v1.0: Rondis traffic (never tagged) and RDRS&rsquo;s own metadata reads run unmetered; service accounts are excluded by design. Decide whether any should ever be metered.</td></tr>
+    <tr><td>Several clusters</td><td>new, small</td><td>Section 12: the cluster column, the picker, per-cluster endpoints. No override table, no location data.</td></tr>
+  </tbody>
+</table></div>
+</section>
+
 <section id="open">
-<h2>14. Open decisions</h2>
+<h2>16. Open decisions</h2>
 <ol>
   <li><strong>Externally-managed RonDB.</strong> A cluster whose mgmd Hopsworks cannot
-  reach keeps its groups <em>pending</em> (section 8). The <code>mgm</code>
-  <code>ExternalName</code> Service (2.4) reaches it when the deployment&rsquo;s networking
+  reach keeps its groups <em>pending</em> (section 10). The <code>mgm</code>
+  <code>ExternalName</code> Service (5.4) reaches it when the deployment&rsquo;s networking
   allows. Accept the pending state as the documented behavior, matching database quotas
   on such clusters, or require the network path for the feature.</li>
-  <li><strong>Service accounts</strong> (4.2): <code>onlinefs</code> and
+  <li><strong>Service accounts</strong> (7.2): <code>onlinefs</code> and
   <code>srvmanager</code> are excluded by username. Confirm the exclusion and the list.</li>
-  <li><strong>A tie created by a membership change</strong> (section 9): refuse the
+  <li><strong>A tie created by a membership change</strong> (section 11): refuse the
   change, or accept it and mark both groups conflicting. Refusing is the proposal.</li>
-  <li><strong>ClusterJ / onlinefs ingestion</strong> (7.4): ingestion writes are untagged
+  <li><strong>ClusterJ / onlinefs ingestion</strong> (13.4): ingestion writes are untagged
   and unmetered. Leave them exempt (service accounts are outside groups anyway), or tag
   them for visibility later.</li>
-  <li><strong>Unmetered online paths</strong> (section 12): Rondis traffic and RDRS&rsquo;s own
+  <li><strong>Unmetered online paths</strong> (section 15): Rondis traffic and RDRS&rsquo;s own
   metadata reads. Meter either, or exempt them explicitly.</li>
-  <li><strong>The query-thread metering gap</strong> (7.2): fixed on its own branch
+  <li><strong>The query-thread metering gap</strong> (13.2): fixed on its own branch
   (<code>RONDB-1158-query-threads</code>); the locking approach on the LDM hot path needs
   kernel-team sign-off.</li>
   <li><strong>Per-data budgets</strong> are out of this version. Version 1.0 specified
@@ -980,12 +1081,12 @@ required.</p>
 </section>
 
 <section id="appendix">
-<h2>15. Appendix: table definitions and commands</h2>
+<h2>17. Appendix: table definitions and commands</h2>
 <p>In the style of the existing Hopsworks Flyway migrations. Every id column matches the
 <code>int(11)</code> key it references. Names and constraints are open to review. Two
 constraints on <code>name</code> come from the cluster: at most 126 characters, no
 leading <code>$</code>, and it must survive the management command line unquoted, so the
-save rules of section 9 should restrict it to something like <code>[A-Za-z0-9_]</code>.
+save rules of section 11 should restrict it to something like <code>[A-Za-z0-9_]</code>.
 The cluster name is a Kubernetes namespace, at most 63 characters by the DNS label rule.
 Check the unique keys over nullable columns against the RonDB migration limits before
 the migration is written.</p>
@@ -1015,7 +1116,7 @@ CREATE TABLE `hopsworks`.`rate_limit_group_user` (
   CONSTRAINT `rlgu_project_fk` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`)  ON DELETE CASCADE
 ) ENGINE = ndbcluster;
 
--- Written by the installer (section 8), read by the admin page (section 10).
+-- Written by the installer (section 10), read by the admin page (section 3).
 CREATE TABLE `hopsworks`.`rate_limit_group_cluster_state` (
   `group_id`     int(11)     NOT NULL,
   `cluster_name` varchar(63) COLLATE latin1_general_cs NOT NULL,
@@ -1030,7 +1131,7 @@ Version 1.0&rsquo;s <code>rate_limit_group_data</code> and
 <code>rate_limit_group_cluster_override</code> tables and the <code>data_scope</code>
 column are gone: data rows with the budgets, the override into the <code>cluster</code>
 column.</p>
-<h3>Proposed management commands (section 7)</h3>
+<h3>Proposed management commands (section 13)</h3>
 <pre><code>USER ALIAS SET  &lt;name&gt; --target=&lt;user&gt;
 USER ALIAS DROP &lt;name&gt;
 USER ALIAS GET  &lt;name&gt;

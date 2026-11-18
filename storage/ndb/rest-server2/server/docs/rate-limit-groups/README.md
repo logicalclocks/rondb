@@ -18,7 +18,7 @@ new session does not have to re-read the rondb and hopsworks repos.
 | File | Audience | What it is |
 |---|---|---|
 | `Hopsworks-OnlineFS-Ratelimiting-v2.0.html` | customer | **Current** white paper. The feature (WHO + cluster, no data scoping), what a 20% budget means, worked scenario, admin UI mockup, planning, several clusters, FAQ. Only two entry points are named: REST server (RDRS) and MySQL server. Never mentions the design doc. |
-| `Hopsworks-OnlineFS-Ratelimiting-Design-v2.0.html` | internal | **Current** design: what exists vs what is new (incl. the Hopsworks mgm client and namespace discovery), the two entry points, Hopsworks accounts, new tables (ERD), the single-target kernel `USER ALIAS`, the Hopsworks installer + reconciler, save/delete rules, admin page, one cluster vs several (cluster column), build list, kernel reference, open decisions, DDL appendix. The header note records what v2.0 removed from v1.0 and why. |
+| `Hopsworks-OnlineFS-Ratelimiting-Design-v2.0.html` | internal | **Current** design, written for a system architect in three parts of increasing depth. Part I, the design at a glance (§1-4): the feature, the end-to-end install + request flow (lifecycle diagram), the admin page mockup, the exists-vs-new map. Part II, the design (§5-12): what exists today (incl. the Hopsworks mgm client and namespace discovery), the worked scenario, the new tables (ERD), both request paths, the Hopsworks installer + reconciler, save/delete rules, one cluster vs several (cluster column). Part III, technical reference (§13-17): the single-target kernel `USER ALIAS`, enforcement mechanics, build list, open decisions, DDL appendix. The header note records what v2.0 removed from v1.0 and why. |
 | `Hopsworks-OnlineFS-Ratelimiting-v1.0.html`, `Hopsworks-OnlineFS-Ratelimiting-Design-v1.0.html` | internal, historical | The data-scoped design (FG/FS `rate_limit_group_data` rows, scoped alias rules, most-specific precedence, RDRS sync loop). Superseded 2026-11-17; kept as the record, referenced by v2.0 §14. |
 | `Hopsworks-OnlineFS-Ratelimiting-Variants-Explained.html` | internal, historical | Plain-words companion to the **v1.0** design doc: the two resolution variants (A, RDRS resolves; B, RonDB resolves) with five inline SVG pictures. Carries a superseded banner; the v2.0 alias is B simplified to one target. |
 | `RonDB-Group-Rate-Limits.html` | internal, historical | The 2026-10-02 original (bucket terminology, `--bucket=` syntax, table names `rate_limit_bucket*`). Kept untouched as the source both v1.0 documents were spliced from. |
@@ -45,7 +45,7 @@ Shared vocabulary of the v2.0 documents (keep it when editing):
 |---|---|---|
 | `img/` | `RonDB-Group-Rate-Limits.html` (existing-tables, new-tables, lookup-maps, multi-cluster, admin-page) and the v1.0 customer doc (`admin-page-customer`) | bucket era, except `admin-page-customer` |
 | `img/design/` | `Hopsworks-OnlineFS-Ratelimiting-Design-v1.0.html` (all nine figures); `existing-tables` is also reused by the v2.0 design doc | group era |
-| `img/v2/` | the v2.0 documents: group-concept, new-tables, kernel-resolution, architecture, multi-cluster, multi-cluster-topology, admin-page (design doc), admin-page-customer (white paper) | cluster era |
+| `img/v2/` | the v2.0 documents: group-concept, lifecycle (numbered install + request flow), new-tables, kernel-resolution, architecture, multi-cluster, multi-cluster-topology, admin-page (design doc), admin-page-customer (white paper) | cluster era |
 
 Every figure ships as `.dot` (source), `.svg` and `.png`; the admin mockups are hand-written
 SVG. In the ERDs, grey italic borderless cells are explanations, not columns.
@@ -83,7 +83,7 @@ node build.js blocks.json ./Hopsworks-OnlineFS-Ratelimiting-v2.0.docx \
 `extract.py` turns the HTML into blocks (headings, paragraphs, lists, tables, figures,
 `<dl>`); `build.js` writes the DOCX with a table of contents before the first level-2
 heading (Word asks to update fields on open; answer yes). Verify with
-`unzip -l x.docx | grep media/` (8 images for the v2.0 design doc, 1 for the customer doc).
+`unzip -l x.docx | grep media/` (9 images for the v2.0 design doc, 1 for the customer doc).
 
 ## Working notes (`notes/`)
 
