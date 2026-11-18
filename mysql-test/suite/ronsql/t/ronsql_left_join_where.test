@@ -23,8 +23,19 @@
 # An XOR of IS NULL tests is never NULL and can hold for the NULL-extended
 # row: lj-r4 pins its rejection.
 #
-# The CTE form (LEFT JOIN cte ... WHERE cte.col IS NULL) is unaffected:
-# it becomes an anti-join or is rejected in the CTE_LOOKUP filter.
+# The CTE form (LEFT JOIN cte ... WHERE cte.col IS NULL) becomes an
+# anti-join when it can; otherwise it is rejected like the real-table
+# form (lj-r7).
+#
+# lj-5, lj-6, lj-r5 to lj-r7 (C-2 in
+# storage/ndb/claude_files/ronsql_executor/review_cte.md): a condition
+# rejects the NULL-extended row of the right side only through that
+# side's columns. An OR over two tables, such as c.v > 20 OR p.grp = 1,
+# holds for a parent without a match when p.grp = 1, but it promoted the
+# join to INNER and those parents were lost. It is now rejected, for a
+# real table (lj-r5) and for a CTE (lj-r6), until post-join filtering
+# exists. An OR whose every branch tests the right side still rejects
+# NULL and promotes the join (lj-5, lj-6).
 
 --source include/have_ndb.inc
 
@@ -138,6 +149,36 @@ FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
 WHERE NOT ((c.v > 5) XOR (c.id > 4))
 GROUP BY p.grp|
 
+--echo
+--echo === lj-5: OR over two tables, every branch on the right side (promoted to INNER) ===
+let $QUERY=
+SELECT p.grp, COUNT(*), COUNT(c.id)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE c.id > p.grp OR c.id > 4
+GROUP BY p.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT p.grp, COUNT(*), COUNT(c.id)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE c.id > p.grp OR c.id > 4
+GROUP BY p.grp|
+
+--echo
+--echo === lj-6: as lj-5 on a CTE, pass-through (promoted to INNER) ===
+let $QUERY=
+WITH s AS (SELECT id AS k, COUNT(*) AS n FROM lj_child GROUP BY id)
+SELECT p.id, s.n
+FROM lj_parent AS p LEFT JOIN s ON s.k = p.id
+WHERE s.k > p.grp OR s.n > 4;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT id AS k, COUNT(*) AS n FROM lj_child GROUP BY id)
+SELECT p.id, s.n
+FROM lj_parent AS p LEFT JOIN s ON s.k = p.id
+WHERE s.k > p.grp OR s.n > 4|
+
 DELIMITER ;|
 
 --echo
@@ -159,6 +200,23 @@ DELIMITER ;|
 --echo === lj-r4 (rejection): XOR of IS NULL tests on the right side (TRUE for the NULL-extended row) ===
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT p.grp, COUNT(*) FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id WHERE (c.v IS NULL) XOR (c.id IS NOT NULL) GROUP BY p.grp;' 2>&1
+
+--echo
+--echo === lj-r5 (rejection): OR over two tables with a branch on the left side only ===
+# Parent 7 (grp 1, no child) satisfies p.grp = 1; MySQL keeps it. The OR
+# used to promote the join to INNER and drop it.
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT p.grp, COUNT(*), COUNT(c.id) FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id WHERE c.v > 20 OR p.grp = 1 GROUP BY p.grp;' 2>&1
+
+--echo
+--echo === lj-r6 (rejection): as lj-r5 on a CTE, pass-through ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH s AS (SELECT id AS k, COUNT(*) AS n FROM lj_child GROUP BY id) SELECT p.id, s.n FROM lj_parent AS p LEFT JOIN s ON s.k = p.id WHERE s.n > 4 OR p.grp = 1;' 2>&1
+
+--echo
+--echo === lj-r7 (rejection): IS NULL in an OR on a CTE (not an anti-join) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH s AS (SELECT id AS k, COUNT(*) AS n FROM lj_child GROUP BY id) SELECT p.id, s.n FROM lj_parent AS p LEFT JOIN s ON s.k = p.id WHERE s.n IS NULL OR s.n > 1;' 2>&1
 
 --disable_query_log
 --disable_warnings

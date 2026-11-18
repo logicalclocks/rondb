@@ -43,6 +43,7 @@ typedef Int32 TokenKind; /* The type of the T_* values used to indicate token
                           */
 
 class RdrsSchemaCache;  // Forward declaration — optional, for index list caching
+class CappedOStream;    // RDRS's response buffer (capped_ostream.hpp), X-7
 
 /*
  * Per-request phase timing statistics.  All *_us values are microseconds
@@ -188,6 +189,18 @@ struct RonSQLExecParams
   };
   ExplainMode explain_mode = ExplainMode::ALLOW;
   std::basic_ostream<char>* out_stream = NULL;
+  // X-6: the caller discards out_stream when the statement fails, as
+  // execute_subqueries does with the private buffer of a subquery.  A
+  // retryable error then stays retryable after output was written: the
+  // retry cannot repeat anything that reached a client.  X-7: RDRS's
+  // ronsql_op sets it when it rewinds rewindable_out_stream between
+  // attempts; ronsql_cli leaves it false (stdout cannot be taken back).
+  bool output_discardable = false;
+  // X-7, only used with RDRS: out_stream, when it is RDRS's response
+  // buffer, which sends nothing before ronsql_op returns.  ronsql_op
+  // rewinds it to its size before the first attempt when it retries the
+  // statement, and sets output_discardable.
+  CappedOStream* rewindable_out_stream = nullptr;
   enum class OutputFormat
   {
     JSON,          // Output a JSON representation of the result set or EXPLAIN
@@ -452,11 +465,21 @@ struct CteDefinition
   struct CteDefinition* next;   // Linked list
 };
 
+/*
+ * One value of a subquery result (X-4): NULL, an integer that fits Int64
+ * (int_val), a string (is_string: its UTF-8 bytes in text), or any other
+ * number (is_float: float_val, and in text its exact digits as
+ * [-]digits[.digits] with no trailing fractional zero, such as the
+ * DECIMAL 1.005 or the BIGINT UNSIGNED 18446744073709551615).  text is
+ * in the statement's arena.
+ */
 struct SubqueryResult {
   bool is_null = true;
   Int64 int_val = 0;
   double float_val = 0.0;
   bool is_float = false;
+  bool is_string = false;
+  LexString text = LexString{NULL, 0};
 };
 
 struct CorrelatedPair {
@@ -488,7 +511,16 @@ struct CorrelatedPair {
  *   RateLimitError or a PermanentError.
  */
 class RonSQLRetryableError : public std::runtime_error {
+ public:
   using std::runtime_error::runtime_error;
+  // X-8: the NDB error code of the failed attempt (0 if none), so that the
+  // caller can report it, and RDRS reconnect after a lost cluster, when
+  // the retries run out.
+  RonSQLRetryableError(const std::string& msg, int ndb_error_code)
+    : std::runtime_error(msg), m_ndb_error_code(ndb_error_code) {}
+  int ndb_error_code() const { return m_ndb_error_code; }
+ private:
+  int m_ndb_error_code = 0;
 };
 
 /*
@@ -597,5 +629,28 @@ class RonSQLRateLimitError : public std::runtime_error {
 class RonSQLMaybeStaleSchema : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
+
+/*
+ * X-14: a broken invariant of RonSQL is a bug, but RonSQL runs inside RDRS,
+ * where ndbrequire() and abort() would stop every request in flight.  Fail
+ * only the statement: a permanent INTERNAL error whose message says what
+ * broke, with " Please report a bug." appended.  Keep ndbrequire() where a
+ * throw is unsafe (destructors, noexcept functions, code called from C) or
+ * memory is already corrupt.  Named so as not to clash with the require_bug
+ * macro of RonSQLPreparer.cpp and the bug macro of ResultPrinter.cpp.
+ */
+[[noreturn]] static inline void
+ronsql_bug(const char* msg)
+{
+  throw RonSQLPermanentError(RonSQLErrorClass::INTERNAL,
+                             std::string(msg) + " Please report a bug.");
+}
+
+static inline void
+ronsql_require_bug(bool condition, const char* msg)
+{
+  if (likely(condition)) return;
+  ronsql_bug(msg);
+}
 
 #endif

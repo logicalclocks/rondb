@@ -1,0 +1,99 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== ml-1: MAX, latin1_swedish_ci leaf then latin1_bin leaf ===
+== Query ==
+SELECT e.id,
+(SELECT MAX(a.s) FROM ml_ci AS a WHERE a.entity_id = e.id) AS m_ci,
+(SELECT MAX(b.s) FROM ml_bin AS b WHERE b.entity_id = e.id) AS m_bin
+FROM ml_e AS e;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT MAX(a.s) FROM ml_ci AS a WHERE a.entity_id = e.id) AS m_ci,
+(SELECT MAX(b.s) FROM ml_bin AS b WHERE b.entity_id = e.id) AS m_bin
+FROM ml_e AS e|
+id	m_ci	m_bin
+1	B	a
+2	x	y
+
+=== ml-2: MIN, latin1_bin leaf then latin1_swedish_ci leaf ===
+== Query ==
+SELECT e.id,
+(SELECT MIN(b.s) FROM ml_bin AS b WHERE b.entity_id = e.id) AS n_bin,
+(SELECT MIN(a.s) FROM ml_ci AS a WHERE a.entity_id = e.id) AS n_ci
+FROM ml_e AS e;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT MIN(b.s) FROM ml_bin AS b WHERE b.entity_id = e.id) AS n_bin,
+(SELECT MIN(a.s) FROM ml_ci AS a WHERE a.entity_id = e.id) AS n_ci
+FROM ml_e AS e|
+id	n_bin	n_ci
+1	B	a
+2	y	x
+
+=== ml-3: MAX, CHAR leaf then VARCHAR leaf ===
+== Query ==
+SELECT e.id,
+(SELECT MAX(c.s) FROM ml_char AS c WHERE c.entity_id = e.id) AS m_char,
+(SELECT MAX(v.s) FROM ml_vchar AS v WHERE v.entity_id = e.id) AS m_vchar
+FROM ml_e AS e;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT MAX(c.s) FROM ml_char AS c WHERE c.entity_id = e.id) AS m_char,
+(SELECT MAX(v.s) FROM ml_vchar AS v WHERE v.entity_id = e.id) AS m_vchar
+FROM ml_e AS e|
+id	m_char	m_vchar
+1	b	b
+2	c	d
+
+=== ml-4: MIN, CHAR leaf then VARCHAR leaf ===
+== Query ==
+SELECT e.id,
+(SELECT MIN(c.s) FROM ml_char AS c WHERE c.entity_id = e.id) AS n_char,
+(SELECT MIN(v.s) FROM ml_vchar AS v WHERE v.entity_id = e.id) AS n_vchar
+FROM ml_e AS e;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT MIN(c.s) FROM ml_char AS c WHERE c.entity_id = e.id) AS n_char,
+(SELECT MIN(v.s) FROM ml_vchar AS v WHERE v.entity_id = e.id) AS n_vchar
+FROM ml_e AS e|
+id	n_char	n_vchar
+1	aa	aa
+2	c	d
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_minmax_string_leaves_jit_fallback_delta;
+ronsql_minmax_string_leaves_jit_fallback_delta
+0

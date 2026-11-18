@@ -19,6 +19,7 @@
 
 #include "ronsql_operation.hpp"
 #include <cstring>
+#include "src/capped_ostream.hpp"
 #include "src/error_strings.h"
 #include "storage/ndb/src/ronsql/RonSQLPreparer.hpp"
 #include "storage/ndb/plugin/ndb_sleep.h"
@@ -37,6 +38,27 @@
 #endif
 
 #include "storage/ndb/src/ronsql/RonSQLPerf.hpp"
+
+/*
+ * X-14: a failure of ronsql_op that no RonSQL exception describes gets the
+ * response of a RonSQLPermanentError of class INTERNAL (HTTP 500, error class
+ * "internal", " Please report a bug." appended), so that RDRS goes on serving
+ * other requests.
+ */
+static RS_Status ronsql_op_internal_error(RonSQLExecParams& params,
+                                          const char* msg,
+                                          int line) {
+  const RonSQLErrorClass cls = RonSQLErrorClass::INTERNAL;
+  const char* cls_name = ronsql_error_class_name(cls);
+  const std::string what = std::string(msg) + " Please report a bug.";
+  *params.err_stream << "[" << cls_name << "] " << what << "\n";
+  params.error_class = cls_name;
+  params.error_ndb_code = 0;
+  return __RS_ERROR(ronsql_http_code_for(cls, what.c_str()), -1, -1, 0, -1,
+                    std::string(rdrsErrorMessage(ERROR_RONSQL_PERMANENT)) +
+                    " [" + cls_name + "] Detail: " + what,
+                    line, __MYFILENAME__);
+}
 
 HTTP_CODE ronsql_http_code_for(RonSQLErrorClass cls, const char* what) {
   switch (cls) {
@@ -61,6 +83,24 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
   std::basic_ostream<char>& err = *params.err_stream;
   static int max_attempts = 10;
   int retry_sleep_ms = 10;
+  /*
+   * X-7: RDRS sends the response body only after ronsql_op returns, so
+   * the output of a failed attempt can be taken back.  Each retry rewinds
+   * the buffer to its size before the first attempt (the JSON prologue
+   * that ronsql_ctrl.cpp wrote stays), and output_discardable keeps a
+   * temporary error retryable after the statement wrote output: the ",od"
+   * rule is for ronsql_cli, whose stdout cannot be taken back.  A buffer
+   * already over its cap is left alone: a statement that succeeds is
+   * answered 413 whatever it writes, and a rewind would forget that.
+   */
+  CappedOStream* rewind_out = params.rewindable_out_stream;
+  if (rewind_out != nullptr && rewind_out->exceeded()) {
+    rewind_out = nullptr;
+  }
+  const size_t rewind_size = rewind_out != nullptr ? rewind_out->size() : 0;
+  if (rewind_out != nullptr) {
+    params.output_discardable = true;
+  }
   for (int attempt = 0; attempt < max_attempts; attempt++) {
     bool is_last_attempt = attempt == max_attempts - 1;
     try {
@@ -130,10 +170,28 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
         err << "[resource] Caught RonSQLRetryableError after " << max_attempts
             << " attempts: " << e.what() << ".\n";
         params.error_class = "resource";
-        return __RS_ERROR(SERVICE_UNAVAILABLE, -1, -1, -1, -1,
+        /*
+         * X-8: the last attempt's NDB error, for X-RonSQL-NDB-Error and
+         * for ReturnNdbObject, which reconnects after 4009, 4035 and 4040
+         * (ndb_error_cluster_unavailable).  These are retried now, so
+         * the code must survive the retries.
+         */
+        params.error_ndb_code = e.ndb_error_code();
+        return __RS_ERROR(SERVICE_UNAVAILABLE, -1, -1,
+                          e.ndb_error_code() != 0 ? e.ndb_error_code() : -1,
+                          -1,
                           std::string(rdrsErrorMessage(ERROR_RONSQL_TEMPORARY)) +
                           " Detail: " + e.what(),
                           __LINE__, __MYFILENAME__);
+      }
+      if (rewind_out != nullptr) {
+        /*
+         * X-7: drop what this attempt wrote; the next one writes the
+         * result again.  An attempt that went over the cap is retried
+         * too: truncate() clears the flag, and the retry is capped on its
+         * own (413 if it overflows again, as without the error).
+         */
+        rewind_out->truncate(rewind_size);
       }
       ndb_retry_sleep(retry_sleep_ms);
       retry_sleep_ms = std::min(retry_sleep_ms * 2, 1000);
@@ -158,11 +216,19 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
                         __LINE__, __MYFILENAME__);
     }
     catch (...) {
-      // This should never happen
-      abort();
+      /*
+       * X-14: the preparer turns every exception into one of the three types
+       * above (handle_ronsql_exception), so only an exception thrown while it
+       * handles another, a std::bad_alloc from the heap say, gets here. Fail
+       * the request, not RDRS.
+       */
+      DEB_TRACE();
+      return ronsql_op_internal_error(
+          params, "An unexpected exception reached ronsql_op.", __LINE__);
     }
   }
-  // Should be unreachable
+  // Unreachable: every arm returns on the last attempt.
   DEB_TRACE();
-  abort();
+  return ronsql_op_internal_error(
+      params, "ronsql_op ran out of attempts without a result.", __LINE__);
 }

@@ -1,0 +1,505 @@
+# Scalar, IN and correlated subquery results keep their type and exact
+# value, and a subquery's output is bounded while it is produced.
+#
+# README findings X-4, F-10 and X-5 (storage/ndb/claude_files/
+# ronsql_executor/review_dispatch_lifecycle.md, review_filter_agg_codegen.md).
+# A subquery ran as a nested statement that printed its result as TEXT
+# into an unbounded buffer, and the text was parsed with strtoll/strtod:
+#   - AVG(int_col) is 2.5000, which became a double that an integer
+#     column refused, so int_col > (SELECT AVG(...)) always failed;
+#   - a BIGINT UNSIGNED above 2^63 - 1 overflowed strtoll and failed;
+#   - a DECIMAL kept only a double's digits, rounded at the column's
+#     scale: 123456789012345678.91 compared as 123456789012345680.00,
+#     and AVG(price) 1.005 as 1.00, so price = AVG matched 1.00 (F-10);
+#   - '' was NULL, 'NULL' was NULL, and any other string, also a DATE,
+#     failed as non-numeric;
+#   - the whole output was buffered before the one-row and 1000-value
+#     limits were checked (X-5).
+# The inner statement now prints JSON into a buffer that parses it into
+# typed values as it fills and fails at the first row past the limit.
+# A number with more fractional digits than an integer or DECIMAL column
+# holds is rounded as each comparison needs (x > 2.5 is x > 2, x >= 2.5
+# is x >= 3), and = and <> with it are FALSE and TRUE, UNKNOWN for NULL.
+#
+# st_n: v is 1, 2, 3, 4 and NULL, so AVG(v) is 2.5000; AVG(price) over
+# ids 1 and 2 (1.00, 1.01) is 1.005000; MAX(ratio) is 3, and 2.5 below 3.
+# st_c: c_d per c_k is 0.50, 2.50, 2.00 and 4.50, and AVG(c_k) is 2.5.
+#
+#   st-1..st-10   AVG(int) against an INT column: aggregate (index
+#                 bound), every operator, NOT, the result on the left,
+#                 unary minus
+#   st-11, st-12  primary key equality with AVG 2.0000 and 1.5000
+#   st-13, st-14  DOUBLE results 3 and 2.5
+#   st-15..st-17  F-10: DECIMAL(10,2) against AVG 1.005000
+#   st-18, st-19  join root filter, and = never TRUE
+#   st-20         correlated MAX of a DECIMAL against an INT column
+#   st-21, st-22  IN and NOT IN over DECIMAL values against an INT column
+#   st-23..st-25  BIGINT UNSIGNED 18446744073709551615 and 2^63
+#   st-26..st-28  DECIMAL(30,2) with 20 digits
+#   st-29..st-33  strings: '', 'NULL', IN, MIN = '', and a DATE
+#   se-1          a VARBINARY result is refused
+#   x5-1          control: an IN subquery of 3 values
+#   x5-2, x5-3    an IN subquery of 1001 and 5000 values: the limit
+#                 error, through ronsql_cli and RDRS (class limit)
+#   x5-4          a scalar subquery over 5000 rows: more than one row
+#
+# Expected results come from mysqld (strict_diff).  st-5, st-8, st-12 and
+# st-19 (= with a fractional result on an indexed or key INT column) run
+# alone on RonSQL and are compared with mysqld with USE INDEX (): mysqld's
+# ref and const access round the value into the key and drop the =.
+# mysqld runs with engine_condition_pushdown off: ha_ndbcluster pushes
+# price = 1.005000 as price = 1.01 (the constant stored in the column's
+# type), and a debug mysqld asserts in unpack_record when the row it
+# gets back fails the condition (st-16).
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+SET @st_global_switch = @@GLOBAL.optimizer_switch;
+SET @st_session_switch = @@SESSION.optimizer_switch;
+SET GLOBAL optimizer_switch = 'engine_condition_pushdown=off';
+SET SESSION optimizer_switch = 'engine_condition_pushdown=off';
+--disable_warnings
+CREATE TABLE st_n (
+  id    INT NOT NULL,
+  v     INT,
+  price DECIMAL(10,2) NOT NULL,
+  ratio DOUBLE NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_st_n_v (v)
+) ENGINE=NDB;
+CREATE TABLE st_c (
+  c_id INT NOT NULL,
+  c_k  INT NOT NULL,
+  c_d  DECIMAL(10,2) NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+CREATE TABLE st_o (
+  id INT NOT NULL,
+  a  INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE st_u (
+  id INT NOT NULL,
+  u  BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE st_w (
+  id INT NOT NULL,
+  w  DECIMAL(30,2) NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE st_s (
+  id INT NOT NULL,
+  s  VARCHAR(10) NOT NULL,
+  dt DATE NOT NULL,
+  vb VARBINARY(8) NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE st_big (
+  id INT NOT NULL,
+  b  INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+INSERT INTO st_n VALUES
+  (1, 1, 1.00, 2.5), (2, 2, 1.01, 3.0), (3, 3, 1.00, 0.5),
+  (4, 4, 2.00, 1.5), (5, NULL, 1.01, 2.0);
+INSERT INTO st_c VALUES
+  (1, 1, 0.50), (2, 2, 2.50), (3, 3, 2.00), (4, 4, 4.50);
+INSERT INTO st_o VALUES (1, 1), (2, 500), (3, 1000), (4, 1001), (5, 4999);
+INSERT INTO st_u VALUES
+  (1, 18446744073709551615), (2, 9223372036854775808), (3, 5);
+INSERT INTO st_w VALUES
+  (1, 123456789012345678.91), (2, 123456789012345678.92),
+  (3, 123456789012345678.90);
+INSERT INTO st_s VALUES
+  (1, 'a', '2024-01-10', 'x'), (2, '', '2024-02-20', 'y'),
+  (3, 'NULL', '2024-03-30', 'z'), (4, 'b', '2024-04-15', 'w');
+INSERT INTO st_big
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 100)
+  SELECT (x.n - 1) * 100 + y.n, (x.n - 1) * 100 + y.n
+  FROM seq AS x, seq AS y WHERE x.n <= 50;
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === st-1: aggregate, v > AVG(v) 2.5000 (an index bound) ===
+let $QUERY=
+SELECT COUNT(*) AS n FROM st_n WHERE v > (SELECT AVG(v) FROM st_n);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM st_n WHERE v > (SELECT AVG(v) FROM st_n)|
+
+--echo
+--echo === st-2: v >= AVG(v) ===
+let $QUERY=
+SELECT id FROM st_n WHERE v >= (SELECT AVG(v) FROM st_n);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_n WHERE v >= (SELECT AVG(v) FROM st_n)|
+
+--echo
+--echo === st-3: v < AVG(v) ===
+let $QUERY=
+SELECT id FROM st_n WHERE v < (SELECT AVG(v) FROM st_n);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_n WHERE v < (SELECT AVG(v) FROM st_n)|
+
+--echo
+--echo === st-4: v <= AVG(v) ===
+let $QUERY=
+SELECT id FROM st_n WHERE v <= (SELECT AVG(v) FROM st_n);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_n WHERE v <= (SELECT AVG(v) FROM st_n)|
+
+--echo
+--echo === st-5: v = AVG(v) is never TRUE ===
+# mysqld's ref access on ix_st_n_v stores AVG(v) 2.5000 in the INT key
+# as 3 with no note, and ref_lookup_subsumes_comparison drops the =, so
+# mysqld returns id 3 (a mysqld bug; without an index it returns no
+# row). RonSQL runs the query alone; the query with USE INDEX () is
+# compared with mysqld. Also st-8, st-12 and st-19.
+--echo == RonSQL alone, no row ==
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id FROM st_n WHERE v = (SELECT AVG(v) FROM st_n);'
+let $QUERY=
+SELECT id FROM st_n USE INDEX () WHERE v = (SELECT AVG(v) FROM st_n);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_n USE INDEX () WHERE v = (SELECT AVG(v) FROM st_n)|
+
+--echo
+--echo === st-6: v <> AVG(v) is TRUE where v is not NULL ===
+let $QUERY=
+SELECT id FROM st_n WHERE v <> (SELECT AVG(v) FROM st_n);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_n WHERE v <> (SELECT AVG(v) FROM st_n)|
+
+--echo
+--echo === st-7: NOT (v = AVG(v)) drops the NULL v ===
+let $QUERY=
+SELECT id FROM st_n WHERE NOT (v = (SELECT AVG(v) FROM st_n));|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_n WHERE NOT (v = (SELECT AVG(v) FROM st_n))|
+
+--echo
+--echo === st-8: NOT (v <> AVG(v)) is never TRUE ===
+# mysqld negates NOT (v <> x) into v = x and looks it up by ref, as in
+# st-5. RonSQL runs it alone; USE INDEX () is compared with mysqld.
+--echo == RonSQL alone, no row ==
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id FROM st_n WHERE NOT (v <> (SELECT AVG(v) FROM st_n));'
+let $QUERY=
+SELECT id FROM st_n USE INDEX () WHERE NOT (v <> (SELECT AVG(v) FROM st_n));|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_n USE INDEX () WHERE NOT (v <> (SELECT AVG(v) FROM st_n))|
+
+--echo
+--echo === st-9: the subquery on the left, AVG(v) < v ===
+# v is named in the subquery before the outer query names it; the outer
+# v stayed an inner column, unresolved, and the index bound on it failed
+# ("Index scan bound requires a stored-table column").
+let $QUERY=
+SELECT id FROM st_n WHERE (SELECT AVG(v) FROM st_n) < v;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_n WHERE (SELECT AVG(v) FROM st_n) < v|
+
+--echo
+--echo === st-10: v > -AVG(v), -2.5000 ===
+let $QUERY=
+SELECT id FROM st_n WHERE v > -(SELECT AVG(v) FROM st_n);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_n WHERE v > -(SELECT AVG(v) FROM st_n)|
+
+--echo
+--echo === st-11: primary key = AVG(id) 2.0000 ===
+let $QUERY=
+SELECT id, v FROM st_n WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 3);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, v FROM st_n WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 3)|
+
+--echo
+--echo === st-12: primary key = AVG(id) 1.5000 is never TRUE ===
+# mysqld reads id = 1.5000 as a const table by the primary key 2, as in
+# st-5. RonSQL runs it alone; USE INDEX () is compared with mysqld.
+--echo == RonSQL alone, no row ==
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id, v FROM st_n WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 2);'
+let $QUERY=
+SELECT id, v FROM st_n USE INDEX () WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, v FROM st_n USE INDEX () WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 2)|
+
+--echo
+--echo === st-13: v > MAX(ratio), a DOUBLE 3 ===
+let $QUERY=
+SELECT id FROM st_n WHERE v > (SELECT MAX(ratio) FROM st_n);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_n WHERE v > (SELECT MAX(ratio) FROM st_n)|
+
+--echo
+--echo === st-14: v > MAX(ratio) below 3, a DOUBLE 2.5 ===
+let $QUERY=
+SELECT id FROM st_n WHERE v > (SELECT MAX(ratio) FROM st_n WHERE ratio < 3);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_n WHERE v > (SELECT MAX(ratio) FROM st_n WHERE ratio < 3)|
+
+--echo
+--echo === st-15: F-10, price >= AVG(price) 1.005000 ===
+let $QUERY=
+SELECT id FROM st_n WHERE price >= (SELECT AVG(price) FROM st_n WHERE id <= 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_n WHERE price >= (SELECT AVG(price) FROM st_n WHERE id <= 2)|
+
+--echo
+--echo === st-16: F-10, price = AVG(price) is never TRUE ===
+let $QUERY=
+SELECT COUNT(*) AS n FROM st_n WHERE price = (SELECT AVG(price) FROM st_n WHERE id <= 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM st_n WHERE price = (SELECT AVG(price) FROM st_n WHERE id <= 2)|
+
+--echo
+--echo === st-17: F-10, price < AVG(price) ===
+let $QUERY=
+SELECT id FROM st_n WHERE price < (SELECT AVG(price) FROM st_n WHERE id <= 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_n WHERE price < (SELECT AVG(price) FROM st_n WHERE id <= 2)|
+
+--echo
+--echo === st-18: join root filter, n.v > AVG(c_k) 2.5000 ===
+let $QUERY=
+SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n JOIN st_o AS o ON o.id = n.id WHERE n.v > (SELECT AVG(c_k) FROM st_c);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n JOIN st_o AS o ON o.id = n.id WHERE n.v > (SELECT AVG(c_k) FROM st_c)|
+
+--echo
+--echo === st-19: join root filter, n.v = AVG(c_k) is never TRUE ===
+# mysqld looks up n.v = 2.5000 by ref on ix_st_n_v as 3, as in st-5.
+# RonSQL runs it alone; USE INDEX () on the root is compared with mysqld.
+--echo == RonSQL alone ==
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n JOIN st_o AS o ON o.id = n.id WHERE n.v = (SELECT AVG(c_k) FROM st_c);'
+let $QUERY=
+SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n USE INDEX () JOIN st_o AS o ON o.id = n.id WHERE n.v = (SELECT AVG(c_k) FROM st_c);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n USE INDEX () JOIN st_o AS o ON o.id = n.id WHERE n.v = (SELECT AVG(c_k) FROM st_c)|
+
+--echo
+--echo === st-20: correlated MAX(c_d), DECIMAL 0.50 2.50 2.00 4.50, against v ===
+let $QUERY=
+SELECT id, SUM(v) AS sv FROM st_n WHERE v >= (SELECT MAX(c_d) FROM st_c WHERE c_k = id) GROUP BY id;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, SUM(v) AS sv FROM st_n WHERE v >= (SELECT MAX(c_d) FROM st_c WHERE c_k = id) GROUP BY id|
+
+--echo
+--echo === st-21: v IN DECIMAL values, only 2.00 matches ===
+let $QUERY=
+SELECT id FROM st_n WHERE v IN (SELECT c_d FROM st_c);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_n WHERE v IN (SELECT c_d FROM st_c)|
+
+--echo
+--echo === st-22: NOT (v IN DECIMAL values) drops the NULL v ===
+let $QUERY=
+SELECT id FROM st_n WHERE NOT (v IN (SELECT c_d FROM st_c));|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_n WHERE NOT (v IN (SELECT c_d FROM st_c))|
+
+--echo
+--echo === st-23: BIGINT UNSIGNED u = MAX(u) 18446744073709551615 ===
+let $QUERY=
+SELECT id FROM st_u WHERE u = (SELECT MAX(u) FROM st_u);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_u WHERE u = (SELECT MAX(u) FROM st_u)|
+
+--echo
+--echo === st-24: BIGINT UNSIGNED u >= MIN(u) 9223372036854775808 ===
+let $QUERY=
+SELECT COUNT(*) AS n FROM st_u WHERE u >= (SELECT MIN(u) FROM st_u WHERE u > 5);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM st_u WHERE u >= (SELECT MIN(u) FROM st_u WHERE u > 5)|
+
+--echo
+--echo === st-25: BIGINT UNSIGNED u IN values above 2^63 - 1 ===
+let $QUERY=
+SELECT id FROM st_u WHERE u IN (SELECT u FROM st_u WHERE id <= 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_u WHERE u IN (SELECT u FROM st_u WHERE id <= 2)|
+
+--echo
+--echo === st-26: DECIMAL(30,2) w = a 20-digit w ===
+let $QUERY=
+SELECT id FROM st_w WHERE w = (SELECT w FROM st_w WHERE id = 1);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_w WHERE w = (SELECT w FROM st_w WHERE id = 1)|
+
+--echo
+--echo === st-27: DECIMAL(30,2) w > a 20-digit w ===
+let $QUERY=
+SELECT id FROM st_w WHERE w > (SELECT w FROM st_w WHERE id = 1);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_w WHERE w > (SELECT w FROM st_w WHERE id = 1)|
+
+--echo
+--echo === st-28: DECIMAL(30,2) w IN 20-digit values ===
+let $QUERY=
+SELECT id FROM st_w WHERE w IN (SELECT w FROM st_w WHERE id >= 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_w WHERE w IN (SELECT w FROM st_w WHERE id >= 2)|
+
+--echo
+--echo === st-29: s = the empty string ===
+let $QUERY=
+SELECT id FROM st_s WHERE s = (SELECT s FROM st_s WHERE id = 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_s WHERE s = (SELECT s FROM st_s WHERE id = 2)|
+
+--echo
+--echo === st-30: s = the string NULL ===
+let $QUERY=
+SELECT id FROM st_s WHERE s = (SELECT s FROM st_s WHERE id = 3);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_s WHERE s = (SELECT s FROM st_s WHERE id = 3)|
+
+--echo
+--echo === st-31: s IN strings, the empty string included ===
+let $QUERY=
+SELECT id FROM st_s WHERE s IN (SELECT s FROM st_s WHERE id >= 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_s WHERE s IN (SELECT s FROM st_s WHERE id >= 2)|
+
+--echo
+--echo === st-32: s > MIN(s), the empty string ===
+let $QUERY=
+SELECT id FROM st_s WHERE s > (SELECT MIN(s) FROM st_s);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_s WHERE s > (SELECT MIN(s) FROM st_s)|
+
+--echo
+--echo === st-33: dt >= MAX(dt), a DATE ===
+let $QUERY=
+SELECT id FROM st_s WHERE dt >= (SELECT MAX(dt) FROM st_s WHERE id <= 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_s WHERE dt >= (SELECT MAX(dt) FROM st_s WHERE id <= 2)|
+
+--echo
+--echo === x5-1: control, an IN subquery of 3 values ===
+let $QUERY=
+SELECT id FROM st_o WHERE a IN (SELECT b FROM st_big WHERE b >= 999 AND b <= 1001);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM st_o WHERE a IN (SELECT b FROM st_big WHERE b >= 999 AND b <= 1001)|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--echo
+--echo === se-1 (rejection): a VARBINARY result ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id FROM st_s WHERE s = (SELECT vb FROM st_s WHERE id = 1);' 2>&1
+
+--echo
+--echo === x5-2 (limit): an IN subquery of 1001 values ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM st_o WHERE a IN (SELECT b FROM st_big WHERE b <= 1001);' 2>&1
+
+--echo
+--echo === x5-3 (limit): an IN subquery of 5000 values, ronsql_cli and RDRS ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM st_o WHERE a IN (SELECT b FROM st_big);' 2>&1
+--exec printf '{"query":"SELECT COUNT(*) AS n FROM st_o WHERE a IN (SELECT b FROM st_big);","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/st-body
+--exec curl -s -o $MYSQL_TMP_DIR/st-rdrs.out -w 'HTTP %{http_code}\n' -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/st-body
+--exec grep -oF '[limit] Caught exception: IN-subquery returned more than 1000 values.' $MYSQL_TMP_DIR/st-rdrs.out || echo "UNEXPECTED: expected the limit error"
+--remove_file $MYSQL_TMP_DIR/st-body
+--remove_file $MYSQL_TMP_DIR/st-rdrs.out
+
+--echo
+--echo === x5-4 (rejection): a scalar subquery over 5000 rows ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM st_o WHERE a > (SELECT b FROM st_big);' 2>&1
+
+--disable_query_log
+--disable_warnings
+DROP TABLE st_big;
+DROP TABLE st_s;
+DROP TABLE st_w;
+DROP TABLE st_u;
+DROP TABLE st_o;
+DROP TABLE st_c;
+DROP TABLE st_n;
+SET GLOBAL optimizer_switch = @st_global_switch;
+SET SESSION optimizer_switch = @st_session_switch;
+--enable_warnings
+--enable_query_log

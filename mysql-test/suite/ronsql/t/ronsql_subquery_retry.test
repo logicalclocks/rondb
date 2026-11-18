@@ -1,0 +1,109 @@
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+--source suite/ndb_push_agg/t/have_ndb_error_insert.inc
+
+# A temporary error in an IN subquery after the subquery wrote rows.
+#
+# README finding X-6: a subquery runs as a nested RonSQLPreparer that
+# writes its result into a private buffer, which is dropped when it
+# fails.  Its pass-through drain still counted those rows as output that
+# reached the client, so a temporary error after the first row became
+# permanent (",od": a retry would repeat the rows), and the outer
+# statement, which had written nothing, failed with it (HTTP 503 or 500,
+# ronsql_cli exit code 1) instead of being run again.  The inner preparer
+# now declares its output discardable (RonSQLExecParams::
+# output_discardable), so its temporary errors stay retryable.  X-13 (in
+# the same commit) sets the flag at every other output site.
+#
+# The trigger: error insert 5023 makes a data node drop the first
+# SCAN_NEXTREQ that a DBTC of its own node sends to it.  sr_in has 800
+# rows in one fragment, READ_BACKUP, so a committed-read scan reads the
+# replica on its TC's node, and the API asks for them in batches of at
+# most 384 rows (BatchSize).  The inner scan therefore writes its first
+# batch, then asks for the next one, which is dropped; DBTC times the
+# fragment out after TransactionDeadlockDetectionTimeout (3 s) and fails
+# the scan with 274 (temporary).  The insert is armed on both data nodes,
+# so the first one or two attempts fail (one per node whose DBTC the
+# attempt uses), and a later attempt succeeds.  793 of the 800 values of
+# b are NULL, so the substituted IN list stays short.
+#
+#   sr-1  control: the statement through RDRS and ronsql_cli, compared
+#         with mysqld
+#   sr-2  RDRS with the insert armed: HTTP 200, the result of mysqld,
+#         more than one attempt (before: 503 [resource])
+#   sr-3  ronsql_cli with the insert armed: the result of mysqld, after
+#         a retry (before: exit code 1)
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE sr_in (
+  id INT NOT NULL,
+  b  INT,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB COMMENT="NDB_TABLE=READ_BACKUP=1"
+  PARTITION BY KEY (id) PARTITIONS 1;
+CREATE TABLE sr_out (
+  id INT NOT NULL,
+  a  INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+INSERT INTO sr_in
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 800)
+  SELECT n, IF(n <= 7, n, NULL) FROM seq;
+INSERT INTO sr_out VALUES (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6),
+  (7, 7), (8, 8), (9, 9), (10, 10);
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === sr-1: control, no error insert ===
+let $QUERY= SELECT COUNT(*) AS n FROM sr_out WHERE a IN (SELECT b FROM sr_in);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM sr_out WHERE a IN (SELECT b FROM sr_in)|
+
+DELIMITER ;|
+
+--echo
+--echo === sr-2: RDRS, the inner scan's second batch is dropped ===
+--exec printf '{"query":"SELECT COUNT(*) AS n FROM sr_out WHERE a IN (SELECT b FROM sr_in);","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/sr-body
+--exec $NDB_MGM -e "all error 5023" >> $NDB_TOOLS_OUTPUT
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/sr-hdrs -o $MYSQL_TMP_DIR/sr-rdrs.out -X POST -H "Content-Type: application/json" -H "x-ronsql-phases: 1" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/sr-body
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec cat $MYSQL_TMP_DIR/sr-rdrs.out
+--echo == More than one attempt (must be 1) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/sr-hdrs | tr -d '\r' | grep -cE ',attempts=([2-9]|10),'
+
+--echo
+--echo === sr-3: ronsql_cli, the inner scan's second batch is dropped ===
+--exec $NDB_MGM -e "all error 5023" >> $NDB_TOOLS_OUTPUT
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM sr_out WHERE a IN (SELECT b FROM sr_in);' > $MYSQL_TMP_DIR/sr-cli.out 2> $MYSQL_TMP_DIR/sr-cli.err || echo "UNEXPECTED: ronsql_cli failed"
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec cat $MYSQL_TMP_DIR/sr-cli.out
+--exec grep -qx 'Error handling: RRE' $MYSQL_TMP_DIR/sr-cli.err && echo "retried" || echo "UNEXPECTED: not retried"
+
+--remove_file $MYSQL_TMP_DIR/sr-body
+--remove_file $MYSQL_TMP_DIR/sr-hdrs
+--remove_file $MYSQL_TMP_DIR/sr-rdrs.out
+--remove_file $MYSQL_TMP_DIR/sr-cli.out
+--remove_file $MYSQL_TMP_DIR/sr-cli.err
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE sr_out;
+DROP TABLE sr_in;
+--enable_warnings
+--enable_query_log
+--remove_file $NDB_TOOLS_OUTPUT

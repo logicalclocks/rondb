@@ -6112,11 +6112,23 @@ static bool do_send(struct thr_data *selfptr, bool must_send,
      * holding the lock will try sending again for us when it has released
      * the lock.
      *
-     * The lock/unlock pair works as a memory barrier to ensure that the
-     * flag update is flushed to the other thread.
+     * That needs two orderings on our side. Our flushed send data
+     * (m_write_index) must be visible before the flag, or the holder can
+     * see the flag but not the data (wmb). The flag must be visible before
+     * trylock reads the lock word, or the holder can unlock, do its mb()
+     * and miss the flag while our trylock still saw the lock taken (mb).
+     * trylock is NdbMutex_Trylock unless NDB_USE_SPINLOCK is set: on x86
+     * even a failed one is a locked compare-exchange, a full barrier, but
+     * on aarch64 a failed one orders nothing, and the data would wait for
+     * the next send to this trp (mt-send-t models this).
      */
     if (must_send) {
+      wmb();
       sb->m_force_send = 1;
+#if !(defined(__x86_64__) || defined(__i386__))
+      // On x86 the trylock below is a full barrier even when it fails.
+      mb();
+#endif
     }
 
     if (trylock(&sb->m_send_lock) != 0) {

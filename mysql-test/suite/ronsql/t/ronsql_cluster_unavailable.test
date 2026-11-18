@@ -1,0 +1,144 @@
+# A cluster that cannot serve RonSQL's API node now.
+#
+# README finding X-8: RonSQL retried an NDB error only when its status was
+# temporary (or it was a lock wait timeout).  The errors that say the
+# cluster cannot serve this API node at the moment are not temporary in
+# ndberror.cpp: 4009 and 4035-4041 (no data node to start a transaction
+# on: none available, starting, shutting down, in single user mode, ...)
+# are unknown results, which the class switch made internal errors (HTTP
+# 500), and 299 (single user mode for another API node) and 281 (cluster
+# shutdown in progress) are application errors, which it made semantic
+# errors (HTTP 400, as if the statement were wrong).  RonSQL only reads,
+# so these are now retried, and when the retries run out the statement
+# fails with a resource error (HTTP 503, try again later) that names the
+# NDB error.  The other unknown results, 4008 and 4012, come after the
+# API waited its whole timeout and are resource errors without a retry.
+#
+# Single user mode is the trigger: the cluster serves only the API node of
+# the first mysqld's first connection, and refuses the scans of RDRS and
+# ronsql_cli with 299.  A full outage cannot be tested this way: with no
+# data node connected RonSQL fails before any transaction
+# (check_data_node_version, already a resource error), and the
+# 4009/4035-4041 window of a restart is too short to hit reliably.
+#
+#   cu-1  control: an aggregate scan and a pass-through join through RDRS
+#         and ronsql_cli, compared with mysqld
+#   cu-2  single user mode for another API node: ronsql_cli retries 3
+#         times and exits with 3 (temporary error); RDRS retries 10 times
+#         and answers 503, class resource, NDB error 299 (before: exit
+#         code 1, and 400 with class semantic)
+#   cu-3  after single user mode: both answer again, compared with mysqld
+#
+# Expected results come from mysqld (strict_diff).
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE cu_t (
+  id INT NOT NULL,
+  v  INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE cu_d (
+  id INT NOT NULL,
+  w  INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+INSERT INTO cu_t VALUES (1, 10), (2, 20), (3, 30);
+INSERT INTO cu_d VALUES (1, 100), (2, 200), (4, 400);
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === cu-1: control, before single user mode ===
+let $QUERY= SELECT SUM(v) AS s FROM cu_t;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(v) AS s FROM cu_t|
+let $QUERY= SELECT t.id, d.w FROM cu_t AS t JOIN cu_d AS d ON d.id = t.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT t.id, d.w FROM cu_t AS t JOIN cu_d AS d ON d.id = t.id|
+
+DELIMITER ;|
+
+--echo
+--echo === cu-2: single user mode for another API node ===
+--let $su_node_id= query_get_value(SHOW STATUS LIKE 'Ndb_cluster_node_id', Value, 1)
+--exec $NDB_MGM -e "enter single user mode $su_node_id" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --single-user >> $NDB_TOOLS_OUTPUT
+
+--echo == ronsql_cli, aggregate scan: 299 on each of 3 attempts, exit code 3 ==
+--error 3
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(v) AS s FROM cu_t;' > $MYSQL_TMP_DIR/cu-cli.out 2>&1
+--exec grep -c -e '->RRE' $MYSQL_TMP_DIR/cu-cli.out
+--exec grep -c -e 'error 299,' $MYSQL_TMP_DIR/cu-cli.out
+--exec grep -F 'ronsql_cli caught retryable error after 3 attempts.' $MYSQL_TMP_DIR/cu-cli.out
+--echo == ronsql_cli, pass-through join: 299 on each of 3 attempts, exit code 3 ==
+--error 3
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT t.id, d.w FROM cu_t AS t JOIN cu_d AS d ON d.id = t.id;' > $MYSQL_TMP_DIR/cu-cli.out 2>&1
+--exec grep -c -e '->RRE' $MYSQL_TMP_DIR/cu-cli.out
+--exec grep -c -e 'error 299,' $MYSQL_TMP_DIR/cu-cli.out
+--exec grep -F 'ronsql_cli caught retryable error after 3 attempts.' $MYSQL_TMP_DIR/cu-cli.out
+
+--echo == RDRS, aggregate scan: 10 attempts, 503 resource ==
+--exec printf '{"query":"SELECT SUM(v) AS s FROM cu_t;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/cu-body
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/cu-hdrs -o $MYSQL_TMP_DIR/cu-rdrs.out -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/cu-body
+--exec grep -i '^x-ronsql-' $MYSQL_TMP_DIR/cu-hdrs | tr -d '\r' | tr '[:upper:]' '[:lower:]' | sort
+--exec grep -oF '[resource] Caught RonSQLRetryableError after 10 attempts' $MYSQL_TMP_DIR/cu-rdrs.out
+--echo == RDRS, pass-through join: 10 attempts, 503 resource ==
+--exec printf '{"query":"SELECT t.id, d.w FROM cu_t AS t JOIN cu_d AS d ON d.id = t.id;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/cu-body
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/cu-hdrs -o $MYSQL_TMP_DIR/cu-rdrs.out -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/cu-body
+--exec grep -i '^x-ronsql-' $MYSQL_TMP_DIR/cu-hdrs | tr -d '\r' | tr '[:upper:]' '[:lower:]' | sort
+--exec grep -oF '[resource] Caught RonSQLRetryableError after 10 attempts' $MYSQL_TMP_DIR/cu-rdrs.out
+
+--exec $NDB_MGM -e "exit single user mode" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+
+--echo
+--echo === cu-3: after single user mode ===
+--echo == RDRS answers again ==
+--exec printf '{"query":"SELECT SUM(v) AS s FROM cu_t;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/cu-body
+--exec curl -s -w 'HTTP %{http_code}\n' -o /dev/null -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/cu-body
+--remove_file $MYSQL_TMP_DIR/cu-body
+--remove_file $MYSQL_TMP_DIR/cu-hdrs
+--remove_file $MYSQL_TMP_DIR/cu-rdrs.out
+--remove_file $MYSQL_TMP_DIR/cu-cli.out
+
+DELIMITER |;
+
+let $QUERY= SELECT SUM(v) AS s FROM cu_t;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(v) AS s FROM cu_t|
+let $QUERY= SELECT t.id, d.w FROM cu_t AS t JOIN cu_d AS d ON d.id = t.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT t.id, d.w FROM cu_t AS t JOIN cu_d AS d ON d.id = t.id|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE cu_d;
+DROP TABLE cu_t;
+--enable_warnings
+--enable_query_log
+--remove_file $NDB_TOOLS_OUTPUT

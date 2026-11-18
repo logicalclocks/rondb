@@ -1,0 +1,601 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== st-1: aggregate, v > AVG(v) 2.5000 (an index bound) ===
+== Query ==
+SELECT COUNT(*) AS n FROM st_n WHERE v > (SELECT AVG(v) FROM st_n);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n FROM st_n WHERE v > (SELECT AVG(v) FROM st_n)|
+n
+2
+
+=== st-2: v >= AVG(v) ===
+== Query ==
+SELECT id FROM st_n WHERE v >= (SELECT AVG(v) FROM st_n);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_n WHERE v >= (SELECT AVG(v) FROM st_n)|
+id
+3
+4
+
+=== st-3: v < AVG(v) ===
+== Query ==
+SELECT id FROM st_n WHERE v < (SELECT AVG(v) FROM st_n);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_n WHERE v < (SELECT AVG(v) FROM st_n)|
+id
+1
+2
+
+=== st-4: v <= AVG(v) ===
+== Query ==
+SELECT id FROM st_n WHERE v <= (SELECT AVG(v) FROM st_n);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_n WHERE v <= (SELECT AVG(v) FROM st_n)|
+id
+1
+2
+
+=== st-5: v = AVG(v) is never TRUE ===
+== RonSQL alone, no row ==
+== Query ==
+SELECT id FROM st_n USE INDEX () WHERE v = (SELECT AVG(v) FROM st_n);
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_n USE INDEX () WHERE v = (SELECT AVG(v) FROM st_n)|
+id
+
+=== st-6: v <> AVG(v) is TRUE where v is not NULL ===
+== Query ==
+SELECT id FROM st_n WHERE v <> (SELECT AVG(v) FROM st_n);
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_n WHERE v <> (SELECT AVG(v) FROM st_n)|
+id
+1
+2
+3
+4
+
+=== st-7: NOT (v = AVG(v)) drops the NULL v ===
+== Query ==
+SELECT id FROM st_n WHERE NOT (v = (SELECT AVG(v) FROM st_n));
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_n WHERE NOT (v = (SELECT AVG(v) FROM st_n))|
+id
+1
+2
+3
+4
+
+=== st-8: NOT (v <> AVG(v)) is never TRUE ===
+== RonSQL alone, no row ==
+== Query ==
+SELECT id FROM st_n USE INDEX () WHERE NOT (v <> (SELECT AVG(v) FROM st_n));
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_n USE INDEX () WHERE NOT (v <> (SELECT AVG(v) FROM st_n))|
+id
+
+=== st-9: the subquery on the left, AVG(v) < v ===
+== Query ==
+SELECT id FROM st_n WHERE (SELECT AVG(v) FROM st_n) < v;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_n WHERE (SELECT AVG(v) FROM st_n) < v|
+id
+3
+4
+
+=== st-10: v > -AVG(v), -2.5000 ===
+== Query ==
+SELECT id FROM st_n WHERE v > -(SELECT AVG(v) FROM st_n);
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_n WHERE v > -(SELECT AVG(v) FROM st_n)|
+id
+1
+2
+3
+4
+
+=== st-11: primary key = AVG(id) 2.0000 ===
+== Query ==
+SELECT id, v FROM st_n WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 3);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id, v FROM st_n WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 3)|
+id	v
+2	2
+
+=== st-12: primary key = AVG(id) 1.5000 is never TRUE ===
+== RonSQL alone, no row ==
+== Query ==
+SELECT id, v FROM st_n USE INDEX () WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 2);
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id, v FROM st_n USE INDEX () WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 2)|
+id	v
+
+=== st-13: v > MAX(ratio), a DOUBLE 3 ===
+== Query ==
+SELECT id FROM st_n WHERE v > (SELECT MAX(ratio) FROM st_n);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_n WHERE v > (SELECT MAX(ratio) FROM st_n)|
+id
+4
+
+=== st-14: v > MAX(ratio) below 3, a DOUBLE 2.5 ===
+== Query ==
+SELECT id FROM st_n WHERE v > (SELECT MAX(ratio) FROM st_n WHERE ratio < 3);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_n WHERE v > (SELECT MAX(ratio) FROM st_n WHERE ratio < 3)|
+id
+3
+4
+
+=== st-15: F-10, price >= AVG(price) 1.005000 ===
+== Query ==
+SELECT id FROM st_n WHERE price >= (SELECT AVG(price) FROM st_n WHERE id <= 2);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_n WHERE price >= (SELECT AVG(price) FROM st_n WHERE id <= 2)|
+id
+2
+4
+5
+
+=== st-16: F-10, price = AVG(price) is never TRUE ===
+== Query ==
+SELECT COUNT(*) AS n FROM st_n WHERE price = (SELECT AVG(price) FROM st_n WHERE id <= 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n FROM st_n WHERE price = (SELECT AVG(price) FROM st_n WHERE id <= 2)|
+n
+0
+
+=== st-17: F-10, price < AVG(price) ===
+== Query ==
+SELECT id FROM st_n WHERE price < (SELECT AVG(price) FROM st_n WHERE id <= 2);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_n WHERE price < (SELECT AVG(price) FROM st_n WHERE id <= 2)|
+id
+1
+3
+
+=== st-18: join root filter, n.v > AVG(c_k) 2.5000 ===
+== Query ==
+SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n JOIN st_o AS o ON o.id = n.id WHERE n.v > (SELECT AVG(c_k) FROM st_c);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n JOIN st_o AS o ON o.id = n.id WHERE n.v > (SELECT AVG(c_k) FROM st_c)|
+cnt	s
+2	2001
+
+=== st-19: join root filter, n.v = AVG(c_k) is never TRUE ===
+== RonSQL alone ==
+cnt	s
+0	NULL
+== Query ==
+SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n USE INDEX () JOIN st_o AS o ON o.id = n.id WHERE n.v = (SELECT AVG(c_k) FROM st_c);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n USE INDEX () JOIN st_o AS o ON o.id = n.id WHERE n.v = (SELECT AVG(c_k) FROM st_c)|
+cnt	s
+0	NULL
+
+=== st-20: correlated MAX(c_d), DECIMAL 0.50 2.50 2.00 4.50, against v ===
+== Query ==
+SELECT id, SUM(v) AS sv FROM st_n WHERE v >= (SELECT MAX(c_d) FROM st_c WHERE c_k = id) GROUP BY id;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id, SUM(v) AS sv FROM st_n WHERE v >= (SELECT MAX(c_d) FROM st_c WHERE c_k = id) GROUP BY id|
+id	sv
+1	1
+3	3
+
+=== st-21: v IN DECIMAL values, only 2.00 matches ===
+== Query ==
+SELECT id FROM st_n WHERE v IN (SELECT c_d FROM st_c);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_n WHERE v IN (SELECT c_d FROM st_c)|
+id
+2
+
+=== st-22: NOT (v IN DECIMAL values) drops the NULL v ===
+== Query ==
+SELECT id FROM st_n WHERE NOT (v IN (SELECT c_d FROM st_c));
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_n WHERE NOT (v IN (SELECT c_d FROM st_c))|
+id
+1
+3
+4
+
+=== st-23: BIGINT UNSIGNED u = MAX(u) 18446744073709551615 ===
+== Query ==
+SELECT id FROM st_u WHERE u = (SELECT MAX(u) FROM st_u);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_u WHERE u = (SELECT MAX(u) FROM st_u)|
+id
+1
+
+=== st-24: BIGINT UNSIGNED u >= MIN(u) 9223372036854775808 ===
+== Query ==
+SELECT COUNT(*) AS n FROM st_u WHERE u >= (SELECT MIN(u) FROM st_u WHERE u > 5);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n FROM st_u WHERE u >= (SELECT MIN(u) FROM st_u WHERE u > 5)|
+n
+2
+
+=== st-25: BIGINT UNSIGNED u IN values above 2^63 - 1 ===
+== Query ==
+SELECT id FROM st_u WHERE u IN (SELECT u FROM st_u WHERE id <= 2);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_u WHERE u IN (SELECT u FROM st_u WHERE id <= 2)|
+id
+1
+2
+
+=== st-26: DECIMAL(30,2) w = a 20-digit w ===
+== Query ==
+SELECT id FROM st_w WHERE w = (SELECT w FROM st_w WHERE id = 1);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_w WHERE w = (SELECT w FROM st_w WHERE id = 1)|
+id
+1
+
+=== st-27: DECIMAL(30,2) w > a 20-digit w ===
+== Query ==
+SELECT id FROM st_w WHERE w > (SELECT w FROM st_w WHERE id = 1);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_w WHERE w > (SELECT w FROM st_w WHERE id = 1)|
+id
+2
+
+=== st-28: DECIMAL(30,2) w IN 20-digit values ===
+== Query ==
+SELECT id FROM st_w WHERE w IN (SELECT w FROM st_w WHERE id >= 2);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_w WHERE w IN (SELECT w FROM st_w WHERE id >= 2)|
+id
+2
+3
+
+=== st-29: s = the empty string ===
+== Query ==
+SELECT id FROM st_s WHERE s = (SELECT s FROM st_s WHERE id = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_s WHERE s = (SELECT s FROM st_s WHERE id = 2)|
+id
+2
+
+=== st-30: s = the string NULL ===
+== Query ==
+SELECT id FROM st_s WHERE s = (SELECT s FROM st_s WHERE id = 3);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_s WHERE s = (SELECT s FROM st_s WHERE id = 3)|
+id
+3
+
+=== st-31: s IN strings, the empty string included ===
+== Query ==
+SELECT id FROM st_s WHERE s IN (SELECT s FROM st_s WHERE id >= 2);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_s WHERE s IN (SELECT s FROM st_s WHERE id >= 2)|
+id
+2
+3
+4
+
+=== st-32: s > MIN(s), the empty string ===
+== Query ==
+SELECT id FROM st_s WHERE s > (SELECT MIN(s) FROM st_s);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_s WHERE s > (SELECT MIN(s) FROM st_s)|
+id
+1
+3
+4
+
+=== st-33: dt >= MAX(dt), a DATE ===
+== Query ==
+SELECT id FROM st_s WHERE dt >= (SELECT MAX(dt) FROM st_s WHERE id <= 2);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_s WHERE dt >= (SELECT MAX(dt) FROM st_s WHERE id <= 2)|
+id
+2
+3
+4
+
+=== x5-1: control, an IN subquery of 3 values ===
+== Query ==
+SELECT id FROM st_o WHERE a IN (SELECT b FROM st_big WHERE b >= 999 AND b <= 1001);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM st_o WHERE a IN (SELECT b FROM st_big WHERE b >= 999 AND b <= 1001)|
+id
+3
+4
+
+=== se-1 (rejection): a VARBINARY result ===
+Error handling: RPE
+ronsql_cli caught exception: A subquery that returns a BINARY or VARBINARY value is not supported.
+
+=== x5-2 (limit): an IN subquery of 1001 values ===
+Error handling: RPE
+ronsql_cli caught exception: IN-subquery returned more than 1000 values.
+
+=== x5-3 (limit): an IN subquery of 5000 values, ronsql_cli and RDRS ===
+Error handling: RPE
+ronsql_cli caught exception: IN-subquery returned more than 1000 values.
+HTTP 400
+[limit] Caught exception: IN-subquery returned more than 1000 values.
+
+=== x5-4 (rejection): a scalar subquery over 5000 rows ===
+Error handling: RPE
+ronsql_cli caught exception: A scalar subquery returned more than one row.
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_subquery_typed_results_jit_fallback_delta;
+ronsql_subquery_typed_results_jit_fallback_delta
+0

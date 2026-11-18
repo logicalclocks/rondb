@@ -1,0 +1,189 @@
+# A unary minus over a scalar subquery in WHERE and HAVING.
+#
+# F-2 (storage/ndb/claude_files/ronsql_executor/review_filter_agg_codegen.md):
+# a subquery's result replaces its node at execution time. A result
+# that is not an integer, such as MIN of a DECIMAL column, becomes a
+# T_FLOAT without source text. The join and CTE paths simplify their
+# WHERE after that, and simplify_ce negated a T_FLOAT by reading its
+# text: a debug build failed an assert and a release build dereferenced
+# NULL, which stops ronsql_cli or RDRS. The single-table path simplified
+# its WHERE before the substitution, so the minus reached the filter,
+# which refused it ("incompatible value"), also for an integer result.
+# The substitution now folds the minus into the constant.
+#
+# The constants are exact at the column's scale: rounding a substituted
+# value to the scale is F-10, and a NULL result in WHERE is F-12 / X-3.
+# Expected results come from mysqld (strict_diff).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE um_o (
+  id    INT NOT NULL,
+  c     INT NOT NULL,
+  total DECIMAL(10,2) NOT NULL,
+  v     INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE um_l (
+  id INT NOT NULL,
+  ok INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_um_l_ok (ok)
+) ENGINE=NDB;
+
+CREATE TABLE um_p (
+  id    INT NOT NULL,
+  price DECIMAL(10,2) NOT NULL,
+  qty   INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+# MIN(price) = 5.25, MAX(price) = 12.00 (both T_FLOAT results),
+# MAX(qty) = 6 (a T_INT result). um_o rows 3 and 7 sit on the -5.25 and
+# -12.00 boundaries, row 8 on 5.25. Row 4 has no um_l row.
+INSERT INTO um_o VALUES
+  (1, 1, -10.00, -7), (2, 1, -8.25, -6), (3, 1, -5.25, -3),
+  (4, 2,  -1.00,  0), (5, 2,  3.50,  2), (6, 3,  8.00,  6),
+  (7, 3, -12.00, -9), (8, 2,  5.25,  1);
+INSERT INTO um_l VALUES
+  (1, 1), (2, 1), (3, 2), (4, 3), (5, 5), (6, 5), (7, 6), (8, 7), (9, 8);
+INSERT INTO um_p VALUES (1, 5.25, 3), (2, 7.50, 6), (3, 12.00, 4);
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === um-1: join, minus over a DECIMAL MIN (the F-2 trigger) ===
+let $QUERY=
+SELECT o.c, COUNT(*) AS cnt
+FROM um_o AS o JOIN um_l AS l ON l.ok = o.id
+WHERE o.total > -(SELECT MIN(price) FROM um_p)
+GROUP BY o.c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.c, COUNT(*) AS cnt
+FROM um_o AS o JOIN um_l AS l ON l.ok = o.id
+WHERE o.total > -(SELECT MIN(price) FROM um_p)
+GROUP BY o.c|
+
+--echo
+--echo === um-2: join, two minuses over a DECIMAL MIN ===
+let $QUERY=
+SELECT o.c, COUNT(*) AS cnt
+FROM um_o AS o JOIN um_l AS l ON l.ok = o.id
+WHERE o.total >= -(-(SELECT MIN(price) FROM um_p))
+GROUP BY o.c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.c, COUNT(*) AS cnt
+FROM um_o AS o JOIN um_l AS l ON l.ok = o.id
+WHERE o.total >= -(-(SELECT MIN(price) FROM um_p))
+GROUP BY o.c|
+
+--echo
+--echo === um-3: join, minus over an INT MAX ===
+let $QUERY=
+SELECT o.c, COUNT(*) AS cnt
+FROM um_o AS o JOIN um_l AS l ON l.ok = o.id
+WHERE o.v <= -(SELECT MAX(qty) FROM um_p)
+GROUP BY o.c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.c, COUNT(*) AS cnt
+FROM um_o AS o JOIN um_l AS l ON l.ok = o.id
+WHERE o.v <= -(SELECT MAX(qty) FROM um_p)
+GROUP BY o.c|
+
+--echo
+--echo === um-4: single-table aggregate, minus over a DECIMAL MIN ===
+let $QUERY=
+SELECT c, COUNT(*) AS cnt FROM um_o
+WHERE total > -(SELECT MIN(price) FROM um_p)
+GROUP BY c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT c, COUNT(*) AS cnt FROM um_o
+WHERE total > -(SELECT MIN(price) FROM um_p)
+GROUP BY c|
+
+--echo
+--echo === um-5: single-table aggregate, minus over an INT MAX ===
+let $QUERY=
+SELECT c, COUNT(*) AS cnt FROM um_o
+WHERE v <= -(SELECT MAX(qty) FROM um_p)
+GROUP BY c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT c, COUNT(*) AS cnt FROM um_o
+WHERE v <= -(SELECT MAX(qty) FROM um_p)
+GROUP BY c|
+
+--echo
+--echo === um-6: single-table pass-through, minus over a DECIMAL MIN ===
+let $QUERY=
+SELECT id, total FROM um_o
+WHERE total <= -(SELECT MIN(price) FROM um_p);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, total FROM um_o
+WHERE total <= -(SELECT MIN(price) FROM um_p)|
+
+--echo
+--echo === um-7: HAVING, minus over a DECIMAL MAX ===
+let $QUERY=
+SELECT c, COUNT(*) AS cnt FROM um_o
+GROUP BY c
+HAVING SUM(total) > -(SELECT MAX(price) FROM um_p);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT c, COUNT(*) AS cnt FROM um_o
+GROUP BY c
+HAVING SUM(total) > -(SELECT MAX(price) FROM um_p)|
+
+--echo
+--echo === um-8: WITH query joined to its CTE, minus over a DECIMAL MIN ===
+let $QUERY=
+WITH ls AS (SELECT ok AS k, COUNT(*) AS m FROM um_l GROUP BY ok)
+SELECT o.c, SUM(ls.m) AS m_sum
+FROM um_o AS o JOIN ls ON ls.k = o.id
+WHERE o.total > -(SELECT MIN(price) FROM um_p)
+GROUP BY o.c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH ls AS (SELECT ok AS k, COUNT(*) AS m FROM um_l GROUP BY ok)
+SELECT o.c, SUM(ls.m) AS m_sum
+FROM um_o AS o JOIN ls ON ls.k = o.id
+WHERE o.total > -(SELECT MIN(price) FROM um_p)
+GROUP BY o.c|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE um_p;
+DROP TABLE um_l;
+DROP TABLE um_o;
+--enable_warnings
+--enable_query_log

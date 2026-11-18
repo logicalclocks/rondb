@@ -395,8 +395,18 @@ inline void Producer::consume(bool force) {
 inline void Consumer::consume(unsigned D) {
   /**
    * This is the equivalent of do_send(must_send = 1)
+   *
+   * If trylock fails, the lock holder must find our values when it sees
+   * m_force_send set (wmb: the values are visible before the flag), and
+   * must see the flag after it unlocks (mb: the flag is visible before
+   * trylock reads the lock word). trylock is NdbMutex_Trylock unless
+   * NDB_USE_SPINLOCK is set: on x86 even a failed one is a locked
+   * compare-exchange, a full barrier, but on aarch64 a failed one orders
+   * nothing, and the holder could miss one value or the flag.
    */
+  wmb();
   m_force_send = 1;
+  mb();
 
   do {
     if (trylock(&m_send_lock) != 0) {

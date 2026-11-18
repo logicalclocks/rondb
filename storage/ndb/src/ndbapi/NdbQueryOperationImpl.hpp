@@ -301,11 +301,13 @@ class NdbQueryImpl {
    */
   bool execAggTRANSID_AI(const Uint32 *data, Uint32 len);
 
-  /** Fragmented variant: accumulates fragment data.
-   *  Records batch offset only on first fragment (fragInfo==1).
+  /** Fragmented variant: one fragment of a record of totalLen words
+   *  (TransIdAILong::totalLen).  Records from different senders may
+   *  interleave; see m_aggFragSlots.
+   *  Returns true when aggregate receive is complete.
    */
   bool execAggTRANSID_AI_frag(const Uint32 *data, Uint32 len,
-                               Uint32 fragInfo);
+                              const NdbApiSignal *signal, Uint32 totalLen);
 
   /** Process all accumulated aggregation results through NdbAggregator.
    *  Called after scan completes. Feeds each batch, including its
@@ -596,6 +598,13 @@ class NdbQueryImpl {
    */
   Uint32Buffer m_aggResultData;
   Uint32Buffer m_aggResultOffsets;
+
+  /** Fragmented records in progress, three words each: the sender's
+   *  block reference (0: free), the next word to write in
+   *  m_aggResultData (~0: the record could not be stored), and the
+   *  words still to come.
+   */
+  Uint32Buffer m_aggFragSlots;
 
   /** Number of aggregate TRANSID_AI rows promised by SCAN_TABCONF. */
   Uint32 m_aggExpectedResults;

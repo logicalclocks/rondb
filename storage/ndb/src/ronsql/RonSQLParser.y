@@ -726,7 +726,9 @@ cond_expr:
                                             case T_SUM: $$->having_agg.agg_index = context->get_agg()->Sum($3); break;
                                             case T_MIN: $$->having_agg.agg_index = context->get_agg()->Min($3); break;
                                             case T_MAX: $$->having_agg.agg_index = context->get_agg()->Max($3); break;
-                                            default: abort();
+                                            // X-14: aggfun gives only these three.
+                                            default: ronsql_bug("An aggregate function in a condition is not"
+                                                                " SUM, MIN or MAX.");
                                           }
                                         }
 | T_COUNT T_LEFT arith_expr T_RIGHT   {
@@ -914,7 +916,18 @@ void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t scanner, const char *s)
     return;
   }
   // Those two cases should be the only possibilities.
-  abort();
+  /*
+   * X-14: bison passes the location of the last token yylex returned. For
+   * most tokens the lexer ends it where its last match ends (first case). For
+   * an illegal byte and for the end of input it keeps the location of the
+   * token before, and for the end of input inside a quoted identifier or
+   * string it ends it where that match starts: at or before the start of the
+   * last match either way (second case). Should neither hold, fail the
+   * statement, not RDRS: this runs inside yyparse, whose grammar actions
+   * already throw (its stack is local or arena memory, YYFREE does nothing).
+   */
+  ronsql_bug("The parser reported an error at a location that does not"
+             " match the last token read.");
 }
 
 // See comment near `#ifndef YYMAXDEPTH` in RonSQLParser.y.cpp

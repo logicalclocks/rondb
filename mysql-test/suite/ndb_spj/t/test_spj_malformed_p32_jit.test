@@ -1,0 +1,17 @@
+--source include/have_ndb.inc
+
+# P-32 (see test_spj_malformed_p32) with the JIT on
+# (CompiledInterpreter=ON, test_spj_malformed_p32_jit.cnf). The JIT's
+# register file is zeroed for each row, so the compiled program summed
+# 0 where the interpreter fails the row, and the scan got SCAN_TABCONF.
+# The compiler now refuses a program whose path to an instruction skips
+# the load of a register the instruction reads (reg_not_loaded, K-1);
+# the program runs on the interpreter, which fails the row with 1868.
+# The fallback counter shows the refusal.
+
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+--let $spj_case = P32
+--let $spj_case_title = P-32: join aggregation SUM of a register the row did not load, JIT on
+--source suite/ndb_spj/include/spj_malformed_case.inc
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 > 0
+       AS p32_refused_by_jit;

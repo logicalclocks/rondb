@@ -418,10 +418,10 @@ SINGLE_QUOTED_STRING_CHARACTER_EXCEPT_APOSTROPHE_AND_BACKSLASH         [^\0\047\
   yylval->str = LexString{yytext, rsqlp_leng};
   if (rsqlp_leng > 64)
   {
-    // return_err(TOO_LONG_IDENTIFIER);
-    // However, this should not happen since the rule only matches up to 18
-    // bytes.
-    abort();
+    // X-14: unreachable, the rule matches at most 18 bytes. Should it ever
+    // match more, this is the error the rule below gives for a long word.
+    // It was abort(), which in RDRS stopped every request in flight.
+    return_err(TOO_LONG_IDENTIFIER);
   }
   return T_IDENTIFIER;
 }
@@ -603,8 +603,17 @@ rsqlp_realloc(void * ptr, size_t bytes, void * scanner)
   (void)ptr;
   (void)bytes;
   (void)scanner;
-  // realloc should not be needed in the lexer.
-  abort();
+  /*
+   * realloc should not be needed in the lexer. X-14: flex reallocates for two
+   * things only. One is to grow a buffer that it fills from a file, but we
+   * scan the SQL buffer in place: yy_scan_buffer sets yy_fill_buffer to 0, so
+   * yy_get_next_buffer returns before it grows anything. The other is to grow
+   * the buffer stack, which only our one yy_scan_buffer call sets up (nothing
+   * pushes or switches buffers). Should it ever be called, fail the
+   * statement, not RDRS: rsqlp_alloc already throws from the same flex code,
+   * which is compiled as C++ and allocates only in the arena.
+   */
+  ronsql_bug("The RonSQL lexer tried to reallocate memory.");
   // If it is needed, we need to keep track of allocation size.
 }
 

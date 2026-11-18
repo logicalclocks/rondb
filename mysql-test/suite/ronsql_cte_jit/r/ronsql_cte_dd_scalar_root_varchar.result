@@ -1,0 +1,220 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== sr-1: VARCHAR(8) scalar root, the filter keeps the row ===
+== Query ==
+WITH s AS (SELECT MAX(vs) AS m FROM sr_t)
+SELECT m FROM s WHERE m > 'b';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(vs) AS m FROM sr_t)
+SELECT m FROM s WHERE m > 'b'|
+m
+cherry
+
+=== sr-2: VARCHAR(8) scalar root, the filter rejects the row ===
+== Query ==
+WITH s AS (SELECT MIN(vs) AS m FROM sr_t)
+SELECT m FROM s WHERE m > 'b';
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MIN(vs) AS m FROM sr_t)
+SELECT m FROM s WHERE m > 'b'|
+m
+
+=== sr-3: VARCHAR(300) scalar root, the filter keeps the row ===
+== Query ==
+WITH s AS (SELECT MAX(vl) AS m FROM sr_t)
+SELECT m FROM s WHERE m >= 'm';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(vl) AS m FROM sr_t)
+SELECT m FROM s WHERE m >= 'm'|
+m
+mango
+
+=== sr-4: VARCHAR(300) scalar root, the filter rejects the row ===
+== Query ==
+WITH s AS (SELECT MAX(vl) AS m FROM sr_t)
+SELECT m FROM s WHERE m = 'kiwi';
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(vl) AS m FROM sr_t)
+SELECT m FROM s WHERE m = 'kiwi'|
+m
+
+=== sr-5: CHAR(4) scalar root (control), the filter keeps the row ===
+== Query ==
+WITH s AS (SELECT MAX(ch) AS m FROM sr_t)
+SELECT m FROM s WHERE m = 'cdef';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(ch) AS m FROM sr_t)
+SELECT m FROM s WHERE m = 'cdef'|
+m
+cdef
+
+=== sr-6: CHAR(4) scalar root (control), the filter rejects the row ===
+== Query ==
+WITH s AS (SELECT MIN(ch) AS m FROM sr_t)
+SELECT m FROM s WHERE m > 'b';
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MIN(ch) AS m FROM sr_t)
+SELECT m FROM s WHERE m > 'b'|
+m
+
+=== sr-7: VARCHAR(8) first output, the filter on COUNT keeps the row ===
+== Query ==
+WITH s AS (SELECT MAX(vs) AS m, COUNT(*) AS n FROM sr_t)
+SELECT m, n FROM s WHERE n = 3;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(vs) AS m, COUNT(*) AS n FROM sr_t)
+SELECT m, n FROM s WHERE n = 3|
+m	n
+cherry	3
+
+=== sr-8: VARCHAR(300) first output, the filter on SUM rejects the row ===
+== Query ==
+WITH s AS (SELECT MIN(vl) AS m, SUM(x) AS t FROM sr_t)
+SELECT m, t FROM s WHERE t > 100;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MIN(vl) AS m, SUM(x) AS t FROM sr_t)
+SELECT m, t FROM s WHERE t > 100|
+m	t
+
+=== sr-9: aggregate over a VARCHAR(8) scalar root, the row is kept ===
+== Query ==
+WITH s AS (SELECT MAX(vs) AS m, COUNT(*) AS n FROM sr_t)
+SELECT COUNT(*) AS cnt, SUM(n) AS sn FROM s WHERE m > 'b';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(vs) AS m, COUNT(*) AS n FROM sr_t)
+SELECT COUNT(*) AS cnt, SUM(n) AS sn FROM s WHERE m > 'b'|
+cnt	sn
+1	3
+
+=== sr-10: aggregate over a VARCHAR(300) scalar root, the row is rejected ===
+== Query ==
+WITH s AS (SELECT MAX(vl) AS m, COUNT(*) AS n FROM sr_t)
+SELECT COUNT(*) AS cnt, SUM(n) AS sn FROM s WHERE m < 'l';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(vl) AS m, COUNT(*) AS n FROM sr_t)
+SELECT COUNT(*) AS cnt, SUM(n) AS sn FROM s WHERE m < 'l'|
+cnt	sn
+0	NULL
+
+=== sr-11: VARCHAR(8) scalar root, comparison with a NULL subquery ===
+== Query ==
+WITH s AS (SELECT MAX(vs) AS m FROM sr_t)
+SELECT m FROM s WHERE m = (SELECT MAX(n_s) FROM sr_n);
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(vs) AS m FROM sr_t)
+SELECT m FROM s WHERE m = (SELECT MAX(n_s) FROM sr_n)|
+m
+
+=== sr-12: aggregate over a VARCHAR(300) scalar root, NULL subquery ===
+== Query ==
+WITH s AS (SELECT MAX(vl) AS m, COUNT(*) AS n FROM sr_t)
+SELECT COUNT(*) AS cnt, SUM(n) AS sn FROM s
+WHERE m > (SELECT MAX(n_s) FROM sr_n);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(vl) AS m, COUNT(*) AS n FROM sr_t)
+SELECT COUNT(*) AS cnt, SUM(n) AS sn FROM s
+WHERE m > (SELECT MAX(n_s) FROM sr_n)|
+cnt	sn
+0	NULL
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_cte_dd_scalar_root_varchar_jit_fallback_delta;
+ronsql_cte_dd_scalar_root_varchar_jit_fallback_delta
+0

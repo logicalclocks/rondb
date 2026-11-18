@@ -1,0 +1,464 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== tm-1: DATE MAX > YYYYMMDD on a CTE_LOOKUP child ===
+== Query ==
+WITH c AS (SELECT grp AS k, MAX(d) AS mx FROM ctm GROUP BY grp) SELECT g.k AS k, c.mx AS mx FROM ctk AS g JOIN c ON c.k = g.k WHERE c.mx > 19950101;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT grp AS k, MAX(d) AS mx FROM ctm GROUP BY grp) SELECT g.k AS k, c.mx AS mx FROM ctk AS g JOIN c ON c.k = g.k WHERE c.mx > 19950101|
+k	mx
+2	1996-06-15
+3	2024-03-05
+
+=== tm-2: DATE MAX <= a date string on the CTE root ===
+== Query ==
+WITH c AS (SELECT grp AS k, MAX(d) AS mx FROM ctm GROUP BY grp) SELECT k, mx FROM c WHERE mx <= '1996-06-15';
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT grp AS k, MAX(d) AS mx FROM ctm GROUP BY grp) SELECT k, mx FROM c WHERE mx <= '1996-06-15'|
+k	mx
+1	1995-01-01
+2	1996-06-15
+
+=== tm-3: DATE MIN < a time of day on a CTE_LOOKUP child ===
+== Query ==
+WITH c AS (SELECT grp AS k, MIN(d) AS mn FROM ctm GROUP BY grp) SELECT g.k AS k, c.mn AS mn FROM ctk AS g JOIN c ON c.k = g.k WHERE c.mn < '1995-01-01 10:00:00';
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT grp AS k, MIN(d) AS mn FROM ctm GROUP BY grp) SELECT g.k AS k, c.mn AS mn FROM ctk AS g JOIN c ON c.k = g.k WHERE c.mn < '1995-01-01 10:00:00'|
+k	mn
+1	1994-12-31
+2	1995-01-01
+
+=== tm-4: DATE MIN = a time of day OR >= a time of day ===
+== Query ==
+WITH c AS (SELECT grp AS k, MIN(d) AS mn FROM ctm GROUP BY grp) SELECT k, mn FROM c WHERE mn = '1995-01-01 10:00:00' OR mn >= '1995-01-01 00:00:00.001';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT grp AS k, MIN(d) AS mn FROM ctm GROUP BY grp) SELECT k, mn FROM c WHERE mn = '1995-01-01 10:00:00' OR mn >= '1995-01-01 00:00:00.001'|
+k	mn
+3	1996-06-15
+
+=== tm-5: DATETIME(3) MAX > a string with an exact fraction ===
+== Query ==
+WITH c AS (SELECT grp AS k, MAX(dt3) AS mx FROM ctm GROUP BY grp) SELECT k, mx FROM c WHERE mx > '1995-01-01 10:00:00.5';
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT grp AS k, MAX(dt3) AS mx FROM ctm GROUP BY grp) SELECT k, mx FROM c WHERE mx > '1995-01-01 10:00:00.5'|
+k	mx
+2	1996-06-15 12:00:00.001
+3	2024-03-05 00:00:00.000
+
+=== tm-6: DATETIME(3) MIN >= and < strings with four fractional digits ===
+== Query ==
+WITH c AS (SELECT grp AS k, MIN(dt3) AS mn FROM ctm GROUP BY grp) SELECT k, mn FROM c WHERE mn >= '1996-06-15 12:00:00.0005' OR mn < '1994-12-31 23:59:59.9995';
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT grp AS k, MIN(dt3) AS mn FROM ctm GROUP BY grp) SELECT k, mn FROM c WHERE mn >= '1996-06-15 12:00:00.0005' OR mn < '1994-12-31 23:59:59.9995'|
+k	mn
+1	1994-12-31 23:59:59.999
+3	1993-07-04 08:15:00.000
+
+=== tm-7: DATETIME(3) MIN = YYYYMMDDhhmmss on a CTE_LOOKUP child ===
+== Query ==
+WITH c AS (SELECT grp AS k, MIN(dt3) AS mn FROM ctm GROUP BY grp) SELECT g.k AS k, c.mn AS mn FROM ctk AS g JOIN c ON c.k = g.k WHERE c.mn = 19960615120000;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT grp AS k, MIN(dt3) AS mn FROM ctm GROUP BY grp) SELECT g.k AS k, c.mn AS mn FROM ctk AS g JOIN c ON c.k = g.k WHERE c.mn = 19960615120000|
+k	mn
+2	1996-06-15 12:00:00.000
+
+=== tm-8: TIME(2) MIN < a time string, a negative value ===
+== Query ==
+WITH c AS (SELECT grp AS k, MIN(t2) AS mn FROM ctm GROUP BY grp) SELECT k, mn FROM c WHERE mn < '00:00:00';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT grp AS k, MIN(t2) AS mn FROM ctm GROUP BY grp) SELECT k, mn FROM c WHERE mn < '00:00:00'|
+k	mn
+1	-01:30:00.25
+
+=== tm-9: TIME(2) MAX >= a string AND < hhmmss on a CTE_LOOKUP child ===
+== Query ==
+WITH c AS (SELECT grp AS k, MAX(t2) AS mx FROM ctm GROUP BY grp) SELECT g.k AS k, c.mx AS mx FROM ctk AS g JOIN c ON c.k = g.k WHERE c.mx >= '12:34:56.79' AND c.mx < 230000;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT grp AS k, MAX(t2) AS mx FROM ctm GROUP BY grp) SELECT g.k AS k, c.mx AS mx FROM ctk AS g JOIN c ON c.k = g.k WHERE c.mx >= '12:34:56.79' AND c.mx < 230000|
+k	mx
+2	12:34:56.79
+
+=== tm-10: TIMESTAMP MIN >= a string with a fraction AND <= YYYYMMDDhhmmss ===
+== Query ==
+WITH c AS (SELECT grp AS k, MIN(ts) AS mn FROM ctm GROUP BY grp) SELECT k, mn FROM c WHERE mn >= '1994-12-31 23:59:59.5' AND mn <= 19960615120000;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT grp AS k, MIN(ts) AS mn FROM ctm GROUP BY grp) SELECT k, mn FROM c WHERE mn >= '1994-12-31 23:59:59.5' AND mn <= 19960615120000|
+k	mn
+2	1996-06-15 12:00:00
+
+=== tm-11: YEAR MAX >= YYYY ===
+== Query ==
+WITH c AS (SELECT grp AS k, MAX(y) AS mx FROM ctm GROUP BY grp) SELECT k, mx FROM c WHERE mx >= 2001;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT grp AS k, MAX(y) AS mx FROM ctm GROUP BY grp) SELECT k, mx FROM c WHERE mx >= 2001|
+k	mx
+2	2001
+3	2024
+
+=== tm-12: GROUP BY a DATE MAX output ===
+== Query ==
+WITH a AS (SELECT id, MAX(d) AS mx FROM ctm GROUP BY id) SELECT mx, COUNT(*) AS n FROM a GROUP BY mx;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT id, MAX(d) AS mx FROM ctm GROUP BY id) SELECT mx, COUNT(*) AS n FROM a GROUP BY mx|
+mx	n
+1994-12-31	1
+1995-01-01	2
+1996-06-15	2
+2024-03-05	1
+
+=== tm-13: GROUP BY a DATE MAX output, ORDER BY it DESC ===
+== Query ==
+WITH a AS (SELECT id, MAX(d) AS mx FROM ctm GROUP BY id) SELECT mx, COUNT(*) AS n FROM a GROUP BY mx ORDER BY mx DESC;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT id, MAX(d) AS mx FROM ctm GROUP BY id) SELECT mx, COUNT(*) AS n FROM a GROUP BY mx ORDER BY mx DESC|
+mx	n
+2024-03-05	1
+1996-06-15	2
+1995-01-01	2
+1994-12-31	1
+
+=== tm-14: GROUP BY a DATETIME(3) MAX output, ORDER BY it ===
+== Query ==
+WITH a AS (SELECT grp, MAX(dt3) AS mx FROM ctm GROUP BY grp) SELECT mx, COUNT(*) AS n FROM a GROUP BY mx ORDER BY mx;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT grp, MAX(dt3) AS mx FROM ctm GROUP BY grp) SELECT mx, COUNT(*) AS n FROM a GROUP BY mx ORDER BY mx|
+mx	n
+1995-01-01 10:00:00.500	1
+1996-06-15 12:00:00.001	1
+2024-03-05 00:00:00.000	1
+
+=== tm-15: GROUP BY a TIME(2) MIN output with a negative value, ORDER BY it ===
+== Query ==
+WITH a AS (SELECT grp, MIN(t2) AS mn FROM ctm GROUP BY grp) SELECT mn, COUNT(*) AS n FROM a GROUP BY mn ORDER BY mn;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT grp, MIN(t2) AS mn FROM ctm GROUP BY grp) SELECT mn, COUNT(*) AS n FROM a GROUP BY mn ORDER BY mn|
+mn	n
+-01:30:00.25	1
+00:00:00.00	1
+12:34:56.78	1
+
+=== tm-16: GROUP BY a TIMESTAMP MAX and a YEAR MIN output ===
+== Query ==
+WITH a AS (SELECT grp, MAX(ts) AS ts_mx, MIN(y) AS y_mn FROM ctm GROUP BY grp) SELECT ts_mx, y_mn, COUNT(*) AS n FROM a GROUP BY ts_mx, y_mn;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT grp, MAX(ts) AS ts_mx, MIN(y) AS y_mn FROM ctm GROUP BY grp) SELECT ts_mx, y_mn, COUNT(*) AS n FROM a GROUP BY ts_mx, y_mn|
+ts_mx	y_mn	n
+1995-01-01 10:00:00	1994	1
+1996-06-15 12:00:01	2000	1
+2024-03-05 00:00:00	1993	1
+
+=== tm-17: GROUP BY a DATE MAX passed up two CTEs ===
+== Query ==
+WITH a AS (SELECT id, MAX(d) AS mx FROM ctm GROUP BY id), b AS (SELECT id, MAX(mx) AS m2 FROM a GROUP BY id) SELECT m2, COUNT(*) AS n FROM b GROUP BY m2;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT id, MAX(d) AS mx FROM ctm GROUP BY id), b AS (SELECT id, MAX(mx) AS m2 FROM a GROUP BY id) SELECT m2, COUNT(*) AS n FROM b GROUP BY m2|
+m2	n
+1994-12-31	1
+1995-01-01	2
+1996-06-15	2
+2024-03-05	1
+
+=== tm-18: a DATETIME(3) MIN passed up two CTEs, pass-through ===
+== Query ==
+WITH a AS (SELECT grp, MIN(dt3) AS mn FROM ctm GROUP BY grp), b AS (SELECT grp, MIN(mn) AS m2 FROM a GROUP BY grp) SELECT grp, m2 FROM b;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT grp, MIN(dt3) AS mn FROM ctm GROUP BY grp), b AS (SELECT grp, MIN(mn) AS m2 FROM a GROUP BY grp) SELECT grp, m2 FROM b|
+grp	m2
+1	1994-12-31 23:59:59.999
+2	1996-06-15 12:00:00.000
+3	1993-07-04 08:15:00.000
+
+=== tm-19: GREATEST and LEAST of two scalar CTEs over DATE ===
+== Query ==
+WITH a AS (SELECT MAX(d) AS d1 FROM ctm WHERE grp = 1), b AS (SELECT MAX(d) AS d2 FROM ctm WHERE grp = 2) SELECT GREATEST(a.d1, b.d2) AS w, LEAST(a.d1, b.d2) AS l FROM a, b;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT MAX(d) AS d1 FROM ctm WHERE grp = 1), b AS (SELECT MAX(d) AS d2 FROM ctm WHERE grp = 2) SELECT GREATEST(a.d1, b.d2) AS w, LEAST(a.d1, b.d2) AS l FROM a, b|
+w	l
+1996-06-15	1995-01-01
+
+=== tm-20: GREATEST and LEAST of two scalar CTEs over DATETIME(3) ===
+== Query ==
+WITH a AS (SELECT MAX(dt3) AS x1 FROM ctm WHERE grp = 1), b AS (SELECT MIN(dt3) AS x2 FROM ctm WHERE grp = 3) SELECT GREATEST(a.x1, b.x2) AS w, LEAST(a.x1, b.x2) AS l FROM a, b;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT MAX(dt3) AS x1 FROM ctm WHERE grp = 1), b AS (SELECT MIN(dt3) AS x2 FROM ctm WHERE grp = 3) SELECT GREATEST(a.x1, b.x2) AS w, LEAST(a.x1, b.x2) AS l FROM a, b|
+w	l
+1995-01-01 10:00:00.500	1993-07-04 08:15:00.000
+
+=== tm-21: GREATEST and LEAST of two scalar CTEs over TIME(2) ===
+== Query ==
+WITH a AS (SELECT MIN(t2) AS ta FROM ctm WHERE grp = 1), b AS (SELECT MAX(t2) AS tb FROM ctm WHERE grp = 2) SELECT GREATEST(a.ta, b.tb) AS w, LEAST(a.ta, b.tb) AS l FROM a, b;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT MIN(t2) AS ta FROM ctm WHERE grp = 1), b AS (SELECT MAX(t2) AS tb FROM ctm WHERE grp = 2) SELECT GREATEST(a.ta, b.tb) AS w, LEAST(a.ta, b.tb) AS l FROM a, b|
+w	l
+12:34:56.79	-01:30:00.25
+
+=== tm-22: GREATEST over TIMESTAMP and LEAST over YEAR scalar CTEs ===
+== Query ==
+WITH a AS (SELECT MAX(ts) AS s1, MAX(y) AS y1 FROM ctm WHERE grp = 1), b AS (SELECT MAX(ts) AS s2, MAX(y) AS y2 FROM ctm WHERE grp = 3) SELECT GREATEST(a.s1, b.s2) AS w, LEAST(a.y1, b.y2) AS l FROM a, b;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT MAX(ts) AS s1, MAX(y) AS y1 FROM ctm WHERE grp = 1), b AS (SELECT MAX(ts) AS s2, MAX(y) AS y2 FROM ctm WHERE grp = 3) SELECT GREATEST(a.s1, b.s2) AS w, LEAST(a.y1, b.y2) AS l FROM a, b|
+w	l
+2024-03-05 00:00:00	1995
+
+=== tm-23: GREATEST and LEAST of two scalar CTEs over FLOAT ===
+== Query ==
+WITH a AS (SELECT MAX(f) AS f1 FROM ctm WHERE grp = 1), b AS (SELECT MIN(f) AS f2 FROM ctm WHERE grp = 3) SELECT GREATEST(a.f1, b.f2) AS w, LEAST(a.f1, b.f2) AS l FROM a, b;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT MAX(f) AS f1 FROM ctm WHERE grp = 1), b AS (SELECT MIN(f) AS f2 FROM ctm WHERE grp = 3) SELECT GREATEST(a.f1, b.f2) AS w, LEAST(a.f1, b.f2) AS l FROM a, b|
+w	l
+0.2	-0.1
+
+=== tm-24: WHERE GREATEST of DATE outputs < a date string ===
+== Query ==
+WITH c AS (SELECT grp AS k, MIN(d) AS mn, MAX(d) AS mx FROM ctm GROUP BY grp) SELECT k, mn, mx FROM c WHERE GREATEST(mn, mx) < '2000-01-01';
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT grp AS k, MIN(d) AS mn, MAX(d) AS mx FROM ctm GROUP BY grp) SELECT k, mn, mx FROM c WHERE GREATEST(mn, mx) < '2000-01-01'|
+k	mn	mx
+1	1994-12-31	1995-01-01
+2	1995-01-01	1996-06-15
+
+=== tm-j1: a DATETIME(3) GROUP BY key under JSON output ===
+== Query ==
+WITH a AS (SELECT grp, MAX(dt3) AS mx FROM ctm GROUP BY grp) SELECT mx, COUNT(*) AS n FROM a GROUP BY mx ORDER BY mx;
+== ronsql_cli JSON ==
+[{"mx":"1995-01-01 10:00:00.500","n":1}
+,{"mx":"1996-06-15 12:00:00.001","n":1}
+,{"mx":"2024-03-05 00:00:00.000","n":1}
+]
+[{"mx":"1995-01-01 10:00:00.500","n":1},{"mx":"1996-06-15 12:00:00.001","n":1},{"mx":"2024-03-05 00:00:00.000","n":1}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"mx":"1995-01-01 10:00:00.500","n":1}
+,{"mx":"1996-06-15 12:00:00.001","n":1}
+,{"mx":"2024-03-05 00:00:00.000","n":1}
+]
+}
+{"data":[{"mx":"1995-01-01 10:00:00.500","n":1},{"mx":"1996-06-15 12:00:00.001","n":1},{"mx":"2024-03-05 00:00:00.000","n":1}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"mx":"1995-01-01 10:00:00.500","n":1}
+,{"mx":"1996-06-15 12:00:00.001","n":1}
+,{"mx":"2024-03-05 00:00:00.000","n":1}
+]
+}
+{"data":[{"mx":"1995-01-01 10:00:00.500","n":1},{"mx":"1996-06-15 12:00:00.001","n":1},{"mx":"2024-03-05 00:00:00.000","n":1}]}
+
+=== tm-e1: SUM of a DATE MAX output is refused ===
+Error handling: RPE
+ronsql_cli caught exception: A CTE output that is a MIN or MAX of a DATE, DATETIME, TIME, TIMESTAMP or YEAR column can be used in an aggregate only as the argument of MIN or MAX, or in a GREATEST or LEAST whose arguments are all CTE outputs of the same temporal type and fractional precision.
+
+=== tm-e2: MAX of arithmetic over a DATE MAX output is refused ===
+Error handling: RPE
+ronsql_cli caught exception: A CTE output that is a MIN or MAX of a DATE, DATETIME, TIME, TIMESTAMP or YEAR column can be used in an aggregate only as the argument of MIN or MAX, or in a GREATEST or LEAST whose arguments are all CTE outputs of the same temporal type and fractional precision.
+
+=== tm-e3: GREATEST of a DATE and a DATETIME scalar CTE is refused ===
+Error handling: RPE
+ronsql_cli caught exception: A CTE output that is a MIN or MAX of a DATE, DATETIME, TIME, TIMESTAMP or YEAR column can be used in an aggregate only as the argument of MIN or MAX, or in a GREATEST or LEAST whose arguments are all CTE outputs of the same temporal type and fractional precision.
+
+=== tm-e4: GREATEST of a DATE scalar CTE and a constant is refused ===
+Error handling: RPE
+ronsql_cli caught exception: A CTE output that is a MIN or MAX of a DATE, DATETIME, TIME, TIMESTAMP or YEAR column can be used in an aggregate only as the argument of MIN or MAX, or in a GREATEST or LEAST whose arguments are all CTE outputs of the same temporal type and fractional precision.
+
+=== tm-e5: a DATETIME(3) MAX compared with YYYYMMDD is refused ===
+Error handling: RPE
+ronsql_cli caught exception: A CTE output that is a MIN or MAX of a DATE, DATETIME, TIME, TIMESTAMP or YEAR column can be compared only with a valid date or time string (a TIME string with at most the column's fractional digits), or with an integer written YYYYMMDD for a DATE, YYYYMMDDhhmmss for a DATETIME or TIMESTAMP, hhmmss for a TIME and YYYY for a YEAR.
+
+=== tm-e6: a TIME(2) MIN compared with three fractional digits is refused ===
+Error handling: RPE
+ronsql_cli caught exception: A CTE output that is a MIN or MAX of a DATE, DATETIME, TIME, TIMESTAMP or YEAR column can be compared only with a valid date or time string (a TIME string with at most the column's fractional digits), or with an integer written YYYYMMDD for a DATE, YYYYMMDDhhmmss for a DATETIME or TIMESTAMP, hhmmss for a TIME and YYYY for a YEAR.
+
+=== tm-e7: WHERE GREATEST of TIME outputs compared with a string is refused ===
+Error handling: RPE
+ronsql_cli caught exception: GREATEST or LEAST of a CTE output that is a MIN or MAX of a TIME column, compared with a string, is not supported. Compare with an integer hhmmss, or compare each CTE output with the string.

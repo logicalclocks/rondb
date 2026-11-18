@@ -68,7 +68,9 @@ AggregationAPICompiler::for_each_expr(
     fn(&m_exprs[i]);
 }
 
-#define require_status(name) ndbrequire(m_status == Status::name)
+#define require_status(name) \
+  ronsql_require_bug(m_status == Status::name, \
+                     "The aggregate compiler is not in state " #name ".")
 
 /*
  * Start of High-level API
@@ -132,11 +134,16 @@ AggregationAPICompiler::new_expr(ExprOp op,
   {
     return NULL;
   }
-  ndbrequire(m_status == Status::PROGRAMMING ||
-             m_status == Status::COMPILING ||
-             m_status == Status::COMPILED);
-  ndbrequire(left == NULL || m_exprs.has_item(left));
-  ndbrequire(right == NULL || m_exprs.has_item(right));
+  ronsql_require_bug(m_status == Status::PROGRAMMING ||
+                     m_status == Status::COMPILING ||
+                     m_status == Status::COMPILED,
+                     "The aggregate compiler is in an unknown state.");
+  ronsql_require_bug(left == NULL || m_exprs.has_item(left),
+                     "An operand of an aggregate expression belongs to "
+                     "another compiler.");
+  ronsql_require_bug(right == NULL || m_exprs.has_item(right),
+                     "An operand of an aggregate expression belongs to "
+                     "another compiler.");
   Expr e;
   e.op = op;
   e.left = left;
@@ -145,15 +152,20 @@ AggregationAPICompiler::new_expr(ExprOp op,
   if (op == ExprOp::Load ||
       op == ExprOp::LoadConstantInt)
   {
-    ndbrequire(left == NULL);
-    ndbrequire(right == NULL);
+    ronsql_require_bug(left == NULL,
+                       "An aggregate load or constant has an operand.");
+    ronsql_require_bug(right == NULL,
+                       "An aggregate load or constant has an operand.");
     e.est_regs = 1;
   }
   else
   {
-    ndbrequire(left != NULL);
-    ndbrequire(right != NULL);
-    ndbrequire(idx == 0);
+    ronsql_require_bug(left != NULL,
+                       "An aggregate arithmetic expression lacks an operand.");
+    ronsql_require_bug(right != NULL,
+                       "An aggregate arithmetic expression lacks an operand.");
+    ronsql_require_bug(idx == 0,
+                       "An aggregate arithmetic expression has an index.");
     // Estimate the numbers of registers necessary to calculate the
     // expression, and use that to determine the order of evaluation.
     // We cannot afford to calculate the exact number of registers needed
@@ -244,7 +256,7 @@ AggregationAPICompiler::new_expr(ExprOp op,
       break;
     default:
       // Unknown operation
-      abort();
+      ronsql_bug("Integer constant folding got an unknown operation.");
     }
     m_constants.push({result});
     return new_expr(ExprOp::LoadConstantInt, 0, 0, m_constants.size() - 1);
@@ -284,10 +296,13 @@ AggregationAPICompiler::new_agg(AggregationAPICompiler::AggType agg_type,
   {
     return -1; // todo can't return -1 due to return type.
   }
-  ndbrequire(m_exprs.has_item(expr));
-  ndbrequire(m_status == Status::PROGRAMMING ||
-             m_status == Status::COMPILING ||
-             m_status == Status::COMPILED);
+  ronsql_require_bug(m_exprs.has_item(expr),
+                     "An aggregate function got an expression of another "
+                     "compiler.");
+  ronsql_require_bug(m_status == Status::PROGRAMMING ||
+                     m_status == Status::COMPILING ||
+                     m_status == Status::COMPILED,
+                     "The aggregate compiler is in an unknown state.");
   AggExpr agg;
   agg.agg_type = agg_type;
   agg.expr = expr;
@@ -351,10 +366,16 @@ AggregationAPICompiler::CaseExpr(ConditionalExpression* condition,
 {
   if (m_status == Status::FAILED) return NULL;
   require_status(PROGRAMMING);
-  ndbrequire(then_expr != NULL);
-  ndbrequire(else_expr != NULL);
-  ndbrequire(m_exprs.has_item(then_expr));
-  ndbrequire(m_exprs.has_item(else_expr));
+  ronsql_require_bug(then_expr != NULL,
+                     "A CASE in an aggregate lacks its THEN value.");
+  ronsql_require_bug(else_expr != NULL,
+                     "A CASE in an aggregate lacks its ELSE value.");
+  ronsql_require_bug(m_exprs.has_item(then_expr),
+                     "An operand of an aggregate expression belongs to "
+                     "another compiler.");
+  ronsql_require_bug(m_exprs.has_item(else_expr),
+                     "An operand of an aggregate expression belongs to "
+                     "another compiler.");
   Expr e;
   e.op = ExprOp::Case;
   e.left = then_expr;
@@ -386,7 +407,9 @@ Uint32
 AggregationAPICompiler::public_aggregate_function_helper(AggType agg_type,
                                                          Expr* x)
 {
-  ndbrequire(m_status != Status::FAILED);
+  ronsql_require_bug(m_status != Status::FAILED,
+                     "An aggregate function was added after the aggregate "
+                     "compiler failed.");
   return new_agg(agg_type, x);
 }
 
@@ -404,7 +427,9 @@ AggregationAPICompiler::public_aggregate_function_helper(AggType agg_type,
  * compilation and to prove correctness of the produced program.
  */
 
-#define require_reg(REG) ndbrequire((REG) < REGS)
+#define require_reg(REG) \
+  ronsql_require_bug((REG) < REGS, \
+                     "The aggregate compiler used a register out of range.")
 
 void
 AggregationAPICompiler::svm_init()
@@ -424,11 +449,15 @@ AggregationAPICompiler::svm_init()
     break;
 #define AGG_CASE(Name) \
   case SVMInstrType::Name: \
-    ndbrequire(dest < m_aggs.size()); \
+    ronsql_require_bug(dest < m_aggs.size(), \
+                       "An aggregate instruction has an aggregate " \
+                       "index out of range."); \
     require_reg(src); \
     svm_use(src, is_first_compilation); \
     if (m_aggs[dest].expr->op != ExprOp::Case) \
-      ndbrequire(m_aggs[dest].expr == r[src]); \
+      ronsql_require_bug(m_aggs[dest].expr == r[src], \
+                         "An aggregate instruction reads a register " \
+                         "that does not hold its argument."); \
     break;
 void
 AggregationAPICompiler::svm_execute(AggregationAPICompiler::Instr* instr,
@@ -459,13 +488,15 @@ AggregationAPICompiler::svm_execute(AggregationAPICompiler::Instr* instr,
   case SVMInstrType::Skip:
     break;
   case SVMInstrType::AggRepeat:
-    ndbrequire(dest < m_aggs.size());
+    ronsql_require_bug(dest < m_aggs.size(),
+                       "An aggregate instruction has an aggregate index out "
+                       "of range.");
     require_reg(src);
     svm_use(src, is_first_compilation);
     break;
   default:
     // Unknown instruction
-    abort();
+    ronsql_bug("The aggregate compiler got an unknown instruction.");
   }
 }
 # undef OPERATOR_CASE
@@ -476,10 +507,13 @@ void
 AggregationAPICompiler::svm_use(Uint32 reg, bool is_first_compilation)
 {
   Expr* value = r[reg];
-  ndbrequire(value != NULL);
+  ronsql_require_bug(value != NULL,
+                     "The aggregate compiler used an empty register.");
   if (is_first_compilation)
   {
-    ndbrequire(value->usage - value->program_usage > 0);
+    ronsql_require_bug(value->usage - value->program_usage > 0,
+                       "The aggregate compiler used a value more often than "
+                       "the aggregates do.");
     value->program_usage++;
   }
 }
@@ -501,7 +535,9 @@ AggregationAPICompiler::svm_use(Uint32 reg, bool is_first_compilation)
       if (m_program[i].dest == next_aggregate) \
         next_aggregate++; \
       else \
-        ndbrequire(m_program[i].dest == next_aggregate - 1); \
+        ronsql_require_bug(m_program[i].dest == next_aggregate - 1, \
+                           "The aggregate program updates the " \
+                           "aggregates out of order."); \
       break;
 bool
 AggregationAPICompiler::compile()
@@ -521,9 +557,14 @@ AggregationAPICompiler::compile()
   for (Uint32 i=0; i<m_exprs.size(); i++)
   {
     Expr* e = &m_exprs[i];
-    ndbrequire(0 < e->usage || e->op == ExprOp::LoadConstantInt);
-    ndbrequire(e->program_usage == 0);
-    ndbrequire(e->has_been_compiled == false);
+    ronsql_require_bug(0 < e->usage || e->op == ExprOp::LoadConstantInt,
+                       "The aggregate compiler got an unused expression.");
+    ronsql_require_bug(e->program_usage == 0,
+                       "The aggregate compiler got an expression used "
+                       "before compilation.");
+    ronsql_require_bug(e->has_been_compiled == false,
+                       "The aggregate compiler got an expression compiled "
+                       "before compilation.");
   }
 #endif
   for (Uint32 i=0; i<m_aggs.size(); i++)
@@ -539,7 +580,9 @@ AggregationAPICompiler::compile()
   for (Uint32 i=0; i<m_exprs.size(); i++)
   {
     if (m_exprs[i].op == ExprOp::Case) continue;
-    ndbrequire(m_exprs[i].usage == m_exprs[i].program_usage);
+    ronsql_require_bug(m_exprs[i].usage == m_exprs[i].program_usage,
+                       "The aggregate program uses an expression another "
+                       "number of times than the aggregates do.");
   }
   dead_code_elimination();
   m_status = Status::COMPILED;
@@ -553,13 +596,16 @@ AggregationAPICompiler::compile()
     {
     FORALL_AGGS(AGG_CASE)
     case SVMInstrType::AggRepeat:
-      ndbrequire(m_program[i].dest == next_aggregate - 1);
+      ronsql_require_bug(m_program[i].dest == next_aggregate - 1,
+                         "The aggregate program repeats an aggregate out of "
+                         "order.");
       break;
     default:
       void(); // Do nothing
     }
   }
-  ndbrequire(next_aggregate == m_aggs.size());
+  ronsql_require_bug(next_aggregate == m_aggs.size(),
+                     "The aggregate program does not update every aggregate.");
   return true;
 }
 #undef AGG_CASE
@@ -613,7 +659,10 @@ AggregationAPICompiler::compile(AggExpr* agg, Uint32 idx)
     m_cases[case_idx].else_start = m_program.size();
     Uint32 else_reg;
     if (!compile(case_expr->right, &else_reg)) return false;
-    pushInstr(SVMInstrType::AggRepeat, idx, else_reg, true);
+    // Count the use of the ELSE value only on the first compilation of
+    // this CASE, as the THEN arm does: AVG compiles the same CASE twice,
+    // once for SUM and once for COUNT (F-1).
+    pushInstr(SVMInstrType::AggRepeat, idx, else_reg, is_first);
     m_cases[case_idx].else_end = m_program.size();
 
     // Values loaded inside CASE arms are conditional — they may not have
@@ -717,11 +766,23 @@ AggregationAPICompiler::compile(Expr* expr, Uint32* reg)
   // At this point, dest and src are both registers containing the correct
   // values, and both are locked. If they are the same register, it's locked
   // twice.
-  ndbrequire(r[dest] == expr->left); ndbrequire(r[src] == expr->right);
-  ndbrequire(m_locked[dest]); ndbrequire(m_locked[src]);
+  ronsql_require_bug(r[dest] == expr->left,
+                     "The aggregate compiler lost the left operand of an "
+                     "expression.");
+  ronsql_require_bug(r[src] == expr->right,
+                     "The aggregate compiler lost the right operand of an "
+                     "expression.");
+  ronsql_require_bug(m_locked[dest] != 0,
+                     "The aggregate compiler did not lock an operand "
+                     "register.");
+  ronsql_require_bug(m_locked[src] != 0,
+                     "The aggregate compiler did not lock an operand "
+                     "register.");
   if (dest == src)
   {
-    ndbrequire(m_locked[dest] >= 2);
+    ronsql_require_bug(m_locked[dest] >= 2,
+                       "The aggregate compiler locked a register that holds "
+                       "both operands only once.");
   }
   if (expr->left->usage - expr->left->program_usage > (dest == src ? 2 : 1))
   {
@@ -743,10 +804,16 @@ AggregationAPICompiler::compile(Expr* expr, Uint32* reg)
                         estimated_cost_of_recalculating(expr->left, dest)))
       {
         require_reg(new_reg);
-        ndbrequire(r[dest] == expr->left);
+        ronsql_require_bug(r[dest] == expr->left,
+                           "The aggregate compiler lost the left operand of "
+                           "an expression.");
         pushInstr(SVMInstrType::Mov, new_reg, dest, is_first_compilation);
-        ndbrequire(r[new_reg] == expr->left);
-        ndbrequire(r[dest] == expr->left);
+        ronsql_require_bug(r[new_reg] == expr->left,
+                           "The aggregate compiler did not copy the left "
+                           "operand of an expression.");
+        ronsql_require_bug(r[dest] == expr->left,
+                           "The aggregate compiler lost the left operand of "
+                           "an expression.");
       }
     }
   }
@@ -773,7 +840,9 @@ AggregationAPICompiler::compile(Expr* expr, Uint32* reg)
       }
     }
     require_reg(new_dest);
-    ndbrequire(m_locked[new_dest] == 0);
+    ronsql_require_bug(m_locked[new_dest] == 0,
+                       "The aggregate compiler chose a locked destination "
+                       "register.");
     if (r[new_dest] != expr->left)
     {
       pushInstr(SVMInstrType::Mov, new_dest, dest, is_first_compilation);
@@ -782,11 +851,19 @@ AggregationAPICompiler::compile(Expr* expr, Uint32* reg)
     m_locked[dest]--;
     dest = new_dest;
   }
-  ndbrequire(r[dest] == expr->left);
-  ndbrequire(m_locked[dest] == (dest == src ? 2 : 1));
+  ronsql_require_bug(r[dest] == expr->left,
+                     "The aggregate compiler lost the left operand of an "
+                     "expression.");
+  ronsql_require_bug(m_locked[dest] == (dest == src ? 2 : 1),
+                     "The aggregate compiler locked the destination "
+                     "register the wrong number of times.");
   m_locked[dest]--;
-  ndbrequire(r[src] == expr->right);
-  ndbrequire(m_locked[src] >= 1);
+  ronsql_require_bug(r[src] == expr->right,
+                     "The aggregate compiler lost the right operand of an "
+                     "expression.");
+  ronsql_require_bug(m_locked[src] >= 1,
+                     "The aggregate compiler did not lock an operand "
+                     "register.");
   m_locked[src]--;
   pushInstr(expr->op, dest, src, is_first_compilation);
   // Phase I.5 v4 fast path: tag the just-pushed pair-op slot with its
@@ -794,7 +871,9 @@ AggregationAPICompiler::compile(Expr* expr, Uint32* reg)
   if (expr->op == ExprOp::Greatest2 || expr->op == ExprOp::Least2) {
     m_pair_op_program_exprs.last_item() = expr;
   }
-  ndbrequire(r[dest] == expr);
+  ronsql_require_bug(r[dest] == expr,
+                     "The aggregate compiler did not compute an expression "
+                     "into its register.");
   *reg = dest;
   return true;
 }
@@ -914,7 +993,7 @@ AggregationAPICompiler::pushInstr(AggType type,
     FORALL_AGGS(AGG_CASE)
     default:
       // Unknown aggregation type
-      abort();
+      ronsql_bug("The aggregate compiler got an unknown aggregate function.");
   }
   pushInstr(instr, dest, src, is_first_compilation);
 }
@@ -935,7 +1014,8 @@ AggregationAPICompiler::pushInstr(ExprOp op,
     FORALL_PAIR_OPS(OP_CASE)
     default:
       // Unknown operation
-      abort();
+      ronsql_bug("The aggregate compiler got an unknown arithmetic "
+                 "operation.");
   }
   pushInstr(instr, dest, src, is_first_compilation);
 }
@@ -953,7 +1033,9 @@ AggregationAPICompiler::pushInstr(ExprOp op,
       break;
 #define AGG_CASE(Name) \
     case SVMInstrType::Name: \
-      ndbrequire(dest < m_aggs.size()); \
+      ronsql_require_bug(dest < m_aggs.size(), \
+                         "An aggregate instruction has an aggregate " \
+                         "index out of range."); \
       require_reg(src); \
       this_instr_is_useful = true; \
       reg_needed[src] = true; \
@@ -1012,7 +1094,9 @@ AggregationAPICompiler::dead_code_elimination()
     FORALL_PAIR_OPS(OPERATOR_CASE)
     FORALL_AGGS(AGG_CASE)
     case SVMInstrType::AggRepeat:
-      ndbrequire(dest < m_aggs.size());
+      ronsql_require_bug(dest < m_aggs.size(),
+                         "An aggregate instruction has an aggregate index "
+                         "out of range.");
       require_reg(src);
       this_instr_is_useful = true;
       reg_needed[src] = true;
@@ -1023,7 +1107,7 @@ AggregationAPICompiler::dead_code_elimination()
       break;
     default:
       // Unknown instruction
-      abort();
+      ronsql_bug("The aggregate compiler got an unknown instruction.");
     }
     if (this_instr_is_useful)
     {
@@ -1033,7 +1117,9 @@ AggregationAPICompiler::dead_code_elimination()
     {
       // We believe the compiler will not generate useless instructions of any
       // other type than Mov.
-      ndbrequire(type == SVMInstrType::Mov);
+      ronsql_require_bug(type == SVMInstrType::Mov,
+                         "Dead code elimination found a useless instruction "
+                         "that is not a Mov.");
       dead_code_found = true;
     }
   }
@@ -1074,7 +1160,9 @@ AggregationAPICompiler::dead_code_elimination()
       ci.skip_pos = new_pos[ci.skip_pos];
       ci.else_start = new_pos[ci.else_start];
       ci.else_end = new_pos[ci.else_end];
-      ndbrequire(m_program[ci.skip_pos].type == SVMInstrType::Skip);
+      ronsql_require_bug(m_program[ci.skip_pos].type == SVMInstrType::Skip,
+                         "Dead code elimination moved the skip of a CASE "
+                         "off its Skip instruction.");
     }
   }
 }
@@ -1119,7 +1207,7 @@ AggregationAPICompiler::print_aggregate(Uint32 idx)
     FORALL_AGGS(AGG_CASE)
   default:
     // Unknown aggregation
-      abort();
+      ronsql_bug("The aggregate compiler got an unknown aggregate function.");
   }
 }
 #undef AGG_CASE
@@ -1218,7 +1306,7 @@ AggregationAPICompiler::print(Expr* expr)
   case ExprOp::Rem: m_out << " % "; break;
   default:
     // Unknown operation
-    abort();
+    ronsql_bug("The aggregate compiler got an unknown arithmetic operation.");
   }
   print(expr->right);
   m_out << ')';
@@ -1244,7 +1332,9 @@ DEFINE_FORMATTER(d2, uint, {
     break;
 #define AGG_CASE(Name) \
   case SVMInstrType::Name: \
-    ndbrequire(dest < m_aggs.size()); \
+    ronsql_require_bug(dest < m_aggs.size(), \
+                       "An aggregate instruction has an aggregate " \
+                       "index out of range."); \
     require_reg(src); \
     m_out << s6(#Name) << " A" << d2(dest) << "  r" << d2(src) << " A" << \
       d2(dest) << ":" << ucasestr_##Name << " <- r" << d2(src) << ':'; \
@@ -1290,7 +1380,9 @@ AggregationAPICompiler::print(Instr* instr)
   FORALL_PAIR_OPS(OPERATOR_CASE)
   FORALL_AGGS(AGG_CASE)
   case SVMInstrType::AggRepeat:
-    ndbrequire(dest < m_aggs.size());
+    ronsql_require_bug(dest < m_aggs.size(),
+                       "An aggregate instruction has an aggregate index out "
+                       "of range.");
     require_reg(src);
     m_out << "AggRep A" << d2(dest) << "  r" << d2(src);
     break;
@@ -1302,7 +1394,7 @@ AggregationAPICompiler::print(Instr* instr)
     break;
   default:
     // Unknown instruction
-    abort();
+    ronsql_bug("The aggregate compiler got an unknown instruction.");
   }
   m_out << '\n';
 }
@@ -1328,7 +1420,9 @@ AggregationAPICompiler::raw_word_size(Uint32 start, Uint32 end)
       // for its precision and scale.  Counted as one, the rows of the
       // skipped-to arm landed one word early (on the THEN arm's Skip, or
       // on the ELSE arm's RepeatAgg), dropping or double-counting them.
-      ndbrequire(m_load_is_decimal.size() == m_program.size());
+      ronsql_require_bug(m_load_is_decimal.size() == m_program.size(),
+                         "The aggregate program lacks the DECIMAL flag of "
+                         "an instruction.");
       count += m_load_is_decimal[i] ? 2 : 1;
     }
     else if (t == SVMInstrType::Greatest2 || t == SVMInstrType::Least2)

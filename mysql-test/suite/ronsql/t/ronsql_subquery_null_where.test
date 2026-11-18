@@ -1,0 +1,505 @@
+# A scalar subquery that returns NULL or no row, in WHERE.
+#
+# X-3 = J-11 (storage/ndb/claude_files/ronsql_executor/
+# review_dispatch_lifecycle.md, review_join.md): a scalar subquery's
+# result replaces its node at execution time, after planning took the
+# node for a constant: a filter value, an index bound or a primary key.
+# A NULL result reached encode_constant, which refused it as a stale
+# schema, so the schema was reloaded and the query failed. MySQL compares
+# with NULL as UNKNOWN and WHERE keeps only TRUE rows. The constants are
+# now folded into the WHERE after the substitution, with three-valued
+# logic: NOT UNKNOWN is UNKNOWN, TRUE OR UNKNOWN is TRUE, XOR with
+# UNKNOWN is UNKNOWN, and IS [NOT] NULL of a subquery is TRUE or FALSE.
+# A WHERE that is TRUE for no row reads no row through its keys and
+# bounds; an aggregate without GROUP BY still returns one row.
+#
+# Subqueries: (SELECT MAX(e_x) FROM nw_e GROUP BY e_id) returns no row,
+# (SELECT MAX(e_x) FROM nw_e) and (SELECT MAX(n_x) FROM nw_n) return
+# NULL, and (SELECT MAX(q) FROM nw_l) returns 7.
+#
+# Case map:
+#   nw-1..nw-21  single table: filter, primary key lookup, index bound,
+#                NOT, OR, XOR, IN list, IS [NOT] NULL, arithmetic
+#   nj-1..nj-13  join: root filter, root primary key, root index bound,
+#                NOT, LEFT JOIN, IN list, IS NULL, XOR
+# A condition on a joined table, or across tables, refuses a subquery
+# at prepare time, so the root is the only place one can be in a join.
+# CTE roots are in ronsql_cte_dd_subquery_null_root (suite ronsql_cte).
+# Expected results come from mysqld (strict_diff).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE nw_o (
+  id INT NOT NULL,
+  c  INT NOT NULL,
+  v  INT,
+  k  INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_nw_o_k (k)
+) ENGINE=NDB;
+
+CREATE TABLE nw_l (
+  id INT NOT NULL,
+  ok INT NOT NULL,
+  q  INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_nw_l_ok (ok)
+) ENGINE=NDB;
+
+CREATE TABLE nw_e (
+  e_id INT NOT NULL,
+  e_x  INT,
+  PRIMARY KEY USING HASH (e_id)
+) ENGINE=NDB;
+
+CREATE TABLE nw_n (
+  n_id INT NOT NULL,
+  n_x  INT,
+  PRIMARY KEY USING HASH (n_id)
+) ENGINE=NDB;
+
+# nw_o rows 3 and 6 have a NULL v. Row 4 has no nw_l row; rows 1 and 6
+# have two. nw_e is empty.
+INSERT INTO nw_o VALUES
+  (1, 1, 10, 5), (2, 1, 20, 15), (3, 2, NULL, 25),
+  (4, 2, 40, 35), (5, 3, 50, 45), (6, 3, NULL, 55);
+INSERT INTO nw_l VALUES
+  (1, 1, 1), (2, 1, 2), (3, 2, 3), (4, 3, 4), (5, 5, 5), (6, 6, 6),
+  (7, 6, 7);
+INSERT INTO nw_n VALUES (1, NULL);
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === nw-1: aggregate without GROUP BY, a subquery with no row ===
+let $QUERY=
+SELECT COUNT(*) AS cnt, SUM(v) AS s FROM nw_o
+WHERE v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS cnt, SUM(v) AS s FROM nw_o
+WHERE v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id)|
+
+--echo
+--echo === nw-2: aggregate with GROUP BY, a subquery that is NULL ===
+let $QUERY=
+SELECT c, COUNT(*) AS cnt FROM nw_o
+WHERE v <= (SELECT MAX(n_x) FROM nw_n)
+GROUP BY c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT c, COUNT(*) AS cnt FROM nw_o
+WHERE v <= (SELECT MAX(n_x) FROM nw_n)
+GROUP BY c|
+
+--echo
+--echo === nw-3: pass-through filter, MAX over an empty table ===
+let $QUERY=
+SELECT id, v FROM nw_o
+WHERE v = (SELECT MAX(e_x) FROM nw_e);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, v FROM nw_o
+WHERE v = (SELECT MAX(e_x) FROM nw_e)|
+
+--echo
+--echo === nw-4: primary key lookup ===
+let $QUERY=
+SELECT id, c FROM nw_o
+WHERE id = (SELECT MAX(e_x) FROM nw_e GROUP BY e_id);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, c FROM nw_o
+WHERE id = (SELECT MAX(e_x) FROM nw_e GROUP BY e_id)|
+
+--echo
+--echo === nw-5: index bound, aggregate without GROUP BY ===
+let $QUERY=
+SELECT COUNT(*) AS cnt, MAX(k) AS mx FROM nw_o
+WHERE k >= (SELECT MAX(n_x) FROM nw_n);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS cnt, MAX(k) AS mx FROM nw_o
+WHERE k >= (SELECT MAX(n_x) FROM nw_n)|
+
+--echo
+--echo === nw-6: index bound, pass-through equality ===
+let $QUERY=
+SELECT id, k FROM nw_o
+WHERE k = (SELECT MAX(e_x) FROM nw_e GROUP BY e_id);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, k FROM nw_o
+WHERE k = (SELECT MAX(e_x) FROM nw_e GROUP BY e_id)|
+
+--echo
+--echo === nw-7: NOT over the comparison is still UNKNOWN ===
+let $QUERY=
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE NOT (v > (SELECT MAX(n_x) FROM nw_n));|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE NOT (v > (SELECT MAX(n_x) FROM nw_n))|
+
+--echo
+--echo === nw-8: NOT over an AND keeps the rows where the other side is FALSE ===
+let $QUERY=
+SELECT id FROM nw_o
+WHERE NOT (v > (SELECT MAX(n_x) FROM nw_n) AND c = 1);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM nw_o
+WHERE NOT (v > (SELECT MAX(n_x) FROM nw_n) AND c = 1)|
+
+--echo
+--echo === nw-9: OR with a side that is TRUE for some rows ===
+let $QUERY=
+SELECT id, c FROM nw_o
+WHERE v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id) OR c = 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, c FROM nw_o
+WHERE v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id) OR c = 2|
+
+--echo
+--echo === nw-10: OR with a side that is FALSE for every row ===
+let $QUERY=
+SELECT id, c FROM nw_o
+WHERE v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id) OR c = 9;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, c FROM nw_o
+WHERE v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id) OR c = 9|
+
+--echo
+--echo === nw-11: NOT over an OR ===
+let $QUERY=
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE NOT (v > (SELECT MAX(n_x) FROM nw_n) OR c = 9);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE NOT (v > (SELECT MAX(n_x) FROM nw_n) OR c = 9)|
+
+--echo
+--echo === nw-12: XOR with UNKNOWN is UNKNOWN ===
+let $QUERY=
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE (v > (SELECT MAX(n_x) FROM nw_n)) XOR (c = 1);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE (v > (SELECT MAX(n_x) FROM nw_n)) XOR (c = 1)|
+
+--echo
+--echo === nw-13: IN list with a NULL subquery ===
+let $QUERY=
+SELECT id, v FROM nw_o
+WHERE v IN (10, 40, (SELECT MAX(n_x) FROM nw_n));|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, v FROM nw_o
+WHERE v IN (10, 40, (SELECT MAX(n_x) FROM nw_n))|
+
+--echo
+--echo === nw-14: NOT over an IN list with a NULL subquery ===
+let $QUERY=
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE NOT (v IN (10, (SELECT MAX(n_x) FROM nw_n)));|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE NOT (v IN (10, (SELECT MAX(n_x) FROM nw_n)))|
+
+--echo
+--echo === nw-15: IS NULL of a NULL subquery is TRUE ===
+let $QUERY=
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE (SELECT MAX(n_x) FROM nw_n) IS NULL;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE (SELECT MAX(n_x) FROM nw_n) IS NULL|
+
+--echo
+--echo === nw-16: IS NOT NULL of a subquery with no row is FALSE ===
+let $QUERY=
+SELECT c, COUNT(*) AS cnt FROM nw_o
+WHERE (SELECT MAX(e_x) FROM nw_e GROUP BY e_id) IS NOT NULL
+GROUP BY c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT c, COUNT(*) AS cnt FROM nw_o
+WHERE (SELECT MAX(e_x) FROM nw_e GROUP BY e_id) IS NOT NULL
+GROUP BY c|
+
+--echo
+--echo === nw-17: IS NOT NULL of a value is TRUE, under AND ===
+let $QUERY=
+SELECT id FROM nw_o
+WHERE (SELECT MAX(q) FROM nw_l) IS NOT NULL AND c = 3;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM nw_o
+WHERE (SELECT MAX(q) FROM nw_l) IS NOT NULL AND c = 3|
+
+--echo
+--echo === nw-18: IS NULL of a value is FALSE, under OR ===
+let $QUERY=
+SELECT id FROM nw_o
+WHERE (SELECT MAX(q) FROM nw_l) IS NULL OR c = 1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM nw_o
+WHERE (SELECT MAX(q) FROM nw_l) IS NULL OR c = 1|
+
+--echo
+--echo === nw-19: arithmetic over a NULL subquery ===
+let $QUERY=
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE v > (SELECT MAX(n_x) FROM nw_n) + 1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE v > (SELECT MAX(n_x) FROM nw_n) + 1|
+
+--echo
+--echo === nw-20: arithmetic over a NULL subquery, under OR ===
+let $QUERY=
+SELECT id, k FROM nw_o
+WHERE k < (SELECT MAX(e_x) FROM nw_e) - 1 OR k > 40;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, k FROM nw_o
+WHERE k < (SELECT MAX(e_x) FROM nw_e) - 1 OR k > 40|
+
+--echo
+--echo === nw-21: unary minus over a NULL subquery, under NOT ===
+let $QUERY=
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE NOT (v < -(SELECT MAX(n_x) FROM nw_n));|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS cnt FROM nw_o
+WHERE NOT (v < -(SELECT MAX(n_x) FROM nw_n))|
+
+--echo
+--echo === nj-1: join, root filter ===
+let $QUERY=
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.v > (SELECT MAX(n_x) FROM nw_n)
+GROUP BY o.c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.v > (SELECT MAX(n_x) FROM nw_n)
+GROUP BY o.c|
+
+--echo
+--echo === nj-2: join, aggregate without GROUP BY ===
+let $QUERY=
+SELECT COUNT(*) AS cnt, SUM(l.q) AS sq
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS cnt, SUM(l.q) AS sq
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id)|
+
+--echo
+--echo === nj-3: join, root primary key, pass-through ===
+let $QUERY=
+SELECT o.id, l.q
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.id = (SELECT MAX(n_x) FROM nw_n);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.id, l.q
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.id = (SELECT MAX(n_x) FROM nw_n)|
+
+--echo
+--echo === nj-4: join, root primary key, aggregate ===
+let $QUERY=
+SELECT o.c, SUM(l.q) AS sq
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.id = (SELECT MAX(e_x) FROM nw_e GROUP BY e_id)
+GROUP BY o.c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.c, SUM(l.q) AS sq
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.id = (SELECT MAX(e_x) FROM nw_e GROUP BY e_id)
+GROUP BY o.c|
+
+--echo
+--echo === nj-5: join, root index bound ===
+let $QUERY=
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.k >= (SELECT MAX(n_x) FROM nw_n)
+GROUP BY o.c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.k >= (SELECT MAX(n_x) FROM nw_n)
+GROUP BY o.c|
+
+--echo
+--echo === nj-6: join, root index bound with a residual that folds ===
+let $QUERY=
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.k >= 10 AND (o.v < (SELECT MAX(n_x) FROM nw_n) OR o.c = 3)
+GROUP BY o.c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.k >= 10 AND (o.v < (SELECT MAX(n_x) FROM nw_n) OR o.c = 3)
+GROUP BY o.c|
+
+--echo
+--echo === nj-7: join, NOT over an AND, pass-through ===
+let $QUERY=
+SELECT o.id, l.q
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE NOT (o.v > (SELECT MAX(n_x) FROM nw_n) AND o.c = 1);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.id, l.q
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE NOT (o.v > (SELECT MAX(n_x) FROM nw_n) AND o.c = 1)|
+
+--echo
+--echo === nj-8: LEFT JOIN, the NULL comparison drops out of an OR ===
+let $QUERY=
+SELECT o.c, COUNT(l.id) AS cnt
+FROM nw_o AS o LEFT JOIN nw_l AS l ON l.ok = o.id
+WHERE o.v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id) OR o.c = 2
+GROUP BY o.c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.c, COUNT(l.id) AS cnt
+FROM nw_o AS o LEFT JOIN nw_l AS l ON l.ok = o.id
+WHERE o.v > (SELECT MAX(e_x) FROM nw_e GROUP BY e_id) OR o.c = 2
+GROUP BY o.c|
+
+--echo
+--echo === nj-9: LEFT JOIN, root filter ===
+let $QUERY=
+SELECT o.c, COUNT(l.id) AS cnt
+FROM nw_o AS o LEFT JOIN nw_l AS l ON l.ok = o.id
+WHERE o.v > (SELECT MAX(n_x) FROM nw_n)
+GROUP BY o.c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.c, COUNT(l.id) AS cnt
+FROM nw_o AS o LEFT JOIN nw_l AS l ON l.ok = o.id
+WHERE o.v > (SELECT MAX(n_x) FROM nw_n)
+GROUP BY o.c|
+
+--echo
+--echo === nj-10: join, IN list on the root primary key ===
+let $QUERY=
+SELECT o.id, l.q
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.id IN (2, 5, (SELECT MAX(e_x) FROM nw_e GROUP BY e_id));|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.id, l.q
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.id IN (2, 5, (SELECT MAX(e_x) FROM nw_e GROUP BY e_id))|
+
+--echo
+--echo === nj-11: join, IS NULL of a NULL subquery is TRUE ===
+let $QUERY=
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE (SELECT MAX(n_x) FROM nw_n) IS NULL
+GROUP BY o.c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE (SELECT MAX(n_x) FROM nw_n) IS NULL
+GROUP BY o.c|
+
+--echo
+--echo === nj-12: join, arithmetic over a NULL subquery, under OR ===
+let $QUERY=
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.k < (SELECT MAX(e_x) FROM nw_e) + 100 OR o.c = 1
+GROUP BY o.c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.c, COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE o.k < (SELECT MAX(e_x) FROM nw_e) + 100 OR o.c = 1
+GROUP BY o.c|
+
+--echo
+--echo === nj-13: join, XOR, aggregate without GROUP BY ===
+let $QUERY=
+SELECT COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE (o.v > (SELECT MAX(n_x) FROM nw_n)) XOR (o.c = 1);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS cnt
+FROM nw_o AS o JOIN nw_l AS l ON l.ok = o.id
+WHERE (o.v > (SELECT MAX(n_x) FROM nw_n)) XOR (o.c = 1)|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE nw_n;
+DROP TABLE nw_e;
+DROP TABLE nw_l;
+DROP TABLE nw_o;
+--enable_warnings
+--enable_query_log

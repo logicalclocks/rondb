@@ -531,23 +531,41 @@ void TlsLineReader::read(int timeout, int *elapsed) {
   char *ptr = m_buf;
   int t;
   int i = 0;
+  bool newline_found = false;
   for (t = peek_len; i < t; i++) {
     if (ptr[i] == '\n') {
-      m_complete = true;
+      newline_found = true;
       i++;
       break;
     }
   }
 
-  /* Consume characters from the buffer */
-  for (int len = i; len;) {
-    t = m_socket.ssl_recv(ptr, len);
-    m_error = (t < 1);
-    if (m_error) return;
+  /* Consume characters from the buffer. ssl_recv() only tries the socket
+     mutex and returns TLS_BUSY_TRY_AGAIN while another thread holds it,
+     e.g. one sending on the same socket. The peeked bytes are already
+     decrypted, so try again while the timeout allows; failing at once
+     would drop part of the line. */
+  {
+    Timer consumeTimer(elapsed);
+    const NDB_TICKS start = NdbTick_getCurrentTicks();
+    for (int len = i; len;) {
+      t = m_socket.ssl_recv(ptr, len);
+      if (t == TLS_BUSY_TRY_AGAIN) {
+        const Uint64 spent =
+            NdbTick_Elapsed(start, NdbTick_getCurrentTicks()).milliSec();
+        if (Uint64(*elapsed) + spent < Uint64(timeout)) continue;
+      }
+      m_error = (t < 1);
+      if (m_error) return;
 
-    ptr += t;
-    len -= t;
+      ptr += t;
+      len -= t;
+    }
   }
+  /* Only a line that was consumed is complete: set before, an error above
+     returned a "complete" line made of the earlier partial reads only,
+     without its newline. */
+  m_complete = newline_found;
 
   /* If a complete line was read, return */
   if (m_complete) {

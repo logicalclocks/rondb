@@ -1,0 +1,242 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== na-0: no WHERE (control) ===
+== Query ==
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+GROUP BY a.grp;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+GROUP BY a.grp|
+grp	cnt	sum_z
+1	3	12
+2	2	3
+3	2	17
+4	3	10
+
+=== na-1: MUL over ADD on the right side ===
+== Query ==
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < b.y * (b.z + 1)
+GROUP BY a.grp;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < b.y * (b.z + 1)
+GROUP BY a.grp|
+grp	cnt	sum_z
+1	1	3
+3	1	8
+4	2	9
+
+=== na-2: SUB over SUB on the right side ===
+== Query ==
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x > b.y - (b.z - 10)
+GROUP BY a.grp;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x > b.y - (b.z - 10)
+GROUP BY a.grp|
+grp	cnt	sum_z
+1	2	9
+2	1	3
+3	1	8
+4	1	7
+
+=== na-3: nested side on the left of the comparison ===
+== Query ==
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE b.y * (b.z - 2) <= a.x
+GROUP BY a.grp;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE b.y * (b.z - 2) <= a.x
+GROUP BY a.grp|
+grp	cnt	sum_z
+1	3	12
+2	2	3
+3	2	17
+4	2	8
+
+=== na-4: nested on both sides ===
+== Query ==
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x * (a.x - 3) > b.y + (b.z * 2)
+GROUP BY a.grp;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x * (a.x - 3) > b.y + (b.z * 2)
+GROUP BY a.grp|
+grp	cnt	sum_z
+1	3	12
+2	2	3
+3	1	8
+4	3	10
+
+=== na-5: nullable column inside the nested operand ===
+== Query ==
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < b.y * (b.zn + 1)
+GROUP BY a.grp;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < b.y * (b.zn + 1)
+GROUP BY a.grp|
+grp	cnt	sum_z
+1	1	3
+4	2	9
+
+=== na-6: nested on the other side, nullable left operand ===
+== Query ==
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.xn - (a.x - 10) > b.z
+GROUP BY a.grp;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.xn - (a.x - 10) > b.z
+GROUP BY a.grp|
+grp	cnt	sum_z
+1	1	3
+2	1	0
+3	1	9
+4	3	10
+
+=== na-7: OR of two nested atoms ===
+== Query ==
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < b.y * (b.z + 1) OR a.x > 2 * (b.y + b.z)
+GROUP BY a.grp;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < b.y * (b.z + 1) OR a.x > 2 * (b.y + b.z)
+GROUP BY a.grp|
+grp	cnt	sum_z
+1	2	9
+2	2	3
+3	1	8
+4	3	10
+
+=== na-8: MUL over ADD, no GROUP BY ===
+== Query ==
+SELECT COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < b.y * (b.z + 1);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < b.y * (b.z + 1)|
+cnt	sum_z
+4	20
+
+=== na-9: a constant minus a nested SUB ===
+== Query ==
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < 12 - (b.y - b.z)
+GROUP BY a.grp;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.grp, COUNT(*) AS cnt, SUM(b.z) AS sum_z
+FROM cna AS a JOIN cnb AS b ON b.id = a.id
+WHERE a.x < 12 - (b.y - b.z)
+GROUP BY a.grp|
+grp	cnt	sum_z
+1	1	3
+2	1	0
+3	1	9
+4	3	10

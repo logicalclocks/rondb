@@ -1,0 +1,383 @@
+# A CTE output that is a MIN or MAX of a temporal column.
+#
+# README findings C-6, O-3 and O-10 = D-7. The kernel computes a MIN or
+# MAX over a DATE, DATETIME, TIME, TIMESTAMP or YEAR column on the
+# column's packed value (its bytes read as an unsigned integer, which
+# orders like the values), and a CTE carries that result as a BIGINT
+# UNSIGNED virtual column. Three places used the packed integer as if it
+# were the value:
+#
+# - C-6: a filter on such an output encoded the constant as a number.
+#   Packed 1995-01-01 is 1021473, so `c.mx > 19950101` rejected every
+#   row, and a string literal failed after a schema reload. The constant
+#   is now converted to the packed value, compared as mysqld compares the
+#   derived table's column: a DATE, DATETIME or TIMESTAMP with a string
+#   as DATETIME at full precision, so a string between two values of the
+#   column's type (a time of day for a DATE, more fractional digits for a
+#   DATETIME(3)) moves the comparison to the value below it, `=` is never
+#   TRUE and `!=` always.
+# - O-3: a GROUP BY over such an output printed the packed integer; so
+#   did the output of a MIN / MAX passed up two CTEs.
+# - O-10: GREATEST / LEAST over scalar-CTE outputs of a temporal or FLOAT
+#   column printed the packed integer or the double digits of the FLOAT.
+#
+#   tm-1..tm-11  filters (C-6), on the CTE root and on a CTE_LOOKUP
+#                child: DATE with YYYYMMDD and with strings, a time of
+#                day (<, =, >=, in DNF), DATETIME(3) with exact and
+#                longer fractions and YYYYMMDDhhmmss, TIME(2) negative,
+#                with a string and hhmmss, TIMESTAMP with a longer
+#                fraction and YYYYMMDDhhmmss, YEAR with YYYY
+#   tm-12..tm-18 GROUP BY over a DATE, DATETIME(3), TIME(2), TIMESTAMP
+#                and YEAR output with and without ORDER BY, a DATE key
+#                and a DATETIME(3) pass-through two CTEs up (O-3)
+#   tm-19..tm-23 GREATEST and LEAST of two scalar CTEs over DATE,
+#                DATETIME(3), TIME(2), TIMESTAMP and YEAR, FLOAT (O-10)
+#   tm-24        GREATEST in WHERE over DATE outputs compared with a
+#                string (one comparison per argument)
+#   tm-j1        a DATETIME(3) GROUP BY key under JSON output (quoted)
+#   tm-e1..e7    refused: SUM and arithmetic over such an output,
+#                GREATEST over DATE and DATETIME, GREATEST with a
+#                constant, a DATETIME compared with YYYYMMDD, a TIME
+#                string with more fractional digits than the column, a
+#                WHERE GREATEST over TIME outputs compared with a string
+#
+# Expected results come from mysqld (strict_diff).
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--let $JSON_CANON=perl -MJSON::PP -e 'print JSON::PP->new->canonical->encode(JSON::PP->new->decode(join q(), <STDIN>)), qq(\n)'
+let $RDRS_RONSQL = curl --no-progress-meter --fail-with-body -X POST
+  -H "Content-Type: application/json"
+  http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql -d;
+
+# RonSQL works in UTC; store the TIMESTAMP values as written, and compare
+# the expected results in UTC as ronsql_compare.inc does.
+--disable_query_log
+--disable_warnings
+SET time_zone = '+00:00';
+CREATE TABLE ctm (
+  id  INT NOT NULL,
+  grp INT NOT NULL,
+  d   DATE NOT NULL,
+  dt3 DATETIME(3) NOT NULL,
+  t2  TIME(2) NOT NULL,
+  ts  TIMESTAMP NOT NULL,
+  y   YEAR NOT NULL,
+  f   FLOAT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE ctk (
+  k INT NOT NULL,
+  PRIMARY KEY USING HASH (k)
+) ENGINE=NDB;
+INSERT INTO ctm VALUES
+  (1, 1, '1995-01-01', '1995-01-01 10:00:00.500', '-01:30:00.25',
+   '1995-01-01 10:00:00', 1995, 0.1),
+  (2, 1, '1994-12-31', '1994-12-31 23:59:59.999', '10:00:00.00',
+   '1994-12-31 23:59:59', 1994, 0.2),
+  (3, 2, '1996-06-15', '1996-06-15 12:00:00.000', '12:34:56.78',
+   '1996-06-15 12:00:00', 2001, 1.5),
+  (4, 2, '1995-01-01', '1996-06-15 12:00:00.001', '12:34:56.79',
+   '1996-06-15 12:00:01', 2000, 2.5),
+  (5, 3, '2024-03-05', '2024-03-05 00:00:00.000', '00:00:00.00',
+   '2024-03-05 00:00:00', 2024, -0.1),
+  (6, 3, '1996-06-15', '1993-07-04 08:15:00.000', '23:00:00.00',
+   '1993-07-04 08:15:00', 1993, 0.3);
+INSERT INTO ctk VALUES (1), (2), (3), (4);
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === tm-1: DATE MAX > YYYYMMDD on a CTE_LOOKUP child ===
+let $QUERY=
+WITH c AS (SELECT grp AS k, MAX(d) AS mx FROM ctm GROUP BY grp) SELECT g.k AS k, c.mx AS mx FROM ctk AS g JOIN c ON c.k = g.k WHERE c.mx > 19950101;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT grp AS k, MAX(d) AS mx FROM ctm GROUP BY grp) SELECT g.k AS k, c.mx AS mx FROM ctk AS g JOIN c ON c.k = g.k WHERE c.mx > 19950101|
+
+--echo
+--echo === tm-2: DATE MAX <= a date string on the CTE root ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_tm2.sql
+--write_file $QUERY_FILE
+WITH c AS (SELECT grp AS k, MAX(d) AS mx FROM ctm GROUP BY grp) SELECT k, mx FROM c WHERE mx <= '1996-06-15';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT grp AS k, MAX(d) AS mx FROM ctm GROUP BY grp) SELECT k, mx FROM c WHERE mx <= '1996-06-15'|
+
+--echo
+--echo === tm-3: DATE MIN < a time of day on a CTE_LOOKUP child ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_tm3.sql
+--write_file $QUERY_FILE
+WITH c AS (SELECT grp AS k, MIN(d) AS mn FROM ctm GROUP BY grp) SELECT g.k AS k, c.mn AS mn FROM ctk AS g JOIN c ON c.k = g.k WHERE c.mn < '1995-01-01 10:00:00';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT grp AS k, MIN(d) AS mn FROM ctm GROUP BY grp) SELECT g.k AS k, c.mn AS mn FROM ctk AS g JOIN c ON c.k = g.k WHERE c.mn < '1995-01-01 10:00:00'|
+
+--echo
+--echo === tm-4: DATE MIN = a time of day OR >= a time of day ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_tm4.sql
+--write_file $QUERY_FILE
+WITH c AS (SELECT grp AS k, MIN(d) AS mn FROM ctm GROUP BY grp) SELECT k, mn FROM c WHERE mn = '1995-01-01 10:00:00' OR mn >= '1995-01-01 00:00:00.001';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT grp AS k, MIN(d) AS mn FROM ctm GROUP BY grp) SELECT k, mn FROM c WHERE mn = '1995-01-01 10:00:00' OR mn >= '1995-01-01 00:00:00.001'|
+
+--echo
+--echo === tm-5: DATETIME(3) MAX > a string with an exact fraction ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_tm5.sql
+--write_file $QUERY_FILE
+WITH c AS (SELECT grp AS k, MAX(dt3) AS mx FROM ctm GROUP BY grp) SELECT k, mx FROM c WHERE mx > '1995-01-01 10:00:00.5';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT grp AS k, MAX(dt3) AS mx FROM ctm GROUP BY grp) SELECT k, mx FROM c WHERE mx > '1995-01-01 10:00:00.5'|
+
+--echo
+--echo === tm-6: DATETIME(3) MIN >= and < strings with four fractional digits ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_tm6.sql
+--write_file $QUERY_FILE
+WITH c AS (SELECT grp AS k, MIN(dt3) AS mn FROM ctm GROUP BY grp) SELECT k, mn FROM c WHERE mn >= '1996-06-15 12:00:00.0005' OR mn < '1994-12-31 23:59:59.9995';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT grp AS k, MIN(dt3) AS mn FROM ctm GROUP BY grp) SELECT k, mn FROM c WHERE mn >= '1996-06-15 12:00:00.0005' OR mn < '1994-12-31 23:59:59.9995'|
+
+--echo
+--echo === tm-7: DATETIME(3) MIN = YYYYMMDDhhmmss on a CTE_LOOKUP child ===
+let $QUERY=
+WITH c AS (SELECT grp AS k, MIN(dt3) AS mn FROM ctm GROUP BY grp) SELECT g.k AS k, c.mn AS mn FROM ctk AS g JOIN c ON c.k = g.k WHERE c.mn = 19960615120000;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT grp AS k, MIN(dt3) AS mn FROM ctm GROUP BY grp) SELECT g.k AS k, c.mn AS mn FROM ctk AS g JOIN c ON c.k = g.k WHERE c.mn = 19960615120000|
+
+--echo
+--echo === tm-8: TIME(2) MIN < a time string, a negative value ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_tm8.sql
+--write_file $QUERY_FILE
+WITH c AS (SELECT grp AS k, MIN(t2) AS mn FROM ctm GROUP BY grp) SELECT k, mn FROM c WHERE mn < '00:00:00';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT grp AS k, MIN(t2) AS mn FROM ctm GROUP BY grp) SELECT k, mn FROM c WHERE mn < '00:00:00'|
+
+--echo
+--echo === tm-9: TIME(2) MAX >= a string AND < hhmmss on a CTE_LOOKUP child ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_tm9.sql
+--write_file $QUERY_FILE
+WITH c AS (SELECT grp AS k, MAX(t2) AS mx FROM ctm GROUP BY grp) SELECT g.k AS k, c.mx AS mx FROM ctk AS g JOIN c ON c.k = g.k WHERE c.mx >= '12:34:56.79' AND c.mx < 230000;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT grp AS k, MAX(t2) AS mx FROM ctm GROUP BY grp) SELECT g.k AS k, c.mx AS mx FROM ctk AS g JOIN c ON c.k = g.k WHERE c.mx >= '12:34:56.79' AND c.mx < 230000|
+
+--echo
+--echo === tm-10: TIMESTAMP MIN >= a string with a fraction AND <= YYYYMMDDhhmmss ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_tm10.sql
+--write_file $QUERY_FILE
+WITH c AS (SELECT grp AS k, MIN(ts) AS mn FROM ctm GROUP BY grp) SELECT k, mn FROM c WHERE mn >= '1994-12-31 23:59:59.5' AND mn <= 19960615120000;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT grp AS k, MIN(ts) AS mn FROM ctm GROUP BY grp) SELECT k, mn FROM c WHERE mn >= '1994-12-31 23:59:59.5' AND mn <= 19960615120000|
+
+--echo
+--echo === tm-11: YEAR MAX >= YYYY ===
+let $QUERY=
+WITH c AS (SELECT grp AS k, MAX(y) AS mx FROM ctm GROUP BY grp) SELECT k, mx FROM c WHERE mx >= 2001;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT grp AS k, MAX(y) AS mx FROM ctm GROUP BY grp) SELECT k, mx FROM c WHERE mx >= 2001|
+
+--echo
+--echo === tm-12: GROUP BY a DATE MAX output ===
+let $QUERY=
+WITH a AS (SELECT id, MAX(d) AS mx FROM ctm GROUP BY id) SELECT mx, COUNT(*) AS n FROM a GROUP BY mx;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT id, MAX(d) AS mx FROM ctm GROUP BY id) SELECT mx, COUNT(*) AS n FROM a GROUP BY mx|
+
+--echo
+--echo === tm-13: GROUP BY a DATE MAX output, ORDER BY it DESC ===
+--let $skip_sort=yes
+let $QUERY=
+WITH a AS (SELECT id, MAX(d) AS mx FROM ctm GROUP BY id) SELECT mx, COUNT(*) AS n FROM a GROUP BY mx ORDER BY mx DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH a AS (SELECT id, MAX(d) AS mx FROM ctm GROUP BY id) SELECT mx, COUNT(*) AS n FROM a GROUP BY mx ORDER BY mx DESC|
+
+--echo
+--echo === tm-14: GROUP BY a DATETIME(3) MAX output, ORDER BY it ===
+--let $skip_sort=yes
+let $QUERY=
+WITH a AS (SELECT grp, MAX(dt3) AS mx FROM ctm GROUP BY grp) SELECT mx, COUNT(*) AS n FROM a GROUP BY mx ORDER BY mx;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH a AS (SELECT grp, MAX(dt3) AS mx FROM ctm GROUP BY grp) SELECT mx, COUNT(*) AS n FROM a GROUP BY mx ORDER BY mx|
+
+--echo
+--echo === tm-15: GROUP BY a TIME(2) MIN output with a negative value, ORDER BY it ===
+--let $skip_sort=yes
+let $QUERY=
+WITH a AS (SELECT grp, MIN(t2) AS mn FROM ctm GROUP BY grp) SELECT mn, COUNT(*) AS n FROM a GROUP BY mn ORDER BY mn;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH a AS (SELECT grp, MIN(t2) AS mn FROM ctm GROUP BY grp) SELECT mn, COUNT(*) AS n FROM a GROUP BY mn ORDER BY mn|
+
+--echo
+--echo === tm-16: GROUP BY a TIMESTAMP MAX and a YEAR MIN output ===
+let $QUERY=
+WITH a AS (SELECT grp, MAX(ts) AS ts_mx, MIN(y) AS y_mn FROM ctm GROUP BY grp) SELECT ts_mx, y_mn, COUNT(*) AS n FROM a GROUP BY ts_mx, y_mn;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT grp, MAX(ts) AS ts_mx, MIN(y) AS y_mn FROM ctm GROUP BY grp) SELECT ts_mx, y_mn, COUNT(*) AS n FROM a GROUP BY ts_mx, y_mn|
+
+--echo
+--echo === tm-17: GROUP BY a DATE MAX passed up two CTEs ===
+let $QUERY=
+WITH a AS (SELECT id, MAX(d) AS mx FROM ctm GROUP BY id), b AS (SELECT id, MAX(mx) AS m2 FROM a GROUP BY id) SELECT m2, COUNT(*) AS n FROM b GROUP BY m2;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT id, MAX(d) AS mx FROM ctm GROUP BY id), b AS (SELECT id, MAX(mx) AS m2 FROM a GROUP BY id) SELECT m2, COUNT(*) AS n FROM b GROUP BY m2|
+
+--echo
+--echo === tm-18: a DATETIME(3) MIN passed up two CTEs, pass-through ===
+let $QUERY=
+WITH a AS (SELECT grp, MIN(dt3) AS mn FROM ctm GROUP BY grp), b AS (SELECT grp, MIN(mn) AS m2 FROM a GROUP BY grp) SELECT grp, m2 FROM b;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT grp, MIN(dt3) AS mn FROM ctm GROUP BY grp), b AS (SELECT grp, MIN(mn) AS m2 FROM a GROUP BY grp) SELECT grp, m2 FROM b|
+
+--echo
+--echo === tm-19: GREATEST and LEAST of two scalar CTEs over DATE ===
+let $QUERY=
+WITH a AS (SELECT MAX(d) AS d1 FROM ctm WHERE grp = 1), b AS (SELECT MAX(d) AS d2 FROM ctm WHERE grp = 2) SELECT GREATEST(a.d1, b.d2) AS w, LEAST(a.d1, b.d2) AS l FROM a, b;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT MAX(d) AS d1 FROM ctm WHERE grp = 1), b AS (SELECT MAX(d) AS d2 FROM ctm WHERE grp = 2) SELECT GREATEST(a.d1, b.d2) AS w, LEAST(a.d1, b.d2) AS l FROM a, b|
+
+--echo
+--echo === tm-20: GREATEST and LEAST of two scalar CTEs over DATETIME(3) ===
+let $QUERY=
+WITH a AS (SELECT MAX(dt3) AS x1 FROM ctm WHERE grp = 1), b AS (SELECT MIN(dt3) AS x2 FROM ctm WHERE grp = 3) SELECT GREATEST(a.x1, b.x2) AS w, LEAST(a.x1, b.x2) AS l FROM a, b;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT MAX(dt3) AS x1 FROM ctm WHERE grp = 1), b AS (SELECT MIN(dt3) AS x2 FROM ctm WHERE grp = 3) SELECT GREATEST(a.x1, b.x2) AS w, LEAST(a.x1, b.x2) AS l FROM a, b|
+
+--echo
+--echo === tm-21: GREATEST and LEAST of two scalar CTEs over TIME(2) ===
+let $QUERY=
+WITH a AS (SELECT MIN(t2) AS ta FROM ctm WHERE grp = 1), b AS (SELECT MAX(t2) AS tb FROM ctm WHERE grp = 2) SELECT GREATEST(a.ta, b.tb) AS w, LEAST(a.ta, b.tb) AS l FROM a, b;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT MIN(t2) AS ta FROM ctm WHERE grp = 1), b AS (SELECT MAX(t2) AS tb FROM ctm WHERE grp = 2) SELECT GREATEST(a.ta, b.tb) AS w, LEAST(a.ta, b.tb) AS l FROM a, b|
+
+--echo
+--echo === tm-22: GREATEST over TIMESTAMP and LEAST over YEAR scalar CTEs ===
+let $QUERY=
+WITH a AS (SELECT MAX(ts) AS s1, MAX(y) AS y1 FROM ctm WHERE grp = 1), b AS (SELECT MAX(ts) AS s2, MAX(y) AS y2 FROM ctm WHERE grp = 3) SELECT GREATEST(a.s1, b.s2) AS w, LEAST(a.y1, b.y2) AS l FROM a, b;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT MAX(ts) AS s1, MAX(y) AS y1 FROM ctm WHERE grp = 1), b AS (SELECT MAX(ts) AS s2, MAX(y) AS y2 FROM ctm WHERE grp = 3) SELECT GREATEST(a.s1, b.s2) AS w, LEAST(a.y1, b.y2) AS l FROM a, b|
+
+--echo
+--echo === tm-23: GREATEST and LEAST of two scalar CTEs over FLOAT ===
+let $QUERY=
+WITH a AS (SELECT MAX(f) AS f1 FROM ctm WHERE grp = 1), b AS (SELECT MIN(f) AS f2 FROM ctm WHERE grp = 3) SELECT GREATEST(a.f1, b.f2) AS w, LEAST(a.f1, b.f2) AS l FROM a, b;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT MAX(f) AS f1 FROM ctm WHERE grp = 1), b AS (SELECT MIN(f) AS f2 FROM ctm WHERE grp = 3) SELECT GREATEST(a.f1, b.f2) AS w, LEAST(a.f1, b.f2) AS l FROM a, b|
+
+--echo
+--echo === tm-24: WHERE GREATEST of DATE outputs < a date string ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_tm24.sql
+--write_file $QUERY_FILE
+WITH c AS (SELECT grp AS k, MIN(d) AS mn, MAX(d) AS mx FROM ctm GROUP BY grp) SELECT k, mn, mx FROM c WHERE GREATEST(mn, mx) < '2000-01-01';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT grp AS k, MIN(d) AS mn, MAX(d) AS mx FROM ctm GROUP BY grp) SELECT k, mn, mx FROM c WHERE GREATEST(mn, mx) < '2000-01-01'|
+
+DELIMITER ;|
+
+--echo
+--echo === tm-j1: a DATETIME(3) GROUP BY key under JSON output ===
+--let $QUERY=WITH a AS (SELECT grp, MAX(dt3) AS mx FROM ctm GROUP BY grp) SELECT mx, COUNT(*) AS n FROM a GROUP BY mx ORDER BY mx;
+--source suite/ronsql/include/ronsql_json_check.inc
+
+--echo === tm-e1: SUM of a DATE MAX output is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT grp, MAX(d) AS mx FROM ctm GROUP BY grp) SELECT SUM(mx) AS s FROM a;' 2>&1
+
+--echo
+--echo === tm-e2: MAX of arithmetic over a DATE MAX output is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT grp, MAX(d) AS mx FROM ctm GROUP BY grp) SELECT MAX(mx + 1) AS s FROM a;' 2>&1
+
+--echo
+--echo === tm-e3: GREATEST of a DATE and a DATETIME scalar CTE is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT MAX(d) AS d1 FROM ctm), b AS (SELECT MAX(dt3) AS x2 FROM ctm) SELECT GREATEST(a.d1, b.x2) AS w FROM a, b;' 2>&1
+
+--echo
+--echo === tm-e4: GREATEST of a DATE scalar CTE and a constant is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT MAX(d) AS d1 FROM ctm) SELECT GREATEST(a.d1, 19950101) AS w FROM a;' 2>&1
+
+--echo
+--echo === tm-e5: a DATETIME(3) MAX compared with YYYYMMDD is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c AS (SELECT grp AS k, MAX(dt3) AS mx FROM ctm GROUP BY grp) SELECT k, mx FROM c WHERE mx >= 19950101;' 2>&1
+
+--echo
+--echo === tm-e6: a TIME(2) MIN compared with three fractional digits is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "WITH c AS (SELECT grp AS k, MIN(t2) AS mn FROM ctm GROUP BY grp) SELECT k, mn FROM c WHERE mn = '12:34:56.785';" 2>&1
+
+--echo
+--echo === tm-e7: WHERE GREATEST of TIME outputs compared with a string is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "WITH c AS (SELECT grp AS k, MIN(t2) AS mn, MAX(t2) AS mx FROM ctm GROUP BY grp) SELECT k FROM c WHERE GREATEST(mn, mx) < '20:00:00';" 2>&1
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE ctk;
+DROP TABLE ctm;
+--enable_warnings
+--enable_query_log

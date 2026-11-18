@@ -1,0 +1,226 @@
+# Arithmetic in a two-table WHERE filter above a LEFT-joined table.
+#
+# ronsql_exec_fixes_handoff.md section 4.1: a WHERE conjunct that
+# compares columns of two INNER-joined tables, like a.x + 1 > b.y, runs
+# as an embedded program in the aggregation program of the leaf. When
+# the leaf is LEFT-joined and has no match, the data node evaluates the
+# program for the NULL-extended row in
+# JoinAggInterpreter::evalEmbeddedForNullRow, as there is no tuple for
+# DBTUP. That evaluator did not know ADD_REG_REG, SUB_REG_REG and
+# MUL_REG_REG; it skipped the program, so the NULL-extended row was
+# aggregated also when the WHERE was false. It now computes them as
+# DBTUP does (TypedRegisterOps.hpp).
+#
+# Rows 2, 5, 6, 7 and 9 of nra / nrb have no nro row, and every case
+# with a WHERE has NULL-extended rows that fail it. Group 3 has only
+# NULL-extended rows: in ar-1 they all fail, so the group must vanish.
+#
+#   ar-0  no WHERE (control)
+#   ar-1  ADD with a constant
+#   ar-2  MUL against ADD
+#   ar-3  ADD over a nullable column (its NULL guard)
+#   ar-4  OR of SUB and MUL atoms
+#   ar-5  unsigned MUL against signed ADD
+#   ar-6  ar-1 without GROUP BY
+#   ar-7  ar-1 with an index-scan LEFT JOIN child (1:n)
+#
+# Expected results come from mysqld (strict_diff).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE nra (
+  id  INT NOT NULL,
+  grp INT NOT NULL,
+  x   INT NOT NULL,
+  xn  INT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE nrb (
+  id INT NOT NULL,
+  y  INT NOT NULL,
+  yu INT UNSIGNED NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE nro (
+  id INT NOT NULL,
+  v  INT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE nrm (
+  id  INT NOT NULL,
+  bid INT NOT NULL,
+  w   INT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_bid (bid)
+) ENGINE=NDB;
+INSERT INTO nra VALUES
+  (1, 1, 5, 5), (2, 1, 2, NULL), (3, 1, 9, 1),
+  (4, 2, 1, 1), (5, 2, 3, NULL),
+  (6, 3, 0, 0), (7, 3, 2, 2),
+  (8, 4, 6, 6), (9, 4, 4, 4);
+INSERT INTO nrb VALUES
+  (1, 3, 4), (2, 7, 2), (3, 9, 6), (4, 5, 1), (5, 8, 3),
+  (6, 4, 0), (7, 9, 9), (8, 2, 5), (9, 4, 2);
+INSERT INTO nro VALUES (1, 10), (3, 30), (4, 20), (8, NULL);
+INSERT INTO nrm VALUES
+  (1, 1, 100), (2, 1, 200), (3, 3, 300), (4, 4, 400),
+  (5, 8, NULL), (6, 8, 600);
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === ar-0: no WHERE (control) ===
+let $QUERY=
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+GROUP BY a.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+GROUP BY a.grp|
+
+--echo
+--echo === ar-1: ADD with a constant ===
+let $QUERY=
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.x + 1 > b.y
+GROUP BY a.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.x + 1 > b.y
+GROUP BY a.grp|
+
+--echo
+--echo === ar-2: MUL against ADD ===
+let $QUERY=
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.x * 2 <= b.y + 3
+GROUP BY a.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.x * 2 <= b.y + 3
+GROUP BY a.grp|
+
+--echo
+--echo === ar-3: ADD over a nullable column ===
+let $QUERY=
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.xn + 1 > b.y
+GROUP BY a.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.xn + 1 > b.y
+GROUP BY a.grp|
+
+--echo
+--echo === ar-4: OR of SUB and MUL atoms ===
+let $QUERY=
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.x - 1 >= b.y OR a.x * 3 < b.y
+GROUP BY a.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.x - 1 >= b.y OR a.x * 3 < b.y
+GROUP BY a.grp|
+
+--echo
+--echo === ar-5: unsigned MUL against signed ADD ===
+let $QUERY=
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE b.yu * 2 > a.x + 1
+GROUP BY a.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE b.yu * 2 > a.x + 1
+GROUP BY a.grp|
+
+--echo
+--echo === ar-6: ADD with a constant, no GROUP BY ===
+let $QUERY=
+SELECT COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.x + 1 > b.y;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.x + 1 > b.y|
+
+--echo
+--echo === ar-7: ADD with a constant, index-scan LEFT JOIN child ===
+let $QUERY=
+SELECT a.grp, COUNT(*) AS cnt, COUNT(m.id) AS cnt_m, SUM(m.w) AS sum_w
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nrm AS m ON m.bid = b.id
+WHERE a.x + 1 > b.y
+GROUP BY a.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.grp, COUNT(*) AS cnt, COUNT(m.id) AS cnt_m, SUM(m.w) AS sum_w
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nrm AS m ON m.bid = b.id
+WHERE a.x + 1 > b.y
+GROUP BY a.grp|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE nrm;
+DROP TABLE nro;
+DROP TABLE nrb;
+DROP TABLE nra;
+--enable_warnings
+--enable_query_log

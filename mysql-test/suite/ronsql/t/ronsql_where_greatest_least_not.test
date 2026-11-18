@@ -1,0 +1,266 @@
+# GREATEST / LEAST in WHERE under NOT and XOR, with NULL arguments.
+#
+# README finding F-5: simplify_ce lowers a comparison of GREATEST or
+# LEAST with a constant into comparisons of each argument
+# (rewrite_minmax_comparison): GREATEST(a, b) > c becomes
+# a IS NOT NULL AND b IS NOT NULL AND (a > c OR b > c), and
+# GREATEST(a, b) < c becomes a < c AND b < c. Where the comparison is
+# UNKNOWN (an argument is NULL), the lowered form can be FALSE. That
+# drops the same rows only where no NOT is above the comparison.
+# simplify_ce lowered the comparison before it applied a NOT above it,
+# and expanded XOR with NOT x, so NOT FALSE kept rows that mysqld drops.
+# NOT is now moved down to the comparison first (NOT (x < c) is x >= c,
+# De Morgan for AND and OR, NOT (x XOR y) is x XOR NOT y), so the
+# comparison is lowered only where no NOT is above it. A comparison
+# that a constant argument makes FALSE or UNKNOWN in every row, such as
+# GREATEST(a, 20) <= 10 (what NOT (GREATEST(a, 20) > 10) becomes now),
+# was refused as a "constant contradiction"; it is now FALSE in every
+# row (a IS NULL AND a IS NOT NULL).
+#
+# Rows of gl (id: a, b, d):
+#   1: NULL, 20, 0    2: NULL, 5, 0     3: 5, 20, 0       4: 20, 5, 1
+#   5: 5, 5, 1        6: 20, 30, 0      7: NULL, NULL, 1  8: 15, NULL, 0
+#
+# Case                                          now (= mysqld)  before
+#   ng-1   NOT (GREATEST(a, b) < 10)               3 4 6        1 3 4 6 8
+#   ng-2   NOT (GREATEST(a, 5) > 10)               3 5          1 2 3 5 7
+#   ng-3   NOT (LEAST(a, b) > 10)                  3 4 5        2 3 4 5
+#   ng-4   NOT (10 > LEAST(a, b))                  6            1 2 6 7 8
+#   ng-5   ng-1 as COUNT(*), SUM(id)               3, 13        5, 22
+#   ng-6   ng-2 as COUNT(*), SUM(id)               2, 8         5, 18
+#   ng-7   NOT (GREATEST(a, 20) > 10), COUNT(*)    0            3 (a IS NULL)
+#   ng-8   GREATEST(a, 20) < 10, COUNT(*)          0            refused
+#   ng-9   GREATEST(a, 20) <= 10 OR d = 1          4 5 7        refused
+#   ng-10  (GREATEST(a, b) > 10) XOR (d = 1)       3 5 6        3 5 6 7
+#   ng-11  NOT ((GREATEST(a, b) > 10) XOR (d = 1)) 4            1 2 4 8
+#   ng-12  NOT (GREATEST(a, b) > 10 AND d = 0)     4 5 7        1 2 4 5 7 8
+#   ng-13  NOT (LEAST(a, b) < 10 OR d = 1)         6            1 2 6 8
+#   ng-14  ng-1 on the joined table of a join, GROUP BY p.grp:
+#          grp 1: 2, 7 and grp 2: 1, 6 (before: 3, 8 and 2, 14)
+#   ng-c1..ng-c4  controls without a NOT above the comparison (NOT NOT
+#          in ng-c4), the same before and now
+#   ng-e1  = under NOT (it becomes !=) is still refused
+#
+# Expected results come from mysqld (strict_diff).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE gl (
+  id INT NOT NULL,
+  a  INT,
+  b  INT,
+  d  INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE glp (
+  id  INT NOT NULL,
+  grp INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+INSERT INTO gl VALUES
+  (1, NULL, 20, 0), (2, NULL, 5, 0), (3, 5, 20, 0), (4, 20, 5, 1),
+  (5, 5, 5, 1), (6, 20, 30, 0), (7, NULL, NULL, 1), (8, 15, NULL, 0);
+INSERT INTO glp VALUES
+  (1, 1), (2, 1), (3, 1), (4, 1), (5, 2), (6, 2), (7, 2), (8, 2);
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === ng-1: NOT over GREATEST < ===
+let $QUERY=
+SELECT id FROM gl WHERE NOT (GREATEST(a, b) < 10);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM gl WHERE NOT (GREATEST(a, b) < 10)|
+
+--echo
+--echo === ng-2: NOT over GREATEST > with a constant argument ===
+let $QUERY=
+SELECT id FROM gl WHERE NOT (GREATEST(a, 5) > 10);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM gl WHERE NOT (GREATEST(a, 5) > 10)|
+
+--echo
+--echo === ng-3: NOT over LEAST > ===
+let $QUERY=
+SELECT id FROM gl WHERE NOT (LEAST(a, b) > 10);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM gl WHERE NOT (LEAST(a, b) > 10)|
+
+--echo
+--echo === ng-4: NOT over a comparison with LEAST on the right ===
+let $QUERY=
+SELECT id FROM gl WHERE NOT (10 > LEAST(a, b));|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM gl WHERE NOT (10 > LEAST(a, b))|
+
+--echo
+--echo === ng-5: ng-1 as an aggregate ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(id) AS ids FROM gl
+WHERE NOT (GREATEST(a, b) < 10);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS ids FROM gl
+WHERE NOT (GREATEST(a, b) < 10)|
+
+--echo
+--echo === ng-6: ng-2 as an aggregate ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(id) AS ids FROM gl
+WHERE NOT (GREATEST(a, 5) > 10);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS ids FROM gl
+WHERE NOT (GREATEST(a, 5) > 10)|
+
+--echo
+--echo === ng-7: NOT over a comparison a constant argument makes TRUE ===
+let $QUERY=
+SELECT COUNT(*) AS n FROM gl WHERE NOT (GREATEST(a, 20) > 10);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM gl WHERE NOT (GREATEST(a, 20) > 10)|
+
+--echo
+--echo === ng-8: a comparison a constant argument makes FALSE ===
+let $QUERY=
+SELECT COUNT(*) AS n FROM gl WHERE GREATEST(a, 20) < 10;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM gl WHERE GREATEST(a, 20) < 10|
+
+--echo
+--echo === ng-9: a comparison a constant argument makes FALSE, in an OR ===
+let $QUERY=
+SELECT id FROM gl WHERE GREATEST(a, 20) <= 10 OR d = 1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM gl WHERE GREATEST(a, 20) <= 10 OR d = 1|
+
+--echo
+--echo === ng-10: GREATEST in an XOR ===
+let $QUERY=
+SELECT id FROM gl WHERE (GREATEST(a, b) > 10) XOR (d = 1);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM gl WHERE (GREATEST(a, b) > 10) XOR (d = 1)|
+
+--echo
+--echo === ng-11: NOT over an XOR with GREATEST ===
+let $QUERY=
+SELECT id FROM gl WHERE NOT ((GREATEST(a, b) > 10) XOR (d = 1));|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM gl WHERE NOT ((GREATEST(a, b) > 10) XOR (d = 1))|
+
+--echo
+--echo === ng-12: NOT over an AND with GREATEST ===
+let $QUERY=
+SELECT id FROM gl WHERE NOT (GREATEST(a, b) > 10 AND d = 0);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM gl WHERE NOT (GREATEST(a, b) > 10 AND d = 0)|
+
+--echo
+--echo === ng-13: NOT over an OR with LEAST ===
+let $QUERY=
+SELECT id FROM gl WHERE NOT (LEAST(a, b) < 10 OR d = 1);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM gl WHERE NOT (LEAST(a, b) < 10 OR d = 1)|
+
+--echo
+--echo === ng-14: NOT over GREATEST on the joined table ===
+let $QUERY=
+SELECT p.grp, COUNT(*) AS n, SUM(c.id) AS ids
+FROM glp AS p JOIN gl AS c ON c.id = p.id
+WHERE NOT (GREATEST(c.a, c.b) < 10)
+GROUP BY p.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT p.grp, COUNT(*) AS n, SUM(c.id) AS ids
+FROM glp AS p JOIN gl AS c ON c.id = p.id
+WHERE NOT (GREATEST(c.a, c.b) < 10)
+GROUP BY p.grp|
+
+--echo
+--echo === ng-c1: control, GREATEST > ===
+let $QUERY=
+SELECT id FROM gl WHERE GREATEST(a, b) > 10;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM gl WHERE GREATEST(a, b) > 10|
+
+--echo
+--echo === ng-c2: control, LEAST <= in an AND ===
+let $QUERY=
+SELECT id FROM gl WHERE LEAST(a, b) <= 5 AND d = 1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM gl WHERE LEAST(a, b) <= 5 AND d = 1|
+
+--echo
+--echo === ng-c3: control, a comparison a constant argument makes TRUE ===
+let $QUERY=
+SELECT id FROM gl WHERE GREATEST(a, 20) > 10;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM gl WHERE GREATEST(a, 20) > 10|
+
+--echo
+--echo === ng-c4: control, NOT NOT over GREATEST < ===
+let $QUERY=
+SELECT id FROM gl WHERE NOT NOT (GREATEST(a, b) < 10);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM gl WHERE NOT NOT (GREATEST(a, b) < 10)|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--echo
+--echo === ng-e1: = under NOT is still refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM gl WHERE NOT (GREATEST(a, b) = 10);' 2>&1
+
+--disable_query_log
+--disable_warnings
+DROP TABLE glp;
+DROP TABLE gl;
+--enable_warnings
+--enable_query_log

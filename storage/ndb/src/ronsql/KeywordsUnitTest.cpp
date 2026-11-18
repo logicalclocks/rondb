@@ -90,6 +90,18 @@ static const char* mysql_operators[] =
 };
 static const Uint32 mysql_operators_len = ARRAY_LEN(mysql_operators);
 
+// Keywords implemented in RonSQL that are not keywords in any MySQL version:
+// a RonSQL statement option, and two functions that MySQL parses as
+// identifiers. Like every implemented keyword, they cannot be used as
+// unquoted identifiers in RonSQL.
+static const char* ronsql_extensions[] =
+{
+  "FRAGS_PER_WORKER",
+  "GREATEST",
+  "LEAST",
+};
+static const Uint32 ronsql_extensions_len = ARRAY_LEN(ronsql_extensions);
+
 void assert_list_sorted(const char* list_name, const char** list, Uint32 list_len)
 {
   for (Uint32 i=0; i < list_len-1; i++)
@@ -144,13 +156,16 @@ main()
   // Exception lists above should be sorted.
   assert_list_sorted("mysql_deprecated", mysql_deprecated, mysql_deprecated_len);
   assert_list_sorted("mysql_operators", mysql_operators, mysql_operators_len);
-  // Concatenate all five lists mentioned. There will be duplicates, that's ok.
+  assert_list_sorted("ronsql_extensions", ronsql_extensions,
+                     ronsql_extensions_len);
+  // Concatenate all six lists mentioned. There will be duplicates, that's ok.
   const Uint32 all_keywords_len =
     ronsql_imple_len +
     ronsql_reserved_len +
     mysql_current_len +
     mysql_deprecated_len +
-    mysql_operators_len;
+    mysql_operators_len +
+    ronsql_extensions_len;
   const char* all_keywords[all_keywords_len];
   {
     Uint32 aidx = 0;
@@ -164,6 +179,8 @@ main()
       all_keywords[aidx++] = mysql_deprecated[i];
     for (Uint32 i=0; i < mysql_operators_len; i++)
       all_keywords[aidx++] = mysql_operators[i];
+    for (Uint32 i=0; i < ronsql_extensions_len; i++)
+      all_keywords[aidx++] = ronsql_extensions[i];
   }
   Uint32 actual_max_strlen_for_keyword_implemented_in_ronsql = 0;
   // Assertions about all keywords
@@ -179,6 +196,7 @@ main()
     static const Uint32 p_09 = 0x40;          // Contains at least one digit
     static const Uint32 p_opchars = 0x80;     // Contains at least one character !&<=>|
     static const Uint32 p_other = 0x100;      // Contains at least one other character
+    static const Uint32 p_ronsql_ext = 0x200; // RonSQL-only keywords
     Uint32 flags = 0;
     if (string_exists_in_list(this_word, ronsql_impl, ronsql_imple_len))
       flags |= p_ronsql_impl;
@@ -190,6 +208,9 @@ main()
       flags |= p_mysql_depr;
     if (string_exists_in_list(this_word, mysql_operators, mysql_operators_len))
       flags |= p_mysql_oper;
+    if (string_exists_in_list(this_word, ronsql_extensions,
+                              ronsql_extensions_len))
+      flags |= p_ronsql_ext;
     Uint32 word_len = strlen(this_word);
     for (Uint32 j=0; j < word_len; j++)
     {
@@ -211,9 +232,11 @@ main()
     }
     switch (flags)    {
     case p_ronsql_impl | p_ronsql_resv | p_mysql_curr | p_AZ_:
+    case p_ronsql_impl | p_ronsql_ext | p_AZ_:
       /*
-       * Implemented keywords should appear in reserved list, be supported in
-       * current MySQL, consist of capital A-Z and underscore (WARNING: The
+       * Implemented keywords should appear in reserved list and be supported
+       * in current MySQL, or be RonSQL extensions, which are in no MySQL list.
+       * They should consist of capital A-Z and underscore (WARNING: The
        * lexer does not currently support digits.). They should also have an
        * acceptable length:
        */
@@ -248,6 +271,7 @@ main()
            << (flags & p_09 ? " | p_09" : "")
            << (flags & p_opchars ? " | p_opchars" : "")
            << (flags & p_other ? " | p_other" : "")
+           << (flags & p_ronsql_ext ? " | p_ronsql_ext" : "")
            << endl;
       break;
     }

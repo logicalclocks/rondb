@@ -380,6 +380,11 @@ class NdbAggregator {
    * no per-row cost. */
   bool OrderBy(Uint32 idx, bool is_agg_result, bool descending);
   bool Limit(Uint32 n);
+  /* Empty-group trailer for a grouped CTE aggregation program: the
+   * owner node erases every group whose COUNT in slot agg_id (a Count()
+   * slot) is 0 after the CTE redistribute.  Declarative — no per-row
+   * cost. */
+  bool DropZeroCountGroups(Uint32 agg_id);
 
   bool GroupBy(const char* name);
   bool GroupBy(Int32 col_id);

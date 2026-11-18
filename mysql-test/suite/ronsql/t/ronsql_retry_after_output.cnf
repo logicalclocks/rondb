@@ -1,0 +1,7 @@
+# Per-test config for ronsql_retry_after_output.test: the one of
+# ronsql_size_limits, whose first rdrs instance ($RDRS_NOKEY_*) caps the
+# response at Internal.MaxRespSize = 65536 bytes (and the request at
+# Internal.MaxHttpReqSize = 300), so that rr-4 can show the cap still
+# holds for a retried attempt.
+
+!include suite/ronsql/t/ronsql_size_limits.cnf

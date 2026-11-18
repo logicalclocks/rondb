@@ -1,0 +1,411 @@
+# A scalar subquery used as a condition: WHERE (SELECT ...), and as an
+# operand of AND, OR, XOR and NOT.
+#
+# README finding S-2 (storage/ndb/claude_files/ronsql_executor/README.md):
+# such a query failed with "Non-boolean term in WHERE condition" whatever
+# the subquery returned. The result replaced the subquery node as a
+# number, and the filter builder takes only predicates. MySQL makes a
+# value used as a condition (0 <> value) (make_condition()): TRUE when it
+# is not zero, also 0.4, FALSE when it is zero, also 0.00, and NULL, which
+# WHERE treats as UNKNOWN, for a NULL result or no row. The result is now
+# substituted as TRUE, FALSE or UNKNOWN in the forms the X-3 fold folds
+# (NULL IS NULL, NULL IS NOT NULL, 0 <> NULL), and the fold removes it
+# from every WHERE structure of the plan.
+#
+# Subqueries over cd_s: MAX(s_i) = 1, MIN(s_i) = 0, AVG(s_i) = 0.4000,
+# MAX(s_d) = 0.40, MIN(s_d) = 0.00, MAX(s_n) = NULL. (SELECT MAX(e_x)
+# FROM cd_e GROUP BY e_id) returns no row.
+#
+# Case map:
+#   cd-1..cd-15  single table: aggregate and pass-through, results 1, 0,
+#                NULL, no row, AVG 0.4, DECIMAL 0.40 and 0.00, NOT, AND,
+#                OR, XOR, index bound and primary key beside it
+#   cj-1..cj-4   join: root filter, never TRUE, OR, index-scan root
+#   cc-1..cc-4   CTE root: grouped and scalar, TRUE and never TRUE
+#   cr-1..cr-5   refused, through ronsql_cli: a correlated subquery as a
+#                condition (decorrelate_scalar() rewrites only a
+#                comparison), a string result (MySQL converts it to a
+#                number with a warning), and, unchanged, a bare column
+#                beside the subquery and arithmetic over it
+#   ce-1         EXPLAIN prints the subquery under NOT and AND
+# Expected results come from mysqld (strict_diff).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE cd_o (
+  id INT NOT NULL,
+  c  INT NOT NULL,
+  v  INT,
+  k  INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_cd_o_k (k)
+) ENGINE=NDB;
+
+CREATE TABLE cd_l (
+  id INT NOT NULL,
+  ok INT NOT NULL,
+  q  INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_cd_l_ok (ok)
+) ENGINE=NDB;
+
+CREATE TABLE cd_s (
+  s_id   INT NOT NULL,
+  s_i    INT NOT NULL,
+  s_d    DECIMAL(5,2) NOT NULL,
+  s_n    INT,
+  s_name VARCHAR(10) NOT NULL,
+  PRIMARY KEY USING HASH (s_id)
+) ENGINE=NDB;
+
+CREATE TABLE cd_e (
+  e_id INT NOT NULL,
+  e_x  INT,
+  PRIMARY KEY USING HASH (e_id)
+) ENGINE=NDB;
+
+# cd_o rows 3 and 6 have a NULL v. Row 4 has no cd_l row; rows 1 and 6
+# have two. cd_e is empty.
+INSERT INTO cd_o VALUES
+  (1, 1, 10, 5), (2, 1, 20, 15), (3, 2, NULL, 25),
+  (4, 2, 40, 35), (5, 3, 50, 45), (6, 3, NULL, 55);
+INSERT INTO cd_l VALUES
+  (1, 1, 1), (2, 1, 2), (3, 2, 3), (4, 3, 4), (5, 5, 5), (6, 6, 6),
+  (7, 6, 7);
+INSERT INTO cd_s VALUES
+  (1, 0, 0.00, NULL, 'abc'), (2, 0, 0.00, NULL, 'b'),
+  (3, 0, 0.10, NULL, 'c'), (4, 1, 0.40, NULL, 'd'),
+  (5, 1, 0.00, NULL, 'e');
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === cd-1: aggregate without GROUP BY, the whole WHERE is 1 ===
+let $QUERY=
+SELECT COUNT(*) AS cnt, SUM(v) AS s FROM cd_o
+WHERE (SELECT MAX(s_i) FROM cd_s);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS cnt, SUM(v) AS s FROM cd_o
+WHERE (SELECT MAX(s_i) FROM cd_s)|
+
+--echo
+--echo === cd-2: aggregate without GROUP BY, the whole WHERE is 0 ===
+let $QUERY=
+SELECT COUNT(*) AS cnt, SUM(v) AS s FROM cd_o
+WHERE (SELECT MIN(s_i) FROM cd_s);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS cnt, SUM(v) AS s FROM cd_o
+WHERE (SELECT MIN(s_i) FROM cd_s)|
+
+--echo
+--echo === cd-3: aggregate without GROUP BY, a NULL aggregate ===
+let $QUERY=
+SELECT COUNT(*) AS cnt, SUM(v) AS s FROM cd_o
+WHERE (SELECT MAX(s_n) FROM cd_s);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS cnt, SUM(v) AS s FROM cd_o
+WHERE (SELECT MAX(s_n) FROM cd_s)|
+
+--echo
+--echo === cd-4: aggregate with GROUP BY, a subquery with no row ===
+let $QUERY=
+SELECT c, COUNT(*) AS cnt FROM cd_o
+WHERE (SELECT MAX(e_x) FROM cd_e GROUP BY e_id)
+GROUP BY c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT c, COUNT(*) AS cnt FROM cd_o
+WHERE (SELECT MAX(e_x) FROM cd_e GROUP BY e_id)
+GROUP BY c|
+
+--echo
+--echo === cd-5: pass-through, AVG 0.4 is TRUE ===
+let $QUERY=
+SELECT id, v FROM cd_o
+WHERE (SELECT AVG(s_i) FROM cd_s);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, v FROM cd_o
+WHERE (SELECT AVG(s_i) FROM cd_s)|
+
+--echo
+--echo === cd-6: pass-through, DECIMAL 0.40 is TRUE, under AND ===
+let $QUERY=
+SELECT id, c FROM cd_o
+WHERE (SELECT MAX(s_d) FROM cd_s) AND c = 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, c FROM cd_o
+WHERE (SELECT MAX(s_d) FROM cd_s) AND c = 2|
+
+--echo
+--echo === cd-7: pass-through, DECIMAL 0.00 is FALSE, under OR ===
+let $QUERY=
+SELECT id, c FROM cd_o
+WHERE (SELECT MIN(s_d) FROM cd_s) OR c = 3;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, c FROM cd_o
+WHERE (SELECT MIN(s_d) FROM cd_s) OR c = 3|
+
+--echo
+--echo === cd-8: NOT 0 is TRUE, aggregate with GROUP BY ===
+let $QUERY=
+SELECT c, COUNT(*) AS cnt FROM cd_o
+WHERE NOT (SELECT MIN(s_i) FROM cd_s)
+GROUP BY c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT c, COUNT(*) AS cnt FROM cd_o
+WHERE NOT (SELECT MIN(s_i) FROM cd_s)
+GROUP BY c|
+
+--echo
+--echo === cd-9: NOT 1 is FALSE, pass-through ===
+let $QUERY=
+SELECT id FROM cd_o
+WHERE NOT (SELECT MAX(s_i) FROM cd_s);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM cd_o
+WHERE NOT (SELECT MAX(s_i) FROM cd_s)|
+
+--echo
+--echo === cd-10: NOT over a subquery with no row is still UNKNOWN ===
+let $QUERY=
+SELECT COUNT(*) AS cnt FROM cd_o
+WHERE NOT (SELECT MAX(e_x) FROM cd_e GROUP BY e_id);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS cnt FROM cd_o
+WHERE NOT (SELECT MAX(e_x) FROM cd_e GROUP BY e_id)|
+
+--echo
+--echo === cd-11: NULL OR a filter keeps the rows of the filter ===
+let $QUERY=
+SELECT id, v FROM cd_o
+WHERE (SELECT MAX(s_n) FROM cd_s) OR v > 30;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, v FROM cd_o
+WHERE (SELECT MAX(s_n) FROM cd_s) OR v > 30|
+
+--echo
+--echo === cd-12: NOT (NULL AND a filter) keeps the rows where it is FALSE ===
+let $QUERY=
+SELECT id FROM cd_o
+WHERE NOT ((SELECT MAX(s_n) FROM cd_s) AND c = 1);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM cd_o
+WHERE NOT ((SELECT MAX(s_n) FROM cd_s) AND c = 1)|
+
+--echo
+--echo === cd-13: TRUE XOR a filter ===
+let $QUERY=
+SELECT id FROM cd_o
+WHERE (SELECT MAX(s_i) FROM cd_s) XOR (c = 1);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM cd_o
+WHERE (SELECT MAX(s_i) FROM cd_s) XOR (c = 1)|
+
+--echo
+--echo === cd-14: index bound with the subquery beside it ===
+let $QUERY=
+SELECT COUNT(*) AS cnt, MAX(k) AS mx FROM cd_o
+WHERE k >= 20 AND (SELECT AVG(s_i) FROM cd_s);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS cnt, MAX(k) AS mx FROM cd_o
+WHERE k >= 20 AND (SELECT AVG(s_i) FROM cd_s)|
+
+--echo
+--echo === cd-15: primary key equality with NOT 0.00 beside it ===
+let $QUERY=
+SELECT id, c, v FROM cd_o
+WHERE id = 4 AND NOT (SELECT MIN(s_d) FROM cd_s);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, c, v FROM cd_o
+WHERE id = 4 AND NOT (SELECT MIN(s_d) FROM cd_s)|
+
+--echo
+--echo === cj-1: join, AVG 0.4 AND a root filter ===
+let $QUERY=
+SELECT o.c, SUM(l.q) AS sq
+FROM cd_o AS o JOIN cd_l AS l ON l.ok = o.id
+WHERE (SELECT AVG(s_i) FROM cd_s) AND o.v > 15
+GROUP BY o.c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.c, SUM(l.q) AS sq
+FROM cd_o AS o JOIN cd_l AS l ON l.ok = o.id
+WHERE (SELECT AVG(s_i) FROM cd_s) AND o.v > 15
+GROUP BY o.c|
+
+--echo
+--echo === cj-2: join, NOT 0.40 is never TRUE, aggregate without GROUP BY ===
+let $QUERY=
+SELECT COUNT(*) AS cnt, SUM(l.q) AS sq
+FROM cd_o AS o JOIN cd_l AS l ON l.ok = o.id
+WHERE NOT (SELECT MAX(s_d) FROM cd_s);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS cnt, SUM(l.q) AS sq
+FROM cd_o AS o JOIN cd_l AS l ON l.ok = o.id
+WHERE NOT (SELECT MAX(s_d) FROM cd_s)|
+
+--echo
+--echo === cj-3: join, NULL OR a root filter, pass-through ===
+let $QUERY=
+SELECT o.id, l.q
+FROM cd_o AS o JOIN cd_l AS l ON l.ok = o.id
+WHERE (SELECT MAX(s_n) FROM cd_s) OR o.c = 3;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.id, l.q
+FROM cd_o AS o JOIN cd_l AS l ON l.ok = o.id
+WHERE (SELECT MAX(s_n) FROM cd_s) OR o.c = 3|
+
+--echo
+--echo === cj-4: join, index-scan root with NOT 0 beside the bound ===
+let $QUERY=
+SELECT o.c, COUNT(*) AS cnt
+FROM cd_o AS o JOIN cd_l AS l ON l.ok = o.id
+WHERE o.k >= 30 AND NOT (SELECT MIN(s_i) FROM cd_s)
+GROUP BY o.c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.c, COUNT(*) AS cnt
+FROM cd_o AS o JOIN cd_l AS l ON l.ok = o.id
+WHERE o.k >= 30 AND NOT (SELECT MIN(s_i) FROM cd_s)
+GROUP BY o.c|
+
+--echo
+--echo === cc-1: grouped CTE root, AVG 0.4 AND a filter on an output ===
+let $QUERY=
+WITH s AS (SELECT c AS g, SUM(v) AS m FROM cd_o GROUP BY c)
+SELECT g, m FROM s
+WHERE (SELECT AVG(s_i) FROM cd_s) AND g > 1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT c AS g, SUM(v) AS m FROM cd_o GROUP BY c)
+SELECT g, m FROM s
+WHERE (SELECT AVG(s_i) FROM cd_s) AND g > 1|
+
+--echo
+--echo === cc-2: aggregate over a grouped CTE root, NOT 1 is never TRUE ===
+let $QUERY=
+WITH s AS (SELECT c AS g, SUM(v) AS m FROM cd_o GROUP BY c)
+SELECT COUNT(*) AS cnt, SUM(m) AS sm FROM s
+WHERE NOT (SELECT MAX(s_i) FROM cd_s);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH s AS (SELECT c AS g, SUM(v) AS m FROM cd_o GROUP BY c)
+SELECT COUNT(*) AS cnt, SUM(m) AS sm FROM s
+WHERE NOT (SELECT MAX(s_i) FROM cd_s)|
+
+--echo
+--echo === cc-3: scalar CTE root, DECIMAL 0.40 is TRUE ===
+let $QUERY=
+WITH s AS (SELECT MAX(v) AS m FROM cd_o)
+SELECT m FROM s WHERE (SELECT MAX(s_d) FROM cd_s);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH s AS (SELECT MAX(v) AS m FROM cd_o)
+SELECT m FROM s WHERE (SELECT MAX(s_d) FROM cd_s)|
+
+--echo
+--echo === cc-4: scalar CTE root, a NULL aggregate is never TRUE ===
+let $QUERY=
+WITH s AS (SELECT MAX(v) AS m FROM cd_o)
+SELECT m FROM s WHERE (SELECT MAX(s_n) FROM cd_s);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH s AS (SELECT MAX(v) AS m FROM cd_o)
+SELECT m FROM s WHERE (SELECT MAX(s_n) FROM cd_s)|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--echo
+--echo === cr-1 (rejection): a correlated subquery is the whole WHERE ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) FROM cd_o AS o WHERE (SELECT COUNT(*) FROM cd_l AS l WHERE l.ok = o.id);' 2>&1
+
+--echo
+--echo === cr-2 (rejection): a correlated subquery under NOT, in an OR ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.id FROM cd_o AS o WHERE o.c = 1 OR NOT (SELECT MAX(l.q) FROM cd_l AS l WHERE l.ok = o.id);' 2>&1
+
+--echo
+--echo === cr-3 (rejection): a string result ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) FROM cd_o WHERE (SELECT s_name FROM cd_s WHERE s_id = 1);' 2>&1
+
+--echo
+--echo === cr-4 (rejection, unchanged): a bare column beside the subquery ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) FROM cd_o WHERE v AND (SELECT MAX(s_i) FROM cd_s);' 2>&1
+
+--echo
+--echo === cr-5 (rejection, unchanged): arithmetic over the subquery ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) FROM cd_o WHERE (SELECT MAX(s_i) FROM cd_s) + 0;' 2>&1
+
+--echo
+--echo === ce-1: EXPLAIN, the subquery under NOT and AND ===
+--let $QUERY_FILE=$MYSQL_TMP_DIR/ronsql-s2.sql
+--let $EXPLAIN_OUT=$MYSQL_TMP_DIR/ronsql-s2.out
+# The WHERE line of the parse tree and the indented lines of its tree.
+--let $WHERE_TREE=sed -n '/^WHERE/,/^[^ ]/{/^WHERE/p;/^  /p;}' $EXPLAIN_OUT
+--write_file $QUERY_FILE
+SELECT COUNT(*) FROM cd_o WHERE NOT (SELECT MAX(s_i) FROM cd_s) AND c = 1;
+EOF
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --output-format TEXT --explain-mode=FORCE --execute-file $QUERY_FILE > $EXPLAIN_OUT 2>&1
+--exec $WHERE_TREE
+--remove_file $QUERY_FILE
+--remove_file $EXPLAIN_OUT
+--let $QUERY_FILE=
+--let $EXPLAIN_OUT=
+--let $WHERE_TREE=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE cd_e;
+DROP TABLE cd_s;
+DROP TABLE cd_l;
+DROP TABLE cd_o;
+--enable_warnings
+--enable_query_log

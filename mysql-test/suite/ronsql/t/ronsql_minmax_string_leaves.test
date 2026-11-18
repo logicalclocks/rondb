@@ -1,0 +1,153 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# String MIN/MAX on a later leaf of a multi-leaf join aggregation
+# (dblqh_ronsql_analysis.md bug 15).
+#
+# SELECT-list subqueries on different tables each get their own leaf
+# program, and the data node puts all leaves' slots in one row: a leaf's
+# program uses slot indexes from 0 and runs against the row shifted by
+# the leaf's offset.  String MIN/MAX keeps per-slot metadata (charset,
+# length-prefix size) in a side table indexed like the whole row, which
+# the setup metadata, the payload encoding and the merges all use.
+# AggInterpreterBase::minMaxString looked it up with the leaf-local
+# index, so a later leaf compared with the charset and length prefix of
+# the earlier leaf's slot at that position:
+#
+#   ml-1/2  latin1_swedish_ci vs latin1_bin: a later leaf compared 'a'
+#           and 'B' with the other leaf's collation.
+#   ml-3/4  CHAR vs VARCHAR: the VARCHAR leaf compared as CHAR without
+#           its length byte, so the length byte ordered the values
+#           ('aa' over 'b' for MAX).
+#
+# Each table's rows for an entity sit in one partition (PARTITION BY
+# KEY (entity_id)), so one interpreter sees both values; a merge
+# between threads would compare with the right metadata and hide it.
+# The CHAR subquery comes first in ml-3/4: with the VARCHAR leaf first,
+# the CHAR leaf would have compared its bytes as a VARCHAR.
+
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE ml_e (
+  id INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE ml_ci (
+  id INT NOT NULL,
+  entity_id INT NOT NULL,
+  s VARCHAR(20) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL,
+  PRIMARY KEY (entity_id, id),
+  INDEX idx_ml_ci (entity_id)
+) ENGINE=NDB PARTITION BY KEY (entity_id);
+
+CREATE TABLE ml_bin (
+  id INT NOT NULL,
+  entity_id INT NOT NULL,
+  s VARCHAR(20) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL,
+  PRIMARY KEY (entity_id, id),
+  INDEX idx_ml_bin (entity_id)
+) ENGINE=NDB PARTITION BY KEY (entity_id);
+
+CREATE TABLE ml_char (
+  id INT NOT NULL,
+  entity_id INT NOT NULL,
+  s CHAR(10) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL,
+  PRIMARY KEY (entity_id, id),
+  INDEX idx_ml_char (entity_id)
+) ENGINE=NDB PARTITION BY KEY (entity_id);
+
+CREATE TABLE ml_vchar (
+  id INT NOT NULL,
+  entity_id INT NOT NULL,
+  s VARCHAR(20) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL,
+  PRIMARY KEY (entity_id, id),
+  INDEX idx_ml_vchar (entity_id)
+) ENGINE=NDB PARTITION BY KEY (entity_id);
+
+INSERT INTO ml_e VALUES (1), (2);
+# Entity 1: 'a' and 'B' order differently in the two collations
+# (swedish_ci: 'B' > 'a'; bin: 'a' (0x61) > 'B' (0x42)).
+INSERT INTO ml_ci  VALUES (1, 1, 'a'), (2, 1, 'B'), (3, 2, 'x');
+INSERT INTO ml_bin VALUES (1, 1, 'a'), (2, 1, 'B'), (3, 2, 'y');
+# Entity 1: 'b' > 'aa', but 'aa' is the longer value.
+INSERT INTO ml_char  VALUES (1, 1, 'aa'), (2, 1, 'b'), (3, 2, 'c');
+INSERT INTO ml_vchar VALUES (1, 1, 'aa'), (2, 1, 'b'), (3, 2, 'd');
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === ml-1: MAX, latin1_swedish_ci leaf then latin1_bin leaf ===
+let $QUERY=
+SELECT e.id,
+  (SELECT MAX(a.s) FROM ml_ci AS a WHERE a.entity_id = e.id) AS m_ci,
+  (SELECT MAX(b.s) FROM ml_bin AS b WHERE b.entity_id = e.id) AS m_bin
+FROM ml_e AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT MAX(a.s) FROM ml_ci AS a WHERE a.entity_id = e.id) AS m_ci,
+  (SELECT MAX(b.s) FROM ml_bin AS b WHERE b.entity_id = e.id) AS m_bin
+FROM ml_e AS e|
+
+--echo
+--echo === ml-2: MIN, latin1_bin leaf then latin1_swedish_ci leaf ===
+let $QUERY=
+SELECT e.id,
+  (SELECT MIN(b.s) FROM ml_bin AS b WHERE b.entity_id = e.id) AS n_bin,
+  (SELECT MIN(a.s) FROM ml_ci AS a WHERE a.entity_id = e.id) AS n_ci
+FROM ml_e AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT MIN(b.s) FROM ml_bin AS b WHERE b.entity_id = e.id) AS n_bin,
+  (SELECT MIN(a.s) FROM ml_ci AS a WHERE a.entity_id = e.id) AS n_ci
+FROM ml_e AS e|
+
+--echo
+--echo === ml-3: MAX, CHAR leaf then VARCHAR leaf ===
+let $QUERY=
+SELECT e.id,
+  (SELECT MAX(c.s) FROM ml_char AS c WHERE c.entity_id = e.id) AS m_char,
+  (SELECT MAX(v.s) FROM ml_vchar AS v WHERE v.entity_id = e.id) AS m_vchar
+FROM ml_e AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT MAX(c.s) FROM ml_char AS c WHERE c.entity_id = e.id) AS m_char,
+  (SELECT MAX(v.s) FROM ml_vchar AS v WHERE v.entity_id = e.id) AS m_vchar
+FROM ml_e AS e|
+
+--echo
+--echo === ml-4: MIN, CHAR leaf then VARCHAR leaf ===
+let $QUERY=
+SELECT e.id,
+  (SELECT MIN(c.s) FROM ml_char AS c WHERE c.entity_id = e.id) AS n_char,
+  (SELECT MIN(v.s) FROM ml_vchar AS v WHERE v.entity_id = e.id) AS n_vchar
+FROM ml_e AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT MIN(c.s) FROM ml_char AS c WHERE c.entity_id = e.id) AS n_char,
+  (SELECT MIN(v.s) FROM ml_vchar AS v WHERE v.entity_id = e.id) AS n_vchar
+FROM ml_e AS e|
+
+DELIMITER ;|
+
+--disable_query_log
+--disable_warnings
+DROP TABLE ml_e, ml_ci, ml_bin, ml_char, ml_vchar;
+--enable_warnings
+--enable_query_log

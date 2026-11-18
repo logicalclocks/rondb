@@ -1,0 +1,204 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== ar-0: no WHERE (control) ===
+== Query ==
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+GROUP BY a.grp;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+GROUP BY a.grp|
+grp	cnt	cnt_o	sum_v
+1	3	2	40
+2	2	1	20
+3	2	0	NULL
+4	2	1	NULL
+
+=== ar-1: ADD with a constant ===
+== Query ==
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.x + 1 > b.y
+GROUP BY a.grp;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.x + 1 > b.y
+GROUP BY a.grp|
+grp	cnt	cnt_o	sum_v
+1	2	2	40
+4	2	1	NULL
+
+=== ar-2: MUL against ADD ===
+== Query ==
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.x * 2 <= b.y + 3
+GROUP BY a.grp;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.x * 2 <= b.y + 3
+GROUP BY a.grp|
+grp	cnt	cnt_o	sum_v
+1	1	0	NULL
+2	2	1	20
+3	2	0	NULL
+
+=== ar-3: ADD over a nullable column ===
+== Query ==
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.xn + 1 > b.y
+GROUP BY a.grp;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.xn + 1 > b.y
+GROUP BY a.grp|
+grp	cnt	cnt_o	sum_v
+1	1	1	10
+4	2	1	NULL
+
+=== ar-4: OR of SUB and MUL atoms ===
+== Query ==
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.x - 1 >= b.y OR a.x * 3 < b.y
+GROUP BY a.grp;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.x - 1 >= b.y OR a.x * 3 < b.y
+GROUP BY a.grp|
+grp	cnt	cnt_o	sum_v
+1	2	1	10
+2	1	1	20
+3	2	0	NULL
+4	1	1	NULL
+
+=== ar-5: unsigned MUL against signed ADD ===
+== Query ==
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE b.yu * 2 > a.x + 1
+GROUP BY a.grp;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.grp, COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE b.yu * 2 > a.x + 1
+GROUP BY a.grp|
+grp	cnt	cnt_o	sum_v
+1	3	2	40
+2	1	0	NULL
+3	1	0	NULL
+4	1	1	NULL
+
+=== ar-6: ADD with a constant, no GROUP BY ===
+== Query ==
+SELECT COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.x + 1 > b.y;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS cnt, COUNT(o.id) AS cnt_o, SUM(o.v) AS sum_v
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nro AS o ON o.id = b.id
+WHERE a.x + 1 > b.y|
+cnt	cnt_o	sum_v
+4	3	40
+
+=== ar-7: ADD with a constant, index-scan LEFT JOIN child ===
+== Query ==
+SELECT a.grp, COUNT(*) AS cnt, COUNT(m.id) AS cnt_m, SUM(m.w) AS sum_w
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nrm AS m ON m.bid = b.id
+WHERE a.x + 1 > b.y
+GROUP BY a.grp;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.grp, COUNT(*) AS cnt, COUNT(m.id) AS cnt_m, SUM(m.w) AS sum_w
+FROM nra AS a JOIN nrb AS b ON b.id = a.id
+LEFT JOIN nrm AS m ON m.bid = b.id
+WHERE a.x + 1 > b.y
+GROUP BY a.grp|
+grp	cnt	cnt_m	sum_w
+1	3	3	600
+4	3	2	600

@@ -1,0 +1,13 @@
+--source include/have_ndb.inc
+
+# P-31: join aggregation leaf 0 with a reserved flag bit in its header (K-1).
+# JoinAggInterpreter::Init asserted the header of leaf 0, so a debug
+# data node stopped; checkProgram now rejects it at JOIN_AGG_SETUP_REQ.
+# The case runs a well-formed join aggregation first, then the malformed
+# one, which must get SCAN_TABREF with every data node still started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P31
+--let $spj_case_title = P-31: join aggregation leaf 0 with a reserved flag bit
+--source suite/ndb_spj/include/spj_malformed_case.inc

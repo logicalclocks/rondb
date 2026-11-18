@@ -1,0 +1,360 @@
+# A CTE body over a join with a cross-table filter.
+#
+# README finding D-4 = F-7 = C-4: a WHERE condition that compares
+# columns of two tables (l.qty > o.lim + 0) is a filter in the join
+# aggregation program, and a hidden sentinel COUNT counts the rows that
+# pass it. The data node creates a GROUP BY group when a row arrives,
+# before the filter can stop the row, so a group whose rows all fail is
+# kept with COUNT 0 and NULL for the other aggregates. The main query's
+# printer drops such groups (sentinel 0); a CTE body is materialized on
+# the data nodes and was read with them, so the outer query saw phantom
+# groups. Now a grouped CTE body's program ends with a kOpDropZeroCount
+# trailer naming the sentinel, and the data node that owns the groups
+# erases those with sentinel 0 before the CTE is read (before its ORDER
+# BY / LIMIT too). Without GROUP BY the one row is kept, as MySQL does
+# (F-6).
+#
+# Second part: the sentinel slot was one past the highest SUM / COUNT /
+# MIN / MAX slot, but a CTE body compiles AVG as one Avg slot, so when
+# AVG was the last aggregate the sentinel took its slot and the query
+# failed with "Failed writing aggregation program. Please report a bug."
+#
+# A CTE body may not compare two bare columns (check_cte_body_col_vs_col),
+# hence the "+ 0".
+#
+# cgo has 4 orders, cgl 6 lines. l.qty > o.lim + 0 holds for one line
+# each of orders 1, 2 and 3 (prices 200, 300, 500) and for no line of
+# order 4. l.qty + 10 > o.lim holds for 5 lines, at least one of every
+# order. cgr puts orders 1 and 2 in region 1, 3 and 4 in region 2.
+#
+#   cg-1  outer pass-through over the CTE, ORDER BY the key
+#         (before: an extra row 4, 0, NULL)
+#   cg-2  COUNT(*) over the CTE (before: 4)
+#   cg-3  MIN / SUM / COUNT over the CTE's outputs (before: MIN(n) 0)
+#   cg-4  GROUP BY over the CTE's COUNT output (before: an extra group
+#         n = 0 with one row)
+#   cg-5  real table JOIN the CTE, grouped by a real-table column
+#         (before: region 2 counted 2 groups)
+#   cg-6  real table LEFT JOIN the CTE, pass-through (before: order 4
+#         matched the phantom group and showed n = 0, not NULL)
+#   ca-1  AVG as the only aggregate of the body (before: "Failed writing
+#         aggregation program. Please report a bug.")
+#   ca-2  COUNT(*) then AVG, AVG last (before: the same error)
+#   ca-3  AVG without GROUP BY, no row passes (before: the same error)
+#   cs-1  without GROUP BY, no row passes: the one row stays, COUNT 0
+#         and SUM NULL (unchanged; the drop must not apply)
+#   cl-1  body ORDER BY n, k LIMIT 2: the drop runs before the LIMIT
+#         (before: the phantom group 4 with n = 0 sorted first and took
+#         one of the two places, so keys 1 and 4)
+#   cc-1  control: every order has a passing line, pass-through
+#         (unchanged)
+#   cc-2  control: the same body, COUNT(*) and SUM over it (unchanged)
+#
+# Expected results come from mysqld (strict_diff).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE cgo (
+  id  INT NOT NULL,
+  lim INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE cgl (
+  id    INT NOT NULL,
+  oid   INT NOT NULL,
+  qty   INT NOT NULL,
+  price INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_cgl_oid (oid)
+) ENGINE=NDB;
+CREATE TABLE cgr (
+  id     INT NOT NULL,
+  region INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+INSERT INTO cgo VALUES (1, 10), (2, 20), (3, 30), (4, 50);
+INSERT INTO cgl VALUES
+  (1, 1, 5, 100), (2, 1, 15, 200), (3, 2, 25, 300),
+  (4, 2, 10, 400), (5, 3, 40, 500), (6, 4, 45, 600);
+INSERT INTO cgr VALUES (1, 1), (2, 1), (3, 2), (4, 2);
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === cg-1: pass-through over the CTE, ORDER BY the key ===
+--let $skip_sort=yes
+let $QUERY=
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT k, n, s FROM cg ORDER BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT k, n, s FROM cg ORDER BY k|
+
+--echo
+--echo === cg-2: COUNT(*) over the CTE ===
+let $QUERY=
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT COUNT(*) AS g FROM cg;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT COUNT(*) AS g FROM cg|
+
+--echo
+--echo === cg-3: MIN, SUM and COUNT over the CTE outputs ===
+let $QUERY=
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT MIN(n) AS mn, SUM(n) AS sn, COUNT(s) AS cs, SUM(s) AS ss FROM cg;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT MIN(n) AS mn, SUM(n) AS sn, COUNT(s) AS cs, SUM(s) AS ss FROM cg|
+
+--echo
+--echo === cg-4: GROUP BY over the CTE COUNT output ===
+let $QUERY=
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT n, COUNT(*) AS g FROM cg GROUP BY n;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT n, COUNT(*) AS g FROM cg GROUP BY n|
+
+--echo
+--echo === cg-5: real table JOIN the CTE, grouped by a real-table column ===
+let $QUERY=
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT r.region, COUNT(*) AS g, SUM(cg.s) AS ss
+FROM cgr AS r JOIN cg ON cg.k = r.id
+GROUP BY r.region;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT r.region, COUNT(*) AS g, SUM(cg.s) AS ss
+FROM cgr AS r JOIN cg ON cg.k = r.id
+GROUP BY r.region|
+
+--echo
+--echo === cg-6: real table LEFT JOIN the CTE, pass-through ===
+--let $skip_sort=yes
+let $QUERY=
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT r.id, cg.n
+FROM cgr AS r LEFT JOIN cg ON cg.k = r.id
+ORDER BY r.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT r.id, cg.n
+FROM cgr AS r LEFT JOIN cg ON cg.k = r.id
+ORDER BY r.id|
+
+--echo
+--echo === ca-1: AVG as the only aggregate of the body ===
+--let $skip_sort=yes
+let $QUERY=
+WITH ca AS (
+SELECT o.id AS k, AVG(l.price) AS av
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT k, av FROM ca ORDER BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH ca AS (
+SELECT o.id AS k, AVG(l.price) AS av
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT k, av FROM ca ORDER BY k|
+
+--echo
+--echo === ca-2: COUNT(*) then AVG in the body, AVG last ===
+let $QUERY=
+WITH ca AS (
+SELECT o.id AS k, COUNT(*) AS n, AVG(l.price) AS av
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT COUNT(*) AS g, SUM(n) AS sn FROM ca;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH ca AS (
+SELECT o.id AS k, COUNT(*) AS n, AVG(l.price) AS av
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT COUNT(*) AS g, SUM(n) AS sn FROM ca|
+
+--echo
+--echo === ca-3: AVG without GROUP BY, no row passes ===
+let $QUERY=
+WITH ca AS (
+SELECT AVG(l.price) AS av
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000)
+SELECT av FROM ca;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH ca AS (
+SELECT AVG(l.price) AS av
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000)
+SELECT av FROM ca|
+
+--echo
+--echo === cs-1: without GROUP BY, no row passes: the one row stays ===
+let $QUERY=
+WITH cs AS (
+SELECT COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000)
+SELECT n, s FROM cs;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cs AS (
+SELECT COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000)
+SELECT n, s FROM cs|
+
+--echo
+--echo === cl-1: body ORDER BY n, k LIMIT 2, the drop runs first ===
+--let $skip_sort=yes
+let $QUERY=
+WITH cl AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id
+ORDER BY n, k
+LIMIT 2)
+SELECT k, n, s FROM cl ORDER BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH cl AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id
+ORDER BY n, k
+LIMIT 2)
+SELECT k, n, s FROM cl ORDER BY k|
+
+--echo
+--echo === cc-1: control, every order has a passing line ===
+--let $skip_sort=yes
+let $QUERY=
+WITH cc AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty + 10 > o.lim
+GROUP BY o.id)
+SELECT k, n, s FROM cc ORDER BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH cc AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty + 10 > o.lim
+GROUP BY o.id)
+SELECT k, n, s FROM cc ORDER BY k|
+
+--echo
+--echo === cc-2: control, COUNT(*) and SUM over the same body ===
+let $QUERY=
+WITH cc AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty + 10 > o.lim
+GROUP BY o.id)
+SELECT COUNT(*) AS g, SUM(n) AS sn, SUM(s) AS ss FROM cc;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cc AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty + 10 > o.lim
+GROUP BY o.id)
+SELECT COUNT(*) AS g, SUM(n) AS sn, SUM(s) AS ss FROM cc|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE cgr;
+DROP TABLE cgl;
+DROP TABLE cgo;
+--enable_warnings
+--enable_query_log

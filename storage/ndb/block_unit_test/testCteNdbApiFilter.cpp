@@ -38,6 +38,8 @@
  *   - Tests 30-31 (finding E-23): CTE group and CTE_LOOKUP keys longer
  *     than 4092 bytes fail the query with error 20023 and leave the data
  *     nodes running.  They need two data nodes and are skipped on one.
+ *   - Test 32 (finding K-2): a filter on a scalar CTE scanned as the
+ *     root, which keeps the one row or rejects it.
  *
  * Schema (created via MySQL):
  *   filter_src(pk INT PK, grp INT, val BIGINT, tag CHAR(8))
@@ -85,6 +87,8 @@ static const char *TEST_DB = "test";
 static const char *SRC_TABLE = "filter_src";
 static const char *CTE_SRC_TABLE = "cte_src";
 static const char *CTE_VIRTUAL_TABLE = "cte_virtual";
+/* Test 32 (K-2): the virtual table of a CTE without GROUP BY. */
+static const char *CTE_SCALAR_VIRTUAL_TABLE = "cte_virtual_scalar";
 /* Tests 30-31 (E-23): the CTE source and probe tables. */
 static const char *E23_WIDE_TABLE = "e23_g";    /* VARCHAR(6000), 5000 B */
 static const char *E23_NARROW_TABLE = "e23_n";  /* VARCHAR(4000), 3990 B */
@@ -130,6 +134,7 @@ createTestTables(MYSQL *conn)
   sqlExec(conn, "DROP TABLE IF EXISTS filter_src");
   sqlExec(conn, "DROP TABLE IF EXISTS cte_src");
   sqlExec(conn, "DROP TABLE IF EXISTS cte_virtual");
+  sqlExec(conn, "DROP TABLE IF EXISTS cte_virtual_scalar");
   sqlExec(conn, "DROP TABLE IF EXISTS e23_g");
   sqlExec(conn, "DROP TABLE IF EXISTS e23_n");
   sqlExec(conn, "DROP TABLE IF EXISTS e23_s");
@@ -157,6 +162,13 @@ createTestTables(MYSQL *conn)
       "CREATE TABLE cte_virtual ("
       "  grp INT NOT NULL PRIMARY KEY,"
       "  total BIGINT NOT NULL"
+      ") ENGINE=NDB") != 0) return -1;
+
+  /* Test 32: a CTE without GROUP BY has the one aggregate result as
+   * its virtual table, as in testCteNdbApi.cpp. */
+  if (sqlExec(conn,
+      "CREATE TABLE cte_virtual_scalar ("
+      "  result BIGINT NOT NULL PRIMARY KEY"
       ") ENGINE=NDB") != 0) return -1;
 
   /* Tests 30-31 (E-23): wide VARCHAR CTE keys.  The tests seed them.
@@ -212,6 +224,7 @@ dropTestTables(MYSQL *conn)
   sqlExec(conn, "DROP TABLE IF EXISTS filter_src");
   sqlExec(conn, "DROP TABLE IF EXISTS cte_src");
   sqlExec(conn, "DROP TABLE IF EXISTS cte_virtual");
+  sqlExec(conn, "DROP TABLE IF EXISTS cte_virtual_scalar");
   sqlExec(conn, "DROP TABLE IF EXISTS e23_g");
   sqlExec(conn, "DROP TABLE IF EXISTS e23_n");
   sqlExec(conn, "DROP TABLE IF EXISTS e23_s");
@@ -5465,6 +5478,204 @@ testCteE23WideLookupKey(Ndb *ndb, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 32: CTE_SCAN filter on a scalar CTE (finding K-2)              */
+/*                                                                     */
+/*   WITH cte0 AS (SELECT SUM(val) AS result FROM cte_src)             */
+/*   SELECT result FROM cte0 WHERE result > threshold                  */
+/*                                                                     */
+/* scanCte(0) is the root.  cte_src is seeded with the baseline rows   */
+/* again, so result = 150.                                             */
+/*   (a) threshold 149: the filter keeps the row, 1 row of 150.        */
+/*   (b) threshold 150: the filter rejects it, 0 rows.                 */
+/*                                                                     */
+/* The scalar arm of cteScanEmitResults counted its row in             */
+/* CTE_SCAN_CONF.numRows also when the filter rejected it.  DBSPJ adds */
+/* numRows to the rows the API waits for, so in (b) nextResult waited  */
+/* for a row that never came, until the receive timeout failed the     */
+/* query.  Test 14 rejects every group of a grouped CTE only.          */
+/* ------------------------------------------------------------------ */
+
+/* Run the query above.  Returns 0 with the number of rows and the last
+ * result read, or -1 after printing FAILED. */
+static int
+runScalarCteScanFilter(Ndb *ndb, const char *label, Int64 threshold,
+                       Uint32 *rowCount, Int64 *result)
+{
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  const NdbDictionary::Table *srcTab = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab =
+      dict->getTable(CTE_SCALAR_VIRTUAL_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr) {
+    printf("FAILED (%s: table lookup: %s)\n", label,
+           dict->getNdbError().message);
+    return -1;
+  }
+
+  /* CTE 0: SUM(val) without GROUP BY. */
+  NdbAggregator cteAgg(srcTab);
+  if (!cteAgg.LoadColumn("val", 0) || !cteAgg.Sum(0, 0) ||
+      !cteAgg.Finalize()) {
+    printf("FAILED (%s: cteAgg)\n", label);
+    return -1;
+  }
+
+  /* Keep the row when result > threshold: branch_linked_mem_ge branches
+   * when the column is <= the value.  A scalar root has no group key
+   * and no parent columns, so the result is at linked position 0. */
+  Uint32 codeBuf[64];
+  NdbInterpretedCode filterCode(virtTab, codeBuf,
+                                sizeof(codeBuf) / sizeof(codeBuf[0]));
+  const Uint32 REJECT = 0;
+  const Uint32 resultAttrId = virtTab->getColumn("result")->getColumnNo();
+  if (filterCode.branch_linked_mem_ge(0, virtTab, resultAttrId,
+                                       &threshold, sizeof(threshold),
+                                       REJECT) != 0 ||
+      filterCode.interpret_exit_ok() != 0 ||
+      filterCode.def_label(REJECT) != 0 ||
+      filterCode.interpret_exit_nok() != 0 ||
+      filterCode.finalise() != 0) {
+    printf("FAILED (%s: build filter)\n", label);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (%s: NdbQueryBuilder::create)\n", label);
+    return -1;
+  }
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    const NdbQueryOperand *key[] = { qb->linkedValue(scan, "pk"), nullptr };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cteAgg);
+    qb->readTuple(srcTab, key, &opts);
+  }
+  qb->endCteSubtree();
+  qb->defineCte(0, srcTab, cteAgg);
+
+  NdbQueryOptions scanOpts;
+  scanOpts.setInterpretedCode(filterCode);
+  if (qb->scanCte(0, 1, virtTab, &scanOpts) == nullptr) {
+    printf("FAILED (%s: scanCte: %s)\n", label, qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (%s: prepare: %s)\n", label, qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (%s: startTransaction)\n", label);
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (%s: createQuery: %s)\n", label,
+           trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  const Uint32 mainOpNo = queryDef->getNoOfOperations() - 1;
+  NdbQueryOperation *mainOp = query->getQueryOperation(mainOpNo);
+  NdbRecAttr *raResult =
+      (mainOp != nullptr) ? mainOp->getValue("result") : nullptr;
+  if (raResult == nullptr) {
+    printf("FAILED (%s: getValue)\n", label);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (%s: execute: %s)\n", label,
+           trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  *rowCount = 0;
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    (*rowCount)++;
+    *result = raResult->int64_value();
+  }
+  if (outcome == NdbQuery::NextResult_error) {
+    const NdbError &error = query->getNdbError();
+    printf("FAILED (%s: nextResult error %d: %s)\n", label, error.code,
+           error.message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+  return 0;
+}
+
+static int
+testCteScanFilterScalar(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 32: CTE_SCAN filter on a scalar CTE ... ");
+  fflush(stdout);
+
+  /* Earlier tests seed cte_src with other rows. */
+  if (sqlExec(conn, "DELETE FROM cte_src") != 0 ||
+      sqlExec(conn,
+              "INSERT INTO cte_src VALUES "
+              "(1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,3,50)") != 0) {
+    printf("FAILED (seed)\n");
+    return -1;
+  }
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_SCALAR_VIRTUAL_TABLE);
+
+  const Int64 expectedSum = 150;
+  Uint32 rows = 0;
+  Int64 result = -1;
+
+  /* (a) Control: the filter keeps the row. */
+  if (runScalarCteScanFilter(ndb, "keep", expectedSum - 1, &rows,
+                             &result) != 0)
+    return -1;
+  if (rows != 1 || result != expectedSum) {
+    printf("FAILED (keep: expected 1 row of %lld, got %u rows, last %lld)\n",
+           (long long)expectedSum, rows, (long long)result);
+    return -1;
+  }
+
+  /* (b) The filter rejects the row: no row, and the scan completes. */
+  rows = 0;
+  result = -1;
+  if (runScalarCteScanFilter(ndb, "reject", expectedSum, &rows,
+                             &result) != 0)
+    return -1;
+  if (rows != 0) {
+    printf("FAILED (reject: expected 0 rows, got %u, last %lld)\n",
+           rows, (long long)result);
+    return -1;
+  }
+
+  printf("OK (keep: 1 row of %lld; reject: 0 rows)\n",
+         (long long)expectedSum);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -5505,6 +5716,7 @@ static const TestEntry g_tests[] = {
     { 29, testCteLookupRowCache },
     { 30, testCteE23WideGroupKey },
     { 31, testCteE23WideLookupKey },
+    { 32, testCteScanFilterScalar },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 

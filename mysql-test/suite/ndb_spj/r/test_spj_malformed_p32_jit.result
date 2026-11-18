@@ -1,0 +1,13 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# P-32: join aggregation SUM of a register the row did not load, JIT on
+Running command
+Result of command: 0
+Test program success!
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 > 0
+AS p32_refused_by_jit;
+p32_refused_by_jit
+1

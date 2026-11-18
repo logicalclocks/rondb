@@ -1,0 +1,86 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== cu-1: control, before single user mode ===
+== Query ==
+SELECT SUM(v) AS s FROM cu_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(v) AS s FROM cu_t|
+s
+60
+== Query ==
+SELECT t.id, d.w FROM cu_t AS t JOIN cu_d AS d ON d.id = t.id;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT t.id, d.w FROM cu_t AS t JOIN cu_d AS d ON d.id = t.id|
+id	w
+1	100
+2	200
+
+=== cu-2: single user mode for another API node ===
+== ronsql_cli, aggregate scan: 299 on each of 3 attempts, exit code 3 ==
+3
+3
+ronsql_cli caught retryable error after 3 attempts.
+== ronsql_cli, pass-through join: 299 on each of 3 attempts, exit code 3 ==
+3
+3
+ronsql_cli caught retryable error after 3 attempts.
+== RDRS, aggregate scan: 10 attempts, 503 resource ==
+HTTP 503
+x-ronsql-error-class: resource
+x-ronsql-ndb-error: 299
+[resource] Caught RonSQLRetryableError after 10 attempts
+== RDRS, pass-through join: 10 attempts, 503 resource ==
+HTTP 503
+x-ronsql-error-class: resource
+x-ronsql-ndb-error: 299
+[resource] Caught RonSQLRetryableError after 10 attempts
+
+=== cu-3: after single user mode ===
+== RDRS answers again ==
+HTTP 200
+== Query ==
+SELECT SUM(v) AS s FROM cu_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(v) AS s FROM cu_t|
+s
+60
+== Query ==
+SELECT t.id, d.w FROM cu_t AS t JOIN cu_d AS d ON d.id = t.id;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT t.id, d.w FROM cu_t AS t JOIN cu_d AS d ON d.id = t.id|
+id	w
+1	100
+2	200
