@@ -29,11 +29,20 @@ NDB_ADD_EXECUTABLE(error_handling_test error_handling_test.cpp
 # to initialize and shut down the NDB client library.
 NDB_ADD_EXECUTABLE(ronsql_oom_test ronsql_oom_test.cpp
                    ronsql_parse_only_test.cpp STATIC_NDBCLIENT)
+# ronsql and ndbclient_static are listed here, in this order, for GNU ld,
+# which takes an archive member only if an object before it on the link line
+# needs it. libronsql.a needs NdbScanFilter from the NDB API library, but
+# ronsql cannot name that library as a dependency, since its users choose
+# between ndbclient_so and ndbclient_static. The other tests get NdbScanFilter
+# through the rdrs2_lib members they use; this test only uses
+# ronsql_operation.cpp from rdrs2_lib, which does not need it.
 TARGET_LINK_LIBRARIES(
   ronsql_oom_test
   ndbgeneral
   rdrs2_lib
   ${GTEST_LIBRARIES}
+  ronsql
+  ndbclient_static
 )
 
 NDB_ADD_EXECUTABLE(reconnect_test reconnect_test.cpp
