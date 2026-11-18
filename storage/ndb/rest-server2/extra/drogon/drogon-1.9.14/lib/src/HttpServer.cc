@@ -232,6 +232,44 @@ void HttpServer::onMessage(const TcpConnectionPtr &conn, MsgBuffer *buf)
             req->setConnectionPtr(conn);
             // TODO: maybe call onRequests() directly in stream mode
             requests.push_back(req);
+            // RonDB patch (drogon-keepalive-graceful-close.patch): at this
+            // point numberOfRequestsParsed() is THIS request's ordinal on
+            // the connection (reset() keeps the counter). When it reaches
+            // the keep-alive cap: serve exactly this request with
+            // "Connection: close" (every response path derives that from
+            // req->keepAlive() in applyConnectionDecision(), and both
+            // sendResponse and sendResponses shut the connection down only
+            // after writing a close-marked response), stop the parser, and
+            // discard any pipelined bytes beyond it - per Connection: close
+            // semantics the client re-issues those on a new connection.
+            // Marking per ordinal here rather than in onRequests() keeps a
+            // pipelined batch that straddles the cap correct: requests
+            // before the cap stay keep-alive and are all answered; the
+            // capped one is always the last dispatched. Skipped in stream
+            // mode, where the request is pushed at headers-complete and
+            // stopping the parser here would discard its own still-arriving
+            // body (a stream-mode connection is instead cut by the backstop
+            // in onRequests once past the cap).
+            //
+            // Two cases in drogon 1.9.14 are not covered, and rdrs2 has
+            // neither. A handler that calls setCloseConnection(false) on
+            // its response overrides req->keepAlive() in
+            // applyConnectionDecision(). And for a 1xx or 204 response,
+            // sendResponse and sendResponses return before they shut the
+            // connection down. In both cases the parser is stopped but the
+            // connection stays open until the client or the idle timer
+            // closes it.
+            if (!req->isStreamMode() &&
+                HttpAppFrameworkImpl::instance().keepaliveRequestsNumber() >
+                    0 &&
+                requestParser->numberOfRequestsParsed() >=
+                    HttpAppFrameworkImpl::instance().keepaliveRequestsNumber())
+            {
+                req->setKeepAlive(false);
+                requestParser->stop();
+                buf->retrieveAll();
+                break;
+            }
         }
         if (parseRes == 1 || parseRes == 2)
         {
@@ -330,8 +368,14 @@ void HttpServer::onRequests(
         return;
     }
 
+    // RonDB patch (drogon-keepalive-graceful-close.patch): '>' instead of
+    // '>=': the request that reaches the cap is served, with
+    // "Connection: close" set at the parse boundary in onMessage(), which
+    // also stops the parser at exactly the cap - so this check can no
+    // longer fire for the batch containing the capped request ('>=' would
+    // have dropped that whole batch unanswered). Kept as a backstop only.
     if (HttpAppFrameworkImpl::instance().keepaliveRequestsNumber() > 0 &&
-        requestParser->numberOfRequestsParsed() >=
+        requestParser->numberOfRequestsParsed() >
             HttpAppFrameworkImpl::instance().keepaliveRequestsNumber())
     {
         requestParser->stop();

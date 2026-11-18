@@ -25,10 +25,10 @@ JSON Content-Type (RONDB-813).
 With this patch two content type codes map to application/json, and
 drogon's own unit tests ContentTypeTest and MultiPartParser fail.
 
-diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/lib/src/HttpUtils.cc b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/lib/src/HttpUtils.cc
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/lib/src/HttpUtils.cc b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/lib/src/HttpUtils.cc
 index 5cfcbb7d256..ea06579b70e 100644
---- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/lib/src/HttpUtils.cc
-+++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/lib/src/HttpUtils.cc
+--- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/lib/src/HttpUtils.cc
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/lib/src/HttpUtils.cc
 @@ -35,7 +35,8 @@ static const std::unordered_map<
      std::pair<std::vector<std::string_view>, std::string_view>>
      mimeTypeDatabase_{

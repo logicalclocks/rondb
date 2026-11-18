@@ -197,7 +197,14 @@ if(TARGET std::filesystem)
 endif()
 
 # jsoncpp
-find_package(jsoncpp QUIET CONFIG)
+# Added by Hopsworks: when the vendored Jsoncpp_lib target exists, do not look
+# for a jsoncpp CMake package on the system. FindJsoncpp.cmake below then uses
+# the vendored target.
+if (TARGET Jsoncpp_lib)
+  set(jsoncpp_FOUND FALSE)
+else()
+  find_package(jsoncpp QUIET CONFIG)
+endif()
 if (jsoncpp_FOUND)
   message(STATUS "jsoncpp found by config")
   if (USE_STATIC_LIBS_ONLY)
@@ -206,7 +213,20 @@ if (jsoncpp_FOUND)
     target_link_libraries(${PROJECT_NAME} PUBLIC jsoncpp_lib)
   endif()
 else()
-  find_package(Jsoncpp REQUIRED MODULE)
+  find_package(Jsoncpp QUIET MODULE)
+  if(NOT Jsoncpp_FOUND)
+    message(STATUS "Jsoncpp NOT FOUND")
+    # Provide suggestions for how to install the missing package
+    if(APPLE)
+      message("\n\nOn macOS, you can use Homebrew to install Jsoncpp:")
+      message("   brew install jsoncpp\n\n")
+    elseif(UNIX)
+      message("\n\nOn Linux, you can use your package manager to install Jsoncpp:")
+      message("   sudo apt-get install libjsoncpp-dev         # For Debian/Ubuntu")
+      message("   sudo dnf install jsoncpp-devel              # For Red Hat/Fedora\n\n")
+    endif()
+    message(FATAL_ERROR "Failed to configure drogon. Jsoncpp NOT FOUND")
+  endif()
   target_link_libraries(${PROJECT_NAME} PUBLIC Jsoncpp_lib)
 endif()
 list(APPEND INCLUDE_DIRS_FOR_DYNAMIC_VIEW ${JSONCPP_INCLUDE_DIRS})
@@ -245,7 +265,22 @@ if (NOT ${CMAKE_SYSTEM_NAME} STREQUAL "FreeBSD"
         add_definitions(-DUSE_BOOST_UUID=1)
     else ()
         add_definitions(-DUSE_BOOST_UUID=0)
-        find_package(UUID REQUIRED)
+        find_package(UUID QUIET)
+
+        if(NOT UUID_FOUND)
+            message(STATUS "UUID NOT FOUND")
+            # Provide suggestions for how to install the missing package
+            if(APPLE)
+                message("\n\nOn macOS, you can use Homebrew to install UUID:")
+                message("   brew install ossp-uuid\n\n")
+            elseif(UNIX)
+                message("\n\nOn Linux, you can use your package manager to install UUID:")
+                message("   sudo apt-get install uuid-dev         # For Debian/Ubuntu")
+                message("   sudo dnf install uuid-devel           # For Red Hat/Fedora\n\n")
+            endif()
+            message(FATAL_ERROR "Failed to configure drogon. UUID NOT FOUND")
+        endif()
+
         target_link_libraries(${PROJECT_NAME} PRIVATE UUID_lib)
 
         try_compile(normal_uuid ${CMAKE_BINARY_DIR}/cmaketest
@@ -844,12 +879,6 @@ install(FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/DrogonUtilities.cmake"
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ParseAndAddDrogonTests.cmake"
     DESTINATION "${INSTALL_DROGON_CMAKE_DIR}"
-    COMPONENT dev)
-
-# Install the export set for use with the install-tree
-install(EXPORT DrogonTargets
-    DESTINATION "${INSTALL_DROGON_CMAKE_DIR}"
-    NAMESPACE Drogon::
     COMPONENT dev)
 
 # Doxygen documentation

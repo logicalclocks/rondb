@@ -38,7 +38,8 @@ class TRANTOR_EXPORT EventLoopThreadPool : NonCopyable
      * @param name The name of the EventLoopThreadPool object.
      */
     EventLoopThreadPool(size_t threadNum,
-                        const std::string &name = "EventLoopThreadPool");
+                        const std::string &name = "EventLoopThreadPool",
+                        size_t stackSize = 0);
 
     /**
      * @brief Run all event loops in the pool.
