@@ -1066,25 +1066,32 @@ defect:</p>
   dedicated <code>MaxNoOfUserObjects</code> configuration parameter</strong>, added to
   the object-slot sum in the kernel with a generous default, so alias capacity has its
   own labeled budget instead of overloading <code>MaxNoOfTables</code> (which also
-  sizes trigger pools through the index parameters). rondb-helm sets it; a slot costs a
-  schema-file entry and pool records, no DataMemory. Mikael agreed on 2026-11-18, provided
-  it integrates with RONDB-136 (in 26.02-main and later), which lets the schema file hold
-  more than 20,320 objects (up to about 200,000): <code>MaxNoOfSchemaObjects</code>
+  sizes trigger pools through the index parameters). rondb-helm exposes it as an optional
+  override of the kernel default. A slot stores no rows in DataMemory, but its dictionary
+  records come out of the memory that automatic memory configuration would otherwise give
+  to DataMemory (<code>Configuration.cpp:583-621</code>, <code>:1495-1585</code>), so the
+  user objects join that accounting too. Mikael agreed on 2026-11-18, provided it
+  integrates with RONDB-136 (in 26.02-main and later), which lets the schema file hold
+  more than 20,320 objects (tested at about 200,000): <code>MaxNoOfSchemaObjects</code>
   (default and minimum 20,320, <code>ConfigInfo.cpp:777-787</code>; read at
   <code>Dbdict.cpp:3204-3207</code>, schema file sized at <code>:3244-3253</code>) must
-  cover the whole object-slot sum, <code>MaxNoOfUserObjects</code> included. This bites
-  every deployment, not a few: with <code>AutomaticMemoryConfig</code>, the default
-  (<code>ConfigInfo.cpp:797</code>) and what rondb-helm sets, <code>MaxNoOfTables</code>,
-  <code>MaxNoOfOrderedIndexes</code> and <code>MaxNoOfUniqueHashIndexes</code> default to
-  8,000, 10,000 and 2,300 (<code>Configuration.cpp:2299-2325</code>), so 20,300 of the
-  20,320 schema-file entries are already taken and any deployment that installs groups
-  goes past 20,320. RONDB-136 already refuses to start a data node whose
-  <code>MaxNoOfSchemaObjects</code> is below the table-and-index sum
-  (<code>Configuration.cpp:2364-2379</code>); once <code>MaxNoOfUserObjects</code> joins
-  that sum, every deployment on the default would fail the check. So the default of
-  <code>MaxNoOfSchemaObjects</code> becomes at least the full sum, and the existing refusal
-  still applies to an explicit value below it. The test runs with automatic memory
-  configuration above 20,320 objects.</li>
+  cover the whole configured object-slot sum, <code>MaxNoOfUserObjects</code> included.
+  The sum the data node checks today is <code>MaxNoOfTables + MaxNoOfOrderedIndexes +
+  MaxNoOfUniqueHashIndexes</code> (<code>Configuration.cpp:2323-2325</code>; the two
+  system tables are added elsewhere), and RONDB-136 refuses to start a data node whose
+  <code>MaxNoOfSchemaObjects</code> is below it (<code>:2364-2379</code>). With
+  <code>AutomaticMemoryConfig</code>, the default (<code>ConfigInfo.cpp:797</code>) and
+  what rondb-helm sets, those three default to 8,000, 10,000 and 2,300
+  (<code>Configuration.cpp:2299-2325</code>): a configured capacity of 20,300, not
+  objects in use. Any <code>MaxNoOfUserObjects</code> allowance above 20 therefore takes
+  the configured sum past 20,320, whether or not a group exists yet, and a deployment on
+  the default <code>MaxNoOfSchemaObjects</code> would fail the startup check. The schema
+  file must grow with the allowance automatically; because mgmd fills every omitted
+  integer parameter with its registered default (<code>ConfigInfo.cpp</code>
+  <code>applyDefaultValues</code>), "not set" cannot be detected on the data node and the
+  mechanism needs its own design (an automatic sentinel or a raised default, open in the
+  implementation plan). An explicit value below the sum stays refused. The test runs
+  with automatic memory configuration above 20,320 configured objects.</li>
   <li><strong>Exhaustion crashes the cluster (defect, fix in scope).</strong> With the
   pool full, each refused <code>USER ALIAS SET</code> took longer than the one before
   (0.3 s, then 9.8 s, then 55 s) until the watchdog killed the DBDICT thread mid
@@ -1190,8 +1197,9 @@ targeted RonDB.</p>
     measurement (13.5): a <code>MaxNoOfUserObjects</code> configuration parameter added
     to the dictionary object-slot sum, so aliases stop competing with tables for
     <code>MaxNoOfTables</code>, with RONDB-136&rsquo;s <code>MaxNoOfSchemaObjects</code>
-    defaulting to at least the full object sum and refusing a smaller value, tested with
-    automatic memory configuration above 20,320 objects; and a clean,
+    growing automatically with the allowance (an explicit smaller value stays refused),
+    the user objects included in automatic memory accounting, and a test with automatic
+    memory configuration above 20,320 configured objects; and a clean,
     constant-cost refusal when the object pool is exhausted, starting from a failing MTR
     reproducer handed to Mikael (today exhaustion escalates per attempt and ends in a
     watchdog kill of the data node).</td></tr>
