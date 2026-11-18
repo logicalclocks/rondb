@@ -60,6 +60,7 @@ target_include_directories(unittest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/drogon-
 target_compile_options(drogon PRIVATE
     -Wno-parentheses
     -Wno-range-loop-construct
+    -Wno-reorder
     -Wno-type-limits
     -Wno-undef
     -Wno-unused-but-set-variable
