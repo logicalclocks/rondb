@@ -1088,7 +1088,9 @@ defect:</p>
   objects in use. Any <code>MaxNoOfUserObjects</code> allowance above 20 therefore takes
   the configured sum past 20,320, whether or not a group exists yet, and a deployment on
   the default <code>MaxNoOfSchemaObjects</code> would fail the startup check. The schema
-  file must grow with the allowance automatically; because mgmd fills every omitted
+  file's capacity must cover the full configured sum, either by resolving an automatic
+  value from the allowance or by a raised default with a documented allowance above which
+  an explicit <code>MaxNoOfSchemaObjects</code> is required; because mgmd fills every omitted
   integer parameter with its registered default (<code>ConfigInfo.cpp</code>
   <code>applyDefaultValues</code>), "not set" cannot be detected on the data node and the
   mechanism needs its own design (an automatic sentinel or a raised default, open in the
@@ -1201,7 +1203,8 @@ targeted RonDB.</p>
     measurement (13.5): a <code>MaxNoOfUserObjects</code> configuration parameter added
     to the dictionary object-slot sum, so aliases stop competing with tables for
     <code>MaxNoOfTables</code>, with RONDB-136&rsquo;s <code>MaxNoOfSchemaObjects</code>
-    growing automatically with the allowance (an explicit smaller value stays refused),
+    covering the full configured sum, resolved automatically or through a raised default
+    with a documented override boundary (an explicit smaller value stays refused),
     the user objects included in automatic memory accounting, and a test with automatic
     memory configuration that creates more than 20,320 live objects and then uses tables
     and indexes at the high ids; and a clean,
