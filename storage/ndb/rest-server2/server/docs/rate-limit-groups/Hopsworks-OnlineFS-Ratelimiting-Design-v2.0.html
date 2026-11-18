@@ -272,7 +272,7 @@ right. Each form field writes to exactly one table, shown in the right margin. T
 also shows the per-cluster install state written back by the installer
 (<a href="#install">section 10</a>), so an administrator can see when a saved group has
 actually been installed.</p>
-<figure class="erd"><img src="img/v2/admin-page.png" alt="Mockup of the admin page: a list of the three example groups with their cluster state, the edit form for recommender2_rl, and callouts naming the table and column each field writes."><figcaption>Editing <code>recommender2_rl</code>. &ldquo;Every cluster&rdquo; is the default; naming one cluster scopes the budget to it. The right margin names the table and column each field writes.</figcaption></figure>
+<figure class="erd"><img src="img/v2/admin-page.png" alt="Mockup of the admin page: a list of the three example groups with their cluster state, an unsaved budget edit of recommender2_rl with the command saving will run, the confirmation for deleting it with the aliases and USER it drops, and callouts naming the table and column each field writes."><figcaption>Editing <code>recommender2_rl</code>: the budget is raised from 5% to 8% and not yet saved, and the form shows the command saving will run. Bottom left, the confirmation that Delete group opens. &ldquo;Every cluster&rdquo; is the default; naming one cluster scopes the budget to it. The right margin names the table and column each field writes.</figcaption></figure>
 <p>Three details carried from the design sections: the name is read-only after creation
 (renaming would drop and recreate the RonDB entry); the budget field shows the converted
 <code>rate-per-sec</code> per targeted cluster so the administrator sees what each
@@ -285,9 +285,14 @@ saving an edit is the same write as creating: the rows change and the immediate 
 pass runs, so the list&rsquo;s per-cluster state shows the outcome of the new pass within
 seconds (<a href="#flow">section 2</a>). A budget edit alters the group&rsquo;s
 <code>USER</code> in place; a Who or cluster edit adds and drops only the affected
-aliases. Deleting a group removes its rows, its Who rows and its state rows, and the
-immediate pass drops the group&rsquo;s <code>USER</code> and its members&rsquo; aliases on every
+aliases. Before Save, the form lists the commands saving will run, and the allocation
+bar shows the total the edit would reach, so a raise that would meet the 50% cap is
+visible before RonDB refuses it. Deleting a group removes its rows, its Who rows and its
+state rows, and the immediate pass drops the group&rsquo;s <code>USER</code> and its members&rsquo; aliases on every
 targeted cluster; the members run unmetered afterwards (<a href="#rules">section 11</a>).
+Delete group first opens a confirmation naming the aliases and the <code>USER</code> it
+drops and whose work goes unmetered; once confirmed, the group leaves the list at once,
+because its state rows go with it.
 Membership churn never passes through this page: when someone joins or leaves a covered
 project, the operation-log handler adjusts the aliases by itself (section 2) and the
 page keeps showing <em>installed</em>. The state column is therefore the
@@ -1112,7 +1117,7 @@ required.</p>
   <tbody>
     <tr><td>Hopsworks tables</td><td>new</td><td>Flyway migration with the two group tables and the state table (appendix); JPA entities; the save rules of section 11 in the controller; re-check &ldquo;no ties&rdquo; in the project-membership path (<code>ProjectController</code>, where <code>createDatabaseUser</code> is already called on member add).</td></tr>
     <tr><td>Hopsworks installer</td><td>new</td><td>Section 10: extend <code>RonDbManagementClient</code> with the <code>USER</code> / <code>USER ALIAS</code> command family (same framing as its quota commands) and per-cluster endpoints from the namespace discovery; the expansion of Who rows into account names (the clip is <code>OnlineFeaturestoreController.onlineDbUsername</code>&rsquo;s); an <code>OnlinefsOperationHandler</code> implementation for membership churn; a primary-gated reconciler on the <code>TrinoReconciler</code> template; state rows per (group, cluster).</td></tr>
-    <tr><td>Hopsworks admin page</td><td>new</td><td>Section 3: list + form, cluster picker from discovery, per-cluster state badges, converted rate shown per cluster.</td></tr>
+    <tr><td>Hopsworks admin page</td><td>new</td><td>Section 3: list + form, cluster picker from discovery, per-cluster state badges, converted rate shown per cluster, the commands a save will run, the delete confirmation.</td></tr>
     <tr><td>RDRS</td><td>exists</td><td>Username mode (merged on the ticket branch): tag the project-user name. <strong>No group code.</strong></td></tr>
     <tr><td>RonDB kernel</td><td>new</td><td>Section 13: alias flag and single target (by name) on the <code>$name</code> object in Dbdict (not budgeted, persisted, backed up, re-resolved on target recreate); the alias-to-target swap at the three Dbtc admission points; <code>USER ALIAS SET/DROP/GET/LIST</code> in the mgm server (<code>Services.cpp</code>) and client; MTR tests in <code>suite/ndb_quota</code>: lifecycle, enforcement through an alias on both key and scan paths, restart and backup/restore, target drop and recreate. Two additions from the scale
     measurement (13.5): a <code>MaxNoOfUserObjects</code> configuration parameter added
