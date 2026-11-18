@@ -1056,11 +1056,13 @@ management-server memory is flat. Two findings came out of it, one decided and o
 defect:</p>
 <ul>
   <li><strong>Aliases consume the shared dictionary object budget.</strong> Every
-  <code>USER</code> and <code>USER ALIAS</code> takes one schema-file object slot from
-  the pool sized as <code>MaxNoOfTables + MaxNoOfOrderedIndexes +
-  MaxNoOfUniqueHashIndexes + 2</code> (<code>seizeTableRecord</code>,
-  <code>Dbdict.cpp:2946</code>; <code>getFreeObjId</code> <code>:2918</code>). On the
-  default MTR configuration creation was refused at 306 aliases. Aliases scale as
+  <code>USER</code> and <code>USER ALIAS</code> takes an object id from the schema file,
+  the same id space tables and indexes use (<code>getFreeObjId</code>,
+  <code>Dbdict.cpp:2918</code>), and a record from Dbdict&rsquo;s database pool
+  (<code>:33664</code>); the id-indexed table arrays of DICT, LQH, SPJ and TC are sized
+  from the table-and-index sum (<code>Configuration.cpp:2323-2325</code>, <code>:2399</code>,
+  <code>:2595-2603</code>, <code>:2679</code>). On the default MTR configuration creation
+  was refused at 306 aliases. Aliases scale as
   members &times; projects per member, hundreds to a few thousand in a large deployment,
   so they would eat the headroom tables and indexes need. <strong>Decided 2026-11-18: a
   dedicated <code>MaxNoOfUserObjects</code> configuration parameter</strong>, added to
@@ -1091,7 +1093,9 @@ defect:</p>
   <code>applyDefaultValues</code>), "not set" cannot be detected on the data node and the
   mechanism needs its own design (an automatic sentinel or a raised default, open in the
   implementation plan). An explicit value below the sum stays refused. The test runs
-  with automatic memory configuration above 20,320 configured objects.</li>
+  with automatic memory configuration, creates more than 20,320 live schema objects, then
+  creates and uses tables and indexes at the resulting high ids, and repeats after a
+  restart and a backup and restore.</li>
   <li><strong>Exhaustion crashes the cluster (defect, fix in scope).</strong> With the
   pool full, each refused <code>USER ALIAS SET</code> took longer than the one before
   (0.3 s, then 9.8 s, then 55 s) until the watchdog killed the DBDICT thread mid
@@ -1199,7 +1203,8 @@ targeted RonDB.</p>
     <code>MaxNoOfTables</code>, with RONDB-136&rsquo;s <code>MaxNoOfSchemaObjects</code>
     growing automatically with the allowance (an explicit smaller value stays refused),
     the user objects included in automatic memory accounting, and a test with automatic
-    memory configuration above 20,320 configured objects; and a clean,
+    memory configuration that creates more than 20,320 live objects and then uses tables
+    and indexes at the high ids; and a clean,
     constant-cost refusal when the object pool is exhausted, starting from a failing MTR
     reproducer handed to Mikael (today exhaustion escalates per attempt and ends in a
     watchdog kill of the data node).</td></tr>
