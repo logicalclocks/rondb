@@ -159,17 +159,19 @@ TARGET_LINK_LIBRARIES(
   ${GTEST_LIBRARIES}
 )
 
-# The C++ tests do not seed the cluster. Most cluster tests use databases
-# created by the Go suite in test_go/resources/testdbs; run a Go integration
-# package first. ronsql_oom_test uses the fixture from ronsql_parser_oom.test,
-# which also runs the full driver. Its CTest entry needs no cluster.
+# Only tests that need no cluster are CTest tests. api_key_test,
+# feature_store_test, reconnect_test and probe_server_cluster_test need a
+# running cluster, mysqld and the databases the Go suite creates in
+# test_go/resources/testdbs, which CTest does not start: they run in the
+# MTR test rdrs2-golang.cpptest (include/run_cpptest.inc), which seeds the
+# databases first. ronsql_oom_test uses the fixture from
+# ronsql_parser_oom.test, which also runs the full driver. Its CTest entries
+# need no cluster.
 
 add_test(NAME process_setup_test COMMAND process_setup_test)
 add_test(NAME buffer_manager_test COMMAND buffer_manager_test)
 add_test(NAME limits_test COMMAND limits_test)
 add_test(NAME buffer_chain_test COMMAND buffer_chain_test)
-add_test(NAME api_key_test COMMAND api_key_test)
-add_test(NAME feature_store_test COMMAND feature_store_test)
 add_test(NAME error_handling_test COMMAND error_handling_test)
 # DECIMAL ParseOnly remains cluster-free; execution cases run through MTR.
 add_test(NAME ronsql_parser_oom_test COMMAND ronsql_oom_test
@@ -180,6 +182,4 @@ add_test(NAME ronsql_parser_list_stack_test COMMAND ronsql_oom_test
 # Authorization inventories and scope guards need no cluster.
 add_test(NAME ronsql_parser_access_test COMMAND ronsql_oom_test
          --gtest_filter=RonSQLParseOnlyInventory.*:RonSQLParseOnlyRejection.*)
-add_test(NAME reconnect_test COMMAND reconnect_test)
 add_test(NAME probe_server_http_test COMMAND probe_server_http_test)
-add_test(NAME probe_server_cluster_test COMMAND probe_server_cluster_test)
