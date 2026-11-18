@@ -1068,11 +1068,23 @@ defect:</p>
   own labeled budget instead of overloading <code>MaxNoOfTables</code> (which also
   sizes trigger pools through the index parameters). rondb-helm sets it; a slot costs a
   schema-file entry and pool records, no DataMemory. Mikael agreed on 2026-11-18, provided
-  it integrates with RONDB-136, which lets the schema file hold more than 20,320 objects
-  (up to about 200,000): <code>MaxNumSchemaObjects</code> (default 20,320,
-  <code>Dbdict.cpp:3204-3207</code>, <code>:3244-3253</code>) sizes the schema file and
-  must cover the whole object-slot sum, <code>MaxNoOfUserObjects</code> included. A
-  deployment past 20,320 objects raises both, and that configuration is tested.</li>
+  it integrates with RONDB-136 (in 26.02-main and later), which lets the schema file hold
+  more than 20,320 objects (up to about 200,000): <code>MaxNoOfSchemaObjects</code>
+  (default and minimum 20,320, <code>ConfigInfo.cpp:777-787</code>; read at
+  <code>Dbdict.cpp:3204-3207</code>, schema file sized at <code>:3244-3253</code>) must
+  cover the whole object-slot sum, <code>MaxNoOfUserObjects</code> included. This bites
+  every deployment, not a few: with <code>AutomaticMemoryConfig</code>, the default
+  (<code>ConfigInfo.cpp:797</code>) and what rondb-helm sets, <code>MaxNoOfTables</code>,
+  <code>MaxNoOfOrderedIndexes</code> and <code>MaxNoOfUniqueHashIndexes</code> default to
+  8,000, 10,000 and 2,300 (<code>Configuration.cpp:2299-2325</code>), so 20,300 of the
+  20,320 schema-file entries are already taken and any deployment that installs groups
+  goes past 20,320. RONDB-136 already refuses to start a data node whose
+  <code>MaxNoOfSchemaObjects</code> is below the table-and-index sum
+  (<code>Configuration.cpp:2364-2379</code>); once <code>MaxNoOfUserObjects</code> joins
+  that sum, every deployment on the default would fail the check. So the default of
+  <code>MaxNoOfSchemaObjects</code> becomes at least the full sum, and the existing refusal
+  still applies to an explicit value below it. The test runs with automatic memory
+  configuration above 20,320 objects.</li>
   <li><strong>Exhaustion crashes the cluster (defect, fix in scope).</strong> With the
   pool full, each refused <code>USER ALIAS SET</code> took longer than the one before
   (0.3 s, then 9.8 s, then 55 s) until the watchdog killed the DBDICT thread mid
@@ -1177,8 +1189,9 @@ targeted RonDB.</p>
     <tr><td>RonDB kernel</td><td>new</td><td>Section 13: alias flag and single target (by name) on the <code>$name</code> object in Dbdict (not budgeted, persisted, backed up, re-resolved on target recreate); the alias-to-target swap at the three Dbtc admission points; <code>USER ALIAS SET/DROP/GET/LIST</code> in the mgm server (<code>Services.cpp</code>) and client; MTR tests in <code>suite/ndb_quota</code>: lifecycle, enforcement through an alias on both key and scan paths, restart and backup/restore, target drop and recreate. Two additions from the scale
     measurement (13.5): a <code>MaxNoOfUserObjects</code> configuration parameter added
     to the dictionary object-slot sum, so aliases stop competing with tables for
-    <code>MaxNoOfTables</code>, integrated with RONDB-136&rsquo;s
-    <code>MaxNumSchemaObjects</code> and tested above 20,320 objects; and a clean,
+    <code>MaxNoOfTables</code>, with RONDB-136&rsquo;s <code>MaxNoOfSchemaObjects</code>
+    defaulting to at least the full object sum and refusing a smaller value, tested with
+    automatic memory configuration above 20,320 objects; and a clean,
     constant-cost refusal when the object pool is exhausted, starting from a failing MTR
     reproducer handed to Mikael (today exhaustion escalates per attempt and ends in a
     watchdog kill of the data node).</td></tr>
