@@ -124,8 +124,8 @@ Number of output lines, including header: 2
 === an aggregation program of 1024 words or more is a limit error ===
 [limit] Caught exception: The aggregate expressions are too large: the aggregation program must be shorter than 1024 words.
 
-=== a program beyond the 8192-word buffer fails cleanly ===
-Caught exception: Failed writing aggregation program
+=== a program beyond the 8192-word buffer is the same limit error ===
+[limit] Caught exception: The aggregate expressions are too large: the aggregation program must be shorter than 1024 words.
 
 === RDRS still answers ===
 == Query ==

@@ -182,6 +182,37 @@ check_groupby_limit(const GroupbyColumns* groupby)
 }
 
 /*
+ * F-15: the aggregation program is too large, a limit error.  The data
+ * nodes take a program of fewer than MAX_AGG_PROGRAM_WORD_SIZE words,
+ * which Finalize() checks.  NdbAggregator writes the program into a
+ * buffer of MAX_VEC_SEARCH_PROGRAM_WORD_SIZE words, and the call whose
+ * words do not fit there fails with the same kErrTooBigProgram before
+ * Finalize() is reached: a program of that size failed as "Failed
+ * writing aggregation program. Please report a bug.", an internal error.
+ * Called where a write or Finalize() failed; returns for any other error.
+ */
+static void
+throw_if_program_too_big(NdbAggregator* agg)
+{
+  if (agg->GetError().errno_ != kErrTooBigProgram) return;
+  throw RonSQLPermanentError(
+      RonSQLErrorClass::LIMIT,
+      "The aggregate expressions are too large: the aggregation program "
+      "must be shorter than " + std::to_string(MAX_AGG_PROGRAM_WORD_SIZE) +
+      " words.");
+}
+
+// F-15: a write to the aggregation program of agg that returned ok, or
+// the limit error of a program too large, or msg.
+static void
+program_write_or_fail(NdbAggregator* agg, bool ok, const char* msg)
+{
+  if (likely(ok)) return;
+  throw_if_program_too_big(agg);
+  throw RonSQLPermanentError(msg);
+}
+
+/*
  * RONSQL-14: Finalize the aggregator, or throw.  The GROUP BY and
  * aggregate counts are checked before programming (check_groupby_limit,
  * AggregationAPICompiler::new_agg), but the size of one group's record
@@ -193,6 +224,7 @@ static void
 finalize_aggregator(NdbAggregator* agg, const char* msg)
 {
   if (agg->Finalize()) return;
+  throw_if_program_too_big(agg);
   switch (agg->GetError().errno_)
   {
   case kErrTooBigResult:
@@ -201,12 +233,6 @@ finalize_aggregator(NdbAggregator* agg, const char* msg)
         "The GROUP BY columns and aggregate results of one group can need "
         "more than " + std::to_string(MAX_AGG_RESULT_BATCH_BYTES / 1024) +
         " KB, counted at the declared column sizes.");
-  case kErrTooBigProgram:
-    throw RonSQLPermanentError(
-        RonSQLErrorClass::LIMIT,
-        "The aggregate expressions are too large: the aggregation program "
-        "must be shorter than " + std::to_string(MAX_AGG_PROGRAM_WORD_SIZE) +
-        " words.");
   case kErrTooManyGroupbyCols:
     throw RonSQLPermanentError(RonSQLErrorClass::LIMIT,
                                "GROUP BY has more than " +
@@ -18789,6 +18815,8 @@ RonSQLPreparer::apply_filter(NdbScanFilter* filter, QueryScope& scope,
     require_sch(DBG(filter->end()) >= 0, filter_fail);
     break;
   case T_NOT:
+  case T_EXCLAMATION:
+    // F-14: simplify_ce makes ! a NOT; a ! is NOT here too.
     require_run(DBG(filter->begin(NdbScanFilter::NAND)) >= 0, filter_fail);
     apply_filter(filter, scope, ce->args.left);
     require_sch(DBG(filter->end()) >= 0, filter_fail);
@@ -19711,6 +19739,7 @@ has_minmax_comparison(const ConditionalExpression* ce)
   case T_GE:
     return is_minmax_node(ce->args.left) || is_minmax_node(ce->args.right);
   case T_NOT:
+  case T_EXCLAMATION:  // F-14: ! is NOT
     return has_minmax_comparison(ce->args.left);
   case T_AND:
   case T_OR:
@@ -19751,6 +19780,7 @@ RonSQLPreparer::negate_minmax_condition(struct ConditionalExpression* ce)
   case T_GE:
     return new_condition_node(m_amalloc, T_LT, ce->args.left, ce->args.right);
   case T_NOT:
+  case T_EXCLAMATION:  // F-14: ! is NOT
     return ce->args.left;
   case T_AND:
   case T_OR:
@@ -19962,6 +19992,17 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
       r[0].op = T_AND;
       r[0].args.right = &r[2];
       return &r[0];
+    }
+  case T_EXCLAMATION:
+    {
+      // F-14: !x is NOT x; MySQL builds the same negation for both.  The
+      // grammar gives ! its higher precedence (!a = b is (!a) = b), so
+      // only its operand differs from NOT's.  Make it a NOT here, so the
+      // filters, keys and bounds built from the simplified tree, which
+      // take NOT, take ! too (they refused it as a non-boolean term).
+      return simplify_ce(new_condition_node(m_amalloc, T_NOT,
+                                            ce->args.left, NULL),
+                         maxdepth);
     }
   case T_NOT:
     {
@@ -20245,8 +20286,12 @@ RonSQLPreparer::rewrite_minmax_comparison(TokenKind cmp_op,
   return root;
 }
 
+// F-15: `aggregator` names the NdbAggregator that CALL writes to, in every
+// function that uses this macro; a write that does not fit in its program
+// buffer is a limit error (program_write_or_fail).
 #define programAggregator_do_or_fail(CALL) \
-  require_prm(CALL, "Failed writing aggregation program. Please report a bug.")
+  program_write_or_fail(aggregator, (CALL), \
+      "Failed writing aggregation program. Please report a bug.")
 
 // F16: NdbAggregator refuses Sum, and Avg, over a string or temporal
 // register (kErrUnsupportedStringOperation /
@@ -20259,13 +20304,15 @@ RonSQLPreparer::rewrite_minmax_comparison(TokenKind cmp_op,
 // through NdbAggregator::RepeatAgg, which makes the same checks for SUM
 // and AVG, and refuses MIN / MAX arms that mix strings with other values
 // or strings of different types or collations (kErrMixedStringCaseArms;
-// the data node keeps a string MIN / MAX as a pointer).  Any other
+// the data node keeps a string MIN / MAX as a pointer).  A write that does
+// not fit in the program buffer is a limit error (F-15).  Any other
 // failure keeps the generic bug message.
 void
 RonSQLPreparer::throw_sum_avg_emit_error(NdbAggregator* aggregator,
                                          const SelectStatement& stmt,
                                          Uint32 agg_id, bool is_avg)
 {
+  throw_if_program_too_big(aggregator);
   const Uint32 errnum = aggregator->GetError().errno_;
   if (errnum == kErrMixedStringCaseArms)
     throw RonSQLPermanentError(
@@ -20336,6 +20383,7 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
       NdbAttrId col_id = src_ref.attr_id;
       if (!aggregator->LoadColumn(col_id, dest))
       {
+        throw_if_program_too_big(aggregator);  // F-15
         err << "Failed writing aggregation program "
                "when attempting to load column "
             << quoted_identifier(m_columns[src]) << endl;
@@ -20548,7 +20596,7 @@ RonSQLPreparer::embedded_filter_expr_word_count(QueryScope& scope,
 }
 
 void
-RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
+RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* aggregator,
                                           QueryScope& scope,
                                           ConditionalExpression* ce,
                                           Uint32 leaf_idx,
@@ -20573,7 +20621,7 @@ RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
     if (ref.join_op_idx == leaf_idx) {
       // READ_ATTR_INTO_REG: native-typed load, sets the register's
       // NULL_INDICATOR for NULL values.
-      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
           Interpreter::Read((Uint32)ref.attr_id, reg)));
       cur_pos++;
     } else {
@@ -20603,7 +20651,7 @@ RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
                     "Unsupported linked column type in cross-table "
                     "WHERE filter (integer columns only).");
       }
-      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
           Interpreter::ReadLinkedColumnIntoReg(reg, lp,
                                                (Uint32)col->getType())));
       cur_pos++;
@@ -20615,7 +20663,7 @@ RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
       // ZREGISTER_INIT_ERROR on a NULL register otherwise, failing
       // the whole query instead of filtering the row.
       Uint32 guard_offset = null_fail_target - cur_pos;
-      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
           Interpreter::Branch(Interpreter::BRANCH_REG_EQ_NULL,
                               /*Reg1=*/0, /*Reg2=*/reg) |
           (guard_offset << 16)));
@@ -20631,9 +20679,9 @@ RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
     memcpy(&lo, &v, 4);
     memcpy(&hi, ((char*)&v) + 4, 4);
     programAggregator_do_or_fail(
-        agg->EmitEmbeddedWord(Interpreter::LoadConst64(reg)));
-    programAggregator_do_or_fail(agg->EmitEmbeddedWord(lo));
-    programAggregator_do_or_fail(agg->EmitEmbeddedWord(hi));
+        aggregator->EmitEmbeddedWord(Interpreter::LoadConst64(reg)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(lo));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(hi));
     cur_pos += 3;
     break;
   }
@@ -20664,17 +20712,17 @@ RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
     if (right_depth > left_depth) {
       left_reg = tmp_reg;
       right_reg = reg;
-      emit_embedded_filter_expr(agg, scope, ce->args.right, leaf_idx,
+      emit_embedded_filter_expr(aggregator, scope, ce->args.right, leaf_idx,
                                 right_reg, left_reg, cur_pos,
                                 null_fail_target);
-      emit_embedded_filter_expr(agg, scope, ce->args.left, leaf_idx,
+      emit_embedded_filter_expr(aggregator, scope, ce->args.left, leaf_idx,
                                 left_reg, right_reg, cur_pos,
                                 null_fail_target);
     } else {
-      emit_embedded_filter_expr(agg, scope, ce->args.left, leaf_idx,
+      emit_embedded_filter_expr(aggregator, scope, ce->args.left, leaf_idx,
                                 left_reg, right_reg, cur_pos,
                                 null_fail_target);
-      emit_embedded_filter_expr(agg, scope, ce->args.right, leaf_idx,
+      emit_embedded_filter_expr(aggregator, scope, ce->args.right, leaf_idx,
                                 right_reg, left_reg, cur_pos,
                                 null_fail_target);
     }
@@ -20683,15 +20731,15 @@ RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
     // commuting.
     switch (ce->op) {
     case T_PLUS:
-      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
           Interpreter::Add(reg, left_reg, right_reg)));
       break;
     case T_MINUS:
-      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
           Interpreter::Sub(reg, left_reg, right_reg)));
       break;
     case T_MULTIPLY:
-      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
           Interpreter::Mul(reg, left_reg, right_reg)));
       break;
     default:
@@ -20973,12 +21021,13 @@ RonSQLPreparer::emit_cte_orderby_limit(QueryScope& scope,
           "CTE body ORDER BY over a subquery output.");
     }
 
-    require_prm(cteAgg->OrderBy(idx, is_agg, !ob->ascending),
-                "Failed to program CTE body ORDER BY.");
+    program_write_or_fail(cteAgg,
+                          cteAgg->OrderBy(idx, is_agg, !ob->ascending),
+                          "Failed to program CTE body ORDER BY.");
   }
 
-  require_prm(cteAgg->Limit((Uint32)stmt->limit),
-              "Failed to program CTE body LIMIT.");
+  program_write_or_fail(cteAgg, cteAgg->Limit((Uint32)stmt->limit),
+                        "Failed to program CTE body LIMIT.");
   return true;
 }
 
@@ -21321,6 +21370,7 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
         NdbAttrId col_id = src_ref.attr_id;
         if (!aggregator->LoadColumn(col_id, dest))
         {
+          throw_if_program_too_big(aggregator);  // F-15
           err << "Failed writing aggregation program "
                  "when attempting to load column "
               << quoted_identifier(m_columns[src]) << endl;

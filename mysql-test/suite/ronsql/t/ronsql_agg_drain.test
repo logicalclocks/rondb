@@ -208,10 +208,13 @@ while ($s <= 200)
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out
 
 --echo
---echo === a program beyond the 8192-word buffer fails cleanly ===
+# The write that does not fit in NdbAggregator's 8192-word buffer is the
+# same limit error, not "Failed writing aggregation program. Please
+# report a bug." (README finding F-15).
+--echo === a program beyond the 8192-word buffer is the same limit error ===
 --exec printf '{"query":"SELECT $sums FROM t_wide;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
 --exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
---exec grep -oF 'Caught exception: Failed writing aggregation program' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected the program writing to stop at the end of the buffer"
+--exec grep -oF '[limit] Caught exception: The aggregate expressions are too large: the aggregation program must be shorter than 1024 words.' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected a limit error for a program beyond the 8192-word buffer"
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out
 
