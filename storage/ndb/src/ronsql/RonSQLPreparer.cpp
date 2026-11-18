@@ -39,6 +39,8 @@
 #include <cstdlib>
 #include <cerrno>
 #include <climits>
+#include <cfloat>
+#include <cmath>
 #include <algorithm>
 #include <vector>
 #include <string>
@@ -1928,6 +1930,17 @@ RonSQLPreparer::load()
     build_cte_scopes();
     resolve_cte_output_columns();
     check_deferred_anti_joins();
+    // F-9, F-11: the main query's comparisons with a CTE output, which
+    // load_join could not resolve before the CTE body scopes existed.
+    if (is_join_query()) {
+      for (Uint32 t = 0; t < m_main_scope.join_plan.num_ops; t++) {
+        const JoinOp& op = m_main_scope.join_plan.ops[t];
+        if (op.type != JoinOp::CTE_LOOKUP && op.type != JoinOp::CTE_SCAN)
+          continue;
+        m_main_scope.join_where_ce[t] = exact_constant_comparisons(
+            m_main_scope, m_main_scope.join_where_ce[t]);
+      }
+    }
   }
 }
 
@@ -2093,6 +2106,10 @@ RonSQLPreparer::load_single_table()
     resolved[col_idx].dict_column = col;
   }
   m_main_scope.resolved_columns = resolved;
+  // F-9, F-11: before plan_index_and_filter takes keys, bounds and
+  // filters from the WHERE.
+  m_context.ast_root.where_expression = exact_constant_comparisons(
+      m_main_scope, m_context.ast_root.where_expression);
 }
 
 void
@@ -3593,6 +3610,11 @@ RonSQLPreparer::load_join()
 
   resolve_columns_for_scope(m_main_scope, m_context.ast_root, true);
 
+  // F-9, F-11: comparisons with a stored column; those with a CTE output
+  // follow in load(), once the CTE body scopes exist.
+  m_context.ast_root.where_expression = exact_constant_comparisons(
+      m_main_scope, m_context.ast_root.where_expression);
+
   // Classify WHERE conditions by table for per-table filter pushdown
   classify_where_by_table(m_main_scope,
                           m_context.ast_root.where_expression);
@@ -3610,6 +3632,9 @@ RonSQLPreparer::load_join()
       MergedLeaf &ml = m_merged_leaves[i];
       SelectSubqueryLeaf &base = m_select_subquery_leaves[ml.first_subquery_idx];
       if (base.inner_filter != NULL) {
+        // F-9, F-11, as for the WHERE above.
+        base.inner_filter =
+            exact_constant_comparisons(m_main_scope, base.inner_filter);
         Uint32 op_idx = ml.plan_op_idx;
         if (m_main_scope.join_where_ce[op_idx] == NULL) {
           m_main_scope.join_where_ce[op_idx] = base.inner_filter;
@@ -7589,6 +7614,10 @@ RonSQLPreparer::build_cte_scopes()
     scope->table = scope->join_plan.ops[0].table;
     scope->agg = cte->stmt->agg;
     resolve_columns_for_cte_scope(*scope, *cte->stmt);
+    // F-9, F-11: the earlier CTEs' scopes exist, so their outputs are
+    // resolved too.
+    cte->stmt->where_expression =
+        exact_constant_comparisons(*scope, cte->stmt->where_expression);
     classify_where_by_table(*scope, cte->stmt->where_expression);
     // Col-vs-col in a CTE-body WHERE: tier-(a) pairs (identical-type
     // stored columns of the body root op) pass through to the
@@ -17280,6 +17309,265 @@ rondb_str_to_mysql_time(MYSQL_TIME *mt, LexString str) {
   // todo test nanosecond rounding, see status->nanoseconds
 }
 
+/*
+ * F-9, F-11: MySQL compares a FLOAT column with a numeric literal as a
+ * DOUBLE, and a DATETIME or TIMESTAMP column with a temporal literal at
+ * the literal's precision.  The scan filters, index bounds and keys
+ * compare in the column's own type: encode_constant rounds the literal
+ * to the nearest FLOAT and truncates a temporal literal to the column's
+ * fractional digits, so a literal that the type cannot hold was compared
+ * as another value: f = 0.1 held for the FLOAT 0.1 (0.100000001...), and
+ * dt = '10:00:00.5' for a DATETIME 10:00:00.
+ *
+ * Returns true when k is such a literal for a column of this type and
+ * precision, and sets *bound to a constant that the type holds: the
+ * largest value of the type below k when *bound_is_below, else the
+ * lowest value of the type (every value of the type is then above k).
+ * Returns false when the type holds k, and for a type or a constant
+ * this does not handle, which encode_constant then serves or refuses as
+ * before.
+ */
+bool
+RonSQLPreparer::inexact_comparison_constant(NdbDictionary::Column::Type type,
+                                            Int32 precision,
+                                            const ConditionalExpression* k,
+                                            ConditionalExpression** bound,
+                                            bool* bound_is_below)
+{
+  ConditionalExpression* n = NULL;
+  switch (type)
+  {
+  case NdbDictionary::Column::Float:
+  {
+    double c = 0;
+    if (k->op == T_INT)
+      c = static_cast<double>(k->constant_integer);
+    else if (k->op == T_FLOAT)
+      c = k->constant_float.dbl;
+    else
+      return false;
+    if (std::isnan(c)) return false;
+    float b = 0;
+    bool below = true;
+    if (c > FLT_MAX) {
+      b = FLT_MAX;
+    } else if (c < -FLT_MAX) {
+      b = -FLT_MAX;
+      below = false;
+    } else {
+      const float nearest = static_cast<float>(c);
+      if (static_cast<double>(nearest) == c) return false;
+      b = (static_cast<double>(nearest) > c)
+              ? std::nextafter(nearest, -FLT_MAX)
+              : nearest;
+    }
+    n = m_amalloc->alloc_exc<ConditionalExpression>(1);
+    n->op = T_FLOAT;
+    n->constant_float.dbl = static_cast<double>(b);
+    // No source text: encode_constant and the printers use .dbl.
+    n->constant_float.ls = LexString{NULL, 0};
+    *bound_is_below = below;
+    break;
+  }
+  case NdbDictionary::Column::Datetime2:
+  case NdbDictionary::Column::Timestamp2:
+  {
+    MYSQL_TIME mt;
+    if (k->op == T_STRING) {
+      // As rondb_str_to_mysql_time, without its errors: a literal it
+      // refuses is left for encode_constant to refuse.
+      MYSQL_TIME_STATUS status;
+      if (str_to_datetime(k->string.str, k->string.len, &mt, 0, &status) ||
+          status.warnings != 0 ||
+          status.m_deprecation.m_kind !=
+              MYSQL_TIME_STATUS::DEPRECATION::DEPR_KIND::DP_NONE)
+        return false;
+    } else if (k->op == I_MYSQL_TIME) {
+      mt = k->mysql_time;
+    } else {
+      return false;
+    }
+    // A DATE literal is refused by encode_constant.
+    if (mt.time_type != MYSQL_TIMESTAMP_DATETIME) return false;
+    if (precision < 0 || precision > DATETIME_MAX_DECIMALS) return false;
+    const unsigned int dec = static_cast<unsigned int>(precision);
+    if (my_time_fraction_remainder(static_cast<long>(mt.second_part),
+                                   dec) == 0)
+      return false;
+    // Truncation removes digits, so the truncated value is below k.  It
+    // goes as text, the constant that every temporal filter accepts.
+    my_datetime_trunc(&mt, dec);
+    char text[MAX_DATE_STRING_REP_LENGTH];
+    const int len = my_TIME_to_str(mt, text, dec);
+    require_run(len > 0, "Failed to render a temporal constant.");
+    char* str = m_amalloc->alloc_exc<char>(static_cast<size_t>(len));
+    memcpy(str, text, static_cast<size_t>(len));
+    n = m_amalloc->alloc_exc<ConditionalExpression>(1);
+    n->op = T_STRING;
+    n->string = LexString{str, static_cast<size_t>(len)};
+    *bound_is_below = true;
+    break;
+  }
+  default:
+    return false;
+  }
+  n->conjunct_sql = LexString{NULL, 0};
+  *bound = n;
+  return true;
+}
+
+/*
+ * F-9, F-11: ce with each comparison of a FLOAT, DATETIME or TIMESTAMP
+ * column with a constant that the column's type cannot hold (see
+ * inexact_comparison_constant) replaced by comparisons with a constant b
+ * that it holds.  With b the largest value below the constant c, and v
+ * a value of the column:
+ *   v < c and v <= c  are  v <= b
+ *   v > c and v >= c  are  v > b
+ *   v = c             is   v < b AND v > b    (FALSE)
+ *   v != c            is   v <= b OR v > b    (TRUE)
+ * With every value above c, b is the lowest value and v < c is v < b,
+ * v > c is v >= b.  Each form is UNKNOWN for a NULL v, as the comparison
+ * is, so it holds under NOT too, and rejects the NULL-extended row of a
+ * LEFT JOIN (is_null_rejecting does not look through NOT over the AND
+ * or OR, so NOT (r.c = c) there is refused instead of promoted).
+ * AND, OR, XOR and NOT are walked; a changed node is a new node, the
+ * tree passed in is not modified.  The column is resolved in `scope`:
+ * a stored column, or a CTE output whose CTE body scope exists.  A CTE
+ * output's filter takes neither form for = and != (an AND or OR within
+ * a conjunct), so those are refused there.
+ */
+ConditionalExpression*
+RonSQLPreparer::exact_constant_comparisons(QueryScope& scope,
+                                           ConditionalExpression* ce)
+{
+  if (ce == NULL) return NULL;
+  switch (ce->op)
+  {
+  case T_AND:
+  case T_OR:
+  case T_XOR:
+  {
+    ConditionalExpression* left =
+        exact_constant_comparisons(scope, ce->args.left);
+    ConditionalExpression* right =
+        exact_constant_comparisons(scope, ce->args.right);
+    if (left == ce->args.left && right == ce->args.right) return ce;
+    ConditionalExpression* n =
+        new_condition_node(m_amalloc, ce->op, left, right);
+    n->conjunct_sql = ce->conjunct_sql;
+    return n;
+  }
+  case T_NOT:
+  case T_EXCLAMATION:
+  {
+    ConditionalExpression* arg =
+        exact_constant_comparisons(scope, ce->args.left);
+    if (arg == ce->args.left) return ce;
+    ConditionalExpression* n =
+        new_condition_node(m_amalloc, ce->op, arg, NULL);
+    n->conjunct_sql = ce->conjunct_sql;
+    return n;
+  }
+  case T_EQUALS:
+  case T_NOT_EQUALS:
+  case T_LT:
+  case T_LE:
+  case T_GT:
+  case T_GE:
+    return exact_constant_comparison(scope, ce);
+  default:
+    return ce;
+  }
+}
+
+ConditionalExpression*
+RonSQLPreparer::exact_constant_comparison(QueryScope& scope,
+                                          ConditionalExpression* ce)
+{
+  TokenKind op = ce->op;
+  ConditionalExpression* col = ce->args.left;
+  ConditionalExpression* k = ce->args.right;
+  if (col == NULL || k == NULL) return ce;
+  if (col->op != T_IDENTIFIER) {
+    // c OP col is col OP' c.
+    ConditionalExpression* tmp = col;
+    col = k;
+    k = tmp;
+    switch (op) {
+    case T_LT: op = T_GT; break;
+    case T_LE: op = T_GE; break;
+    case T_GT: op = T_LT; break;
+    case T_GE: op = T_LE; break;
+    default: break;
+    }
+  }
+  if (col->op != T_IDENTIFIER || k->op == T_IDENTIFIER ||
+      scope.resolved_columns == NULL)
+    return ce;
+  const QueryScope::ResolvedColumnRef& ref =
+      scope.resolved_columns[col->col_idx];
+  // An aggregate output of a CTE is a BIGINT, DOUBLE or packed temporal
+  // virtual column, compared as such.
+  const bool stored =
+      (ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn);
+  if (!stored &&
+      !(ref.kind == QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+        ref.cte_output != NULL &&
+        ref.cte_output->type == Outputs::Type::COLUMN))
+    return ce;
+  NdbDictionary::Column::Type type = NdbDictionary::Column::Undefined;
+  Uint32 length = 0;
+  const void* cs = NULL;
+  Int32 scale = 0;
+  Int32 precision = 0;
+  if (!resolve_chained_column_type(scope, col->col_idx, type, length, cs,
+                                   scale, precision))
+    return ce;
+  if (type != NdbDictionary::Column::Float &&
+      type != NdbDictionary::Column::Datetime2 &&
+      type != NdbDictionary::Column::Timestamp2)
+    return ce;
+  // The constant as the filters see it: a unary minus or a DATE_ADD /
+  // DATE_SUB folded.
+  ConditionalExpression* value = simplify_ce(k, -1);
+  ConditionalExpression* b = NULL;
+  bool b_is_below = true;
+  if (!inexact_comparison_constant(type, precision, value, &b, &b_is_below))
+    return ce;
+  ConditionalExpression* n = NULL;
+  switch (op) {
+  case T_LT:
+  case T_LE:
+    n = new_condition_node(m_amalloc, b_is_below ? T_LE : T_LT, col, b);
+    break;
+  case T_GT:
+  case T_GE:
+    n = new_condition_node(m_amalloc, b_is_below ? T_GT : T_GE, col, b);
+    break;
+  case T_EQUALS:
+  case T_NOT_EQUALS:
+  {
+    require_unsupported(
+        stored,
+        "= and != between a FLOAT, DATETIME or TIMESTAMP output of a CTE "
+        "and a constant that the type cannot hold (a value between two "
+        "FLOAT values, or more fractional digits than the column has) are "
+        "not supported.");
+    const bool is_eq = (op == T_EQUALS);
+    n = new_condition_node(
+        m_amalloc, is_eq ? T_AND : T_OR,
+        new_condition_node(m_amalloc, is_eq ? T_LT : T_LE, col, b),
+        new_condition_node(m_amalloc, T_GT, col, b));
+    break;
+  }
+  default:
+    return ce;
+  }
+  n->conjunct_sql = ce->conjunct_sql;
+  return n;
+}
+
 // RONSQL-13: a string literal is UTF-8 (the lexer checks it), but a CHAR,
 // VARCHAR or LONGVARCHAR column holds its own character set, and the
 // kernel compares and LIKE-matches the value in that character set.
@@ -20191,6 +20479,39 @@ RonSQLPreparer::generate_embedded_condition(
         // col-vs-const path (v1): resolve the constant against the LHS
         // column descriptor.  Use the simplified node so negative
         // literals fold into T_INT / T_FLOAT here too.
+        //
+        // F-11: a temporal constant with more fractional digits than
+        // the column compares with the largest value below it, as the
+        // WHERE does (exact_constant_comparisons).  = and != would need
+        // an AND or OR within the atom list.
+        ConditionalExpression* bound = NULL;
+        bool bound_is_below = true;
+        if (inexact_comparison_constant(info.lhs.col->getType(),
+                                        info.lhs.col->getPrecision(),
+                                        rhs_simplified, &bound,
+                                        &bound_is_below)) {
+          TokenKind exact_op = atom->op;
+          switch (atom->op) {
+          case T_LT:
+          case T_LE:
+            exact_op = bound_is_below ? T_LE : T_LT;
+            break;
+          case T_GT:
+          case T_GE:
+            exact_op = bound_is_below ? T_GT : T_GE;
+            break;
+          default:
+            require_unsupported(
+                false,
+                "= and != in a CASE condition between a DATETIME or "
+                "TIMESTAMP column and a constant with more fractional "
+                "digits than the column has are not supported.");
+          }
+          atom = new_condition_node(m_amalloc, exact_op, atom->args.left,
+                                    bound);
+          atoms[a] = atom;
+          rhs_simplified = bound;
+        }
         info.rhs.rv = encode_constant(rhs_simplified, info.lhs.col);
         info.rhs.byte_len = info.rhs.rv.len;
         info.rhs.data_words = (info.rhs.byte_len + 3) / 4;

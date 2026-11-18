@@ -1297,6 +1297,22 @@ private:
   // gets none.  INT64_MIN fails the statement, as in MySQL.
   bool negate_numeric_constant(const struct ConditionalExpression* n,
                                struct ConditionalExpression* out);
+  // F-9, F-11: true when the constant k is not a value of a FLOAT,
+  // DATETIME or TIMESTAMP column of this type and precision; *bound is
+  // then a constant of the type, the largest value below k when
+  // *bound_is_below, else the lowest value (every value is above k).
+  bool inexact_comparison_constant(NdbDictionary::Column::Type type,
+                                   Int32 precision,
+                                   const struct ConditionalExpression* k,
+                                   struct ConditionalExpression** bound,
+                                   bool* bound_is_below);
+  // F-9, F-11: ce with each comparison of such a column with such a
+  // constant replaced by comparisons with constants of the column's type
+  // that hold in the same rows (see the definition).
+  struct ConditionalExpression* exact_constant_comparisons(
+      QueryScope& scope, struct ConditionalExpression* ce);
+  struct ConditionalExpression* exact_constant_comparison(
+      QueryScope& scope, struct ConditionalExpression* ce);
   // F-5: NOT ce with the NOT moved one level down, for a ce that has a
   // GREATEST / LEAST comparison below NOT, AND, OR and XOR (see the
   // definition).  simplify_ce simplifies the result.
