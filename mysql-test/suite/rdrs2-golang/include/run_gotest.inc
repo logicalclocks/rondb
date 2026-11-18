@@ -116,14 +116,14 @@ my %groups = (
         packages => [ "$it/ronsql" ],
         smoke    => 0,
     },
-    # bufferpool and starvation skip here (their tests are driven by the
-    # buffer_pool, memory_regression and ping_starvation tests);
+    # bufferpool, starvation and mtls skip here (their tests are driven by
+    # the buffer_pool, memory_regression, ping_starvation and mtls tests);
     # spillfixture and testclient are helper packages without tests. All
     # are listed so the coverage check below can stay strict.
     'ping_health_stat_jsonerrors_smoke' => {
         packages => [ map { "$it/$_" } qw(ping health stat jsonerrors
-                                           bufferpool starvation spillfixture
-                                           testclient) ],
+                                           bufferpool starvation mtls
+                                           spillfixture testclient) ],
         smoke    => 1,
     },
 );

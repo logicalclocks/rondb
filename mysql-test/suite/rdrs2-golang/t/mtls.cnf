@@ -1,0 +1,11 @@
+# Config for mtls (RONDB-1160): same cluster and rdrs servers as the rest of
+# the suite, except that the no-auth rdrs.3.1 runs with TLS and requires
+# client certificates (Security.TLS.RequireAndVerifyClientCert), verified
+# against RootCACertFile. See the template for the certificates.
+!include suite/rdrs2-golang/my.cnf
+
+[rdrs.3.1]
+config-json-template=suite/rdrs2-golang/rdrs_config_template_mtls.json
+
+[ENV]
+RDRS_CONFIG_FILE_MTLS=         @rdrs.3.1.#config-json

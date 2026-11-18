@@ -485,7 +485,8 @@ CLASS
  CM(std::string, privateKeyFile, PrivateKeyFile, "",
     "Path to the private key corresponding to the server certificate")
  CM(std::string, rootCACertFile, RootCACertFile, "",
-    "Path to the CA certificate used to sign the server certificate")
+    "Path to the CA certificate used to sign the server certificate. Client"
+    " certificates are verified against it when `RequireClientCert` is set")
  CM(TestParameters, testParameters, TestParameters, TestParameters(),
     "Parameters used for testing TLS. rdrs2 will not use these settings.")
  PROBLEM(enableTLS && (certificateFile.empty() ||
@@ -494,6 +495,8 @@ CLASS
          " not set")
  PROBLEM(!enableTLS && requireClientCert,
          "cannot require client certificates if TLS is not enabled")
+ PROBLEM(requireClientCert && rootCACertFile.empty(),
+         "cannot require client certificates if `RootCACertFile` is not set")
 )
 
 CLASS

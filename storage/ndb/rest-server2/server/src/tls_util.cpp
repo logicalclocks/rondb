@@ -31,16 +31,47 @@
 
 RS_Status GenerateTLSConfig(bool requireClientCert, const std::string &rootCACertFile,
                             const std::string &certFile, const std::string &privateKeyFile) {
-  auto &httpApp = drogon::app();
+  drogon::HttpAppFramework &httpApp = drogon::app();
 
   httpApp.setSSLFiles(certFile, privateKeyFile);
 
-  if (requireClientCert) {
-    httpApp.setSSLConfigCommands({{"VerifyMode", "Require"}});
+  if (!requireClientCert) {
+    return CRS_Status::SUCCESS.status;
   }
 
-  if (!rootCACertFile.empty()) {
-    httpApp.setSSLConfigCommands({{"ClientCAFile", rootCACertFile}});
+  /*
+   * Fail here with a readable message if the CA file is missing or holds no
+   * certificate. Otherwise the OpenSSL configuration commands below fail
+   * when Drogon creates the listener, and that surfaces as an uncaught
+   * exception out of drogon::app().run().
+   */
+  STACK_OF(X509_NAME) *caNames =
+    SSL_load_client_CA_file(rootCACertFile.c_str());
+  if (caNames == nullptr) {
+    return CRS_Status(HTTP_CODE::SERVER_ERROR,
+                      "cannot require client certificates: no CA certificate"
+                      " could be read from `RootCACertFile` '" +
+                      rootCACertFile + "'").status;
   }
+  sk_X509_NAME_pop_free(caNames, X509_NAME_free);
+
+  /*
+   * Drogon gives no access to the TLS policy of its listeners, so client
+   * certificates are set up with OpenSSL configuration commands. All three
+   * are needed:
+   * - VerifyMode Require makes the server ask for a client certificate and
+   *   fail the handshake when the client presents none.
+   * - VerifyCAFile is the CA that client certificates are verified against.
+   *   Without it OpenSSL trusts no CA and refuses every client certificate.
+   * - ClientCAFile only puts the CA name into the certificate request, so
+   *   that the client can pick a matching certificate.
+   * They must go in one call: setSSLConfigCommands() replaces the commands
+   * of an earlier call.
+   */
+  std::vector<std::pair<std::string, std::string>> sslConfCmds;
+  sslConfCmds.emplace_back("VerifyMode", "Require");
+  sslConfCmds.emplace_back("VerifyCAFile", rootCACertFile);
+  sslConfCmds.emplace_back("ClientCAFile", rootCACertFile);
+  httpApp.setSSLConfigCommands(sslConfCmds);
   return CRS_Status::SUCCESS.status;
 }

@@ -1,0 +1,64 @@
+# RONDB-1160: Security.TLS.RequireAndVerifyClientCert is enforced.
+#
+# rdrs2 used to pass the OpenSSL configuration commands for client
+# certificates to Drogon in two calls, and the second call replaced the
+# first. With both RequireAndVerifyClientCert and RootCACertFile set, the
+# server therefore never asked for a client certificate and served any TLS
+# client.
+#
+# rdrs.3.1 (see the companion .cnf) runs with TLS, requires client
+# certificates and has RootCACertFile set. The Go driver
+# (internal/integrationtests/mtls, TestRequireAndVerifyClientCert) sends
+# /ping on the main port and checks that
+#   - a client with a certificate issued under RootCACertFile is served,
+#   - a client without a certificate is refused,
+#   - a client with a certificate from an unknown CA is refused.
+#
+# The probe port never asks for a client certificate, which is why mtr can
+# still wait for the server to start.
+
+--source include/have_ndb.inc
+--source include/not_windows.inc
+
+--echo # Client certificate checks
+perl END_OF_PERL;
+use strict;
+use warnings;
+use File::Spec;
+
+my $MYSQL_BASEDIR = $ENV{'MYSQL_BASEDIR'};
+my $TEST_GO_DIR = File::Spec->catdir($MYSQL_BASEDIR, 'storage', 'ndb',
+                                     'rest-server2', 'server', 'test_go');
+die "Directory $TEST_GO_DIR does not exist\n" unless -d $TEST_GO_DIR;
+chdir $TEST_GO_DIR or die "Cannot change directory to $TEST_GO_DIR: $!";
+
+my $log_dir = $ENV{'MYSQLTEST_VARDIR'} ? "$ENV{'MYSQLTEST_VARDIR'}/log"
+                                       : $ENV{'MYSQL_TMP_DIR'};
+my $go_log_file = "$log_dir/rdrs2-golang_mtls.output.log";
+if (open(my $trunc, '>', $go_log_file)) { close($trunc); }
+
+$ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_MTLS'};
+
+system("go test -v -count 1 -timeout 5m " .
+       "-run '^TestRequireAndVerifyClientCert\$' " .
+       "hopsworks.ai/rdrs2/internal/integrationtests/mtls " .
+       ">> \"$go_log_file\" 2>&1");
+my $exit_code = $? >> 8;
+if ($exit_code != 0) {
+    print "FAIL: client certificate checks exited with code $exit_code\n";
+    print "Full log: $go_log_file\n";
+    if (open(my $fh, '<', $go_log_file)) { print while <$fh>; close($fh); }
+    exit 1;
+}
+# `go test -run` with a pattern matching no test exits 0; a renamed or
+# skipped test must not pass silently.
+my $out = '';
+if (open(my $fh, '<', $go_log_file)) { local $/; $out = <$fh>; close($fh); }
+if ($out !~ /^--- PASS: TestRequireAndVerifyClientCert /m) {
+    print "FAIL: TestRequireAndVerifyClientCert did not run or was skipped\n";
+    print $out;
+    exit 1;
+}
+print "PASS\n";
+exit 0;
+END_OF_PERL
