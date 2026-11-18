@@ -32,12 +32,6 @@
 class RDRSRonDBConnection {
   static constexpr int MAX_PARALLEL_KEY_OPS = 1024;
   static constexpr Uint32 expectedMagic = 0x52b5cb03;
-  /* How long GetNumReadyDataNodes() retries its try-lock, in 1 ms steps,
-   * before it reports the connection as not ready. Long enough that
-   * ordinary request-path contention on connectionMutex can never be
-   * mistaken for an unavailable cluster, short enough that a health probe
-   * still answers promptly. */
-  static constexpr Uint32 READY_NODES_TRYLOCK_ATTEMPTS = 20;
 
  private:
   Uint32 magic = 0;
@@ -75,6 +69,21 @@ class RDRSRonDBConnection {
   AtomicRonDBStats stats;
 
   Ndb_cluster_connection *ndbConnection;
+  /* The probes' view of ndbConnection: GetNumReadyDataNodes() and
+   * IsStranded() read the cluster connection through this pointer, under
+   * probeConnectionMutex, and never take connectionMutex. That mutex is on
+   * the request path - every metadata Ndb acquisition and return takes it -
+   * so a probe that try-locks it starves under load and has to guess, which
+   * is how a healthy but busy server came to answer /health with 503.
+   *
+   * Set by Connect() once the connection is fully up, cleared by Shutdown()
+   * before the connection is deleted. probeConnectionMutex is a leaf: it is
+   * taken inside connectionMutex, never the other way round, and every
+   * holder keeps it for a pointer assignment or for one get_no_ready()
+   * call. A probe can therefore lock it without ever waiting on a rebuild
+   * or on request traffic. */
+  NdbMutex *probeConnectionMutex;
+  Ndb_cluster_connection *probeConnection;
   /* Ndb_cluster_connection::get_connect_count() as of the last time this
    * connection was seen with a reachable data node. The NDB API bumps that
    * counter exactly when this API node loses its last data node, so a
@@ -82,8 +91,8 @@ class RDRSRonDBConnection {
    * Captured before connect() - the counter cannot have moved on an
    * object no thread has started for - and advanced by IsStranded()
    * whenever it observes ready nodes, so a loss the NDB API recovered from
-   * on its own does not linger as a mismatch. Protected by connectionMutex
-   * like the ndbConnection it describes. */
+   * on its own does not linger as a mismatch. Protected by
+   * probeConnectionMutex. */
   Uint32 m_connect_count_last_healthy;
   char *connection_string;
   Uint32 m_node_id;

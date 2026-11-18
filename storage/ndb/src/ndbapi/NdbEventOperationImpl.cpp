@@ -2965,6 +2965,19 @@ void NdbEventBuffer::report_node_failure_completed(Uint32 node_id) {
   assert(m_min_gci_index == m_max_gci_index);
   assert(m_latest_complete_GCI == 0);
   m_latestGCI = 0;
+  /**
+   * The GCI sequence starts over, exactly as for a new event buffer: the
+   * first epoch seen after the reconnect is one the subscription joined
+   * part way through, so some of its SUB_GCP_COMPLETE_REP never arrive and
+   * it can never complete. Completing the failure epoch above cleared
+   * m_startup_hack, and init_gci_containers() - which would set it - is
+   * not called here. Without it set again, that first epoch stays
+   * incomplete as the minimum known GCI and every later epoch is only
+   * registered as 'out of order' behind it: nothing is ever delivered or
+   * released again, and the receive thread gets slower with every epoch
+   * buffered. Arm it so the first completed epoch flushes what precedes it.
+   */
+  m_startup_hack = true;
 
   m_epoch_generation++;
   DBUG_VOID_RETURN;

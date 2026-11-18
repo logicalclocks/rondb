@@ -57,9 +57,9 @@ NdbMutex *globalConfigsMutex = nullptr;
 extern RDRSRonDBConnectionPool *rdrsRonDBConnectionPool;
 
 static constexpr Uint32 NUM_THREADS = 4;
-/* Readiness checks per contention probe. Enough that a single-attempt
- * try-lock is overwhelmingly likely to collide with the request path at
- * least once. */
+/* Readiness checks per contention probe. Enough that a readiness check
+ * depending on connectionMutex is overwhelmingly likely to collide with
+ * the request path at least once. */
 static constexpr Uint32 NUM_HEALTH_PROBES = 200;
 
 class ReconnectTest : public ::testing::Test {
@@ -232,9 +232,11 @@ TEST_F(ReconnectTest, ClusterUpErrorsDoNotReconnect) {
  * the request path happens to hold connectionMutex. Metadata Ndb objects are
  * not thread-cached, so GetMetadataNdbObject/ReturnMetadataNdbObject take
  * that mutex on every API-key validation - i.e. on every request in the
- * production configuration. A single-attempt try-lock inside
- * GetNumReadyDataNodes() therefore reports 0 ready data nodes under ordinary
- * load, flapping /health to 503 on a perfectly healthy server.
+ * production configuration. A try-lock on it inside GetNumReadyDataNodes()
+ * - single-attempt, or retried for 20 ms as it later was - therefore
+ * reports 0 ready data nodes under load, flapping /health to 503 on a
+ * perfectly healthy server. The readiness check must not depend on that
+ * mutex at all.
  */
 TEST_F(ReconnectTest, ContendedConnectionMutexStaysHealthy) {
   ASSERT_TRUE(waitForRecovery(60 * 1000));

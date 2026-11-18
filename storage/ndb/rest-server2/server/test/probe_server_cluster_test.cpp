@@ -29,8 +29,9 @@
  * 2. The never-blocks contract under contention: with threads hammering the
  *    connection-acquisition path (whose critical section creates Ndb
  *    objects while holding both connection mutexes), /health on the probe
- *    port answers fast AND correct - the wait-free stats reads plus the
- *    bounded try-lock, measured end to end over HTTP.
+ *    port answers fast AND correct - the lock-free stats reads plus a
+ *    node count read that never touches those mutexes, measured end to end
+ *    over HTTP.
  */
 
 #include "probe_server.hpp"
@@ -217,9 +218,9 @@ TEST_F(ProbeServerClusterTest, Phase3_DrogonUp_PingAndHealth200) {
  * used to make /health block (same hammer as reconnect_test's
  * ContendedConnectionMutexStaysHealthy, but measured end to end over HTTP).
  * Every probe must answer 200 "1" (a wrong answer under load is the
- * /health-flapping bug), and fast: the bound is the ~20x1ms try-lock, so
- * 100ms of budget is generous and still well below the kubelet's 2s probe
- * timeout. */
+ * /health-flapping bug), and fast: the probe takes no mutex the hammer
+ * holds, so 100ms of budget is generous and still well below the kubelet's
+ * 2s probe timeout. */
 TEST_F(ProbeServerClusterTest, Phase4_HealthFastAndCorrectUnderContention) {
   std::atomic<bool> stop{false};
   std::atomic<Uint64> acquisitions{0};

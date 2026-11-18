@@ -43,6 +43,7 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string,
 
   connectionMutex = NdbMutex_Create();
   connectionInfoMutex = NdbMutex_Create();
+  probeConnectionMutex = NdbMutex_Create();
   stats.ndb_objects_available = 0;
   stats.ndb_objects_count = 0;
   stats.ndb_objects_created = 0;
@@ -64,6 +65,7 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string,
   this->connection_retry_delay_in_sec = connection_retry_delay_in_sec;
 
   ndbConnection = nullptr;
+  probeConnection = nullptr;
   m_connect_count_last_healthy = 0;
   reconnectionThread = nullptr;
 
@@ -93,7 +95,9 @@ RS_Status RDRSRonDBConnection::Connect() {
      * lost the last data node and bumped the counter, and a baseline read
      * then would absorb that loss - CONNECTED with no reachable node and
      * equal counters, which is the stranded state made undetectable. */
+    NdbMutex_Lock(probeConnectionMutex);
     m_connect_count_last_healthy = ndbConnection->get_connect_count();
+    NdbMutex_Unlock(probeConnectionMutex);
     retCode = ndbConnection->connect(connection_retries,
                                      connection_retry_delay_in_sec,
                                      0);
@@ -121,6 +125,10 @@ RS_Status RDRSRonDBConnection::Connect() {
       NdbMutex_Unlock(connectionMutex);
       return status;
     }
+    /* Fully up: let the probes see it. */
+    NdbMutex_Lock(probeConnectionMutex);
+    probeConnection = ndbConnection;
+    NdbMutex_Unlock(probeConnectionMutex);
     NdbMutex_Unlock(connectionMutex);
   }
   {
@@ -146,6 +154,7 @@ RDRSRonDBConnection::~RDRSRonDBConnection() {
     require(!stats.is_shutting_down);
     require(!stats.is_reconnection_in_progress);
     require(ndbConnection == nullptr);
+    require(probeConnection == nullptr);
     require(reconnectionThread == nullptr);
     NdbMutex_Unlock(connectionMutex);
     NdbMutex_Unlock(connectionInfoMutex);
@@ -155,6 +164,7 @@ RDRSRonDBConnection::~RDRSRonDBConnection() {
 
   NdbMutex_Destroy(connectionMutex);
   NdbMutex_Destroy(connectionInfoMutex);
+  NdbMutex_Destroy(probeConnectionMutex);
 }
 
 RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
@@ -278,23 +288,13 @@ void RDRSRonDBConnection::ReturnNDBObjectToPool(Ndb *ndb_object,
 }
 
 int RDRSRonDBConnection::GetNumReadyDataNodes() {
-  /* Health probes call this and must never wait, so nothing here may take a
-   * blocking lock. The state fields are atomics - read them lock-free.
-   *
-   * connectionMutex is held for tens of seconds only while the cluster
-   * connection is rebuilt: Connect()'s wait_until_ready() and the
-   * delete ndbConnection in Shutdown(). Those windows are exactly what the
-   * state below describes, so check it first and never wait for them.
-   *
-   * The try-lock below still matters: ndbConnection is deleted under
-   * connectionMutex, so touching it without the lock is a use-after-free.
-   * Every holder outside a rebuild keeps that mutex for microseconds, and
-   * one of them is on the hot path: the metadata Ndb objects are not
-   * thread-cached, so GetMetadataNdbObject/ReturnMetadataNdbObject take it
-   * on every API-key validation and every feature store metadata read. A
-   * failed try-lock there means contention, NOT an unavailable cluster -
-   * reporting 0 would flap /health on a healthy but busy server - so retry
-   * briefly instead of guessing. */
+  /* Health probes call this and must never wait on a rebuild or on request
+   * traffic, so connectionMutex is off limits here: it is held for tens of
+   * seconds across Connect()/Shutdown(), and on the request path by every
+   * metadata Ndb acquisition and return. The state fields are atomics -
+   * read them lock-free - and the cluster connection is reached through
+   * probeConnection, whose mutex is only ever held for a pointer
+   * assignment or by another probe (see its declaration). */
   {
     const bool unavailable = stats.is_shutdown || stats.is_shutting_down ||
                              stats.is_reconnection_in_progress ||
@@ -303,25 +303,15 @@ int RDRSRonDBConnection::GetNumReadyDataNodes() {
       return 0;
     }
   }
-  for (Uint32 attempt = 0; attempt < READY_NODES_TRYLOCK_ATTEMPTS; attempt++) {
-    if (likely(NdbMutex_Trylock(connectionMutex) == 0)) {
-      int ready = -1;
-      if (likely(ndbConnection != nullptr)) {
-        ready = ndbConnection->get_no_ready();
-      }
-      NdbMutex_Unlock(connectionMutex);
-      return ready;
-    }
-    NdbSleep_MilliSleep(1);
+  /* probeConnection is null whenever the connection is not fully up, also
+   * when a rebuild started right after the state check above. */
+  int ready = 0;
+  NdbMutex_Lock(probeConnectionMutex);
+  if (likely(probeConnection != nullptr)) {
+    ready = probeConnection->get_no_ready();
   }
-  /* Unbroken contention for the whole window: a rebuild must have started
-   * after the check above, or the server is pathologically overloaded.
-   * Either way it cannot serve right now. */
-  rdrs_logger::warn(
-    "Health check could not read the number of ready data nodes: "
-    "connectionMutex busy for " +
-    std::to_string(READY_NODES_TRYLOCK_ATTEMPTS) + " ms.");
-  return 0;
+  NdbMutex_Unlock(probeConnectionMutex);
+  return ready;
 }
 
 bool RDRSRonDBConnection::IsStranded() {
@@ -341,40 +331,34 @@ bool RDRSRonDBConnection::IsStranded() {
       return true;
     }
   }
-  /* Same try-lock discipline as GetNumReadyDataNodes() - connectionMutex
-   * is held for tens of seconds only during a rebuild, which the state
-   * check above has already excluded - but the opposite default when it
-   * loses: a busy connection is not a stranded one. */
-  for (Uint32 attempt = 0; attempt < READY_NODES_TRYLOCK_ATTEMPTS; attempt++) {
-    if (likely(NdbMutex_Trylock(connectionMutex) == 0)) {
-      bool stranded = false;
-      if (likely(ndbConnection != nullptr)) {
-        const Uint32 connect_count = ndbConnection->get_connect_count();
-        if (ndbConnection->get_no_ready() > 0) {
-          /* Reachable nodes: whatever losses the counter records are
-           * behind us - either none happened, or the dictionary cache was
-           * empty at the time and the NDB API reconnected by itself. Move
-           * the baseline up so that recovered loss is not remembered as a
-           * mismatch and later misread, during some transient zero-ready
-           * moment of a partial outage, as a reason to tear down a
-           * connection that is fine. */
-          m_connect_count_last_healthy = connect_count;
-        } else {
-          /* Nothing reachable. On its own that cannot tell a partial outage
-           * in progress (which the NDB API rides out) from a total one -
-           * get_no_ready() has no node-group awareness. The counter can: it
-           * moves only when the last node is lost. Moved since we last saw
-           * a healthy node, and still nothing back, is exactly the parked
-           * state. */
-          stranded = connect_count != m_connect_count_last_healthy;
-        }
-      }
-      NdbMutex_Unlock(connectionMutex);
-      return stranded;
+  /* Same discipline as GetNumReadyDataNodes(): never connectionMutex. No
+   * published connection means a rebuild is under way, which is not the
+   * stranded state. */
+  bool stranded = false;
+  NdbMutex_Lock(probeConnectionMutex);
+  if (likely(probeConnection != nullptr)) {
+    const Uint32 connect_count = probeConnection->get_connect_count();
+    if (probeConnection->get_no_ready() > 0) {
+      /* Reachable nodes: whatever losses the counter records are behind
+       * us - either none happened, or the dictionary cache was empty at
+       * the time and the NDB API reconnected by itself. Move the baseline
+       * up so that recovered loss is not remembered as a mismatch and
+       * later misread, during some transient zero-ready moment of a
+       * partial outage, as a reason to tear down a connection that is
+       * fine. */
+      m_connect_count_last_healthy = connect_count;
+    } else {
+      /* Nothing reachable. On its own that cannot tell a partial outage in
+       * progress (which the NDB API rides out) from a total one -
+       * get_no_ready() has no node-group awareness. The counter can: it
+       * moves only when the last node is lost. Moved since we last saw a
+       * healthy node, and still nothing back, is exactly the parked
+       * state. */
+      stranded = connect_count != m_connect_count_last_healthy;
     }
-    NdbSleep_MilliSleep(1);
   }
-  return false;
+  NdbMutex_Unlock(probeConnectionMutex);
+  return stranded;
 }
 
 void RDRSRonDBConnection::GetStats(RonDB_Stats &ret) {
@@ -534,6 +518,13 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
   }
   {
     NdbMutex_Lock(connectionMutex);
+    /* Take the connection away from the probes first. Once this unlock
+     * returns no probe is inside it and none can enter, so the delete
+     * below - which can take a long time - runs without holding the
+     * probes' mutex. */
+    NdbMutex_Lock(probeConnectionMutex);
+    probeConnection = nullptr;
+    NdbMutex_Unlock(probeConnectionMutex);
     // Delete connection
     try {
       rdrs_logger::debug("delete ndbconnection");

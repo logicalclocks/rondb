@@ -256,8 +256,9 @@ std::string buildResponse(int status,
  * health_ctrl.cpp for why one STARTED data node implies a serving cluster;
  * this is the same predicate, plus the Drogon guard):
  * - g_drogon_up: readiness must not say 200 before the main port accepts.
- * - get_rondb_stats()/get_num_ready_data_nodes() are wait-free and safe
- *   before init() and after shutdown (they answer "down" then). */
+ * - get_rondb_stats()/get_num_ready_data_nodes() never wait on the request
+ *   path or on a connection rebuild, and are safe before init() and after
+ *   shutdown (they answer "down" then). */
 int healthStatus() {
   if (!g_drogon_up.load(std::memory_order_acquire)) {
     return 503;
