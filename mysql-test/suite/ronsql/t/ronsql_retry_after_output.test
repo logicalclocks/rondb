@@ -1,0 +1,156 @@
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+--source suite/ndb_push_agg/t/have_ndb_error_insert.inc
+
+# A temporary error after a streamed pass-through query wrote rows.
+#
+# README finding X-7: RDRS buffers the whole response body in a
+# CappedOStream and sends nothing before the statement is done, but
+# RonSQL applied the ",od" rule there as in ronsql_cli: once a streaming
+# drain had printed a row, a temporary error became permanent, since a
+# retry would repeat the rows.  A pass-through scan that lost a batch
+# failed with 503 [resource] although nothing had reached the client.
+# ronsql_op now rewinds the buffer, on each retry, to its size before
+# the first attempt (the JSON prologue that ronsql_ctrl.cpp writes
+# stays), and runs the statement with RonSQLExecParams::
+# output_discardable, so the error stays retryable.  ronsql_cli keeps
+# the ",od" rule: its stdout cannot be taken back.
+#
+# The trigger is the one of ronsql_subquery_retry, on the main query:
+# error insert 5023 makes a data node drop the first SCAN_NEXTREQ that a
+# DBTC of its own node sends to it.  rrt has 800 rows in one fragment,
+# READ_BACKUP, so a committed-read scan reads the replica on its TC's
+# node, and the API asks for them in batches of at most 384 rows
+# (BatchSize; fewer for the wide rows of rr-4).  The scan prints its
+# first batch, asks for the next one, which is dropped, and DBTC fails
+# the scan with 274 (temporary) after TransactionDeadlockDetectionTimeout
+# (3 s).  The insert is armed on both data nodes, so the first one or two
+# attempts fail and a later one succeeds.
+#
+# ronsql_retry_after_output.cnf is the config of ronsql_size_limits: the
+# RDRS used here caps the response at Internal.MaxRespSize = 65536.
+#
+#   rr-1  control: SELECT id, v through RDRS and ronsql_cli, compared
+#         with mysqld
+#   rr-2  RDRS, TEXT, insert armed: HTTP 200 and the 800 rows of mysqld,
+#         each once, after more than one attempt (before: 503 [resource])
+#   rr-3  RDRS, JSON with an operationId, insert armed: one JSON object,
+#         the prologue once and the 800 rows once (a rewind to 0 would
+#         drop the prologue, no rewind would repeat the first batch)
+#   rr-4  RDRS, insert armed, a result over MaxRespSize (83899 bytes of
+#         TSV): 413 [limit], the cap holds for the retried attempt
+#         (before: 503 [resource])
+#   rr-5  ronsql_cli, insert armed: not retried after it printed rows
+#         (",od", unchanged), exit code 1 with the first batch on stdout
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE rrt (
+  id  INT NOT NULL,
+  v   INT NOT NULL,
+  pad VARCHAR(100) NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB COMMENT="NDB_TABLE=READ_BACKUP=1"
+  PARTITION BY KEY (id) PARTITIONS 1;
+INSERT INTO rrt
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 800)
+  SELECT n, 3 * n, REPEAT('x', 100) FROM seq;
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === rr-1: control, no error insert ===
+--let $QUERY=SELECT id, v FROM rrt;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result (summary) ==
+SELECT COUNT(*) AS n, MIN(id) AS lo, MAX(id) AS hi, SUM(v) AS sum_v FROM rrt;
+
+--exec $MYSQL -D test -e 'SELECT id, v FROM rrt' > $MYSQL_TMP_DIR/rr-mysql.out
+--exec (head -n 1 $MYSQL_TMP_DIR/rr-mysql.out && tail -n +2 $MYSQL_TMP_DIR/rr-mysql.out | sort) > $MYSQL_TMP_DIR/rr-mysql.sorted
+
+--echo
+--echo === rr-2: RDRS, TEXT, the scan's second batch is dropped ===
+--exec printf '{"query":"SELECT id, v FROM rrt;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/rr-body
+--exec $NDB_MGM -e "all error 5023" >> $NDB_TOOLS_OUTPUT
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/rr-hdrs -o $MYSQL_TMP_DIR/rr-rdrs.out -X POST -H "Content-Type: application/json" -H "x-ronsql-phases: 1" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/rr-body
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec (head -n 1 $MYSQL_TMP_DIR/rr-rdrs.out && tail -n +2 $MYSQL_TMP_DIR/rr-rdrs.out | sort) > $MYSQL_TMP_DIR/rr-rdrs.sorted
+--exec echo Number of output lines, including header: `grep -Fc '' '$MYSQL_TMP_DIR/rr-rdrs.sorted'`
+--echo == Diff with mysqld ==
+--exec diff -u --label mysql.out $MYSQL_TMP_DIR/rr-mysql.sorted --label ronsql.out $MYSQL_TMP_DIR/rr-rdrs.sorted
+--echo == The last attempt drained 800 rows, more than one attempt ran (must be 1) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/rr-hdrs | tr -d '\r' | grep -cE ',rows=800,attempts=([2-9]|10),'
+
+--echo
+--echo === rr-3: RDRS, JSON with an operationId, the scan's second batch is dropped ===
+--exec printf '{"query":"SELECT id, v FROM rrt;","database":"test","outputFormat":"JSON","operationId":"rr-3"}' > $MYSQL_TMP_DIR/rr-body
+--exec $NDB_MGM -e "all error 5023" >> $NDB_TOOLS_OUTPUT
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/rr-hdrs -o $MYSQL_TMP_DIR/rr-rdrs.out -X POST -H "Content-Type: application/json" -H "x-ronsql-phases: 1" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/rr-body
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--perl
+use strict;
+use warnings;
+use JSON::PP;
+my $file = "$ENV{MYSQL_TMP_DIR}/rr-rdrs.out";
+open(my $fh, '<', $file) or die "Cannot open $file: $!";
+my $body = do { local $/; <$fh> };
+close($fh);
+my $doc = eval { decode_json($body) };
+if (!defined $doc || ref($doc) ne 'HASH' || ref($doc->{data}) ne 'ARRAY') {
+  print "UNEXPECTED: the body is not one JSON object with a data array\n";
+} else {
+  my %seen;
+  my $sum = 0;
+  foreach my $row (@{$doc->{data}}) {
+    $seen{$row->{id}}++;
+    $sum += $row->{v};
+  }
+  print "operationId: $doc->{operationId}\n";
+  print "rows: ", scalar(@{$doc->{data}}), ", distinct ids: ",
+        scalar(keys %seen), ", sum of v: $sum\n";
+}
+EOF
+--echo == The last attempt drained 800 rows, more than one attempt ran (must be 1) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/rr-hdrs | tr -d '\r' | grep -cE ',rows=800,attempts=([2-9]|10),'
+
+--echo
+--echo === rr-4: RDRS, a result over MaxRespSize, the scan's second batch is dropped ===
+--exec printf '{"query":"SELECT id, pad FROM rrt;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/rr-body
+--exec $NDB_MGM -e "all error 5023" >> $NDB_TOOLS_OUTPUT
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/rr-hdrs -o $MYSQL_TMP_DIR/rr-rdrs.out -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/rr-body
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec cat $MYSQL_TMP_DIR/rr-rdrs.out
+--echo == Error class limit (must be 1) ==
+--exec grep -ciE '^X-RonSQL-Error-Class: limit' $MYSQL_TMP_DIR/rr-hdrs
+
+--echo
+--echo === rr-5: ronsql_cli, the scan's second batch is dropped ===
+--exec $NDB_MGM -e "all error 5023" >> $NDB_TOOLS_OUTPUT
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id, v FROM rrt;' > $MYSQL_TMP_DIR/rr-cli.out 2> $MYSQL_TMP_DIR/rr-cli.err || echo "ronsql_cli failed"
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec awk 'END { if (NR > 1 && NR < 801) print "partial output: the header and the first batch"; else print "UNEXPECTED: " NR " lines" }' $MYSQL_TMP_DIR/rr-cli.out
+--exec grep -x 'Error handling: SRE,te,nu,od->RPE' $MYSQL_TMP_DIR/rr-cli.err
+--exec grep '^ronsql_cli caught' $MYSQL_TMP_DIR/rr-cli.err
+
+--remove_file $MYSQL_TMP_DIR/rr-body
+--remove_file $MYSQL_TMP_DIR/rr-hdrs
+--remove_file $MYSQL_TMP_DIR/rr-rdrs.out
+--remove_file $MYSQL_TMP_DIR/rr-rdrs.sorted
+--remove_file $MYSQL_TMP_DIR/rr-mysql.out
+--remove_file $MYSQL_TMP_DIR/rr-mysql.sorted
+--remove_file $MYSQL_TMP_DIR/rr-cli.out
+--remove_file $MYSQL_TMP_DIR/rr-cli.err
+
+--disable_query_log
+--disable_warnings
+DROP TABLE rrt;
+--enable_warnings
+--enable_query_log
+--remove_file $NDB_TOOLS_OUTPUT

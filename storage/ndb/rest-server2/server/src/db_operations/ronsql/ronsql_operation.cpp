@@ -19,6 +19,7 @@
 
 #include "ronsql_operation.hpp"
 #include <cstring>
+#include "src/capped_ostream.hpp"
 #include "src/error_strings.h"
 #include "storage/ndb/src/ronsql/RonSQLPreparer.hpp"
 #include "storage/ndb/plugin/ndb_sleep.h"
@@ -82,6 +83,24 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
   std::basic_ostream<char>& err = *params.err_stream;
   static int max_attempts = 10;
   int retry_sleep_ms = 10;
+  /*
+   * X-7: RDRS sends the response body only after ronsql_op returns, so
+   * the output of a failed attempt can be taken back.  Each retry rewinds
+   * the buffer to its size before the first attempt (the JSON prologue
+   * that ronsql_ctrl.cpp wrote stays), and output_discardable keeps a
+   * temporary error retryable after the statement wrote output: the ",od"
+   * rule is for ronsql_cli, whose stdout cannot be taken back.  A buffer
+   * already over its cap is left alone: a statement that succeeds is
+   * answered 413 whatever it writes, and a rewind would forget that.
+   */
+  CappedOStream* rewind_out = params.rewindable_out_stream;
+  if (rewind_out != nullptr && rewind_out->exceeded()) {
+    rewind_out = nullptr;
+  }
+  const size_t rewind_size = rewind_out != nullptr ? rewind_out->size() : 0;
+  if (rewind_out != nullptr) {
+    params.output_discardable = true;
+  }
   for (int attempt = 0; attempt < max_attempts; attempt++) {
     bool is_last_attempt = attempt == max_attempts - 1;
     try {
@@ -164,6 +183,15 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
                           std::string(rdrsErrorMessage(ERROR_RONSQL_TEMPORARY)) +
                           " Detail: " + e.what(),
                           __LINE__, __MYFILENAME__);
+      }
+      if (rewind_out != nullptr) {
+        /*
+         * X-7: drop what this attempt wrote; the next one writes the
+         * result again.  An attempt that went over the cap is retried
+         * too: truncate() clears the flag, and the retry is capped on its
+         * own (413 if it overflows again, as without the error).
+         */
+        rewind_out->truncate(rewind_size);
       }
       ndb_retry_sleep(retry_sleep_ms);
       retry_sleep_ms = std::min(retry_sleep_ms * 2, 1000);

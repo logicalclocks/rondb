@@ -293,6 +293,10 @@ void RonSQLCtrl::ronsql(
    * every query paid the ~400 µs listIndexes() slow path). */
   params.schema_cache = g_schema_cache;
   params.avro_decoder = &request->avro_decoder;
+  // X-7: the body (out_stream, set below) is sent only after the
+  // statement is done, so ronsql_op may rewind it to retry the statement
+  // after it wrote output.
+  params.rewindable_out_stream = &request->out_stream;
 #ifdef RONSQL_PHASE_STATS
   // Capture phase timings only for a client that asked for them; a NULL
   // sink also tells RonSQLRequest::execute to omit the response header.

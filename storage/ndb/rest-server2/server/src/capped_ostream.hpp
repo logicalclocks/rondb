@@ -57,6 +57,18 @@ class CappedStringBuf : public std::streambuf {
   const std::string &str() const { return m_data; }
   std::string take() { return std::move(m_data); }
   size_t size() const { return m_data.size(); }
+  /*
+   * X-7: drop the bytes written after the first `size`, so that a retried
+   * statement writes its output again from there (ronsql_op).  The caller
+   * read `size` from size() while exceeded() was false, so a write the cap
+   * refused came after it and is forgotten with them: exceeded() is false
+   * again, and the cap applies to what the retry writes.  No put area is
+   * used, so m_data holds every byte written.
+   */
+  void truncate(size_t size) {
+    if (size < m_data.size()) m_data.resize(size);
+    m_exceeded = false;
+  }
 
  protected:
   std::streamsize xsputn(const char *s, std::streamsize n) override {
@@ -96,6 +108,12 @@ class CappedOStream : public std::ostream {
   const std::string &str() const { return m_buf.str(); }
   std::string take() { return m_buf.take(); }
   size_t size() const { return m_buf.size(); }
+  // X-7: see CappedStringBuf::truncate.  The badbit a refused write set
+  // is cleared with the flag, so the stream takes writes again.
+  void truncate(size_t size) {
+    m_buf.truncate(size);
+    clear();
+  }
 
  private:
   CappedStringBuf m_buf;

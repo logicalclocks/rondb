@@ -43,6 +43,7 @@ typedef Int32 TokenKind; /* The type of the T_* values used to indicate token
                           */
 
 class RdrsSchemaCache;  // Forward declaration — optional, for index list caching
+class CappedOStream;    // RDRS's response buffer (capped_ostream.hpp), X-7
 
 /*
  * Per-request phase timing statistics.  All *_us values are microseconds
@@ -191,10 +192,15 @@ struct RonSQLExecParams
   // X-6: the caller discards out_stream when the statement fails, as
   // execute_subqueries does with the private buffer of a subquery.  A
   // retryable error then stays retryable after output was written: the
-  // retry cannot repeat anything that reached a client.  RDRS and
-  // ronsql_cli keep what was written (RDRS does not rewind its buffer
-  // between attempts, X-7), so they leave it false.
+  // retry cannot repeat anything that reached a client.  X-7: RDRS's
+  // ronsql_op sets it when it rewinds rewindable_out_stream between
+  // attempts; ronsql_cli leaves it false (stdout cannot be taken back).
   bool output_discardable = false;
+  // X-7, only used with RDRS: out_stream, when it is RDRS's response
+  // buffer, which sends nothing before ronsql_op returns.  ronsql_op
+  // rewinds it to its size before the first attempt when it retries the
+  // statement, and sets output_discardable.
+  CappedOStream* rewindable_out_stream = nullptr;
   enum class OutputFormat
   {
     JSON,          // Output a JSON representation of the result set or EXPLAIN
