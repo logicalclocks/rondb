@@ -6677,60 +6677,508 @@ strip_not(ConditionalExpression* ce, bool* negated)
   return ce;
 }
 
-static void
-parse_subquery_value(const char* str, SubqueryResult& val)
+/*
+ * X-4: the number in [begin, end) as SubqueryResult keeps its text:
+ * [-]digits[.digits], with no leading zero in the integer part but a
+ * lone 0, no trailing zero in the fraction, no point without a fraction,
+ * no sign on zero, and no exponent.  A DOUBLE prints in fixed point, but
+ * a FLOAT can print as 1.5e-07, which becomes 0.00000015.  False when
+ * the text is not a number.
+ */
+static bool
+plain_number_text(const char* begin, const char* end, std::string* out)
 {
-  if (strcmp(str, "NULL") == 0)
+  const char* p = begin;
+  bool negative = false;
+  if (p < end && (*p == '-' || *p == '+'))
   {
-    val.is_null = true;
-    return;
+    negative = (*p == '-');
+    p++;
   }
-  char* endptr = NULL;
-  errno = 0;
-  long long ll = strtoll(str, &endptr, 10);
-  if (endptr != NULL && *endptr == '\0' && errno == 0)
+  const char* int_begin = p;
+  while (p < end && *p >= '0' && *p <= '9') p++;
+  const char* int_end = p;
+  const char* frac_begin = p;
+  const char* frac_end = p;
+  if (p < end && *p == '.')
   {
-    val.is_null = false;
-    val.is_float = false;
-    val.int_val = (Int64)ll;
-    return;
+    p++;
+    frac_begin = p;
+    while (p < end && *p >= '0' && *p <= '9') p++;
+    frac_end = p;
   }
-  errno = 0;
-  double dbl = strtod(str, &endptr);
-  if (endptr != NULL && *endptr == '\0' && errno == 0)
+  if (int_end == int_begin && frac_end == frac_begin) return false;
+  long exponent = 0;
+  if (p < end && (*p == 'e' || *p == 'E'))
   {
-    val.is_null = false;
-    val.is_float = true;
-    val.float_val = dbl;
-    return;
+    p++;
+    bool negative_exponent = false;
+    if (p < end && (*p == '-' || *p == '+'))
+    {
+      negative_exponent = (*p == '-');
+      p++;
+    }
+    const char* exponent_begin = p;
+    while (p < end && *p >= '0' && *p <= '9')
+    {
+      exponent = exponent * 10 + (*p - '0');
+      // Far beyond any double; a FLOAT prints exponents up to 45.
+      if (exponent > 400) return false;
+      p++;
+    }
+    if (p == exponent_begin) return false;
+    if (negative_exponent) exponent = -exponent;
   }
-  throw RonSQLPermanentError(
-      "Correlated scalar subquery returned a non-numeric value.");
+  if (p != end) return false;
+  // All digits, and how many of them stand before the point.
+  std::string digits(int_begin, int_end);
+  digits.append(frac_begin, frac_end);
+  const long num_digits = static_cast<long>(digits.size());
+  const long point = static_cast<long>(int_end - int_begin) + exponent;
+  std::string int_part;
+  std::string frac_part;
+  for (long i = 0; i < point; i++)
+    int_part += (i < num_digits) ? digits[i] : '0';
+  for (long i = point; i < num_digits; i++)
+    frac_part += (i < 0) ? '0' : digits[i];
+  const size_t first = int_part.find_first_not_of('0');
+  int_part = (first == std::string::npos) ? std::string("0")
+                                          : int_part.substr(first);
+  const size_t last = frac_part.find_last_not_of('0');
+  frac_part.resize(last == std::string::npos ? 0 : last + 1);
+  const bool is_zero = (int_part == "0" && frac_part.empty());
+  out->clear();
+  if (negative && !is_zero) out->push_back('-');
+  out->append(int_part);
+  if (!frac_part.empty())
+  {
+    out->push_back('.');
+    out->append(frac_part);
+  }
+  return true;
 }
 
 /*
- * Return the next non-empty line of a subquery's TEXT_NOHEADER output in
- * [*pos, end), NUL-terminated in place (the '\n' and any trailing '\r'
- * are overwritten), and advance *pos past it; NULL when none is left.
- * Lines are split on '\n' and blank ones skipped, as std::getline over
- * the output did, but without a std::string per line.  *end must be
- * writable: the output's own terminator.
+ * X-4: a number of a subquery's output as a SubqueryResult: an Int64
+ * when it is an integer that fits, otherwise a double with its exact
+ * text (a DECIMAL or DOUBLE with a fraction, a BIGINT UNSIGNED above
+ * 2^63 - 1).  An integral DECIMAL such as 3.0000 is the integer 3.
  */
-static char*
-next_subquery_output_line(char** pos, char* end)
+static bool
+subquery_number(const char* begin, const char* end, ArenaMalloc* amalloc,
+                SubqueryResult* v)
 {
-  while (*pos < end)
+  std::string text;
+  if (!plain_number_text(begin, end, &text)) return false;
+  v->is_null = false;
+  if (text.find('.') == std::string::npos)
   {
-    char* line = *pos;
-    char* nl = static_cast<char*>(memchr(line, '\n', end - line));
-    char* line_end = (nl != NULL) ? nl : end;
-    *pos = (nl != NULL) ? nl + 1 : end;
-    while (line_end > line && line_end[-1] == '\r') line_end--;
-    if (line_end == line) continue;
-    *line_end = '\0';
-    return line;
+    errno = 0;
+    char* endptr = NULL;
+    const long long ll = strtoll(text.c_str(), &endptr, 10);
+    if (errno == 0 && endptr != NULL && *endptr == '\0')
+    {
+      v->int_val = static_cast<Int64>(ll);
+      return true;
+    }
+  }
+  char* copy = amalloc->alloc_exc<char>(static_cast<Uint32>(text.size() + 1));
+  memcpy(copy, text.c_str(), text.size() + 1);
+  v->is_float = true;
+  v->float_val = strtod(copy, NULL);
+  v->text = LexString{copy, text.size()};
+  return true;
+}
+
+// X-4: the closing quote of the JSON string whose content starts at p,
+// or NULL when it is not in [p, end).
+static const char*
+json_string_end(const char* p, const char* end)
+{
+  while (p < end)
+  {
+    if (*p == '"') return p;
+    if (*p == '\\')
+    {
+      if (end - p < 2) return NULL;
+      p += 2;
+      continue;
+    }
+    p++;
   }
   return NULL;
+}
+
+static int
+json_hex_digit(char c)
+{
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+/*
+ * X-4: the UTF-8 content of the JSON string [p, end), unescaped into
+ * amalloc.  The JSON printer (print_string) escapes \" \\ and the control
+ * characters, as \b \f \n \r \t or \u00XX, and writes every other
+ * character as UTF-8, so a \u escape is never a surrogate.  False when
+ * the content is not such a string.
+ */
+static bool
+json_unescape(const char* p, const char* end, ArenaMalloc* amalloc,
+              LexString* out)
+{
+  // An escape is never shorter than what it stands for.
+  char* buf = amalloc->alloc_exc<char>(static_cast<Uint32>(end - p + 1));
+  size_t n = 0;
+  while (p < end)
+  {
+    const char c = *p++;
+    if (c != '\\')
+    {
+      buf[n++] = c;
+      continue;
+    }
+    if (p == end) return false;
+    const char e = *p++;
+    switch (e)
+    {
+    case '"': buf[n++] = '"'; break;
+    case '\\': buf[n++] = '\\'; break;
+    case '/': buf[n++] = '/'; break;
+    case 'b': buf[n++] = '\b'; break;
+    case 'f': buf[n++] = '\f'; break;
+    case 'n': buf[n++] = '\n'; break;
+    case 'r': buf[n++] = '\r'; break;
+    case 't': buf[n++] = '\t'; break;
+    case 'u':
+    {
+      if (end - p < 4) return false;
+      Uint32 cp = 0;
+      for (int i = 0; i < 4; i++)
+      {
+        const int d = json_hex_digit(*p++);
+        if (d < 0) return false;
+        cp = (cp << 4) | static_cast<Uint32>(d);
+      }
+      if (cp >= 0xd800 && cp <= 0xdfff) return false;
+      if (cp < 0x80)
+      {
+        buf[n++] = static_cast<char>(cp);
+      }
+      else if (cp < 0x800)
+      {
+        buf[n++] = static_cast<char>(0xc0 | (cp >> 6));
+        buf[n++] = static_cast<char>(0x80 | (cp & 0x3f));
+      }
+      else
+      {
+        buf[n++] = static_cast<char>(0xe0 | (cp >> 12));
+        buf[n++] = static_cast<char>(0x80 | ((cp >> 6) & 0x3f));
+        buf[n++] = static_cast<char>(0x80 | (cp & 0x3f));
+      }
+      break;
+    }
+    default:
+      return false;
+    }
+  }
+  buf[n] = '\0';
+  *out = LexString{buf, n};
+  return true;
+}
+
+static void
+require_subquery_output(bool condition)
+{
+  ronsql_require_bug(condition,
+                     "The output of a subquery is not the JSON its printer "
+                     "writes.");
+}
+
+/*
+ * X-4, X-5: the private output stream of a subquery's inner statement.
+ * The inner statement prints its result as JSON, which keeps what the
+ * TEXT format lost: NULL apart from the string 'NULL', the empty string
+ * apart from no row, a string apart from a number, and every digit of a
+ * number.  Each time the buffer fills, the rows in it are parsed into
+ * SubqueryResult values and taken out of it, so the rows are counted
+ * while the inner statement produces them: the row past max_rows fails
+ * the statement at once with the error of that limit, and the buffer
+ * keeps only a value not yet complete.  The ostream over it must have
+ * badbit in its exception mask, so that the error leaves the printer
+ * and the inner statement.  A value, at most a row of the table, never
+ * nears MAX_CAPACITY.
+ */
+class SubqueryOutputBuf : public std::streambuf
+{
+public:
+  SubqueryOutputBuf(ArenaMalloc* amalloc,
+                    Uint32 num_cols,
+                    Uint32 max_rows,
+                    RonSQLErrorClass too_many_rows_class,
+                    const char* too_many_rows_msg);
+  // Parses the rest of the output, after the inner statement succeeded.
+  void finish();
+  Uint32 num_rows() const { return m_num_rows; }
+  const SubqueryResult& value(Uint32 row, Uint32 col) const
+  {
+    return m_values[row * m_num_cols + col];
+  }
+protected:
+  int_type overflow(int_type c) override;
+private:
+  enum class State
+  {
+    ARRAY_START,  // before '['
+    FIRST_ROW,    // after '[': a row or ']'
+    ROW,          // after ',' between rows
+    KEY,          // an output name
+    COLON,
+    VALUE,
+    NEXT_COLUMN,  // ',' or '}'
+    NEXT_ROW,     // ',' or ']'
+    DONE
+  };
+  static constexpr size_t INITIAL_CAPACITY = 16384;
+  static constexpr size_t MAX_CAPACITY = 4194304;
+  static constexpr Uint32 MAX_COLUMNS = 2;
+  void parse(bool at_end);
+  bool parse_token(const char** pos, const char* end, bool at_end);
+  const char* parse_value(const char* p, const char* end, bool at_end);
+  void end_row();
+  void throw_column_count();
+  ArenaMalloc* m_amalloc;
+  const Uint32 m_num_cols;
+  const Uint32 m_max_rows;
+  const RonSQLErrorClass m_too_many_rows_class;
+  const char* const m_too_many_rows_msg;
+  std::string m_buf;
+  State m_state = State::ARRAY_START;
+  Uint32 m_col = 0;
+  Uint32 m_num_rows = 0;
+  SubqueryResult m_row[MAX_COLUMNS];
+  DynamicArray<SubqueryResult> m_values;
+};
+
+SubqueryOutputBuf::SubqueryOutputBuf(ArenaMalloc* amalloc,
+                                     Uint32 num_cols,
+                                     Uint32 max_rows,
+                                     RonSQLErrorClass too_many_rows_class,
+                                     const char* too_many_rows_msg)
+  : m_amalloc(amalloc),
+    m_num_cols(num_cols),
+    m_max_rows(max_rows),
+    m_too_many_rows_class(too_many_rows_class),
+    m_too_many_rows_msg(too_many_rows_msg),
+    m_buf(INITIAL_CAPACITY, '\0'),
+    m_values(amalloc)
+{
+  ronsql_require_bug(num_cols >= 1 && num_cols <= MAX_COLUMNS,
+                     "A subquery result has an unexpected number of "
+                     "columns.");
+  setp(&m_buf[0], &m_buf[0] + m_buf.size());
+}
+
+SubqueryOutputBuf::int_type
+SubqueryOutputBuf::overflow(int_type c)
+{
+  parse(false);
+  const size_t used = static_cast<size_t>(pptr() - pbase());
+  if (used > m_buf.size() / 2)
+  {
+    // A value not yet complete fills more than half the buffer: double
+    // it, so that the value is not scanned again for every few bytes.
+    if (m_buf.size() >= MAX_CAPACITY)
+    {
+      throw RonSQLPermanentError(
+          RonSQLErrorClass::LIMIT,
+          "A value in the result of a subquery is too large.");
+    }
+    m_buf.resize(m_buf.size() * 2);
+    setp(&m_buf[0], &m_buf[0] + m_buf.size());
+    pbump(static_cast<int>(used));
+  }
+  if (!traits_type::eq_int_type(c, traits_type::eof()))
+  {
+    *pptr() = traits_type::to_char_type(c);
+    pbump(1);
+  }
+  return traits_type::not_eof(c);
+}
+
+void
+SubqueryOutputBuf::finish()
+{
+  parse(true);
+  // An inner statement that printed nothing returned no row.
+  require_subquery_output(
+      m_state == State::DONE ||
+      (m_state == State::ARRAY_START && pptr() == pbase()));
+}
+
+// Parses the complete tokens in the buffer and keeps the rest.
+void
+SubqueryOutputBuf::parse(bool at_end)
+{
+  const char* const begin = pbase();
+  const char* const end = pptr();
+  const char* pos = begin;
+  while (parse_token(&pos, end, at_end))
+  {
+  }
+  const size_t rest = static_cast<size_t>(end - pos);
+  if (pos != begin) memmove(&m_buf[0], pos, rest);
+  setp(&m_buf[0], &m_buf[0] + m_buf.size());
+  pbump(static_cast<int>(rest));
+}
+
+// Consumes the next token at *pos; false when none is complete before end.
+bool
+SubqueryOutputBuf::parse_token(const char** pos, const char* end,
+                               bool at_end)
+{
+  const char* p = *pos;
+  while (p < end && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t'))
+    p++;
+  *pos = p;
+  if (p == end) return false;
+  const char c = *p;
+  switch (m_state)
+  {
+  case State::ARRAY_START:
+    require_subquery_output(c == '[');
+    m_state = State::FIRST_ROW;
+    break;
+  case State::FIRST_ROW:
+    if (c == ']')
+    {
+      m_state = State::DONE;
+      break;
+    }
+    require_subquery_output(c == '{');
+    m_col = 0;
+    m_state = State::KEY;
+    break;
+  case State::ROW:
+    require_subquery_output(c == '{');
+    m_col = 0;
+    m_state = State::KEY;
+    break;
+  case State::KEY:
+  {
+    require_subquery_output(c == '"');
+    const char* close = json_string_end(p + 1, end);
+    if (close == NULL)
+    {
+      require_subquery_output(!at_end);
+      return false;
+    }
+    *pos = close + 1;
+    m_state = State::COLON;
+    return true;
+  }
+  case State::COLON:
+    require_subquery_output(c == ':');
+    m_state = State::VALUE;
+    break;
+  case State::VALUE:
+  {
+    const char* next = parse_value(p, end, at_end);
+    if (next == NULL) return false;
+    m_col++;
+    *pos = next;
+    m_state = State::NEXT_COLUMN;
+    return true;
+  }
+  case State::NEXT_COLUMN:
+    if (c == ',')
+    {
+      m_state = State::KEY;
+      break;
+    }
+    require_subquery_output(c == '}');
+    end_row();
+    m_state = State::NEXT_ROW;
+    break;
+  case State::NEXT_ROW:
+    if (c == ',')
+    {
+      m_state = State::ROW;
+      break;
+    }
+    require_subquery_output(c == ']');
+    m_state = State::DONE;
+    break;
+  case State::DONE:
+    require_subquery_output(false);
+    break;
+  }
+  *pos = p + 1;
+  return true;
+}
+
+// The value at p into m_row[m_col]; returns the end of it, or NULL when
+// it is not complete before end.
+const char*
+SubqueryOutputBuf::parse_value(const char* p, const char* end, bool at_end)
+{
+  if (m_col >= m_num_cols) throw_column_count();
+  SubqueryResult& v = m_row[m_col];
+  v = SubqueryResult();
+  if (*p == '"')
+  {
+    const char* close = json_string_end(p + 1, end);
+    if (close == NULL)
+    {
+      require_subquery_output(!at_end);
+      return NULL;
+    }
+    require_subquery_output(json_unescape(p + 1, close, m_amalloc, &v.text));
+    v.is_null = false;
+    v.is_string = true;
+    return close + 1;
+  }
+  if (*p == 'n')
+  {
+    if (end - p < 4)
+    {
+      require_subquery_output(!at_end);
+      return NULL;
+    }
+    require_subquery_output(memcmp(p, "null", 4) == 0);
+    return p + 4;
+  }
+  const char* q = p;
+  while (q < end && ((*q >= '0' && *q <= '9') || *q == '-' || *q == '+' ||
+                     *q == '.' || *q == 'e' || *q == 'E'))
+    q++;
+  // A number ends at the ',' or '}' after it.
+  if (q == end && !at_end) return NULL;
+  require_subquery_output(q > p && subquery_number(p, q, m_amalloc, &v));
+  return q;
+}
+
+void
+SubqueryOutputBuf::end_row()
+{
+  if (m_col != m_num_cols) throw_column_count();
+  if (m_num_rows >= m_max_rows)
+  {
+    throw RonSQLPermanentError(m_too_many_rows_class, m_too_many_rows_msg);
+  }
+  for (Uint32 c = 0; c < m_num_cols; c++) m_values.push(m_row[c]);
+  m_num_rows++;
+}
+
+void
+SubqueryOutputBuf::throw_column_count()
+{
+  throw RonSQLPermanentError(
+      RonSQLErrorClass::SEMANTIC,
+      "A subquery returned a row with another number of columns than its "
+      "use takes.");
 }
 
 /*
@@ -9354,6 +9802,39 @@ RonSQLPreparer::prepare_avro_outputs()
     m_resultprinter->set_avro_decoder(m_conf.avro_decoder, handles);
 }
 
+/*
+ * X-4: a SELECT output that is a BINARY or VARBINARY column, stored or
+ * passed through CTEs.  execute_subqueries() reads a subquery's result
+ * from its JSON output, which prints such a value as base64 text that
+ * would be compared as a string.
+ */
+bool
+RonSQLPreparer::has_binary_output()
+{
+  for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
+       o = o->next)
+  {
+    if (o->type != Outputs::Type::COLUMN) continue;
+    NdbDictionary::Column::Type type = NdbDictionary::Column::Undefined;
+    Uint32 length = 0;
+    const void* cs = NULL;
+    Int32 scale = 0;
+    Int32 precision = 0;
+    if (!resolve_chained_column_type(m_main_scope, o->column.col_idx, type,
+                                     length, cs, scale, precision))
+    {
+      continue;
+    }
+    if (type == NdbDictionary::Column::Binary ||
+        type == NdbDictionary::Column::Varbinary ||
+        type == NdbDictionary::Column::Longvarbinary)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
 void
 RonSQLPreparer::execute_subqueries()
 {
@@ -9379,7 +9860,36 @@ RonSQLPreparer::execute_subqueries()
     buf[inner_len + 1] = '\0';
     buf[inner_len + 2] = '\0';
 
-    std::ostringstream oss;
+    // X-4, X-5: the inner statement prints JSON into a buffer that
+    // parses it into typed values while it is written and fails the
+    // statement at the first row past the limit of the subquery's shape:
+    // one row for a scalar subquery (MySQL's "Subquery returns more than
+    // 1 row"), 1000 values for an IN subquery and 1000 groups for a
+    // correlated one.  The whole output was buffered first, unbounded.
+    Uint32 num_cols = 1;
+    Uint32 max_rows = 1;
+    RonSQLErrorClass too_many_rows_class = RonSQLErrorClass::SEMANTIC;
+    const char* too_many_rows_msg =
+        "A scalar subquery returned more than one row.";
+    if (info.is_corr_scalar)
+    {
+      // The correlation key and the aggregate.
+      num_cols = 2;
+      max_rows = 1000;
+      too_many_rows_class = RonSQLErrorClass::LIMIT;
+      too_many_rows_msg =
+          "Correlated scalar subquery returned more than 1000 rows.";
+    }
+    else if (info.is_in_subquery)
+    {
+      max_rows = 1000;
+      too_many_rows_class = RonSQLErrorClass::LIMIT;
+      too_many_rows_msg = "IN-subquery returned more than 1000 values.";
+    }
+    SubqueryOutputBuf obuf(m_amalloc, num_cols, max_rows,
+                           too_many_rows_class, too_many_rows_msg);
+    std::ostream oss(&obuf);
+    oss.exceptions(std::ios_base::badbit);
     std::ostringstream ess;
 
     try
@@ -9393,7 +9903,7 @@ RonSQLPreparer::execute_subqueries()
       inner_params.sql_len = buf_len;
       inner_params.amalloc = &inner_amalloc;
       inner_params.ndb = m_conf.ndb;
-      inner_params.output_format = RonSQLExecParams::OutputFormat::TEXT_NOHEADER;
+      inner_params.output_format = RonSQLExecParams::OutputFormat::JSON;
       inner_params.out_stream = &oss;
       // X-6: oss is dropped when the inner statement fails, and the outer
       // statement has written nothing yet (subqueries run first), so a
@@ -9410,129 +9920,39 @@ RonSQLPreparer::execute_subqueries()
       // Create and execute inner preparer
       {
         RonSQLPreparer inner_preparer(inner_params);
+        if (inner_preparer.has_binary_output())
+        {
+          throw RonSQLPermanentError(
+              RonSQLErrorClass::UNSUPPORTED,
+              "A subquery that returns a BINARY or VARBINARY value is not "
+              "supported.");
+        }
         inner_preparer.execute();
       }
-
-      // Parse the TEXT_NOHEADER output
-      std::string result_str = oss.str();
-      // Trim trailing newline
-      while (!result_str.empty() &&
-             (result_str.back() == '\n' || result_str.back() == '\r'))
-        result_str.pop_back();
-      // The multi-row shapes split the output into lines in place.
-      char* line_pos = &result_str[0];
-      char* const result_end = line_pos + result_str.size();
+      obuf.finish();
 
       if (info.is_corr_scalar)
       {
-        // Correlated scalar: parse multi-line output with two tab-separated columns
-        char* line;
-        while ((line = next_subquery_output_line(&line_pos, result_end)) !=
-               NULL)
+        for (Uint32 r = 0; r < obuf.num_rows(); r++)
         {
-          char* tab = strchr(line, '\t');
-          require_prm(tab != NULL,
-                      "Correlated scalar subquery did not return two columns.");
-          *tab = '\0';
           CorrelatedPair pair;
-          parse_subquery_value(line, pair.key);
-          parse_subquery_value(tab + 1, pair.val);
+          pair.key = obuf.value(r, 0);
+          pair.val = obuf.value(r, 1);
           info.corr_values->push(pair);
         }
-        if (info.corr_values->size() > 1000)
-          throw RonSQLPermanentError(
-              "Correlated scalar subquery returned more than 1000 rows.");
       }
       else if (info.is_in_subquery)
       {
-        // IN-subquery: parse multi-line output, one value per line
-        char* line;
-        while ((line = next_subquery_output_line(&line_pos, result_end)) !=
-               NULL)
+        for (Uint32 r = 0; r < obuf.num_rows(); r++)
         {
-          SubqueryResult val;
-          if (strcmp(line, "NULL") == 0)
-          {
-            val.is_null = true;
-          }
-          else
-          {
-            char* endptr = NULL;
-            errno = 0;
-            long long ll = strtoll(line, &endptr, 10);
-            if (endptr != NULL && *endptr == '\0' && errno == 0)
-            {
-              val.is_null = false;
-              val.is_float = false;
-              val.int_val = (Int64)ll;
-            }
-            else
-            {
-              errno = 0;
-              double dbl = strtod(line, &endptr);
-              if (endptr != NULL && *endptr == '\0' && errno == 0)
-              {
-                val.is_null = false;
-                val.is_float = true;
-                val.float_val = dbl;
-              }
-              else
-              {
-                throw RonSQLPermanentError(
-                    "IN-subquery returned a non-numeric result.");
-              }
-            }
-          }
-          info.in_values->push(val);
+          info.in_values->push(obuf.value(r, 0));
         }
-        if (info.in_values->size() > 1000)
-        {
-          throw RonSQLPermanentError(
-              "IN-subquery returned more than 1000 values.");
-        }
-      }
-      else if (result_str.find('\n') != std::string::npos)
-      {
-        // RONSQL-41: MySQL's "Subquery returns more than 1 row".  The
-        // whole output used to be parsed as one number and failed as a
-        // non-numeric result.
-        throw RonSQLPermanentError(
-            RonSQLErrorClass::SEMANTIC,
-            "A scalar subquery returned more than one row.");
-      }
-      else if (result_str == "NULL" || result_str.empty())
-      {
-        info.result.is_null = true;
       }
       else
       {
-        // Scalar subquery: single-value parsing
-        char* endptr = NULL;
-        errno = 0;
-        long long ll = strtoll(result_str.c_str(), &endptr, 10);
-        if (endptr != NULL && *endptr == '\0' && errno == 0)
-        {
-          info.result.is_null = false;
-          info.result.is_float = false;
-          info.result.int_val = (Int64)ll;
-        }
-        else
-        {
-          // Try float
-          errno = 0;
-          double dbl = strtod(result_str.c_str(), &endptr);
-          if (endptr != NULL && *endptr == '\0' && errno == 0)
-          {
-            info.result.is_null = false;
-            info.result.is_float = true;
-            info.result.float_val = dbl;
-          }
-          else
-          {
-            throw RonSQLPermanentError(
-                "Subquery returned a non-numeric result.");
-          }
-        }
+        // No row is NULL, as in MySQL.
+        info.result = (obuf.num_rows() == 0) ? SubqueryResult()
+                                             : obuf.value(0, 0);
       }
     }
     catch (const RonSQLPermanentError&)
@@ -9568,10 +9988,75 @@ RonSQLPreparer::execute_subqueries()
 void
 RonSQLPreparer::substitute_subquery_results()
 {
+  m_subquery_values =
+      new (m_amalloc->alloc_exc<DynamicArray<const ConditionalExpression*>>(1))
+          DynamicArray<const ConditionalExpression*>(m_amalloc);
+  m_substituting_where = true;
   substitute_subquery_results_ce(&m_context.ast_root.where_expression, 1,
                                  /*is_condition=*/true);
+  m_substituting_where = false;
+  // X-4, F-10: before fold_where_after_substitution(), over the same
+  // WHERE structures, and the WHERE that the join paths read.
+  exact_subquery_comparisons(m_context.ast_root.where_expression);
+  if (!is_join_query())
+  {
+    for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++)
+      exact_subquery_comparisons(m_toplevel_conditions[i]);
+  }
+  else
+  {
+    exact_subquery_comparisons(m_main_scope.join_where_ce[0]);
+    for (Uint32 i = 0; i < m_main_scope.body_toplevel_conditions.size(); i++)
+      exact_subquery_comparisons(m_main_scope.body_toplevel_conditions[i]);
+  }
   // HAVING refuses a subquery used as a condition (validate_having_support).
   substitute_subquery_results_ce(&m_context.ast_root.having_expression);
+}
+
+/*
+ * X-4: a subquery result as a constant.  A number that is not an Int64
+ * (a fraction, or an integer above 2^63 - 1) is a T_FLOAT with its exact
+ * digits as source text, which encode_constant() writes into a DECIMAL
+ * key or filter as they are; it took the double's digits, rounded at the
+ * column's scale.  A string, the empty string included, is a T_STRING;
+ * the TEXT output turned '' into NULL and refused any other string.
+ * conjunct_sql is left alone: `out` can be a node of the WHERE.
+ */
+void
+RonSQLPreparer::set_subquery_constant(ConditionalExpression* out,
+                                      const SubqueryResult& value)
+{
+  if (value.is_null)
+  {
+    out->op = T_NULL;
+  }
+  else if (value.is_string)
+  {
+    out->op = T_STRING;
+    out->string = value.text;
+  }
+  else if (value.is_float)
+  {
+    out->op = T_FLOAT;
+    out->constant_float.dbl = value.float_val;
+    out->constant_float.ls = value.text;
+  }
+  else
+  {
+    out->op = T_INT;
+    out->constant_integer = value.int_val;
+  }
+}
+
+bool
+RonSQLPreparer::is_subquery_value(const ConditionalExpression* ce) const
+{
+  if (ce == NULL || m_subquery_values == NULL) return false;
+  for (Uint32 i = 0; i < m_subquery_values->size(); i++)
+  {
+    if ((*m_subquery_values)[i] == ce) return true;
+  }
+  return false;
 }
 
 void
@@ -9613,28 +10098,22 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
         // Build: key_expr = key_const
         ConditionalExpression* key_const =
           m_amalloc->alloc_exc<ConditionalExpression>(1);
-        if (pair.key.is_float)
-        {
-          key_const->op = T_FLOAT;
-          key_const->constant_float.dbl = pair.key.float_val;
-          key_const->constant_float.ls = LexString{NULL, 0};
-        }
-        else
-        {
-          key_const->op = T_INT;
-          key_const->constant_integer = pair.key.int_val;
-        }
+        key_const->conjunct_sql = LexString{NULL, 0};
+        set_subquery_constant(key_const, pair.key);
 
         ConditionalExpression* key_eq =
           m_amalloc->alloc_exc<ConditionalExpression>(1);
         key_eq->op = T_EQUALS;
         key_eq->args.left = key_expr;
         key_eq->args.right = key_const;
+        // X-4: a key with a fraction matches no integer key.
+        exact_subquery_comparison(key_eq);
 
         if (info.corr_count)
         {
           ConditionalExpression* key_ne =
             node(T_NOT_EQUALS, key_expr, key_const);
+          exact_subquery_comparison(key_ne);
           no_group = (no_group == NULL) ? key_ne
                                         : node(T_AND, no_group, key_ne);
         }
@@ -9642,23 +10121,16 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
         // Build: cmp_expr <cmp_op> val_const
         ConditionalExpression* val_const =
           m_amalloc->alloc_exc<ConditionalExpression>(1);
-        if (pair.val.is_float)
-        {
-          val_const->op = T_FLOAT;
-          val_const->constant_float.dbl = pair.val.float_val;
-          val_const->constant_float.ls = LexString{NULL, 0};
-        }
-        else
-        {
-          val_const->op = T_INT;
-          val_const->constant_integer = pair.val.int_val;
-        }
+        val_const->conjunct_sql = LexString{NULL, 0};
+        set_subquery_constant(val_const, pair.val);
 
         ConditionalExpression* cmp_node =
           m_amalloc->alloc_exc<ConditionalExpression>(1);
         cmp_node->op = cmp_op;
         cmp_node->args.left = cmp_expr;
         cmp_node->args.right = val_const;
+        // X-4: AVG(int) compared with an integer column, for example.
+        exact_subquery_comparison(cmp_node);
 
         // Build: key_eq AND cmp_node
         ConditionalExpression* and_node =
@@ -9754,25 +10226,24 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
             continue;
           }
 
+          // HAVING compares in DOUBLE and takes no string.
+          if (val.is_string && !m_substituting_where)
+          {
+            throw RonSQLPermanentError(
+                "IN-subquery returned a non-numeric result.");
+          }
           ConditionalExpression* const_node =
             m_amalloc->alloc_exc<ConditionalExpression>(1);
-          if (val.is_float)
-          {
-            const_node->op = T_FLOAT;
-            const_node->constant_float.dbl = val.float_val;
-            const_node->constant_float.ls = LexString{NULL, 0};
-          }
-          else
-          {
-            const_node->op = T_INT;
-            const_node->constant_integer = val.int_val;
-          }
+          const_node->conjunct_sql = LexString{NULL, 0};
+          set_subquery_constant(const_node, val);
 
           ConditionalExpression* eq =
             m_amalloc->alloc_exc<ConditionalExpression>(1);
           eq->op = T_EQUALS;
           eq->args.left = in_expr;
           eq->args.right = const_node;
+          // X-4: a value with a fraction matches no integer column.
+          if (m_substituting_where) exact_subquery_comparison(eq);
 
           if (result == NULL)
           {
@@ -9873,21 +10344,16 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
           substitute_condition_result(ce, result);
           return;
         }
-        if (result.is_null)
+        // HAVING compares in DOUBLE and takes no string.
+        if (result.is_string && !m_substituting_where)
         {
-          ce->op = T_NULL;
+          throw RonSQLPermanentError(
+              "Subquery returned a non-numeric result.");
         }
-        else if (result.is_float)
-        {
-          ce->op = T_FLOAT;
-          ce->constant_float.dbl = result.float_val;
-          ce->constant_float.ls = LexString{NULL, 0};
-        }
-        else
-        {
-          ce->op = T_INT;
-          ce->constant_integer = result.int_val;
-        }
+        set_subquery_constant(ce, result);
+        // The comparison above makes itself exact for its column
+        // (exact_subquery_comparison).
+        m_subquery_values->push(ce);
         return;
       }
     }
@@ -9937,6 +10403,7 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
       // literal folds the same way simplify_ce folds it, and -NULL is
       // NULL.
       const ConditionalExpression* n = ce->args.right;
+      const bool negates_subquery = is_subquery_value(n);
       if (n->op == T_NULL)
       {
         ce->op = T_NULL;
@@ -9945,6 +10412,7 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
       {
         negate_numeric_constant(n, ce);
       }
+      if (negates_subquery) m_subquery_values->push(ce);
     }
     return;
   case T_IDENTIFIER:
@@ -9969,6 +10437,45 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
 }
 
 /*
+ * X-4, F-10: runs exact_subquery_comparison() on every comparison in ce
+ * with a scalar subquery result as an operand.  The plan holds its own
+ * copies of some comparisons: simplify_ce() puts the column on the left
+ * of a new node, rewrites GREATEST and LEAST into comparisons that share
+ * the result node, and moves NOT down.  So the WHERE structures of the
+ * plan are walked as well as the WHERE.  A comparison changes the same
+ * way wherever it is, and its operand is no longer a result afterwards,
+ * so a second visit changes nothing.
+ */
+void
+RonSQLPreparer::exact_subquery_comparisons(ConditionalExpression* ce)
+{
+  if (ce == NULL) return;
+  switch (ce->op)
+  {
+  case T_AND:
+  case T_OR:
+  case T_XOR:
+    exact_subquery_comparisons(ce->args.left);
+    exact_subquery_comparisons(ce->args.right);
+    return;
+  case T_NOT:
+  case T_EXCLAMATION:
+    exact_subquery_comparisons(ce->args.left);
+    return;
+  default:
+    // A comparison is a condition; no other condition of a WHERE holds
+    // one.
+    if (is_comparison_op(ce->op) &&
+        (is_subquery_value(ce->args.left) ||
+         is_subquery_value(ce->args.right)))
+    {
+      exact_subquery_comparison(ce);
+    }
+    return;
+  }
+}
+
+/*
  * S-2: a scalar subquery used as a condition, the whole WHERE or an
  * operand of AND, OR, XOR or NOT.  MySQL takes a value there as
  * (0 <> value) (make_condition() in item_cmpfunc.cc): TRUE when the
@@ -9979,13 +10486,18 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
  * 0 <> NULL, and TRUE and FALSE become NULL IS NULL and NULL IS NOT
  * NULL.  The fold then removes it from every WHERE structure the plan
  * holds, so no filter is built from it.  The node is changed in place,
- * since the plan shares it.  A result that is not a number failed in
- * execute_subqueries().
+ * since the plan shares it.  A string result is refused, as it was
+ * when execute_subqueries() refused every string (X-4); MySQL converts
+ * it to a number, with a warning.
  */
 void
 RonSQLPreparer::substitute_condition_result(ConditionalExpression* ce,
                                             const SubqueryResult& result)
 {
+  if (result.is_string)
+  {
+    throw RonSQLPermanentError("Subquery returned a non-numeric result.");
+  }
   ConditionalExpression* null_const =
       m_amalloc->alloc_exc<ConditionalExpression>(1);
   null_const->conjunct_sql = LexString{NULL, 0};
@@ -10067,6 +10579,211 @@ new_condition_node(ArenaMalloc* amalloc, TokenKind op,
   n->args.left = left;
   n->args.right = right;
   return n;
+}
+
+/*
+ * X-4, F-10: the magnitude of the number `text` ([-]digits.digits, as
+ * SubqueryResult keeps it, with more than `scale` fractional digits)
+ * cut to `scale` fractional digits, plus one unit in the last kept digit
+ * when away_from_zero, with the sign of text unless it is zero.
+ */
+static LexString
+decimal_text_at_scale(LexString text, int scale, bool away_from_zero,
+                      ArenaMalloc* amalloc)
+{
+  const bool negative = (text.len > 0 && text.str[0] == '-');
+  const char* digits = text.str + (negative ? 1 : 0);
+  const char* end = text.str + text.len;
+  const char* dot =
+      static_cast<const char*>(memchr(digits, '.', end - digits));
+  ronsql_require_bug(dot != NULL && dot > digits && end - (dot + 1) > scale,
+                     "A subquery result to round has no fraction past "
+                     "the scale.");
+  const size_t num_int = static_cast<size_t>(dot - digits);
+  // A sign, a digit for a carry, the integer digits, the point, `scale`
+  // fractional digits and a NUL.
+  char* buf = amalloc->alloc_exc<char>(
+      static_cast<Uint32>(num_int + static_cast<size_t>(scale) + 4));
+  char* p = buf;
+  *p++ = '-';
+  *p++ = '0';
+  memcpy(p, digits, num_int);
+  p += num_int;
+  if (scale > 0)
+  {
+    *p++ = '.';
+    memcpy(p, dot + 1, static_cast<size_t>(scale));
+    p += scale;
+  }
+  *p = '\0';
+  if (away_from_zero)
+  {
+    // The carry digit, a 0, ends the carry at the latest.
+    char* q = p - 1;
+    while (*q == '9' || *q == '.')
+    {
+      if (*q == '9') *q = '0';
+      q--;
+    }
+    (*q)++;
+  }
+  char* start = buf + 1;
+  if (start[0] == '0' && start[1] >= '0' && start[1] <= '9') start++;
+  bool is_zero = true;
+  for (const char* d = start; d < p; d++)
+  {
+    if (*d >= '1' && *d <= '9') is_zero = false;
+  }
+  if (negative && !is_zero)
+  {
+    start--;
+    *start = '-';
+  }
+  return LexString{start, static_cast<size_t>(p - start)};
+}
+
+bool
+RonSQLPreparer::exact_numeric_column_scale(Uint32 col_idx, int* scale)
+{
+  NdbDictionary::Column::Type type = NdbDictionary::Column::Undefined;
+  Uint32 length = 0;
+  const void* cs = NULL;
+  Int32 col_scale = 0;
+  Int32 col_precision = 0;
+  if (!resolve_chained_column_type(m_main_scope, col_idx, type, length, cs,
+                                   col_scale, col_precision))
+  {
+    return false;
+  }
+  switch (type)
+  {
+  case NdbDictionary::Column::Tinyint:
+  case NdbDictionary::Column::Tinyunsigned:
+  case NdbDictionary::Column::Smallint:
+  case NdbDictionary::Column::Smallunsigned:
+  case NdbDictionary::Column::Mediumint:
+  case NdbDictionary::Column::Mediumunsigned:
+  case NdbDictionary::Column::Int:
+  case NdbDictionary::Column::Unsigned:
+  case NdbDictionary::Column::Bigint:
+  case NdbDictionary::Column::Bigunsigned:
+    *scale = 0;
+    return true;
+  case NdbDictionary::Column::Decimal:
+  case NdbDictionary::Column::Decimalunsigned:
+    *scale = col_scale;
+    return true;
+  default:
+    return false;
+  }
+}
+
+/*
+ * X-4, F-10: cmp compares a column x with a number c that a subquery
+ * returned.  MySQL compares an integer or DECIMAL column with a DECIMAL
+ * or DOUBLE exactly, but the data node compares the column with a
+ * constant of the column's own type, so a c with more fractional digits
+ * than x holds failed against an integer column (int_col >
+ * (SELECT AVG(int_col)) always), and was rounded to the scale of a
+ * DECIMAL column, which made = and >= TRUE for a row where they are not.
+ * For such a c:
+ *   x > c and x <= c  hold as with c rounded down to the column's scale,
+ *   x >= c and x < c  as with c rounded up to it,
+ *   x = c             is FALSE, UNKNOWN for a NULL x,
+ *   x <> c            is TRUE, UNKNOWN for a NULL x.
+ * The rounded number gets a node of its own: the result's node can be a
+ * key of the plan and shared by other comparisons (a GREATEST or LEAST
+ * rewrite).  The plan's bounds read the comparison, which keeps its
+ * operator.  = and <> become x IS NULL AND 0 <> NULL and x IS NOT NULL
+ * OR 0 <> NULL, which fold_where_after_substitution() folds as it folds
+ * a NULL result (X-3): = is never TRUE, so no key or bound is used, and
+ * under NOT it keeps the rows whose x is not NULL.  c is a T_FLOAT whose
+ * text has no trailing fractional zero (SubqueryOutputBuf), so a
+ * fractional digit past the column's scale is never 0.  Other numbers
+ * are exact for the column already, and FLOAT and DOUBLE columns compare
+ * with the double.
+ */
+void
+RonSQLPreparer::exact_subquery_comparison(ConditionalExpression* cmp)
+{
+  if (!is_comparison_op(cmp->op)) return;
+  ConditionalExpression* col = cmp->args.left;
+  ConditionalExpression* value = cmp->args.right;
+  TokenKind op = cmp->op;
+  bool value_on_left = false;
+  if (col == NULL || value == NULL) return;
+  if (col->op != T_IDENTIFIER)
+  {
+    // c OP x is x OP' c.
+    ConditionalExpression* tmp = col;
+    col = value;
+    value = tmp;
+    op = flip_cmp_op(op);
+    value_on_left = true;
+  }
+  if (col->op != T_IDENTIFIER || value->op != T_FLOAT) return;
+  const LexString text = value->constant_float.ls;
+  if (text.str == NULL) return;
+  const char* dot = static_cast<const char*>(memchr(text.str, '.', text.len));
+  if (dot == NULL) return;  // An integer is exact at every scale.
+  int scale = 0;
+  if (!exact_numeric_column_scale(col->col_idx, &scale)) return;
+  const size_t num_frac = static_cast<size_t>(text.str + text.len - (dot + 1));
+  if (num_frac <= static_cast<size_t>(scale)) return;
+  if (op == T_EQUALS || op == T_NOT_EQUALS)
+  {
+    ConditionalExpression* null_test =
+        m_amalloc->alloc_exc<ConditionalExpression>(1);
+    null_test->conjunct_sql = LexString{NULL, 0};
+    null_test->op = T_IS;
+    null_test->is.arg = col;
+    null_test->is.null = (op == T_EQUALS);
+    ConditionalExpression* zero =
+        m_amalloc->alloc_exc<ConditionalExpression>(1);
+    zero->conjunct_sql = LexString{NULL, 0};
+    zero->op = T_INT;
+    zero->constant_integer = 0;
+    ConditionalExpression* null_const =
+        m_amalloc->alloc_exc<ConditionalExpression>(1);
+    null_const->conjunct_sql = LexString{NULL, 0};
+    null_const->op = T_NULL;
+    ConditionalExpression* unknown =
+        new_condition_node(m_amalloc, T_NOT_EQUALS, zero, null_const);
+    cmp->op = (op == T_EQUALS) ? T_AND : T_OR;
+    cmp->args.left = null_test;
+    cmp->args.right = unknown;
+    return;
+  }
+  // Cutting digits rounds a positive c down and a negative one up.
+  const bool negative = (text.str[0] == '-');
+  const bool round_down = (op == T_GT || op == T_LE);
+  const LexString rounded_text =
+      decimal_text_at_scale(text, scale, round_down == negative, m_amalloc);
+  ConditionalExpression* rounded =
+      m_amalloc->alloc_exc<ConditionalExpression>(1);
+  rounded->conjunct_sql = LexString{NULL, 0};
+  rounded->op = T_FLOAT;
+  rounded->constant_float.dbl = strtod(rounded_text.str, NULL);
+  rounded->constant_float.ls = rounded_text;
+  if (scale == 0)
+  {
+    errno = 0;
+    char* endptr = NULL;
+    const long long ll = strtoll(rounded_text.str, &endptr, 10);
+    if (errno == 0 && endptr != NULL && *endptr == '\0')
+    {
+      rounded->op = T_INT;
+      rounded->constant_integer = static_cast<Int64>(ll);
+    }
+  }
+  if (value_on_left)
+  {
+    cmp->args.left = rounded;
+  }
+  else
+  {
+    cmp->args.right = rounded;
+  }
 }
 
 RonSQLPreparer::FoldedTruth
@@ -18304,6 +19021,36 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     *val = ce->constant_integer;
     return raw_value{ val, static_cast<Uint32>(bytes) };
   }
+  if (tk == INT && op == T_FLOAT && ce->constant_float.ls.str != NULL &&
+      ce->constant_float.ls.len > 0 &&
+      memchr(ce->constant_float.ls.str, '.', ce->constant_float.ls.len) ==
+          NULL) {
+    // X-4: an integer result of a subquery outside the range of
+    // constant_integer, such as a BIGINT UNSIGNED above 2^63 - 1, is a
+    // T_FLOAT with the digits as its text (set_subquery_constant).  A
+    // T_FLOAT literal always has a point, and the lexer refuses an
+    // integer literal of that size.
+    const LexString ls = ce->constant_float.ls;
+    char digits[24];
+    Uint64 u = 0;
+    bool fits = false;
+    if (ls.len < sizeof(digits) && ls.str[0] >= '0' && ls.str[0] <= '9') {
+      memcpy(digits, ls.str, ls.len);
+      digits[ls.len] = '\0';
+      errno = 0;
+      char* endptr = NULL;
+      const unsigned long long ull = strtoull(digits, &endptr, 10);
+      fits = (errno == 0 && endptr == digits + ls.len);
+      u = static_cast<Uint64>(ull);
+    }
+    if (!fits || type != NdbDictionary::Column::Type::Bigunsigned) {
+      throw RonSQLPermanentError("Integer type column compared to an integer"
+                                 " literal out of range.");
+    }
+    Uint64* val = m_amalloc->alloc_exc<Uint64>(1);
+    *val = u;
+    return raw_value{ val, static_cast<Uint32>(bytes) };
+  }
   if (tk == INT) {
     throw RonSQLMaybeStaleSchema("Integer type column compared to an"
                                  " incompatible value. Only integer literals"
@@ -18364,19 +19111,17 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       LexString ls = ce->constant_float.ls;
       char dbl_buf[400];
       if (ls.str == NULL) {
-        /* A subquery-substituted float constant carries only .dbl —
-         * every substitution site sets ls = {NULL, 0} since there is
-         * no source text to point at.  decimal_str2bin on the NULL
-         * pointer crashed the whole process when a scalar subquery
-         * result was compared against a DECIMAL column
-         * (ronsql_cte_subquery Test 7).  Render at the COLUMN's scale:
-         * the subquery text was formatted at that scale by the inner
-         * query, and rounding the double back at the same scale
-         * recovers the exact original value (DECIMAL digits within
-         * double's exact range).  A round-trip-exact %.17g rendering
-         * instead surfaces the double's binary error as extra digits
-         * and fails decimal_str2bin with E_DEC_TRUNCATED.  The buffer
-         * covers %.f of any double (up to ~309 integer digits). */
+        /* A float constant without text.  X-4: a subquery result now
+         * carries its exact digits, and exact_subquery_comparison()
+         * rounds one with more fractional digits than the column holds
+         * as the comparison needs (F-10); before, every substituted
+         * constant came here with only .dbl, which decimal_str2bin on
+         * the NULL pointer crashed on (ronsql_cte_subquery Test 7).
+         * Kept as a fallback: render at the COLUMN's scale.  A
+         * round-trip-exact %.17g rendering instead surfaces the
+         * double's binary error as extra digits and fails
+         * decimal_str2bin with E_DEC_TRUNCATED.  The buffer covers %.f
+         * of any double (up to ~309 integer digits). */
         int n = snprintf(dbl_buf, sizeof(dbl_buf), "%.*f", scale,
                          ce->constant_float.dbl);
         require_prm(n > 0 && n < (int)sizeof(dbl_buf),

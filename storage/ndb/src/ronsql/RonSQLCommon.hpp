@@ -465,11 +465,21 @@ struct CteDefinition
   struct CteDefinition* next;   // Linked list
 };
 
+/*
+ * One value of a subquery result (X-4): NULL, an integer that fits Int64
+ * (int_val), a string (is_string: its UTF-8 bytes in text), or any other
+ * number (is_float: float_val, and in text its exact digits as
+ * [-]digits[.digits] with no trailing fractional zero, such as the
+ * DECIMAL 1.005 or the BIGINT UNSIGNED 18446744073709551615).  text is
+ * in the statement's arena.
+ */
 struct SubqueryResult {
   bool is_null = true;
   Int64 int_val = 0;
   double float_val = 0.0;
   bool is_float = false;
+  bool is_string = false;
+  LexString text = LexString{NULL, 0};
 };
 
 struct CorrelatedPair {

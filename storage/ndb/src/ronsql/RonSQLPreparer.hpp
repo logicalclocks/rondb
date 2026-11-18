@@ -555,6 +555,13 @@ private:
   };
   DynamicArray<SubqueryInfo> m_subquery_infos;
   bool m_has_subqueries = false;
+  // X-4: the nodes that hold a scalar subquery result after
+  // substitution (the subquery's own node, a unary minus folded over
+  // it), and whether substitute_subquery_results() is in the WHERE,
+  // where exact_subquery_comparison() applies, or in HAVING, which
+  // compares in DOUBLE.
+  DynamicArray<const ConditionalExpression*>* m_subquery_values = NULL;
+  bool m_substituting_where = false;
   // X-3: set by fold_where_after_substitution() when a scalar subquery
   // result makes the WHERE TRUE for no row.  The plan's keys and bounds
   // may then hold a NULL, so execution reads no row through them.
@@ -1162,6 +1169,10 @@ private:
   // Functions used in execution phase
 public:
   void execute(); // todo make sure we can execute several times, do not mutate. Make this a separate object that takes a preparer as const input (This todo from review 2024-08-22 with MR)
+  // X-4: true when a SELECT output of this prepared statement is a
+  // BINARY or VARBINARY column, which the JSON output that
+  // execute_subqueries() reads carries as base64 text.
+  bool has_binary_output();
 private:
   // Start m_trans, tagged with the rate limit identity if there is one.
   // Every transaction of a query is started here.
@@ -1169,6 +1180,18 @@ private:
   void cleanup_trans();
   void execute_subqueries();
   void substitute_subquery_results();
+  // X-4: writes the constant a subquery result stands for into `out`.
+  void set_subquery_constant(struct ConditionalExpression* out,
+                             const SubqueryResult& value);
+  bool is_subquery_value(const struct ConditionalExpression* ce) const;
+  // X-4, F-10: makes a comparison of an integer or DECIMAL column with a
+  // number a subquery returned compare as MySQL does.
+  void exact_subquery_comparison(struct ConditionalExpression* cmp);
+  // ... every such comparison with a scalar subquery result in ce.
+  void exact_subquery_comparisons(struct ConditionalExpression* ce);
+  // The fractional digits an integer (0) or DECIMAL column holds; false
+  // for a column of any other type.
+  bool exact_numeric_column_scale(Uint32 col_idx, int* scale);
   // polarity: 1 under an even number of NOTs, -1 under an odd number, and
   // 0 where the exact truth value matters (XOR, IS, comparisons).
   // is_condition: ce is the whole WHERE or an operand of AND, OR, XOR or
