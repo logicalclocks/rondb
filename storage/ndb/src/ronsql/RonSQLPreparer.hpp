@@ -1178,6 +1178,17 @@ private:
   void determine_explain();
   bool is_avro_output(const Outputs* o) const;
   void prepare_avro_outputs();
+  /**
+   * O-13: refuse, before any scan, a SELECT output of a type the result
+   * printers cannot print: BIT, BLOB, TEXT and the old DECIMAL and
+   * temporal formats, as a GROUP BY key or passed through.
+   */
+  void check_printed_output_types();
+  /**
+   * O-11: under JSON and JSON_ASCII output, refuse two SELECT outputs of
+   * the same name, which would be one key of each row object.
+   */
+  void check_json_output_names() const;
   bool unload_schema();
   void handle_ronsql_exception(std::exception_ptr eptr);
 

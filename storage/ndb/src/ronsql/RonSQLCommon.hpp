@@ -222,6 +222,12 @@ struct RonSQLExecParams
   // (NUL, tab, newline and backslash as \0 \t \n \\).  BLOB / TEXT
   // columns are not supported in pass-through results.
   OutputFormat output_format = OutputFormat::JSON;
+  // O-11: under JSON and JSON_ASCII each result row is an object keyed by
+  // the output names, so a statement with two outputs of the same name is
+  // refused (a JSON reader keeps one of the two values).  The caller sets
+  // this when it reads the values of a row by position instead, as
+  // execute_subqueries does with the output of a subquery.
+  bool outputs_read_by_position = false;
   std::basic_ostream<char>* err_stream = NULL;
   const char* operation_id = NULL; // Only used with RDRS
   // Rate limit identity (RONDB-978), only used with RDRS: when set, every

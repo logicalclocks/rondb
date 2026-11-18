@@ -908,11 +908,12 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
             break;
           }
         case NdbDictionary::Column::Type::Binary:
-          feature_not_implemented("Print GROUP BY column of type Binary");
         case NdbDictionary::Column::Type::Varbinary:
-          feature_not_implemented("Print GROUP BY column of type Varbinary");
         case NdbDictionary::Column::Type::Longvarbinary:
-          feature_not_implemented("Print GROUP BY column of type Longvarbinary");
+          // O-13: as in a pass-through result.
+          print_groupby_as_passthrough(out, column,
+                                       cmd.print_group_by_column.precision);
+          break;
         case NdbDictionary::Column::Type::Datetime:
           feature_not_implemented("Print GROUP BY column of type Datetime");
         case NdbDictionary::Column::Type::Date:
@@ -933,11 +934,16 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
         case NdbDictionary::Column::Type::Time:
           feature_not_implemented("Print GROUP BY column of type Time");
         case NdbDictionary::Column::Type::Year:
-          feature_not_implemented("Print GROUP BY column of type Year");
+          // O-13: as in a pass-through result.
+          print_groupby_as_passthrough(out, column, 0);
+          break;
         case NdbDictionary::Column::Type::Timestamp:
           feature_not_implemented("Print GROUP BY column of type Timestamp");
         case NdbDictionary::Column::Type::Time2:
-          feature_not_implemented("Print GROUP BY column of type Time2");
+          // O-13: as in a pass-through result.
+          print_groupby_as_passthrough(out, column,
+                                       cmd.print_group_by_column.precision);
+          break;
         case NdbDictionary::Column::Type::Datetime2:
           {
             int precision = cmd.print_group_by_column.precision;
@@ -1431,6 +1437,73 @@ print_temporal_packed(std::ostream& out, Uint64 w,
     break; // unreachable (callers guard)
   }
   out << quote << buf << quote;
+}
+
+// O-13: a GROUP BY key of a type that print_passthrough_value prints and
+// the GROUP BY printers did not: YEAR, TIME, BINARY and VARBINARY.  A
+// group key holds the column's stored bytes, as an NdbRecAttr does, so it
+// is printed as print_passthrough_value prints the column: YEAR and TIME
+// as text, quoted under JSON; BINARY at its full padded length and
+// VARBINARY as a base64 string under JSON and as the raw bytes with the
+// mysql client's batch-mode escaping under TEXT.
+void
+ResultPrinter::print_groupby_as_passthrough(std::ostream& out,
+                                            NdbAggregator::Column& column,
+                                            int fsp)
+{
+  const unsigned char* data =
+      pointer_cast<const unsigned char*>(column.data());
+  const size_t size = (size_t)column.byte_size();
+  const unsigned char* bytes = data;
+  size_t len = size;
+  switch (column.type())
+  {
+  case NdbDictionary::Column::Year:
+    require_sch(size >= 1, "Empty YEAR GROUP BY column");
+    print_temporal_packed(out, (Uint64)data[0], TemporalDisplay::YEAR, 0,
+                          m_quote);
+    return;
+  case NdbDictionary::Column::Time2:
+  {
+    // 3 bytes and the fraction, big-endian, re-packed into the Uint64
+    // form the shared decoder takes, as print_passthrough_value does.
+    require_sch(fsp >= 0 && fsp <= 6,
+                "Bad precision of a TIME GROUP BY column");
+    const Uint32 n = 3u + (1u + (Uint32)fsp) / 2u;
+    require_sch(n <= size, "Short TIME GROUP BY column");
+    Uint64 w = 0;
+    for (Uint32 i = 0; i < n; i++)
+      w = (w << 8) | data[i];
+    print_temporal_packed(out, w, TemporalDisplay::TIME2, fsp, m_quote);
+    return;
+  }
+  case NdbDictionary::Column::Binary:
+    break;
+  case NdbDictionary::Column::Varbinary:
+    require_sch(size >= 1 && 1 + (size_t)data[0] <= size,
+                "Bad length of a VARBINARY GROUP BY column");
+    bytes = &data[1];
+    len = (size_t)data[0];
+    break;
+  case NdbDictionary::Column::Longvarbinary:
+    require_sch(size >= 2, "Bad length of a VARBINARY GROUP BY column");
+    len = (size_t)data[0] | ((size_t)data[1] << 8);
+    require_sch(2 + len <= size, "Bad length of a VARBINARY GROUP BY column");
+    bytes = &data[2];
+    break;
+  default:
+    ronsql_bug("A GROUP BY key printed as a pass-through value has a type "
+               "that is not YEAR, TIME, BINARY or VARBINARY.");
+  }
+  if (m_json_output) {
+    out << '"';
+    print_base64(out, bytes, len);
+    out << '"';
+  } else if (m_tsv_output) {
+    print_binary_tsv(out, bytes, len);
+  } else {
+    ronsql_bug("The result printer has neither JSON nor TSV output.");
+  }
 }
 
 // Phase E.3 + I.12 helpers: format a single NdbRecAttr value (or its
@@ -2166,11 +2239,12 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
             break;
           }
         case NdbDictionary::Column::Type::Binary:        ///< Len
-          feature_not_implemented("Print GROUP BY column of type Binary");
         case NdbDictionary::Column::Type::Varbinary:     ///< Length bytes: 1, Max: 255
-          feature_not_implemented("Print GROUP BY column of type Varbinary");
         case NdbDictionary::Column::Type::Longvarbinary: ///< Length bytes: 2, little-endian
-          feature_not_implemented("Print GROUP BY column of type Longvarbinary");
+          // O-13: as in a pass-through result.
+          print_groupby_as_passthrough(out, column,
+                                       cmd.print_group_by_column.precision);
+          break;
         case NdbDictionary::Column::Type::Datetime:      ///< Precision down to 1 sec (sizeof(Datetime) == 8 bytes )
           feature_not_implemented("Print GROUP BY column of type Datetime");
         case NdbDictionary::Column::Type::Date:          ///< Precision down to 1 day(sizeof(Date) == 4 bytes )
@@ -2191,11 +2265,16 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         case NdbDictionary::Column::Type::Time:          ///< Time without date
           feature_not_implemented("Print GROUP BY column of type Time");
         case NdbDictionary::Column::Type::Year:          ///< Year 1901-2155 (1 byte)
-          feature_not_implemented("Print GROUP BY column of type Year");
+          // O-13: as in a pass-through result.
+          print_groupby_as_passthrough(out, column, 0);
+          break;
         case NdbDictionary::Column::Type::Timestamp:     ///< Unix time
           feature_not_implemented("Print GROUP BY column of type Timestamp");
         case NdbDictionary::Column::Type::Time2:         ///< 3 bytes + 0-3 fraction
-          feature_not_implemented("Print GROUP BY column of type Time2");
+          // O-13: as in a pass-through result.
+          print_groupby_as_passthrough(out, column,
+                                       cmd.print_group_by_column.precision);
+          break;
         case NdbDictionary::Column::Type::Datetime2:     ///< 5 bytes plus 0-3 fraction
           {
             int precision = cmd.print_group_by_column.precision;

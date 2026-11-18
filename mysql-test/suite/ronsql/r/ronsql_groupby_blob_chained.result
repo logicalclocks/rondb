@@ -39,9 +39,9 @@ x-ronsql-error-class: unsupported
 == RDRS still answers ==
 HTTP 200
 
-=== gbc-10: TEXT column passed on by a CTE without GROUP BY on it (unchanged) ===
+=== gbc-10: TEXT column passed on by a CTE without GROUP BY on it (O-13) ===
 Error handling: RPE
-ronsql_cli caught exception: CTE output column `txt` has a column type that CTEs do not support.
+ronsql_cli caught exception: The SELECT output `txt` has type TEXT, which RonSQL cannot return.
 
 === gbc-c1: control, VARCHAR key one CTE up ===
 == Query ==

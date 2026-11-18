@@ -347,6 +347,12 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     STAT_SET(m_conf.phase_stats, compile_us, s_compile_start, s_compile_end);
     determine_explain();
     prepare_avro_outputs();
+    // O-13, O-11: refuse a result the printers cannot write, before any
+    // scan and before any output.  EXPLAIN prints no result rows.
+    if (!m_do_explain) {
+      check_printed_output_types();
+      check_json_output_names();
+    }
     PERF_LOG("  prepare total", t_prep_start, t_compile_end);
     m_status = Status::PREPARED;
   }
@@ -8501,6 +8507,141 @@ RonSQLPreparer::check_cte_groupby_key_types(QueryScope& scope,
   }
 }
 
+/*
+ * O-13: the SQL name of a column type that the result printers cannot
+ * print, or NULL for a type they print.  The GROUP BY key printers
+ * (ResultPrinter::print_record and print_stored_record) and the
+ * pass-through printer (print_passthrough_value) print the same types:
+ * the integers, FLOAT, DOUBLE, DECIMAL, CHAR, VARCHAR, BINARY, VARBINARY,
+ * DATE, YEAR, DATETIME, TIME and TIMESTAMP.  A CTE MIN / MAX of a temporal
+ * column is a BIGINT UNSIGNED, which they decode.
+ */
+static const char*
+unprintable_output_type_name(NdbDictionary::Column::Type type)
+{
+  switch (type) {
+  case NdbDictionary::Column::Tinyint:
+  case NdbDictionary::Column::Tinyunsigned:
+  case NdbDictionary::Column::Smallint:
+  case NdbDictionary::Column::Smallunsigned:
+  case NdbDictionary::Column::Mediumint:
+  case NdbDictionary::Column::Mediumunsigned:
+  case NdbDictionary::Column::Int:
+  case NdbDictionary::Column::Unsigned:
+  case NdbDictionary::Column::Bigint:
+  case NdbDictionary::Column::Bigunsigned:
+  case NdbDictionary::Column::Float:
+  case NdbDictionary::Column::Double:
+  case NdbDictionary::Column::Decimal:
+  case NdbDictionary::Column::Decimalunsigned:
+  case NdbDictionary::Column::Char:
+  case NdbDictionary::Column::Varchar:
+  case NdbDictionary::Column::Longvarchar:
+  case NdbDictionary::Column::Binary:
+  case NdbDictionary::Column::Varbinary:
+  case NdbDictionary::Column::Longvarbinary:
+  case NdbDictionary::Column::Date:
+  case NdbDictionary::Column::Year:
+  case NdbDictionary::Column::Datetime2:
+  case NdbDictionary::Column::Time2:
+  case NdbDictionary::Column::Timestamp2:
+    return NULL;
+  case NdbDictionary::Column::Bit:
+    return "BIT";
+  case NdbDictionary::Column::Blob:
+    return "BLOB";
+  case NdbDictionary::Column::Text:
+    return "TEXT";
+  case NdbDictionary::Column::Olddecimal:
+  case NdbDictionary::Column::Olddecimalunsigned:
+    return "DECIMAL in the format before MySQL 5.0";
+  case NdbDictionary::Column::Datetime:
+    return "DATETIME in the format before MySQL 5.6";
+  case NdbDictionary::Column::Time:
+    return "TIME in the format before MySQL 5.6";
+  case NdbDictionary::Column::Timestamp:
+    return "TIMESTAMP in the format before MySQL 5.6";
+  default:
+    return "UNDEFINED";
+  }
+}
+
+/*
+ * O-13: the result printers refused a GROUP BY key of type YEAR, TIME,
+ * BINARY, VARBINARY or BIT, and a pass-through BIT, BLOB or TEXT column,
+ * only when they met the first value: after the scan, and after the
+ * header and the rows before it were written, which ronsql_cli cannot
+ * take back.  The GROUP BY printers now print YEAR, TIME, BINARY and
+ * VARBINARY as the pass-through printer does; refuse every other type of
+ * a printed column here, before any scan.  A printed column of an
+ * aggregate query is a GROUP BY key, and a BLOB or TEXT key gets the
+ * error that GroupBy() gives it (RONSQL-39).  Aggregates need no check:
+ * the aggregation interpreter refuses to load a column of a type it
+ * cannot aggregate when the program is built, before the scan (F16), and
+ * gives a value of a type the printers print.
+ */
+void
+RonSQLPreparer::check_printed_output_types()
+{
+  if (m_main_scope.resolved_columns == NULL) return;
+  for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
+       o = o->next) {
+    if (o->type != Outputs::Type::COLUMN) continue;
+    if (o->column.col_idx >= m_columns.size()) continue;
+    NdbDictionary::Column::Type type = NdbDictionary::Column::Undefined;
+    Uint32 length = 1;
+    const void* cs = NULL;
+    Int32 scale = 0;
+    Int32 precision = 0;
+    if (!resolve_chained_column_type(m_main_scope, o->column.col_idx, type,
+                                     length, cs, scale, precision))
+      continue;
+    const char* type_name = unprintable_output_type_name(type);
+    if (type_name == NULL) continue;
+    if (m_is_aggregate_query &&
+        (type == NdbDictionary::Column::Blob ||
+         type == NdbDictionary::Column::Text)) {
+      throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
+                                 GROUPBY_BLOB_UNSUPPORTED);
+    }
+    std::ostringstream msg;
+    msg << "The SELECT output " << quoted_identifier(o->output_name)
+        << " has type " << type_name << ", which RonSQL cannot return.";
+    throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, msg.str());
+  }
+}
+
+/*
+ * O-11: under JSON and JSON_ASCII each result row is an object keyed by
+ * the output names, so two outputs of one name, e.g. the `id` of
+ * `SELECT a.id, b.id ...` (the unqualified column name, as in mysqld),
+ * gave a row with a duplicate key, of which a JSON reader keeps one
+ * value.  Refuse such a statement; TEXT output, like mysqld, allows it.
+ * The names compare as the bytes the printers write: names that differ
+ * in case are different keys.
+ */
+void
+RonSQLPreparer::check_json_output_names() const
+{
+  if (m_conf.output_format != RonSQLExecParams::OutputFormat::JSON &&
+      m_conf.output_format != RonSQLExecParams::OutputFormat::JSON_ASCII)
+    return;
+  if (m_conf.outputs_read_by_position) return;
+  for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
+       o = o->next) {
+    for (const Outputs* p = m_context.ast_root.outputs; p != o;
+         p = p->next) {
+      if (!(p->output_name == o->output_name)) continue;
+      std::ostringstream msg;
+      msg << "Two SELECT outputs are named "
+          << quoted_identifier(o->output_name)
+          << ", a duplicate key in each row of the JSON output.  Give them"
+             " different aliases with AS, or use the TEXT output format.";
+      throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, msg.str());
+    }
+  }
+}
+
 // The operations NdbQueryBuilder numbers for one JoinPlan: one per
 // operation and two for a unique-index lookup (the index and the table).
 static Uint32
@@ -9768,6 +9909,16 @@ RonSQLPreparer::build_result_column_metadata()
                 static_cast<const CHARSET_INFO*>(rcs));
             column_metadata[col_idx].has_metadata = true;
           }
+          // O-13: a chained TIME, DATETIME or TIMESTAMP GROUP BY key keeps
+          // its fractional-second precision, with which the GROUP BY
+          // printer decodes it.  Without it a DATETIME(3) key two CTEs
+          // up printed without its fraction.
+          if (rt == NdbDictionary::Column::Time2 ||
+              rt == NdbDictionary::Column::Datetime2 ||
+              rt == NdbDictionary::Column::Timestamp2) {
+            column_metadata[col_idx].precision = rprecision;
+            column_metadata[col_idx].has_metadata = true;
+          }
         }
         // O-3: a MIN / MAX of a temporal column passed on by a further
         // CTE has no plumbed dict_column either; its Bigunsigned value
@@ -10096,6 +10247,9 @@ RonSQLPreparer::execute_subqueries()
       inner_params.amalloc = &inner_amalloc;
       inner_params.ndb = m_conf.ndb;
       inner_params.output_format = RonSQLExecParams::OutputFormat::JSON;
+      // O-11: obuf reads a row's values by position, so the outputs may
+      // share a name (a correlation key and an aggregate aliased alike).
+      inner_params.outputs_read_by_position = true;
       inner_params.out_stream = &oss;
       // X-6: oss is dropped when the inner statement fails, and the outer
       // statement has written nothing yet (subqueries run first), so a

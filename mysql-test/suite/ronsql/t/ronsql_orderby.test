@@ -709,25 +709,42 @@ ORDER BY g;|
 --source suite/ronsql/include/ronsql_compare.inc
 
 #
-# ===== Section E: Unsupported type error tests =====
+# ===== Section E: GROUP BY keys of the types the printer refused (O-13) =====
 #
+# VARBINARY, TIME and YEAR keys were refused when the first non-NULL key
+# was printed: after the scan, the header and the NULL group.  They print
+# as in a pass-through result now.  A printed BIT key is refused at
+# prepare time, before the scan and before any output.
 
 --echo
 --echo
 --echo
---echo ORDER BY unsupported VARBINARY:
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c_varbinary, count(*) FROM orderby_test GROUP BY c_varbinary ORDER BY c_varbinary;' 2>&1
+--echo ORDER BY c_varbinary ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_varbinary, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_varbinary
+ORDER BY c_varbinary;|
+--source suite/ronsql/include/ronsql_compare.inc
 
---echo
---echo ORDER BY unsupported TIME:
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c_time, count(*) FROM orderby_test GROUP BY c_time ORDER BY c_time;' 2>&1
+--echo ORDER BY c_time ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_time, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_time
+ORDER BY c_time;|
+--source suite/ronsql/include/ronsql_compare.inc
 
---echo
---echo ORDER BY unsupported YEAR:
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c_year, count(*) FROM orderby_test GROUP BY c_year ORDER BY c_year;' 2>&1
+--echo ORDER BY c_year ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_year, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_year
+ORDER BY c_year;|
+--source suite/ronsql/include/ronsql_compare.inc
 
 --echo
 --echo ORDER BY unsupported BIT:

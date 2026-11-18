@@ -241,6 +241,11 @@ private:
   void optimize();
   void print_record(NdbAggregator::ResultRecord& record,
                     std::ostream& out);
+  // O-13: a YEAR, TIME, BINARY or VARBINARY GROUP BY key, printed as in a
+  // pass-through result; `fsp` is the precision of a TIME key.
+  void print_groupby_as_passthrough(std::ostream& out,
+                                    NdbAggregator::Column& column,
+                                    int fsp);
   void run_program(Uint32 from, Uint32 to,
                    NdbAggregator::ResultRecord* record,
                    std::ostream* out);
