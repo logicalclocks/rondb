@@ -238,6 +238,10 @@ cmd: testNodeRestart
 args: -n InplaceCharPkChangeCI T1
 max-time: 1200
 
+cmd: testNodeRestart
+args: -n InplaceCharPkChangeCISlowCopy T1
+max-time: 1200
+
 cmd: testPartitioning
 args : -n startTransactionHint_orderedIndex_MaxKey T1
 max-time: 60

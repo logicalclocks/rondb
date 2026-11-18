@@ -652,6 +652,10 @@ int runRestarter(NDBT_Context *ctx, NDBT_Step *step) {
   int sleep0 = ctx->getProperty("Sleep0", (unsigned)0);
   int sleep1 = ctx->getProperty("Sleep1", (unsigned)0);
   int randnode = ctx->getProperty("RandNode", (unsigned)0);
+  /* Set again on each restarted node, since a restart loses them */
+  const bool nrKeyDebug = ctx->getProperty("NrKeyDebug", (unsigned)0) != 0;
+  const int restartErrorInsert =
+      ctx->getProperty("RestartErrorInsert", (unsigned)0);
   NdbRestarter restarter;
   int i = 0;
   int lastId = 0;
@@ -684,6 +688,23 @@ int runRestarter(NDBT_Context *ctx, NDBT_Step *step) {
 
     if (restarter.waitNodesNoStart(&nodeId, 1)) {
       g_err << "Failed to waitNodesNoStart" << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+
+    if (nrKeyDebug) {
+      const int dump[] = {DumpStateOrd::LqhNrKeyDebug, 1};
+      if (restarter.dumpStateOneNode(nodeId, dump, 2)) {
+        g_err << "Failed to turn on NR key debug in node " << nodeId << endl;
+        result = NDBT_FAILED;
+        break;
+      }
+    }
+
+    if (restartErrorInsert != 0 &&
+        restarter.insertErrorInNode(nodeId, restartErrorInsert)) {
+      g_err << "Failed to insert error " << restartErrorInsert << " in node "
+            << nodeId << endl;
       result = NDBT_FAILED;
       break;
     }
@@ -9255,6 +9276,12 @@ int runChangePkCharKeyTable(NDBT_Context *ctx, NDBT_Step *step) {
                 << endl;
           g_err << "Cycle " << cycle << " i " << i << " toCaseKey " << buf
                 << endl;
+          /* Which operation failed: 1-2 case 1, 3-4 case 2, then case 3
+           * (odd i only), case 4 and case 5 */
+          const NdbOperation *errOp = trans->getNdbErrorOperation();
+          g_err << "Failed operation " << trans->getNdbErrorLine()
+                << " type " << (errOp ? (int)errOp->getType() : -1)
+                << endl;
           if (trans->getNdbError().status == NdbError::TemporaryError) {
             /* Ignore temporary errors due to restarts etc */
             trans->close();
@@ -9283,6 +9310,31 @@ int runClearErrorInsert(NDBT_Context *ctx, NDBT_Step *step) {
   NdbRestarter restarter;
 
   return restarter.insertErrorInAllNodes(0);
+}
+
+/**
+ * DUMP 2368 1 / 0 (LqhNrKeyDebug): log node restart copy decisions on
+ * tables with character keys and key errors on backup replicas, in debug
+ * and error insert builds. Turned off again at the end so that it does
+ * not affect later test cases. runRestarter turns it on again in each
+ * restarted node when the test case sets NrKeyDebug.
+ */
+static int setNrKeyDebug(int on) {
+  NdbRestarter restarter;
+  const int dump[] = {DumpStateOrd::LqhNrKeyDebug, on};
+  if (restarter.dumpStateAllNodes(dump, 2) != 0) {
+    g_err << "Failed to set NR key debug to " << on << endl;
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
+int runNrKeyDebugOn(NDBT_Context *ctx, NDBT_Step *step) {
+  return setNrKeyDebug(1);
+}
+
+int runNrKeyDebugOff(NDBT_Context *ctx, NDBT_Step *step) {
+  return setNrKeyDebug(0);
 }
 
 int runWatchdogSlowShutdown(NDBT_Context *ctx, NDBT_Step *step) {
@@ -15687,12 +15739,15 @@ TESTCASE("InplaceCharPkChangeCS",
          "collation-compare the same, are ok during restarts") {
   TC_PROPERTY("CSCharset", Uint32(1));
   TC_PROPERTY("NumDataColumns", Uint32(10));
+  TC_PROPERTY("NrKeyDebug", Uint32(1));
+  INITIALIZER(runNrKeyDebugOn);
   INITIALIZER(runCreateCharKeyTable);
   INITIALIZER(runLoadCharKeyTable);
   INITIALIZER(runErrorInsertSlowCopyFrag);
   STEP(runChangePkCharKeyTable);
   STEP(runRestarter);
   FINALIZER(runClearErrorInsert);
+  FINALIZER(runNrKeyDebugOff);
   FINALIZER(runDropCharKeyTable);
 }
 TESTCASE("InplaceCharPkChangeCI",
@@ -15700,12 +15755,34 @@ TESTCASE("InplaceCharPkChangeCI",
          "collation-compare the same, are ok during restarts") {
   TC_PROPERTY("CSCharset", Uint32(0));
   TC_PROPERTY("NumDataColumns", Uint32(10));
+  TC_PROPERTY("NrKeyDebug", Uint32(1));
+  INITIALIZER(runNrKeyDebugOn);
   INITIALIZER(runCreateCharKeyTable);
   INITIALIZER(runLoadCharKeyTable);
   INITIALIZER(runErrorInsertSlowCopyFrag);
   STEP(runChangePkCharKeyTable);
   STEP(runRestarter);
   FINALIZER(runClearErrorInsert);
+  FINALIZER(runNrKeyDebugOff);
+  FINALIZER(runDropCharKeyTable);
+}
+TESTCASE("InplaceCharPkChangeCISlowCopy",
+         "As InplaceCharPkChangeCI, but each restarted node gets error "
+         "insert 5106 again, so that every fragment copy stays slow. "
+         "InplaceCharPkChangeCI sets it once, so the copies get fast as "
+         "the copying nodes restart") {
+  TC_PROPERTY("CSCharset", Uint32(0));
+  TC_PROPERTY("NumDataColumns", Uint32(10));
+  TC_PROPERTY("NrKeyDebug", Uint32(1));
+  TC_PROPERTY("RestartErrorInsert", Uint32(5106));
+  INITIALIZER(runNrKeyDebugOn);
+  INITIALIZER(runCreateCharKeyTable);
+  INITIALIZER(runLoadCharKeyTable);
+  INITIALIZER(runErrorInsertSlowCopyFrag);
+  STEP(runChangePkCharKeyTable);
+  STEP(runRestarter);
+  FINALIZER(runClearErrorInsert);
+  FINALIZER(runNrKeyDebugOff);
   FINALIZER(runDropCharKeyTable);
 }
 TESTCASE("ChangeNumLDMsNR", "Change the number of LDMs in a NR") {

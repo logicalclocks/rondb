@@ -11604,6 +11604,11 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
      */
     jam();
     if (TRACENR_FLAG) TRACENR(" Waiting for COPY_ACTIVEREQ" << endl);
+#ifdef DBLQH_NR_KEY_DEBUG
+    if (nr_key_debug_wanted(regTcPtr.p->tableref)) {
+      nr_key_debug("NO_ROWID_TO_NORMAL", regTcPtr.p, nullptr, 0, 0, false);
+    }
+#endif
     ndbassert(!LqhKeyReq::getNrCopyFlag(regTcPtr.p->reqinfo));
     regTcPtr.p->activeCreat = Fragrecord::AC_NORMAL;
     fragptr.p->m_copy_started_state = Fragrecord::AC_NORMAL;
@@ -11628,6 +11633,21 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
   if (TRACENR_FLAG)
     TRACENR(" len: " << len << " match: " << match
                      << " uncommitted: " << uncommitted);
+
+#ifdef DBLQH_NR_KEY_DEBUG
+  /**
+   * Skip the bulk of uninteresting lines: copy DELETE by rowid of an empty
+   * rowid (only updates the GCI), deletes by rowid from RESTORE and
+   * updates of a matching row.
+   */
+  if (!(nrCopyFlag && op == ZDELETE && len == 0) &&
+      !(op == ZUPDATE && match) &&
+      refToMain(regTcPtr.p->tcBlockref) != getRESTORE() &&
+      nr_key_debug_wanted(regTcPtr.p->tableref)) {
+    nr_key_debug("HANDLE_NR_COPY", regTcPtr.p, dst, len, match ? 1 : 0,
+                 uncommitted);
+  }
+#endif
 
   /**
    * len == 0 here means that the row id had no record attached to it.
@@ -12044,6 +12064,15 @@ Dblqh::nr_copy_delete_row(Signal* signal,
 
   TRACENR("DELETED: " << regTcPtr.p->m_row_id << endl);
 
+#ifdef DBLQH_NR_KEY_DEBUG
+  /* The rowid printed is that of the deleted row */
+  if (refToMain(regTcPtr.p->tcBlockref) != getRESTORE() &&
+      nr_key_debug_wanted(tableId)) {
+    nr_key_debug(rowid ? "DELETED_AT_ROWID" : "DELETED_BY_KEY", regTcPtr.p,
+                 nullptr, 0, 0, false);
+  }
+#endif
+
   regTcPtr.p->m_dealloc_state = TcConnectionrec::DA_IDLE;
   regTcPtr.p->m_dealloc_data.m_dealloc_ref_count = RNIL;
   regTcPtr.p->m_row_id = save;
@@ -12162,6 +12191,112 @@ Uint32 Dblqh::getKeyInfoWordOrZero(const TcConnectionrec *regTcPtr,
   }
   return 0;
 }
+
+#ifdef DBLQH_NR_KEY_DEBUG
+/**
+ * Targeted output to find how a replica ends up with a primary key that
+ * the primary replica does not have (testNodeRestart
+ * -n InplaceCharPkChange*). Only in debug and error insert builds, and
+ * off until DUMP 2368 1 (LqhNrKeyDebug). The flag is per data node
+ * process, so a restarted node needs the DUMP again; the test sends it
+ * while the node is held in no-start.
+ *
+ * nr_key_debug traces the node restart copy decisions of handle_nr_copy,
+ * but only for tables whose primary key has character columns, and at
+ * most NR_KEY_DEBUG_MAX lines after each DUMP 2368 1.
+ *
+ * replica_keyref_debug prints when a backup replica fails an operation
+ * with 626 or 630 that the primary replica executed. A replica that
+ * agrees with the primary never does that, so the output is rare.
+ */
+static constexpr Uint32 NR_KEY_DEBUG_MAX = 20000;
+static constexpr Uint32 REPLICA_KEYREF_DEBUG_MAX = 1000;
+static std::atomic<bool> g_nr_key_debug{false};
+static std::atomic<Uint32> g_nr_key_debug_lines{0};
+static std::atomic<Uint32> g_replica_keyref_debug_lines{0};
+
+static void format_key_bytes(char *buf, size_t bufsz, const Uint32 *key,
+                             Uint32 words) {
+  const Uint8 *b = reinterpret_cast<const Uint8 *>(key);
+  size_t pos = 0;
+  buf[0] = 0;
+  for (Uint32 i = 0; i < 4 * words && pos + 5 < bufsz; i++) {
+    if (b[i] >= 0x20 && b[i] < 0x7f && b[i] != '\\') {
+      buf[pos++] = (char)b[i];
+      buf[pos] = 0;
+    } else {
+      pos += snprintf(buf + pos, bufsz - pos, "\\x%02x", b[i]);
+    }
+  }
+}
+
+bool Dblqh::nr_key_debug_wanted(Uint32 tableId) {
+  if (likely(!g_nr_key_debug.load(std::memory_order_relaxed))) return false;
+  if (!g_key_descriptor_pool.getPtr(tableId)->hasCharAttr) return false;
+  return g_nr_key_debug_lines.fetch_add(1) < NR_KEY_DEBUG_MAX;
+}
+
+void Dblqh::nr_key_debug(const char *what, const TcConnectionrec *regTcPtr,
+                         const Uint32 *storedKey, int storedLen, int match,
+                         bool uncommitted) {
+  Uint32 reqKey[MAX_KEY_SIZE_IN_WORDS];
+  Uint32 reqLen = 0;
+  if (regTcPtr->keyInfoIVal != RNIL &&
+      regTcPtr->primKeyLen <= MAX_KEY_SIZE_IN_WORDS) {
+    copy(reqKey, regTcPtr->keyInfoIVal);
+    reqLen = regTcPtr->primKeyLen;
+  }
+  char reqBuf[128];
+  char storedBuf[128];
+  format_key_bytes(reqBuf, sizeof(reqBuf), reqKey, reqLen);
+  format_key_bytes(storedBuf, sizeof(storedBuf), storedKey,
+                   storedLen > 0 ? (Uint32)storedLen : 0);
+  bool binDiff = (storedLen > 0 && reqLen > 0 &&
+                  (reqLen != (Uint32)storedLen ||
+                   memcmp(reqKey, storedKey, 4 * reqLen) != 0));
+  g_eventLogger->info(
+      "NRKEY LDM(%u) %s tab(%u,%u) op %u%s rowid(%u,%u) gci %u"
+      " transid(0x%x,0x%x) len %d match %d%s unc %u req '%s' stored '%s'",
+      instance(), what, regTcPtr->tableref, regTcPtr->fragmentid,
+      regTcPtr->operation,
+      LqhKeyReq::getNrCopyFlag(regTcPtr->reqinfo) ? " NrCopy" : "",
+      regTcPtr->m_row_id.m_page_no, regTcPtr->m_row_id.m_page_idx,
+      regTcPtr->gci_hi, regTcPtr->transid[0], regTcPtr->transid[1],
+      storedLen, match, binDiff ? " BINDIFF" : "", (Uint32)uncommitted,
+      reqBuf, storedBuf);
+}
+
+void Dblqh::replica_keyref_debug(const TcConnectionrec *regTcPtr,
+                                 Uint32 errorCode) {
+  if (g_replica_keyref_debug_lines.fetch_add(1) >= REPLICA_KEYREF_DEBUG_MAX)
+    return;
+  FragrecordPtr fragPtr;
+  ndbrequire(c_fragment_pool.getPtr(fragPtr, regTcPtr->fragmentptr));
+  const bool rowidFlag = LqhKeyReq::getRowidFlag(regTcPtr->reqinfo);
+  Uint32 stored[MAX_KEY_SIZE_IN_WORDS + 64];
+  int storedLen = 0;
+  bool uncommitted = false;
+  if (rowidFlag && !m_is_in_query_thread) {
+    /* What does this replica have at the rowid the primary used? */
+    Local_key rowid = regTcPtr->m_row_id;
+    storedLen = c_tup->nr_read_pk(fragPtr.p->tupFragptr, &rowid, stored,
+                                  uncommitted);
+  }
+  int match = (storedLen > 0)
+                  ? compare_key(regTcPtr, stored, (Uint32)storedLen) == 0
+                  : 0;
+  g_eventLogger->info(
+      "REPLICA KEYREF %u LDM(%u) seqNoReplica %u lastReplicaNo %u"
+      " tc node %u next node %u activeCreat %u copy state %u fragStatus %u"
+      " rowidFlag %u",
+      errorCode, instance(), regTcPtr->seqNoReplica, regTcPtr->lastReplicaNo,
+      refToNode(regTcPtr->tcBlockref), regTcPtr->nextReplica,
+      (Uint32)regTcPtr->activeCreat, (Uint32)fragPtr.p->m_copy_started_state,
+      (Uint32)fragPtr.p->fragStatus, (Uint32)rowidFlag);
+  nr_key_debug("REPLICA_KEYREF", regTcPtr, stored, storedLen, match,
+               uncommitted);
+}
+#endif  // DBLQH_NR_KEY_DEBUG
 
 void Dblqh::unlockError(Signal *signal, Uint32 error,
                         const TcConnectionrecPtr tcConnectptr) {
@@ -16574,6 +16709,16 @@ void Dblqh::continueACCKEYREF(Signal *signal, TcConnectionrecPtr tcConnectptr,
       ndbabort();
   }  // switch
   tcPtr->errorCode = errorCode;
+
+#ifdef DBLQH_NR_KEY_DEBUG
+  if (unlikely(g_nr_key_debug.load(std::memory_order_relaxed)) &&
+      tcPtr->seqNoReplica != 0 &&
+      (errorCode == ZTUPLE_ALREADY_EXIST || errorCode == ZNO_TUPLE_FOUND)) {
+    /* A backup replica disagrees with the primary replica */
+    jam();
+    replica_keyref_debug(tcPtr, errorCode);
+  }
+#endif
 
   if (TRACENR_FLAG) {
     TRACENR("ACCKEYREF: " << errorCode << " ");
@@ -37881,6 +38026,14 @@ void Dblqh::execCOPY_FRAG_DONE_REP(Signal *signal) {
    * AC_NORMAL: The signal came after COPY_FRAGCONF -> COPY_ACTIVEREQ
    */
   g_eventLogger->info("m_copy_started_state before: %u", fragptr.p->m_copy_started_state);
+#ifdef DBLQH_NR_KEY_DEBUG
+  if (nr_key_debug_wanted(rep->tableId)) {
+    g_eventLogger->info("NRKEY LDM(%u) COPY_FRAG_DONE_REP tab(%u,%u)"
+                        " m_copy_started_state before: %u",
+                        instance(), rep->tableId, rep->fragId,
+                        (Uint32)fragptr.p->m_copy_started_state);
+  }
+#endif
   fragptr.p->m_copy_started_state = Fragrecord::AC_NORMAL;
 }
 
@@ -44944,6 +45097,27 @@ void Dblqh::execDUMP_STATE_ORD(Signal *signal) {
     }
     return;
   }
+#ifdef DBLQH_NR_KEY_DEBUG
+  if (arg == DumpStateOrd::LqhNrKeyDebug) {
+    jam();
+    /**
+     * Handled at the top, since the test sends it to a node held in
+     * no-start, before READ_CONFIG_REQ. Every instance receives it; the
+     * flag is per data node process. Turning it on restarts the line
+     * budgets.
+     */
+    const bool on = signal->getLength() < 2 || signal->theData[1] != 0;
+    if (on && !g_nr_key_debug.load(std::memory_order_relaxed)) {
+      g_nr_key_debug_lines.store(0, std::memory_order_relaxed);
+      g_replica_keyref_debug_lines.store(0, std::memory_order_relaxed);
+    }
+    g_nr_key_debug.store(on, std::memory_order_relaxed);
+    if (instance() == 1 && !m_is_query_block) {
+      g_eventLogger->info("NRKEY debug %s", on ? "on" : "off");
+    }
+    return;
+  }
+#endif
   if (arg == DumpStateOrd::LqhGroupTableSizeHints) {
     jam();
     /* Process-wide like the trace; every instance gets it, which only

@@ -138,6 +138,16 @@ class FsReadWriteReq;
 
 #endif // DEBUG_PA
 
+/**
+ * Debug output of node restart copy decisions on character keys and of
+ * key errors on backup replicas, see Dblqh::nr_key_debug(). Compiled only
+ * into debug and error insert builds, and off until DUMP 2368 1
+ * (LqhNrKeyDebug) turns it on.
+ */
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+#define DBLQH_NR_KEY_DEBUG
+#endif
+
 #define ZINVALID_SCHEMA_VERSION 1227
 
 #ifdef DBLQH_C
@@ -4704,8 +4714,16 @@ private:
   void exec_acckeyreq(Signal*, Ptr<TcConnectionrec>);
   int compare_key(const TcConnectionrec*, const Uint32 * ptr, Uint32 len);
   void nr_copy_delete_row(Signal*, Ptr<TcConnectionrec>, Local_key*, Uint32);
-  Uint32 getKeyInfoWordOrZero(const TcConnectionrec* regTcPtr, 
+  Uint32 getKeyInfoWordOrZero(const TcConnectionrec* regTcPtr,
                               Uint32 offset);
+#ifdef DBLQH_NR_KEY_DEBUG
+  bool nr_key_debug_wanted(Uint32 tableId);
+  void nr_key_debug(const char *what, const TcConnectionrec *regTcPtr,
+                    const Uint32 *storedKey, int storedLen, int match,
+                    bool uncommitted);
+  void replica_keyref_debug(const TcConnectionrec *regTcPtr,
+                            Uint32 errorCode);
+#endif
 
   NdbMutex m_read_redo_log_data_mutex;
   Uint64 m_tot_written_bytes;
