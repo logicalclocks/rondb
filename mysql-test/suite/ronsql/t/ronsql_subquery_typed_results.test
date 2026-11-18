@@ -47,6 +47,10 @@
 # st-19 (= with a fractional result on an indexed or key INT column) run
 # alone on RonSQL and are compared with mysqld with USE INDEX (): mysqld's
 # ref and const access round the value into the key and drop the =.
+# mysqld runs with engine_condition_pushdown off: ha_ndbcluster pushes
+# price = 1.005000 as price = 1.01 (the constant stored in the column's
+# type), and a debug mysqld asserts in unpack_record when the row it
+# gets back fails the condition (st-16).
 
 --source include/have_ndb.inc
 --source include/have_util_curl.inc
@@ -60,6 +64,10 @@ call mtr.add_suppression("Participant timeout");
 --let $strict_diff=yes
 
 --disable_query_log
+SET @st_global_switch = @@GLOBAL.optimizer_switch;
+SET @st_session_switch = @@SESSION.optimizer_switch;
+SET GLOBAL optimizer_switch = 'engine_condition_pushdown=off';
+SET SESSION optimizer_switch = 'engine_condition_pushdown=off';
 --disable_warnings
 CREATE TABLE st_n (
   id    INT NOT NULL,
@@ -491,5 +499,7 @@ DROP TABLE st_u;
 DROP TABLE st_o;
 DROP TABLE st_c;
 DROP TABLE st_n;
+SET GLOBAL optimizer_switch = @st_global_switch;
+SET SESSION optimizer_switch = @st_session_switch;
 --enable_warnings
 --enable_query_log
