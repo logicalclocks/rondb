@@ -43,7 +43,10 @@
 #                 error, through ronsql_cli and RDRS (class limit)
 #   x5-4          a scalar subquery over 5000 rows: more than one row
 #
-# Expected results come from mysqld (strict_diff).
+# Expected results come from mysqld (strict_diff).  st-5, st-8, st-12 and
+# st-19 (= with a fractional result on an indexed or key INT column) run
+# alone on RonSQL and are compared with mysqld with USE INDEX (): mysqld's
+# ref and const access round the value into the key and drop the =.
 
 --source include/have_ndb.inc
 --source include/have_util_curl.inc
@@ -160,12 +163,19 @@ SELECT id FROM st_n WHERE v <= (SELECT AVG(v) FROM st_n)|
 
 --echo
 --echo === st-5: v = AVG(v) is never TRUE ===
+# mysqld's ref access on ix_st_n_v stores AVG(v) 2.5000 in the INT key
+# as 3 with no note, and ref_lookup_subsumes_comparison drops the =, so
+# mysqld returns id 3 (a mysqld bug; without an index it returns no
+# row). RonSQL runs the query alone; the query with USE INDEX () is
+# compared with mysqld. Also st-8, st-12 and st-19.
+--echo == RonSQL alone, no row ==
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id FROM st_n WHERE v = (SELECT AVG(v) FROM st_n);'
 let $QUERY=
-SELECT id FROM st_n WHERE v = (SELECT AVG(v) FROM st_n);|
+SELECT id FROM st_n USE INDEX () WHERE v = (SELECT AVG(v) FROM st_n);|
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
-SELECT id FROM st_n WHERE v = (SELECT AVG(v) FROM st_n)|
+SELECT id FROM st_n USE INDEX () WHERE v = (SELECT AVG(v) FROM st_n)|
 
 --echo
 --echo === st-6: v <> AVG(v) is TRUE where v is not NULL ===
@@ -187,12 +197,16 @@ SELECT id FROM st_n WHERE NOT (v = (SELECT AVG(v) FROM st_n))|
 
 --echo
 --echo === st-8: NOT (v <> AVG(v)) is never TRUE ===
+# mysqld negates NOT (v <> x) into v = x and looks it up by ref, as in
+# st-5. RonSQL runs it alone; USE INDEX () is compared with mysqld.
+--echo == RonSQL alone, no row ==
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id FROM st_n WHERE NOT (v <> (SELECT AVG(v) FROM st_n));'
 let $QUERY=
-SELECT id FROM st_n WHERE NOT (v <> (SELECT AVG(v) FROM st_n));|
+SELECT id FROM st_n USE INDEX () WHERE NOT (v <> (SELECT AVG(v) FROM st_n));|
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
-SELECT id FROM st_n WHERE NOT (v <> (SELECT AVG(v) FROM st_n))|
+SELECT id FROM st_n USE INDEX () WHERE NOT (v <> (SELECT AVG(v) FROM st_n))|
 
 --echo
 --echo === st-9: the subquery on the left, AVG(v) < v ===
@@ -223,12 +237,16 @@ SELECT id, v FROM st_n WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 3)|
 
 --echo
 --echo === st-12: primary key = AVG(id) 1.5000 is never TRUE ===
+# mysqld reads id = 1.5000 as a const table by the primary key 2, as in
+# st-5. RonSQL runs it alone; USE INDEX () is compared with mysqld.
+--echo == RonSQL alone, no row ==
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id, v FROM st_n WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 2);'
 let $QUERY=
-SELECT id, v FROM st_n WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 2);|
+SELECT id, v FROM st_n USE INDEX () WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 2);|
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
-SELECT id, v FROM st_n WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 2)|
+SELECT id, v FROM st_n USE INDEX () WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 2)|
 
 --echo
 --echo === st-13: v > MAX(ratio), a DOUBLE 3 ===
@@ -286,12 +304,16 @@ SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n JOIN st_o AS o ON o.id = n.
 
 --echo
 --echo === st-19: join root filter, n.v = AVG(c_k) is never TRUE ===
+# mysqld looks up n.v = 2.5000 by ref on ix_st_n_v as 3, as in st-5.
+# RonSQL runs it alone; USE INDEX () on the root is compared with mysqld.
+--echo == RonSQL alone ==
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n JOIN st_o AS o ON o.id = n.id WHERE n.v = (SELECT AVG(c_k) FROM st_c);'
 let $QUERY=
-SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n JOIN st_o AS o ON o.id = n.id WHERE n.v = (SELECT AVG(c_k) FROM st_c);|
+SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n USE INDEX () JOIN st_o AS o ON o.id = n.id WHERE n.v = (SELECT AVG(c_k) FROM st_c);|
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
-SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n JOIN st_o AS o ON o.id = n.id WHERE n.v = (SELECT AVG(c_k) FROM st_c)|
+SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n USE INDEX () JOIN st_o AS o ON o.id = n.id WHERE n.v = (SELECT AVG(c_k) FROM st_c)|
 
 --echo
 --echo === st-20: correlated MAX(c_d), DECIMAL 0.50 2.50 2.00 4.50, against v ===

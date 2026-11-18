@@ -70,8 +70,9 @@ id
 2
 
 === st-5: v = AVG(v) is never TRUE ===
+== RonSQL alone, no row ==
 == Query ==
-SELECT id FROM st_n WHERE v = (SELECT AVG(v) FROM st_n);
+SELECT id FROM st_n USE INDEX () WHERE v = (SELECT AVG(v) FROM st_n);
 
 Number of output lines, including header: 0
 
@@ -81,7 +82,7 @@ Number of output lines, including header: 0
 
 
 == Expected result ==
-SELECT id FROM st_n WHERE v = (SELECT AVG(v) FROM st_n)|
+SELECT id FROM st_n USE INDEX () WHERE v = (SELECT AVG(v) FROM st_n)|
 id
 
 === st-6: v <> AVG(v) is TRUE where v is not NULL ===
@@ -123,8 +124,9 @@ id
 4
 
 === st-8: NOT (v <> AVG(v)) is never TRUE ===
+== RonSQL alone, no row ==
 == Query ==
-SELECT id FROM st_n WHERE NOT (v <> (SELECT AVG(v) FROM st_n));
+SELECT id FROM st_n USE INDEX () WHERE NOT (v <> (SELECT AVG(v) FROM st_n));
 
 Number of output lines, including header: 0
 
@@ -134,7 +136,7 @@ Number of output lines, including header: 0
 
 
 == Expected result ==
-SELECT id FROM st_n WHERE NOT (v <> (SELECT AVG(v) FROM st_n))|
+SELECT id FROM st_n USE INDEX () WHERE NOT (v <> (SELECT AVG(v) FROM st_n))|
 id
 
 === st-9: the subquery on the left, AVG(v) < v ===
@@ -190,8 +192,9 @@ id	v
 2	2
 
 === st-12: primary key = AVG(id) 1.5000 is never TRUE ===
+== RonSQL alone, no row ==
 == Query ==
-SELECT id, v FROM st_n WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 2);
+SELECT id, v FROM st_n USE INDEX () WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 2);
 
 Number of output lines, including header: 0
 
@@ -201,7 +204,7 @@ Number of output lines, including header: 0
 
 
 == Expected result ==
-SELECT id, v FROM st_n WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 2)|
+SELECT id, v FROM st_n USE INDEX () WHERE id = (SELECT AVG(id) FROM st_n WHERE id <= 2)|
 id	v
 
 === st-13: v > MAX(ratio), a DOUBLE 3 ===
@@ -305,8 +308,11 @@ cnt	s
 2	2001
 
 === st-19: join root filter, n.v = AVG(c_k) is never TRUE ===
+== RonSQL alone ==
+cnt	s
+0	NULL
 == Query ==
-SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n JOIN st_o AS o ON o.id = n.id WHERE n.v = (SELECT AVG(c_k) FROM st_c);
+SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n USE INDEX () JOIN st_o AS o ON o.id = n.id WHERE n.v = (SELECT AVG(c_k) FROM st_c);
 
 Number of output lines, including header: 2
 
@@ -316,7 +322,7 @@ Number of output lines, including header: 2
 
 
 == Expected result ==
-SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n JOIN st_o AS o ON o.id = n.id WHERE n.v = (SELECT AVG(c_k) FROM st_c)|
+SELECT COUNT(*) AS cnt, SUM(o.a) AS s FROM st_n AS n USE INDEX () JOIN st_o AS o ON o.id = n.id WHERE n.v = (SELECT AVG(c_k) FROM st_c)|
 cnt	s
 0	NULL
 
