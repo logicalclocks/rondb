@@ -752,7 +752,7 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     <code>headless-mgmds.&lt;namespace&gt;.svc:1186</code>.</li>
     <li><strong>Pick this cluster&rsquo;s groups.</strong> Groups whose <code>cluster</code>
     is NULL or equal to this cluster&rsquo;s name. Where one person is covered by both a
-    named-cluster group and an every-cluster group, the named one wins on the main cluster
+    named-cluster group and an every-cluster group, the named one wins in that cluster&rsquo;s RonDB
     (7.4): the person&rsquo;s aliases here point at it.</li>
     <li><strong>Expand Who into account names.</strong> A uid row becomes every account
     that user holds, <code>clip31(projectname + "_" + username)</code> for each of their
@@ -1010,7 +1010,7 @@ repoint a person&rsquo;s budget must instead fail loudly and be reconciled.
 <code>DROP</code> drops the alias. The management-server side mirrors the existing
 <code>set user</code> family in <code>Services.cpp</code>.</p>
 <p><code>GET</code> shows one alias. <code>LIST</code> takes no arguments and shows every
-alias on the main cluster, in object-id order; there is no filter by target. The installer
+alias in the RonDB it is run against, in object-id order; there is no filter by target. The installer
 reconciles every group of the cluster in one pass and needs the whole set, including
 aliases whose target is no longer wanted; the operation-log handler never lists, because
 it already knows the one account it changes. Over the management API the list is paged
@@ -1067,7 +1067,12 @@ defect:</p>
   the object-slot sum in the kernel with a generous default, so alias capacity has its
   own labeled budget instead of overloading <code>MaxNoOfTables</code> (which also
   sizes trigger pools through the index parameters). rondb-helm sets it; a slot costs a
-  schema-file entry and pool records, no DataMemory.</li>
+  schema-file entry and pool records, no DataMemory. Mikael agreed on 2026-11-18, provided
+  it integrates with RONDB-136, which lets the schema file hold more than 20,320 objects
+  (up to about 200,000): <code>MaxNumSchemaObjects</code> (default 20,320,
+  <code>Dbdict.cpp:3204-3207</code>, <code>:3244-3253</code>) sizes the schema file and
+  must cover the whole object-slot sum, <code>MaxNoOfUserObjects</code> included. A
+  deployment past 20,320 objects raises both, and that configuration is tested.</li>
   <li><strong>Exhaustion crashes the cluster (defect, fix in scope).</strong> With the
   pool full, each refused <code>USER ALIAS SET</code> took longer than the one before
   (0.3 s, then 9.8 s, then 55 s) until the watchdog killed the DBDICT thread mid
@@ -1077,7 +1082,9 @@ defect:</p>
   Probably reachable with plain <code>USER</code> creates on the base version too. The
   clean-refusal fix, with an MTR test that drives creates past the limit, is a blocker
   for the kernel PR; error logs and traces are preserved in the ticket workspace
-  (<code>RONDB-1158_alias_bench/</code>).</li>
+  (<code>RONDB-1158_alias_bench/</code>). Mikael will investigate the crash given a failing
+  test case, so the first deliverable is an MTR reproducer, ideally with plain
+  <code>USER</code> creates on the base version.</li>
   <li>Restart and backup paths for a new object flag, including that restore re-resolves
   targets by name.</li>
   <li>The cost of the one extra indirection on the <code>TCKEYREQ</code> path, and
@@ -1154,8 +1161,8 @@ ndb_mgm&gt; USER LIST
 ndb_mgm&gt; USER DROP  etl_jobs</code></pre>
 <p>A name may be up to 126 characters and may not begin with <code>$</code>. The NDB API attaches a name to a transaction with
 <code>NdbTransaction::setUserId</code>. A name with no configured limit runs unlimited:
-installing the group on the main cluster and installing its members&rsquo; aliases are both
-required.</p>
+the group&rsquo;s <code>USER</code> and its members&rsquo; aliases are both required in each
+targeted RonDB.</p>
 </section>
 
 <section id="build">
@@ -1170,9 +1177,11 @@ required.</p>
     <tr><td>RonDB kernel</td><td>new</td><td>Section 13: alias flag and single target (by name) on the <code>$name</code> object in Dbdict (not budgeted, persisted, backed up, re-resolved on target recreate); the alias-to-target swap at the three Dbtc admission points; <code>USER ALIAS SET/DROP/GET/LIST</code> in the mgm server (<code>Services.cpp</code>) and client; MTR tests in <code>suite/ndb_quota</code>: lifecycle, enforcement through an alias on both key and scan paths, restart and backup/restore, target drop and recreate. Two additions from the scale
     measurement (13.5): a <code>MaxNoOfUserObjects</code> configuration parameter added
     to the dictionary object-slot sum, so aliases stop competing with tables for
-    <code>MaxNoOfTables</code>; and a clean, constant-cost refusal when the object pool
-    is exhausted, with an MTR test that drives creates past the limit (today exhaustion
-    escalates per attempt and ends in a watchdog kill of the data node).</td></tr>
+    <code>MaxNoOfTables</code>, integrated with RONDB-136&rsquo;s
+    <code>MaxNumSchemaObjects</code> and tested above 20,320 objects; and a clean,
+    constant-cost refusal when the object pool is exhausted, starting from a failing MTR
+    reproducer handed to Mikael (today exhaustion escalates per attempt and ends in a
+    watchdog kill of the data node).</td></tr>
     <tr><td>ClusterJ</td><td>new, phase 1</td><td>Section 13.4: <code>Session.setRateLimitUser</code> in clusterj-api and clusterj-core, applied in <code>DbImpl.enlist</code>, the <code>setUserId</code> binding in <code>ndbjtie</code> over a session-owned direct buffer, and the reset on <code>closeCache</code>. Tests: a <code>RateLimitTest</code> class in clusterj-test, run by a new <code>ndb_quota</code> MTR test that turns rate limits on, sets <code>USER</code> and <code>USER ALIAS</code> entries through <code>ndb_mgm</code> and runs <code>AllTests -n RateLimitTest</code>. The class carries <code>@Ignore</code>, so the plain <code>ndb.clusterj</code> run, which has rate limits off, skips it, while a run that names it still executes it (<code>AllTests.java:96-98</code>, <code>:139-145</code>). Cases: a tagged session is throttled (243 / 2203) and an untagged session on the same table is not; a tag naming an alias charges the alias&rsquo;s target; an unknown name runs unmetered; explicit and autocommit transactions are both tagged; a new name takes effect at the next transaction; a session back from the cache carries no name; a name over the limit fails the transaction start.</td></tr>
     <tr><td>OnlineFS ingestion</td><td>new, phase 2</td><td>Section 13.4: <a href="https://github.com/logicalclocks/clusterj-onlinefs">clusterj-onlinefs</a> sets the tag per write transaction to the producing user&rsquo;s project-user account; how it learns that user is open (section 16). No installer change.</td></tr>
     <tr><td>MySQL server</td><td>exists</td><td>Nothing to code. Enable <code>ndb_user_rate_limits</code> through rondb-helm.</td></tr>
@@ -1203,7 +1212,7 @@ required.</p>
   there and the budget stays counted against the 50% cap: a limit outliving its group,
   the failure mode section 10 rules out. Either keep a record of deleted groups per
   (group, cluster) until each targeted cluster confirms the drop, or mark the installer&rsquo;s
-  objects on the main cluster itself (a reserved name prefix or an object flag) so the
+  objects in each RonDB (a reserved name prefix or an object flag) so the
   reconciler can find orphans. Decide before the installer is built.</li>
   <li><strong>Ingestion identity, phase 2</strong> (13.4): the ClusterJ tag is phase 1,
   the OnlineFS change phase 2 (decided 2026-11-18; the writes were untagged and unmetered
