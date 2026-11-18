@@ -218,6 +218,35 @@ written back to a state table (&#9317;), which is what the admin page shows. The
 pass re-runs when project membership changes and on a primary-gated timer, so every
 cluster converges back to the tables after a missed event, a restore or an outage
 (<a href="#install">section 10</a>).</p>
+<p><strong>Changing and deleting a group is the same flow.</strong> There is no separate
+update path: every later change re-enters the install flow at step &#9314; and the pass
+converges each targeted cluster to the tables. A changed budget re-converts the
+percentage and alters the group&rsquo;s existing <code>USER</code> in place; no alias moves.
+A changed Who list or cluster field becomes alias commands computed from the difference:
+<code>USER ALIAS SET</code> for each person now covered, <code>USER ALIAS DROP</code>
+for each person no longer covered, and a person moving between groups gets a DROP then a
+SET, because the kernel refuses pointing an existing alias at a different target (13.3).
+Deleting a group runs the pass with the rows gone: the installer drops the members&rsquo;
+aliases, then the group&rsquo;s <code>USER</code>, and the members&rsquo; traffic falls back to
+unmetered (<a href="#rules">section 11</a>).</p>
+<p><strong>Implicit changes travel the same way, without an administrator.</strong> A
+project Who row is a rule, &ldquo;everyone in this project&rdquo;, and membership keeps changing
+after the group is saved. Suppose a group gives everyone in project Recommender 2% of a
+cluster, and Bob later joins the project. Hopsworks creates his MySQL account exactly as
+it does today (5.3), and the operation-log callback that creates the account also checks
+whether any group covers the project. One does, so the handler issues
+<code>USER ALIAS SET Recommender_bob91cd --target=recommender_team_rl</code> on each
+targeted cluster, with the framework&rsquo;s retries. One alias appears; the budget and every
+other alias are untouched, and Bob&rsquo;s REST keys and SQL logins are metered from that
+moment. When Mary is removed from a covered project, the same callback sees her account
+removal and issues <code>USER ALIAS DROP</code> for that account on the affected
+clusters; her remaining traffic is unmetered again, or keeps charging whichever other
+group still covers her. A missed callback, for example across a Hopsworks restart, is
+repaired by the periodic reconciler, which replays the full pass and converges every
+cluster back to the tables (<a href="#install">section 10</a>). The asymmetry is
+deliberate: an alias arriving late only delays metering, while a limit outliving its
+group would throttle someone wrongly, and the reconciler exists to prevent the
+second.</p>
 <p><strong>The request flow (&#9318;&ndash;&#9322;).</strong> A request is authenticated
 and authorized exactly as today (&#9318;). RDRS and the MySQL server tag the transaction
 with the caller&rsquo;s account name, once per transaction (&#9319;); the same person is the
@@ -249,6 +278,18 @@ cluster will receive; and the sentence preview restates the group in words, whic
 quickest check that Who and the cluster were filled in as intended. The cluster picker
 is fed from the live discovery (<a href="#today">5.4</a>), so it offers exactly the
 clusters that exist.</p>
+<p><strong>Editing and deleting.</strong> Every field except the name is editable, and
+saving an edit is the same write as creating: the rows change and the immediate install
+pass runs, so the list&rsquo;s per-cluster state shows the outcome of the new pass within
+seconds (<a href="#flow">section 2</a>). A budget edit alters the group&rsquo;s
+<code>USER</code> in place; a Who or cluster edit adds and drops only the affected
+aliases. Deleting a group removes its rows, its Who rows and its state rows, and the
+immediate pass drops the group&rsquo;s <code>USER</code> and its members&rsquo; aliases on every
+targeted cluster; the members run unmetered afterwards (<a href="#rules">section 11</a>).
+Membership churn never passes through this page: when someone joins or leaves a covered
+project, the operation-log handler adjusts the aliases by itself (section 2) and the
+page keeps showing <em>installed</em>. The state column is therefore the
+administrator&rsquo;s check for every kind of change, explicit or implicit.</p>
 </section>
 
 <section id="glance">
