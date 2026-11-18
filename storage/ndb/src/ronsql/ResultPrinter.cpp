@@ -585,12 +585,14 @@ ResultPrinter::compile()
         cmd.print_aggregate.charset = aggregate_arg_charset(o);
         cmd.print_aggregate.float_display = aggregate_uses_float_display(o);
         {
-          // D15: only format with fixed scale when the source DECIMAL is within
-          // DOUBLE's exact range (precision <= 15); wider DECIMALs keep compact
-          // formatting (the value is already a lossy DOUBLE).
+          // D15: a SUM, MIN or MAX over a DECIMAL (precision > 0) prints
+          // at the DECIMAL's scale, as mysqld does.  O-7: also above
+          // precision 15; print_fixed_scale() rounds the double's
+          // shortest digits.  Before, such a value dropped its scale
+          // (10.50 printed 10.5, 0.00 printed 0).
           int sc = aggregate_arg_scale(o);
           int pr = aggregate_arg_precision(o);
-          cmd.print_aggregate.scale = (pr > 0 && pr <= 15) ? sc : 0;
+          cmd.print_aggregate.scale = (pr > 0) ? sc : 0;
         }
         // D17 + temporal: MIN/MAX over a temporal column → decode the
         // Bigunsigned packed value back to its text form.
@@ -822,14 +824,14 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
         case NdbDictionary::Column::Type::Double:
           // cte_avg_plan.md V4 (C8): a Double GROUP BY column carrying
           // display scale metadata (an AVG or DECIMAL-widened CTE
-          // output) prints with fixed scale like MySQL, gated on the
-          // DOUBLE-exact precision range like print_passthrough_value.
+          // output) prints with fixed scale like MySQL, whatever its
+          // precision (O-7), like print_passthrough_value.
           // It is a DECIMAL in MySQL: rounded HALF_UP, never "-0.00"
           // (print_fixed_scale, O-5/O-6).
           {
             int sc = cmd.print_group_by_column.scale;
             int pr = cmd.print_group_by_column.precision;
-            if (sc > 0 && pr > 0 && pr <= 15) {
+            if (sc > 0 && pr > 0) {
               print_fixed_scale(out, column.data_double(), sc);
             } else {
               print_float_or_double(out, column.data_double(),
@@ -849,12 +851,17 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
             int scale = cmd.print_group_by_column.scale;
             constexpr int DECIMAL_MAX_STR_LEN_IN_BYTES = 68;
             char decStr[DECIMAL_MAX_STR_LEN_IN_BYTES];
-            decimal_bin2str((const void*)column.data(),
-                            column.byte_size(),
-                            precision,
-                            scale,
-                            decStr,
-                            DECIMAL_MAX_STR_LEN_IN_BYTES);
+            // O-14: on an error decimal_bin2str() leaves decStr unwritten.
+            const int dec_ret =
+                decimal_bin2str((const void*)column.data(),
+                                column.byte_size(),
+                                precision,
+                                scale,
+                                decStr,
+                                DECIMAL_MAX_STR_LEN_IN_BYTES);
+            ronsql_require_bug(dec_ret == E_DEC_OK,
+                               "A DECIMAL GROUP BY value could not be "
+                               "converted to text.");
             out << decStr;
             break;
           }
@@ -1485,15 +1492,14 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
   case NdbDictionary::Column::Double:
     {
       // D15: a DECIMAL-derived value carried as DOUBLE prints with its source
-      // scale (set on the virt column via setScale) to match MySQL — but only
-      // within DOUBLE's exact range (precision <= 15).  True DOUBLE columns
-      // have scale 0; wider DECIMALs keep the compact formatting.  The
-      // value is a DECIMAL in MySQL (SUM/MIN/MAX of a DECIMAL, AVG of an
-      // exact type): rounded HALF_UP, never "-0.00" (O-5/O-6).
+      // scale (set on the virt column via setScale) to match MySQL, whatever
+      // the DECIMAL's precision (O-7).  True DOUBLE columns have scale 0.
+      // The value is a DECIMAL in MySQL (SUM/MIN/MAX of a DECIMAL, AVG of
+      // an exact type): rounded HALF_UP, never "-0.00" (O-5/O-6).
       const NdbDictionary::Column* col = attr->getColumn();
       int sc = (col != nullptr) ? col->getScale() : 0;
       int pr = (col != nullptr) ? col->getPrecision() : 0;
-      if (sc > 0 && pr > 0 && pr <= 15) {
+      if (sc > 0 && pr > 0) {
         print_fixed_scale(out, attr->double_value(), sc);
       } else {
         print_float_or_double(out, attr->double_value(),
@@ -1589,12 +1595,15 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
       require_sch(col != nullptr, "NULL column on DECIMAL NdbRecAttr");
       constexpr int DECIMAL_MAX_STR_LEN_IN_BYTES = 68;
       char decStr[DECIMAL_MAX_STR_LEN_IN_BYTES];
-      decimal_bin2str((const void*)attr->aRef(),
-                      attr->get_size_in_bytes(),
-                      col->getPrecision(),
-                      col->getScale(),
-                      decStr,
-                      DECIMAL_MAX_STR_LEN_IN_BYTES);
+      // O-14: on an error decimal_bin2str() leaves decStr unwritten.
+      const int dec_ret = decimal_bin2str((const void*)attr->aRef(),
+                                          attr->get_size_in_bytes(),
+                                          col->getPrecision(),
+                                          col->getScale(),
+                                          decStr,
+                                          DECIMAL_MAX_STR_LEN_IN_BYTES);
+      ronsql_require_bug(dec_ret == E_DEC_OK,
+                         "A DECIMAL value could not be converted to text.");
       out << decStr;
       break;
     }
@@ -2079,7 +2088,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
           {
             int sc = cmd.print_group_by_column.scale;
             int pr = cmd.print_group_by_column.precision;
-            if (sc > 0 && pr > 0 && pr <= 15) {
+            if (sc > 0 && pr > 0) {
               print_fixed_scale(out, column.data_double(), sc);
             } else {
               print_float_or_double(out, column.data_double(),
@@ -2099,12 +2108,17 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
             int scale = cmd.print_group_by_column.scale;
             constexpr int DECIMAL_MAX_STR_LEN_IN_BYTES = 68;
             char decStr[DECIMAL_MAX_STR_LEN_IN_BYTES];
-            decimal_bin2str((const void*)column.data(),
-                            column.byte_size(),
-                            precision,
-                            scale,
-                            decStr,
-                            DECIMAL_MAX_STR_LEN_IN_BYTES);
+            // O-14: on an error decimal_bin2str() leaves decStr unwritten.
+            const int dec_ret =
+                decimal_bin2str((const void*)column.data(),
+                                column.byte_size(),
+                                precision,
+                                scale,
+                                decStr,
+                                DECIMAL_MAX_STR_LEN_IN_BYTES);
+            ronsql_require_bug(dec_ret == E_DEC_OK,
+                               "A DECIMAL GROUP BY value could not be "
+                               "converted to text.");
             out << decStr;
             break;
           }
@@ -2626,10 +2640,21 @@ print_string(std::ostream& out,
  * uses for DOUBLE, and write its "d.ddde-NN" form (below 1e-15) in fixed
  * point.  'to' holds FLOATING_POINT_BUFFER + 1 bytes; the longest result,
  * -2.2250738585072014e-308, is 327 characters.
+ *
+ * O-4: from 1e15 up the text is mysqld's, my_gcvt() with the width mysqld
+ * gives it (Protocol_text::store_double).  It writes an exponent when the
+ * shortest digits end before the decimal point (1e15, -1.5e15,
+ * 9.007199254740992e15, 1.2345678901234568e17) and fixed point when they
+ * do not (1000000000000000.5).  my_fcvt_compact() wrote 1e20 as
+ * 100000000000000000000.  From 0.1 up to 1e15 both functions give the
+ * same text.  Inf and NaN set *error in both.
  */
 static size_t
 double_to_fixed(double value, char* to, bool* error)
 {
+  if (!(std::fabs(value) < 1e15))
+    return my_gcvt(value, MY_GCVT_ARG_DOUBLE, FLOATING_POINT_BUFFER, to,
+                   error);
   if (!(std::fabs(value) < 0.1) || value == 0.0)
     return my_fcvt_compact(value, to, error);
   // Wide enough that my_gcvt() drops no digit in either format.
@@ -2670,7 +2695,8 @@ ResultPrinter::print_float_or_double(std::ostream& out, double value,
   char buffer[FLOATING_POINT_BUFFER + 1];
   bool error;
   // Match MySQL's text-protocol FLOAT conversion. SUM/AVG and true DOUBLE
-  // values are printed exactly in fixed point (double_to_fixed()).
+  // values are printed exactly, in fixed point below 1e15 and as mysqld
+  // prints a DOUBLE from 1e15 up (double_to_fixed()).
   size_t len = float_display
       ? my_gcvt(value, MY_GCVT_ARG_FLOAT, FLOATING_POINT_BUFFER, buffer, &error)
       : double_to_fixed(value, buffer, &error);
@@ -2702,7 +2728,9 @@ ResultPrinter::print_float_or_double(std::ostream& out, double value,
  *
  * The decimal holds 81 digits in 9 words, as a my_decimal.  A value whose
  * integer and scale words do not fit (from 1e45 at scale 30, from 1e72 at
- * scale 9 or less; no caller comes near) keeps the rounding of my_fcvt().
+ * scale 9 or less) keeps the rounding of my_fcvt().  A MIN, MAX or AVG of
+ * any DECIMAL fits (O-7: precisions above 15 come here too); a SUM gets
+ * there only over about 10^8 rows near the maximum of a DECIMAL(65, s).
  * 'to' holds FLOATING_POINT_BUFFER bytes.  Returns the length, or 0 for
  * Inf and NaN.
  */
@@ -2915,17 +2943,17 @@ ResultPrinter::aggregate_arg_scale(const Outputs* out) const
   return m_column_metadata[col_idx].scale;
 }
 
-// Source DECIMAL precision of a MIN/MAX aggregate's argument column.  Used to
-// gate scale-formatting to the DOUBLE-exact range (precision <= 15): wider
-// DECIMALs are unrepresentable as DOUBLE, so fixed-scale formatting would
-// expose mantissa noise — those keep the compact my_fcvt_compact form.
+// Source DECIMAL precision of a MIN/MAX aggregate's argument column.  A
+// precision above 0 marks a DECIMAL, whose result prints at its scale.  O-7:
+// it no longer limits that to precision 15: print_fixed_scale() rounds the
+// double's shortest digits, where snprintf("%.*f") wrote its binary value
+// (0.1 at scale 30 as 0.100000000000000005551115123126).
 int
 ResultPrinter::aggregate_arg_precision(const Outputs* out) const
 {
   if (out == NULL || out->type != Outputs::Type::AGGREGATE)
     return 0;
-  // D15 (MIN/MAX) + D1 (SUM): see aggregate_arg_scale.  The precision gate
-  // keeps fixed-scale formatting within the DOUBLE-exact range (<= 15).
+  // D15 (MIN/MAX) + D1 (SUM): see aggregate_arg_scale.
   if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX &&
       out->aggregate.fun != T_SUM)
     return 0;

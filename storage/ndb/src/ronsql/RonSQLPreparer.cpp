@@ -15064,9 +15064,9 @@ RonSQLPreparer::resolve_chained_column_type(
         out_type = NdbDictionary::Column::Double;
         out_length = 1; out_cs = NULL;
         out_scale = (arg_scale + 4 > 30) ? 30 : arg_scale + 4;
-        // Display-gate rule mirrors build_cte_virtual_tables: format
-        // fixed-scale iff the SOURCE precision fits the DOUBLE-exact
-        // range (the average's magnitude is bounded by the source's).
+        // Mirrors build_cte_virtual_tables.  The printer formats at the
+        // scale whenever the precision is above 0 (O-7 dropped its
+        // precision <= 15 gate).
         out_precision =
             (arg_precision <= 15)
                 ? 15
@@ -15165,9 +15165,9 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
       const void* derived_cs = NULL;
       // D15: display scale + precision carried onto the virt column so the
       // result printer formats DECIMAL-derived MIN/MAX (widened to DOUBLE) with
-      // the source scale, matching MySQL (e.g. 20055.00) — but only when the
-      // DECIMAL is within DOUBLE's exact range (precision <= 15); the printer
-      // gates on precision.  0 for non-scaled outputs.
+      // the source scale, matching MySQL (e.g. 20055.00), whatever the
+      // DECIMAL's precision (O-7); the printer needs a precision above 0.
+      // 0 for non-scaled outputs.
       Int32 derived_scale = 0;
       Int32 derived_precision = 0;
       bool have_derived = false;
@@ -15255,8 +15255,8 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
               // wire format the kernel emits.  scale>0 SUM is therefore a
               // DOUBLE sum (best-effort, like DECIMAL MIN/MAX — no exact
               // DECIMAL accumulation in the kernel); the source scale +
-              // precision are carried for fixed-scale display (D15), gated on
-              // precision <= 15 in the result printer.
+              // precision are carried for fixed-scale display (D15), at any
+              // precision (O-7).
               require_prm(
                   decimal_minmax_fits_64bit(st, src_precision, src_scale),
                   "SUM over scale-zero DECIMAL wider than the 64-bit integer "
@@ -15346,7 +15346,7 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
                 derived_type = NdbDictionary::Column::Double;
                 // D15: keep the source scale + precision for display so the
                 // DOUBLE result prints with fixed scale (e.g. 20055.00) like
-                // MySQL — gated on precision <= 15 in the printer.
+                // MySQL, at any precision (O-7).
                 derived_scale = src_scale;
                 derived_precision = src_precision;
               }
@@ -15477,11 +15477,10 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
           derived_type = NdbDictionary::Column::Double;
           // MySQL result-type rule: scale + 4 (capped at 30).  The
           // precision here is DISPLAY metadata: the printer formats
-          // fixed-scale only within the DOUBLE-exact range
-          // (precision <= 15), and an average's magnitude is bounded by
-          // the source's — so gate on the SOURCE precision.  Using
-          // p+4 spuriously tripped the gate (first record:
-          // AVG(DECIMAL(12,2)) printed compact instead of scale-6).
+          // fixed-scale when it is above 0.  It was 15 up to source
+          // precision 15 to pass the printer's precision <= 15 gate,
+          // which O-7 removed (p+4 had tripped it: AVG(DECIMAL(12,2))
+          // printed compact instead of scale-6).
           derived_scale = (src_scale + 4 > 30) ? 30 : src_scale + 4;
           derived_precision =
               (src_precision <= 15)
@@ -15522,7 +15521,7 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
       }
       // D15: carry the display scale + precision (DECIMAL source) onto the virt
       // column so column metadata / the result printer can format with fixed
-      // scale, gated on precision <= 15.  Only set when meaningful.
+      // scale (at any precision, O-7).  Only set when meaningful.
       if (derived_scale > 0) {
         vcol.setScale(derived_scale);
       }

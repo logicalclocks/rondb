@@ -246,9 +246,12 @@ SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`
 
 --echo
 --echo === PROBE EDGE-NULL-A2: mixed-NULL group, DECIMAL(18,2) MIN/MAX ===
+# O-7 (fixed): DECIMAL(18,2) results print at scale 2, as in mysqld.
+--let $strict_diff=yes
 let $QUERY=
 SELECT MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 1;|
 --source suite/ronsql/include/ronsql_compare.inc
+--let $strict_diff=
 --echo == Expected result ==
 --sorted_result
 SELECT MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 1|
@@ -289,9 +292,12 @@ SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max`
 
 --echo
 --echo === PROBE EDGE-NULL-A: mixed-NULL group, the combined statement (F1, fixed) ===
+# O-7 (fixed): DECIMAL(18,2) results print at scale 2, as in mysqld.
+--let $strict_diff=yes
 let $QUERY=
 SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max`, MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, MAX(`s_val`) AS `s_max`, MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1;|
 --source suite/ronsql/include/ronsql_compare.inc
+--let $strict_diff=
 --echo == Expected result ==
 --sorted_result
 SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max`, MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, MAX(`s_val`) AS `s_max`, MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1|

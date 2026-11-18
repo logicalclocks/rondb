@@ -1,0 +1,391 @@
+# ronsql_output_numeric_format: DOUBLE values from 1e15 up and DECIMAL
+# results with a precision above 15 print as mysqld prints them.
+#
+# README findings O-4, O-7 and O-14
+# (storage/ndb/claude_files/ronsql_executor/).
+#
+# O-4: mysqld prints a DOUBLE with my_gcvt(): from 1e15 up it writes an
+# exponent when the shortest digits end before the decimal point (1e15,
+# 1.5e15, 9.007199254740992e15, 1e100) and fixed point when they do not
+# (1000000000000000.5).  RonSQL printed every DOUBLE from 0.1 up in fixed
+# point (1e20 as 100000000000000000000).  It now prints mysqld's text from
+# 1e15 up.  Below 1e-15 it keeps fixed point (RONSQL-44, see
+# ronsql_float_formatting).
+#
+# O-7: the kernel computes SUM, MIN and MAX over a DECIMAL with a scale as
+# a DOUBLE.  RonSQL printed such a result at the DECIMAL's scale only up to
+# precision 15 and dropped the scale above it (DECIMAL(18,2) MAX 10.50
+# printed 10.5, a SUM of 0.00 printed 0), also as a CTE output, and so did
+# a CTE AVG of such a DECIMAL.  It now prints every one at its scale,
+# rounding the double's shortest digits HALF_UP.  Where the double cannot
+# hold the value (more than 15 significant digits) RonSQL still differs
+# from mysqld's exact DECIMAL: nd-16..nd-21 run RonSQL alone and record
+# its output next to mysqld's.
+#
+# O-14: the DECIMAL arms of the printer check the return code of
+# decimal_bin2str().  No SQL makes it fail (O-1 fixed the missing
+# precision of chained CTE keys), so only the success path is tested:
+# nd-1 (pass-through), nd-9 and nd-10 (GROUP BY keys, both printers).
+#
+#   nf-1  DOUBLE pass-through
+#   nf-2  MIN, MAX, SUM and AVG per group
+#   nf-3  SUM without GROUP BY
+#   nf-4  DOUBLE GROUP BY keys; nf-5 with ORDER BY
+#   nf-6  CTE pass-through of a SUM
+#   nf-7  CTE MAX as a GROUP BY key
+#   nf-8  JSON output: the exponent forms are valid JSON numbers
+#   nd-1  DECIMAL pass-through, precision 16 to 65
+#   nd-2..nd-7  MIN, MAX, SUM and AVG of DECIMAL(16,2), (18,2), (20,6),
+#         (30,10), (38,1) and (65,30) per group
+#   nd-8  DECIMAL(18,2) without GROUP BY (a double sum of -2.8e-17)
+#   nd-9  DECIMAL(30,10) GROUP BY keys; nd-10 with ORDER BY
+#   nd-11, nd-12  CTE pass-through of DECIMAL(30,10) and (65,30) aggregates
+#   nd-13 CTE DECIMAL(18,2) MAX as a GROUP BY key; nd-14 with ORDER BY
+#   nd-15 MIN and MAX over a CTE SUM of DECIMAL(65,30)
+#   nd-16..nd-21  each type beyond the double: RonSQL alone, then mysqld
+#
+# Expected results come from mysqld (strict_diff), except nd-16..nd-21.
+# In nd-2..nd-15 every value has at most 15 significant digits, and every
+# sum is exact in binary or a double that rounds back to the exact
+# DECIMAL at its scale, in every summation order.
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let $RDRS_RONSQL=curl --no-progress-meter --fail-with-body -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql -d
+--let $JSON_VALID=perl -MJSON::PP -e 'print qq(valid JSON\n) if JSON::PP->new->decode(join q(), <STDIN>)'
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE nf_dbl (
+  id INT NOT NULL,
+  g  INT NOT NULL,
+  d  DOUBLE NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+INSERT INTO nf_dbl VALUES
+  (1, 1, 1e15),
+  (2, 2, -1e15),
+  (3, 3, 1.5e15),
+  (4, 4, 999999999999999),
+  (5, 5, 999999999999999.9),
+  (6, 6, -999999999999999.9),
+  (7, 7, 1000000000000000.5),
+  (8, 8, 9007199254740992),
+  (9, 9, 123456789012345678),
+  (10, 10, -123456789012345678),
+  (11, 11, 1e20),
+  (12, 12, 1e100),
+  (13, 13, 1.7976931348623157e308),
+  (14, 14, 100000000000000),
+  (15, 15, 500000000000000),
+  (16, 15, 500000000000000),
+  (17, 16, 2000000000000000),
+  (18, 16, 4000000000000000),
+  (19, 17, 999999999999999),
+  (20, 17, 1),
+  (21, 18, 1000000000000000),
+  (22, 18, -1);
+CREATE TABLE nf_dec (
+  id  INT NOT NULL,
+  g   INT NOT NULL,
+  d16 DECIMAL(16,2) NOT NULL,
+  d18 DECIMAL(18,2) NOT NULL,
+  d20 DECIMAL(20,6) NOT NULL,
+  d30 DECIMAL(30,10) NOT NULL,
+  d38 DECIMAL(38,1) NOT NULL,
+  d65 DECIMAL(65,30) NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+INSERT INTO nf_dec VALUES
+  (1, 1, 10.50, 10.50, 10.500000, 10.5, 10.5, 10.5),
+  (2, 1, -3.25, -3.25, -3.25, -3.25, -3.5, -3.25),
+  (3, 2, 0.10, 0.10, 0.1, 0.1, 0.1, 0.5),
+  (4, 2, 0.20, 0.20, 0.2, 0.2, 0.2, 0.25),
+  (5, 3, 0, 0, 0, 0, 0, 0),
+  (6, 3, 0, 0, 0, 0, 0, 0),
+  (7, 4, 0.30, 0.30, 0.3, 0.3, 0.3, 0.75),
+  (8, 4, -0.10, -0.10, -0.1, -0.1, -0.1, -0.25),
+  (9, 4, -0.20, -0.20, -0.2, -0.2, -0.2, -0.5),
+  (10, 5, 1234567890123.45, 123456789012.34, 123456789.123456, 12345.6789012345, 12345678901234.5, 123456789012345),
+  (11, 5, 1.10, 5.66, 0.876544, -0.0000000005, 0.5, 0.5),
+  (12, 6, 99999999999999.99, 999999999999999.99, 12345678901234.567891, 99999999999999999999.9999999999, 1234567890123456789012345678901234567.8, 0.1),
+  (13, 6, -99999999999999.99, -999999999999999.99, 0.000001, 0.0000000001, 0.1, 0.2);
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === nf-1: DOUBLE pass-through: around and above 1e15, negative, exact powers, just below ===
+let $QUERY=
+SELECT id, d FROM nf_dbl;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, d FROM nf_dbl|
+
+--echo
+--echo === nf-2: MIN, MAX, SUM and AVG of DOUBLE per group ===
+let $QUERY=
+SELECT g, MIN(d) AS lo, MAX(d) AS hi, SUM(d) AS s, AVG(d) AS a FROM nf_dbl GROUP BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MIN(d) AS lo, MAX(d) AS hi, SUM(d) AS s, AVG(d) AS a FROM nf_dbl GROUP BY g|
+
+--echo
+--echo === nf-3: DOUBLE SUM of 7e15 without GROUP BY ===
+let $QUERY=
+SELECT SUM(d) AS s, COUNT(*) AS n FROM nf_dbl WHERE g >= 15 AND g <= 16;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(d) AS s, COUNT(*) AS n FROM nf_dbl WHERE g >= 15 AND g <= 16|
+
+--echo
+--echo === nf-4: DOUBLE GROUP BY keys ===
+let $QUERY=
+SELECT d, COUNT(*) AS n FROM nf_dbl GROUP BY d;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT d, COUNT(*) AS n FROM nf_dbl GROUP BY d|
+
+--echo
+--echo === nf-5: DOUBLE GROUP BY keys with ORDER BY ===
+let $QUERY=
+SELECT d, COUNT(*) AS n FROM nf_dbl GROUP BY d ORDER BY d;|
+--let $skip_sort=yes
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT d, COUNT(*) AS n FROM nf_dbl GROUP BY d ORDER BY d|
+
+--echo
+--echo === nf-6: CTE pass-through of a DOUBLE SUM ===
+let $QUERY=
+WITH c AS (SELECT g, SUM(d) AS s FROM nf_dbl GROUP BY g) SELECT g, s FROM c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT g, SUM(d) AS s FROM nf_dbl GROUP BY g) SELECT g, s FROM c|
+
+--echo
+--echo === nf-7: CTE DOUBLE MAX as a GROUP BY key ===
+let $QUERY=
+WITH c AS (SELECT g, MAX(d) AS hi FROM nf_dbl GROUP BY g) SELECT hi, COUNT(*) AS n FROM c GROUP BY hi;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT g, MAX(d) AS hi FROM nf_dbl GROUP BY g) SELECT hi, COUNT(*) AS n FROM c GROUP BY hi|
+
+--echo
+--echo === nf-8: JSON output, the exponent forms are JSON numbers ===
+--exec $RDRS_RONSQL '{"query":"SELECT g, MAX(d) AS hi FROM nf_dbl GROUP BY g ORDER BY g","database":"test","outputFormat":"JSON"}' > $MYSQL_TMP_DIR/nf-json.out
+--exec cat $MYSQL_TMP_DIR/nf-json.out
+--exec $JSON_VALID < $MYSQL_TMP_DIR/nf-json.out
+--remove_file $MYSQL_TMP_DIR/nf-json.out
+
+--echo
+--echo === nd-1: DECIMAL pass-through, precision 16 to 65 ===
+let $QUERY=
+SELECT id, d16, d18, d20, d30, d38, d65 FROM nf_dec;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, d16, d18, d20, d30, d38, d65 FROM nf_dec|
+
+--echo
+--echo === nd-2: DECIMAL(16,2): MIN, MAX, SUM and AVG per group ===
+let $QUERY=
+SELECT g, MIN(d16) AS lo, MAX(d16) AS hi, SUM(d16) AS s, AVG(d16) AS a FROM nf_dec WHERE g <= 5 GROUP BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MIN(d16) AS lo, MAX(d16) AS hi, SUM(d16) AS s, AVG(d16) AS a FROM nf_dec WHERE g <= 5 GROUP BY g|
+
+--echo
+--echo === nd-3: DECIMAL(18,2): MIN, MAX, SUM and AVG per group ===
+let $QUERY=
+SELECT g, MIN(d18) AS lo, MAX(d18) AS hi, SUM(d18) AS s, AVG(d18) AS a FROM nf_dec WHERE g <= 5 GROUP BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MIN(d18) AS lo, MAX(d18) AS hi, SUM(d18) AS s, AVG(d18) AS a FROM nf_dec WHERE g <= 5 GROUP BY g|
+
+--echo
+--echo === nd-4: DECIMAL(20,6): MIN, MAX, SUM and AVG per group ===
+let $QUERY=
+SELECT g, MIN(d20) AS lo, MAX(d20) AS hi, SUM(d20) AS s, AVG(d20) AS a FROM nf_dec WHERE g <= 5 GROUP BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MIN(d20) AS lo, MAX(d20) AS hi, SUM(d20) AS s, AVG(d20) AS a FROM nf_dec WHERE g <= 5 GROUP BY g|
+
+--echo
+--echo === nd-5: DECIMAL(30,10): MIN, MAX, SUM and AVG per group ===
+let $QUERY=
+SELECT g, MIN(d30) AS lo, MAX(d30) AS hi, SUM(d30) AS s, AVG(d30) AS a FROM nf_dec WHERE g <= 5 GROUP BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MIN(d30) AS lo, MAX(d30) AS hi, SUM(d30) AS s, AVG(d30) AS a FROM nf_dec WHERE g <= 5 GROUP BY g|
+
+--echo
+--echo === nd-6: DECIMAL(38,1): MIN, MAX, SUM and AVG per group ===
+let $QUERY=
+SELECT g, MIN(d38) AS lo, MAX(d38) AS hi, SUM(d38) AS s, AVG(d38) AS a FROM nf_dec WHERE g <= 5 GROUP BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MIN(d38) AS lo, MAX(d38) AS hi, SUM(d38) AS s, AVG(d38) AS a FROM nf_dec WHERE g <= 5 GROUP BY g|
+
+--echo
+--echo === nd-7: DECIMAL(65,30): MIN, MAX, SUM and AVG per group ===
+let $QUERY=
+SELECT g, MIN(d65) AS lo, MAX(d65) AS hi, SUM(d65) AS s, AVG(d65) AS a FROM nf_dec WHERE g <= 5 GROUP BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MIN(d65) AS lo, MAX(d65) AS hi, SUM(d65) AS s, AVG(d65) AS a FROM nf_dec WHERE g <= 5 GROUP BY g|
+
+--echo
+--echo === nd-8: DECIMAL(18,2) without GROUP BY: a double sum of -2.8e-17 prints 0.00 ===
+let $QUERY=
+SELECT MIN(d18) AS lo, MAX(d18) AS hi, SUM(d18) AS s FROM nf_dec WHERE g = 4;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT MIN(d18) AS lo, MAX(d18) AS hi, SUM(d18) AS s FROM nf_dec WHERE g = 4|
+
+--echo
+--echo === nd-9: DECIMAL(30,10) GROUP BY keys (decimal_bin2str, O-14) ===
+let $QUERY=
+SELECT d30, COUNT(*) AS n FROM nf_dec GROUP BY d30;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT d30, COUNT(*) AS n FROM nf_dec GROUP BY d30|
+
+--echo
+--echo === nd-10: DECIMAL(30,10) GROUP BY keys with ORDER BY ===
+let $QUERY=
+SELECT d30, COUNT(*) AS n FROM nf_dec GROUP BY d30 ORDER BY d30;|
+--let $skip_sort=yes
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT d30, COUNT(*) AS n FROM nf_dec GROUP BY d30 ORDER BY d30|
+
+--echo
+--echo === nd-11: CTE pass-through of DECIMAL(30,10) MIN, MAX, SUM and AVG ===
+let $QUERY=
+WITH c AS (SELECT g, MIN(d30) AS lo, MAX(d30) AS hi, SUM(d30) AS s, AVG(d30) AS a FROM nf_dec WHERE g <= 5 GROUP BY g) SELECT g, lo, hi, s, a FROM c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT g, MIN(d30) AS lo, MAX(d30) AS hi, SUM(d30) AS s, AVG(d30) AS a FROM nf_dec WHERE g <= 5 GROUP BY g) SELECT g, lo, hi, s, a FROM c|
+
+--echo
+--echo === nd-12: CTE pass-through of DECIMAL(65,30) MIN, MAX, SUM and AVG ===
+let $QUERY=
+WITH c AS (SELECT g, MIN(d65) AS lo, MAX(d65) AS hi, SUM(d65) AS s, AVG(d65) AS a FROM nf_dec WHERE g <= 5 GROUP BY g) SELECT g, lo, hi, s, a FROM c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT g, MIN(d65) AS lo, MAX(d65) AS hi, SUM(d65) AS s, AVG(d65) AS a FROM nf_dec WHERE g <= 5 GROUP BY g) SELECT g, lo, hi, s, a FROM c|
+
+--echo
+--echo === nd-13: CTE DECIMAL(18,2) MAX as a GROUP BY key ===
+let $QUERY=
+WITH c AS (SELECT g, MAX(d18) AS hi FROM nf_dec WHERE g <= 5 GROUP BY g) SELECT hi, COUNT(*) AS n FROM c GROUP BY hi;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT g, MAX(d18) AS hi FROM nf_dec WHERE g <= 5 GROUP BY g) SELECT hi, COUNT(*) AS n FROM c GROUP BY hi|
+
+--echo
+--echo === nd-14: CTE DECIMAL(18,2) MAX as a GROUP BY key with ORDER BY ===
+let $QUERY=
+WITH c AS (SELECT g, MAX(d18) AS hi FROM nf_dec WHERE g <= 5 GROUP BY g) SELECT hi, COUNT(*) AS n FROM c GROUP BY hi ORDER BY hi;|
+--let $skip_sort=yes
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH c AS (SELECT g, MAX(d18) AS hi FROM nf_dec WHERE g <= 5 GROUP BY g) SELECT hi, COUNT(*) AS n FROM c GROUP BY hi ORDER BY hi|
+
+--echo
+--echo === nd-15: MIN and MAX over a CTE SUM of DECIMAL(65,30) ===
+let $QUERY=
+WITH c AS (SELECT g, SUM(d65) AS s FROM nf_dec WHERE g <= 5 GROUP BY g) SELECT MIN(s) AS lo, MAX(s) AS hi, COUNT(*) AS n FROM c;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT g, SUM(d65) AS s FROM nf_dec WHERE g <= 5 GROUP BY g) SELECT MIN(s) AS lo, MAX(s) AS hi, COUNT(*) AS n FROM c|
+
+# nd-16..nd-21: the kernel turns each DECIMAL into the nearest double
+# (decimal2double), and a double holds 15 to 17 significant digits.
+# MAX(d18) 999999999999999.99 becomes 1e15 and prints 1000000000000000.00
+# (the format of mysqld's DECIMAL, not its value); 99999999999999.99 prints
+# 99999999999999.98; a DECIMAL(65,30) sum of 0.1 and 0.2 is the double
+# 0.30000000000000004.  Printing cannot restore the lost digits: that needs
+# exact DECIMAL aggregation in the kernel (Q-6 / E-16).  RonSQL runs these
+# alone, and mysqld's exact result follows.
+
+--echo
+--echo === nd-16: DECIMAL(16,2) beyond the double: RonSQL alone, then mysqld ===
+--echo == RonSQL alone ==
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT MIN(d16) AS lo, MAX(d16) AS hi, SUM(d16) AS s FROM nf_dec WHERE g = 6;'
+--echo == mysqld ==
+SELECT MIN(d16) AS lo, MAX(d16) AS hi, SUM(d16) AS s FROM nf_dec WHERE g = 6|
+
+--echo
+--echo === nd-17: DECIMAL(18,2) beyond the double: RonSQL alone, then mysqld ===
+--echo == RonSQL alone ==
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT MIN(d18) AS lo, MAX(d18) AS hi, SUM(d18) AS s FROM nf_dec WHERE g = 6;'
+--echo == mysqld ==
+SELECT MIN(d18) AS lo, MAX(d18) AS hi, SUM(d18) AS s FROM nf_dec WHERE g = 6|
+
+--echo
+--echo === nd-18: DECIMAL(20,6) beyond the double: RonSQL alone, then mysqld ===
+--echo == RonSQL alone ==
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT MIN(d20) AS lo, MAX(d20) AS hi, SUM(d20) AS s FROM nf_dec WHERE g = 6;'
+--echo == mysqld ==
+SELECT MIN(d20) AS lo, MAX(d20) AS hi, SUM(d20) AS s FROM nf_dec WHERE g = 6|
+
+--echo
+--echo === nd-19: DECIMAL(30,10) beyond the double: RonSQL alone, then mysqld ===
+--echo == RonSQL alone ==
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT MIN(d30) AS lo, MAX(d30) AS hi, SUM(d30) AS s FROM nf_dec WHERE g = 6;'
+--echo == mysqld ==
+SELECT MIN(d30) AS lo, MAX(d30) AS hi, SUM(d30) AS s FROM nf_dec WHERE g = 6|
+
+--echo
+--echo === nd-20: DECIMAL(38,1) beyond the double: RonSQL alone, then mysqld ===
+--echo == RonSQL alone ==
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT MIN(d38) AS lo, MAX(d38) AS hi, SUM(d38) AS s FROM nf_dec WHERE g = 6;'
+--echo == mysqld ==
+SELECT MIN(d38) AS lo, MAX(d38) AS hi, SUM(d38) AS s FROM nf_dec WHERE g = 6|
+
+--echo
+--echo === nd-21: DECIMAL(65,30) beyond the double: RonSQL alone, then mysqld ===
+--echo == RonSQL alone ==
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT MIN(d65) AS lo, MAX(d65) AS hi, SUM(d65) AS s FROM nf_dec WHERE g = 6;'
+--echo == mysqld ==
+SELECT MIN(d65) AS lo, MAX(d65) AS hi, SUM(d65) AS s FROM nf_dec WHERE g = 6|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE nf_dec;
+DROP TABLE nf_dbl;
+--enable_warnings
+--enable_query_log
