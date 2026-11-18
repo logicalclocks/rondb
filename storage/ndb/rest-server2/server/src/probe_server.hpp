@@ -50,8 +50,9 @@ extern std::atomic<bool> g_drogon_up;
  * while every Drogon worker thread is blocked in the data path (the failure
  * mode behind the fleet-wide liveness kills this replaces). Never
  * authenticates - API-key validation itself goes to RonDB and can block.
- * Both handlers are wait-free: ping touches nothing, health reads atomics
- * and the NDB API's live node count (see get_rondb_stats /
+ * Neither handler waits on the data path: ping touches nothing, health
+ * reads atomics and the NDB API's live node count through a mutex no
+ * request or connection rebuild ever holds (see get_rondb_stats /
  * get_num_ready_data_nodes).
  *
  * Built directly on trantor rather than Drogon: a second Drogon listener

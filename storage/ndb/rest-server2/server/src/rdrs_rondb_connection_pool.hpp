@@ -46,7 +46,7 @@ class RDRSRonDBConnectionPool {
   /* How often the reconnection watchdog re-checks whether the cluster is
    * reachable, in milliseconds. Short enough that a REST server rejoins
    * the cluster promptly after a cluster restart, long enough that the
-   * check itself - a try-lock plus get_no_ready() per connection - is
+   * check itself - an uncontended lock plus get_no_ready() per connection - is
    * free. A reconnection attempt is far longer than this interval, and
    * Reconnect() is idempotent, so the interval does not pace retries. */
   static constexpr Uint32 RECONNECT_WATCHDOG_INTERVAL_MS = 5000;
