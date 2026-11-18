@@ -184,8 +184,9 @@ a set of people may use. It has four properties: a <strong>name</strong> (the id
 RonDB meters), a <strong>budget</strong> as a percentage of a data node&rsquo;s
 database-work capacity, a <strong>Who</strong> list (named login users and/or whole
 projects), and a <strong>cluster</strong> (one by name, or every cluster). The budget
-covers everything those people do on that cluster: both entry points (REST and SQL),
-every account they hold, own data and data shared with them alike.</p>
+covers everything those people do on that cluster: every entry point (REST, SQL and,
+for a project group, the project&rsquo;s OnlineFS ingestion), every account they hold, own
+data and data shared with them alike.</p>
 <figure class="erd"><img src="img/v2/group-concept.png" alt="Two rate limit groups: recommender_team_rl, 20% on every cluster, shared by project Recommender; and mary_mike_rl, 2%, shared by Mary and Mike."><figcaption>The concept. A group is a name, a budget, a Who list and a cluster. The first group covers everything its members do, on every cluster; the second caps two named people.</figcaption></figure>
 <p>What a group deliberately is <em>not</em> bounds the whole design. It is not a
 permission: listing someone in a group does not let them read anything new. It is not a
@@ -204,7 +205,7 @@ dictionary objects, and all of it runs in Hopsworks. The <strong>request flow</s
 is the data plane: it runs on every transaction, almost all of it already exists from
 the per-identity rate limiting of RONDB-978, and this design adds exactly one
 indirection to it (step &#9320;).</p>
-<figure class="erd"><img src="img/v2/lifecycle.png" alt="Numbered end-to-end flow. Install flow: admin page writes the group tables, the installer pass expands and converts them, the mgmd applies USER and USER ALIAS commands, Dbdict holds the objects, state is written back. Request flow: a REST or SQL request is tagged with the account name, Dbtc swaps the alias for its target USER, Dblqh charges, sustained excess rejects with 429 or 1297."><figcaption>The design and implementation flow. &#9312;&ndash;&#9317; the install flow: a saved group becomes <code>USER</code> and <code>USER ALIAS</code> objects on each targeted cluster, and the outcome is written back for the admin page. &#9318;&ndash;&#9322; the request flow: every transaction is tagged with the caller&rsquo;s account name and the work is charged to the group&rsquo;s budget.</figcaption></figure>
+<figure class="erd"><img src="img/v2/lifecycle.png" alt="Numbered end-to-end flow. Install flow: admin page writes the group tables, the installer pass expands and converts them, the mgmd applies USER and USER ALIAS commands, Dbdict holds the objects, state is written back. Request flow: a REST, SQL or ClusterJ request is tagged with the account name, Dbtc swaps the alias for its target USER, Dblqh charges, sustained excess rejects with 429 or 1297."><figcaption>The design and implementation flow. &#9312;&ndash;&#9317; the install flow: a saved group becomes <code>USER</code> and <code>USER ALIAS</code> objects on each targeted cluster, and the outcome is written back for the admin page. &#9318;&ndash;&#9322; the request flow: every transaction is tagged with the caller&rsquo;s account name and the work is charged to the group&rsquo;s budget.</figcaption></figure>
 <p><strong>The install flow (&#9312;&ndash;&#9317;).</strong> An administrator saves a
 group on the admin page (&#9312;); the save writes rows into two <code>hopsworks</code>
 tables (&#9313;) and triggers an immediate install pass (&#9314;). The installer, inside
@@ -248,9 +249,10 @@ deliberate: an alias arriving late only delays metering, while a limit outliving
 group would throttle someone wrongly, and the reconciler exists to prevent the
 second.</p>
 <p><strong>The request flow (&#9318;&ndash;&#9322;).</strong> A request is authenticated
-and authorized exactly as today (&#9318;). RDRS and the MySQL server tag the transaction
-with the caller&rsquo;s account name, once per transaction (&#9319;); the same person is the
-same string on both entry points. Dbtc resolves the tagged name at admission, and when
+and authorized exactly as today (&#9318;). RDRS, the MySQL server and OnlineFS ingestion
+(through ClusterJ) tag the transaction with the caller&rsquo;s account name, once per
+transaction (&#9319;); the same person is the same string on every entry point, and an
+ingestion write carries the owning project&rsquo;s OnlineFS account (13.4). Dbtc resolves the tagged name at admission, and when
 the name is an alias, swaps it for the group&rsquo;s <code>USER</code>, one pointer
 dereference (&#9320;). Dblqh charges the work to that budget per row operation
 (&#9321;); sustained excess queues and then rejects, 429 on REST and error 1297 on SQL
@@ -307,6 +309,7 @@ the document: each row says where the part is described and whether it is implem
     <tr><td>Hopsworks speaks the management-server protocol; cluster discovery by namespace label</td><td><strong>Implemented</strong> (quotas; backups)</td><td>Hopsworks</td><td><a href="#today">5.4</a></td></tr>
     <tr><td>The two group tables and the admin page</td><td><em>New</em></td><td>Hopsworks</td><td><a href="#tables">7</a>, <a href="#admin">3</a></td></tr>
     <tr><td>The alias object: tagged name &rarr; group, for all paths</td><td><em>New</em></td><td>Dbdict, Dbtc, mgm server</td><td><a href="#sql">9</a>, <a href="#kernel">13</a></td></tr>
+    <tr><td>Transaction tagging from OnlineFS ingestion (ClusterJ exposes <code>setUserId</code>; the app tags the project&rsquo;s OnlineFS account)</td><td><em>New</em></td><td>ClusterJ, <a href="https://github.com/logicalclocks/clusterj-onlinefs">clusterj-onlinefs</a></td><td><a href="#today">5.2</a>, <a href="#kernel">13.4</a></td></tr>
     <tr><td>The installer and reconciler that turn rows into <code>USER</code> and <code>USER ALIAS</code> objects on the right cluster</td><td><em>New</em></td><td>Hopsworks</td><td><a href="#install">10</a></td></tr>
     <tr><td>Turning the switches on (<code>ndb_user_rate_limits</code>, <code>ActivateRateLimits</code>)</td><td><em>New</em> configuration</td><td>rondb-helm</td><td><a href="#build">15</a></td></tr>
   </tbody>
@@ -366,7 +369,13 @@ the NDB transactions it starts:</p>
   distribution and stored-grant replication never tag.</li>
 </ul>
 <p>Online ingestion (<code>onlinefs</code>) writes through ClusterJ and tags nothing today.
-<code>NdbTransaction::setUserId</code> is available to it if that is ever wanted.</p>
+The NDB API call exists (<code>NdbTransaction::setUserId</code>,
+<code>NdbTransaction.hpp:573</code>; it is what mysqld and RDRS use), but ClusterJ does
+not expose it to Java. This design brings the path in scope: ClusterJ gains a way to set
+the tag per transaction, and the OnlineFS application
+(<a href="https://github.com/logicalclocks/clusterj-onlinefs">clusterj-onlinefs</a>) tags
+each write transaction with the owning project&rsquo;s OnlineFS account (13.4), so ingestion
+work is metered through the same alias mechanism as REST and SQL.</p>
 
 <h3>5.3 Hopsworks creates one MySQL account per project member</h3>
 <p>When a project&rsquo;s online feature store is first used, and again whenever a member is
@@ -561,8 +570,12 @@ tables. Column definitions are in the <a href="#appendix">appendix</a>.</p>
   <code>project_team</code> row for this project at the moment the installer runs&rdquo;
   (<code>team_member</code> holds an email, not a uid; every role counts;
   <code>team_role</code> is not consulted). The service users <code>onlinefs</code> and
-  <code>srvmanager</code> are excluded by username: they are on every team, carry
-  ordinary roles, and their traffic is platform work, not the team&rsquo;s. Membership changes
+  <code>srvmanager</code> are excluded from this person expansion by username: they are
+  on every team and carry ordinary roles. One of them comes back in deliberately: a
+  project row also covers the project&rsquo;s <em>ingestion</em>, so the installer adds one
+  alias for the project&rsquo;s OnlineFS account (<code>clip31(project + "_onlinefs")</code>),
+  under which the OnlineFS service tags the project&rsquo;s writes (13.4).
+  <code>srvmanager</code> stays out entirely. Membership changes
   write nothing here: when Bob joins Recommender he is covered after the next install
   pass, and when Ava leaves she drops out the same way (section 10).</li>
 </ul>
@@ -655,13 +668,14 @@ tables, the Hopsworks membership expansion and an event-driven cache of them, wh
 Hopsworks-metadata cache rebuilt inside mysqld (the closest existing template, the
 index-statistics listener on <code>ndb_index_stat_head</code>,
 <code>ha_ndb_index_stat.cc:1839</code>, shows it can be done and how much machinery it
-is). ClusterJ, if ingestion is ever metered, would need a second copy. And the tag is
+is). ClusterJ, whose ingestion writes are metered too (5.2), would need a second copy. And the tag is
 fixed once per transaction (5.2), so whatever mapping is used must be a property of the
 name, not of the statement.</p>
 
 <h3>9.2 What every path has in common: the tagged name</h3>
-<p>Both entry points tag the transaction with the same string: the caller&rsquo;s
-project-user account name. The data nodes resolve that name to a dictionary object at
+<p>Every entry point tags the transaction with the same kind of string, a project-scoped
+account name: REST and SQL tag the caller&rsquo;s project-user account, ingestion tags the
+project&rsquo;s OnlineFS account. The data nodes resolve that name to a dictionary object at
 every admission point. So the one place a &ldquo;this person&rsquo;s work charges that group&rdquo;
 mapping covers REST, SQL and ClusterJ at once is the dictionary itself: an object under
 the person&rsquo;s account name whose only job is to point at the group&rsquo;s <code>USER</code>.
@@ -697,9 +711,10 @@ other sessions:</p>
   </tbody>
 </table></div>
 
-<h3>9.4 One mechanism for both entry points</h3>
+<h3>9.4 One mechanism for every entry point</h3>
 <p>The decision of 2026-11-13 (one mechanism must cover both entry points; no REST-only
-intermediate step) carries over unchanged, and this version makes it cheaper: with
+intermediate step) carries over unchanged and now extends to ingestion (5.2, 13.4), and
+this version makes it cheaper: with
 budgets no longer scoped to data, the alias needs no rules, Dbtc needs no per-table
 state, and the mapping each cluster holds is exactly one pointer per member account.
 The whole flow is the pair of pictures in <a href="#flow">section 2</a>.</p>
@@ -735,7 +750,9 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     <li><strong>Expand Who into account names.</strong> A uid row becomes every account
     that user holds, <code>clip31(projectname + "_" + username)</code> for each of their
     <code>project_team</code> rows; a project row becomes the same for every member,
-    excluding the <code>onlinefs</code> and <code>srvmanager</code> service users (7.2).</li>
+    excluding the <code>onlinefs</code> and <code>srvmanager</code> service users, plus
+    one alias for the project&rsquo;s OnlineFS account so ingestion charges the group
+    too (7.2).</li>
     <li><strong>Convert each percentage</strong> using this cluster&rsquo;s data-node thread
     count: with 20 threads, 20% &rarr; 4,000,000 (section 14). The thread count is read
     once per pass from the cluster itself (its <code>ndbinfo.threads</code> over the
@@ -970,15 +987,44 @@ repoint a person&rsquo;s budget must instead fail loudly and be reconciled.
     <tr><td>MySQL server</td><td>None. <code>ndb_user_rate_limits</code> must be on; it is read-only at runtime, so it is set in the server configuration by rondb-helm.</td></tr>
     <tr><td>Data nodes</td><td><code>ActivateRateLimits=true</code> in the cluster configuration.</td></tr>
     <tr><td>RDRS</td><td>Tag REST transactions with the project-user string (username mode). No group code of any kind (section 8).</td></tr>
-    <tr><td>ClusterJ / onlinefs</td><td>Optional: call <code>setUserId</code> with the service&rsquo;s account name. Not in a first version; service accounts are excluded from groups regardless (7.2).</td></tr>
-    <tr><td>NDB API</td><td>None.</td></tr>
+    <tr><td>ClusterJ</td><td>Expose the transaction tag to Java: a session or transaction property that reaches <code>NdbTransaction::setUserId</code> through <code>ndbjtie</code>. Settable per transaction, because one OnlineFS process writes for many projects.</td></tr>
+    <tr><td>OnlineFS (<a href="https://github.com/logicalclocks/clusterj-onlinefs">clusterj-onlinefs</a>)</td><td>Tag each write transaction with the owning project&rsquo;s OnlineFS account, <code>clip31(project + "_onlinefs")</code>; the project is known from the topic being consumed. The installer aliases that account for any group whose Who names the project (7.2), so ingestion charges the project&rsquo;s group. No alias installed means the write runs unmetered, exactly as today.</td></tr>
+    <tr><td>NDB API</td><td>None; <code>setUserId</code> exists.</td></tr>
   </tbody>
 </table></div>
 
 <h3>13.5 To verify before committing</h3>
+<p><strong>Alias-scale measurement (run 2026-11-18, MTR cluster, debug build; shapes
+matter, absolutes are inflated).</strong> Creation costs 20&ndash;30 ms per single
+<code>USER ALIAS SET</code> and about 11 ms per alias in bulk over one management
+connection; lookups stay flat at 300+ objects (<code>GET</code> 16 ms,
+<code>USER ALIAS LIST</code> 64 ms, <code>USER BACKUP</code> 53 ms, no truncation);
+management-server memory is flat. Two findings came out of it, one decided and one a
+defect:</p>
 <ul>
-  <li>Dictionary object limits: aliases scale as members &times; projects per member.
-  Six in the example; hundreds to a few thousand in a large deployment, none budgeted.</li>
+  <li><strong>Aliases consume the shared dictionary object budget.</strong> Every
+  <code>USER</code> and <code>USER ALIAS</code> takes one schema-file object slot from
+  the pool sized as <code>MaxNoOfTables + MaxNoOfOrderedIndexes +
+  MaxNoOfUniqueHashIndexes + 2</code> (<code>seizeTableRecord</code>,
+  <code>Dbdict.cpp:2946</code>; <code>getFreeObjId</code> <code>:2918</code>). On the
+  default MTR configuration creation was refused at 306 aliases. Aliases scale as
+  members &times; projects per member, hundreds to a few thousand in a large deployment,
+  so they would eat the headroom tables and indexes need. <strong>Decided 2026-11-18: a
+  dedicated <code>MaxNoOfUserObjects</code> configuration parameter</strong>, added to
+  the object-slot sum in the kernel with a generous default, so alias capacity has its
+  own labeled budget instead of overloading <code>MaxNoOfTables</code> (which also
+  sizes trigger pools through the index parameters). rondb-helm sets it; a slot costs a
+  schema-file entry and pool records, no DataMemory.</li>
+  <li><strong>Exhaustion crashes the cluster (defect, fix in scope).</strong> With the
+  pool full, each refused <code>USER ALIAS SET</code> took longer than the one before
+  (0.3 s, then 9.8 s, then 55 s) until the watchdog killed the DBDICT thread mid
+  <code>CREATE_DATABASE_REQ</code> (error 6050, block 250, gsn 645) and the second data
+  node followed with an abort: a reconciler retrying creates against a full pool takes
+  the cluster down. The growth per attempt points at state leaked by each failed create.
+  Probably reachable with plain <code>USER</code> creates on the base version too. The
+  clean-refusal fix, with an MTR test that drives creates past the limit, is a blocker
+  for the kernel PR; error logs and traces are preserved in the ticket workspace
+  (<code>RONDB-1158_alias_bench/</code>).</li>
   <li>Restart and backup paths for a new object flag, including that restore re-resolves
   targets by name.</li>
   <li>The cost of the one extra indirection on the <code>TCKEYREQ</code> path, and
@@ -1068,11 +1114,18 @@ required.</p>
     <tr><td>Hopsworks installer</td><td>new</td><td>Section 10: extend <code>RonDbManagementClient</code> with the <code>USER</code> / <code>USER ALIAS</code> command family (same framing as its quota commands) and per-cluster endpoints from the namespace discovery; the expansion of Who rows into account names (the clip is <code>OnlineFeaturestoreController.onlineDbUsername</code>&rsquo;s); an <code>OnlinefsOperationHandler</code> implementation for membership churn; a primary-gated reconciler on the <code>TrinoReconciler</code> template; state rows per (group, cluster).</td></tr>
     <tr><td>Hopsworks admin page</td><td>new</td><td>Section 3: list + form, cluster picker from discovery, per-cluster state badges, converted rate shown per cluster.</td></tr>
     <tr><td>RDRS</td><td>exists</td><td>Username mode (merged on the ticket branch): tag the project-user name. <strong>No group code.</strong></td></tr>
-    <tr><td>RonDB kernel</td><td>new</td><td>Section 13: alias flag and single target (by name) on the <code>$name</code> object in Dbdict (not budgeted, persisted, backed up, re-resolved on target recreate); the alias-to-target swap at the three Dbtc admission points; <code>USER ALIAS SET/DROP/GET/LIST</code> in the mgm server (<code>Services.cpp</code>) and client; MTR tests in <code>suite/ndb_quota</code>: lifecycle, enforcement through an alias on both key and scan paths, restart and backup/restore, target drop and recreate.</td></tr>
+    <tr><td>RonDB kernel</td><td>new</td><td>Section 13: alias flag and single target (by name) on the <code>$name</code> object in Dbdict (not budgeted, persisted, backed up, re-resolved on target recreate); the alias-to-target swap at the three Dbtc admission points; <code>USER ALIAS SET/DROP/GET/LIST</code> in the mgm server (<code>Services.cpp</code>) and client; MTR tests in <code>suite/ndb_quota</code>: lifecycle, enforcement through an alias on both key and scan paths, restart and backup/restore, target drop and recreate. Two additions from the scale
+    measurement (13.5): a <code>MaxNoOfUserObjects</code> configuration parameter added
+    to the dictionary object-slot sum, so aliases stop competing with tables for
+    <code>MaxNoOfTables</code>; and a clean, constant-cost refusal when the object pool
+    is exhausted, with an MTR test that drives creates past the limit (today exhaustion
+    escalates per attempt and ends in a watchdog kill of the data node).</td></tr>
+    <tr><td>ClusterJ</td><td>new</td><td>Section 13.4: expose the per-transaction tag to Java (a session or transaction property reaching <code>NdbTransaction::setUserId</code> through <code>ndbjtie</code>). Unit test beside the existing ClusterJ test suites.</td></tr>
+    <tr><td>OnlineFS ingestion</td><td>new</td><td>Section 13.4: <a href="https://github.com/logicalclocks/clusterj-onlinefs">clusterj-onlinefs</a> sets the tag per write transaction to the owning project&rsquo;s OnlineFS account; the installer&rsquo;s Who expansion adds that account&rsquo;s alias for project groups (7.2, 10).</td></tr>
     <tr><td>MySQL server</td><td>exists</td><td>Nothing to code. Enable <code>ndb_user_rate_limits</code> through rondb-helm.</td></tr>
     <tr><td>Data nodes</td><td>exists</td><td><code>ActivateRateLimits=true</code> in the cluster configuration.</td></tr>
     <tr><td>Testing without a Hopsworks deployment</td><td>new tests</td><td>RonDB&rsquo;s rigs replicate the installer&rsquo;s mechanics: MTR and the rdrs2 C++ tests issue the same <code>USER</code> / <code>USER ALIAS</code> sequences the installer would, against a live cluster, and assert enforcement, restart survival and the 50%-cap refusal order. Hopsworks unit tests mock the management client; the end-to-end check on a deployed cluster drives the admin page and reads the state table.</td></tr>
-    <tr><td>Unmetered paths</td><td>open</td><td>Unchanged from v1.0: Rondis traffic (never tagged) and RDRS&rsquo;s own metadata reads run unmetered; service accounts are excluded by design. Decide whether any should ever be metered.</td></tr>
+    <tr><td>Unmetered paths</td><td>open</td><td>Rondis traffic (never tagged) and RDRS&rsquo;s own metadata reads run unmetered; <code>srvmanager</code> stays excluded by design. OnlineFS ingestion, unmetered in v1.0, is now tagged and covered by project groups (13.4). Decide whether the remaining paths should ever be metered.</td></tr>
     <tr><td>Several clusters</td><td>new, small</td><td>Section 12: the cluster column, the picker, per-cluster endpoints. No override table, no location data.</td></tr>
   </tbody>
 </table></div>
@@ -1087,12 +1140,16 @@ required.</p>
   allows. Accept the pending state as the documented behavior, matching database quotas
   on such clusters, or require the network path for the feature.</li>
   <li><strong>Service accounts</strong> (7.2): <code>onlinefs</code> and
-  <code>srvmanager</code> are excluded by username. Confirm the exclusion and the list.</li>
+  <code>srvmanager</code> are excluded from the person expansion by username, but the
+  project&rsquo;s OnlineFS account is aliased deliberately as the project&rsquo;s ingestion
+  identity (13.4). Confirm the exclusion list and this split.</li>
   <li><strong>A tie created by a membership change</strong> (section 11): refuse the
   change, or accept it and mark both groups conflicting. Refusing is the proposal.</li>
-  <li><strong>ClusterJ / onlinefs ingestion</strong> (13.4): ingestion writes are untagged
-  and unmetered. Leave them exempt (service accounts are outside groups anyway), or tag
-  them for visibility later.</li>
+  <li><strong>Ingestion coverage</strong> (13.4): ClusterJ tagging and the OnlineFS
+  change are in scope (decided 2026-11-18; the writes were untagged and unmetered in
+  v1.0). Residual question: a project group covering the project&rsquo;s ingestion is
+  always-on in this design; decide whether it should instead be a per-group option on
+  the admin page.</li>
   <li><strong>Unmetered online paths</strong> (section 15): Rondis traffic and RDRS&rsquo;s own
   metadata reads. Meter either, or exempt them explicitly.</li>
   <li><strong>The query-thread metering gap</strong> (13.2): fixed on its own branch
@@ -1116,8 +1173,12 @@ required.</p>
   <code>$</code> can hit <code>ndbrequire(m_is_user == false)</code>
   (<code>DbtcMain.cpp:27798</code>) and crash the node;
   <code>execLIST_DATABASE_REQ</code> never increments its <code>loop_count</code>, so the
-  300-object break never fires; and the rate-decay timer computes a constant 99 ms
-  instead of the elapsed time (<code>DbtcMain.cpp:27573-27575</code>).</li>
+  300-object break never fires; the rate-decay timer computes a constant 99 ms
+  instead of the elapsed time (<code>DbtcMain.cpp:27573-27575</code>); and exhausting
+  the dictionary object pool with repeated creates escalates per refused attempt until
+  the watchdog kills the data node (measured in 13.5; likely pre-existing with plain
+  <code>USER</code> creates, but its fix is in this ticket&rsquo;s scope because the
+  installer&rsquo;s reconciler is exactly the client that would trigger it).</li>
 </ol>
 </section>
 

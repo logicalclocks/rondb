@@ -45,16 +45,16 @@ digraph lifecycle {
   }
 
   subgraph cluster_request {
-    label=<<B>Request flow</B> (data plane; every transaction, both entry points)>; fontsize=12; color="#8aa5a3"; style="rounded"; margin=14;
+    label=<<B>Request flow</B> (data plane; every transaction, all entry points)>; fontsize=12; color="#8aa5a3"; style="rounded"; margin=14;
     r1 [label=<
 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
  <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>&#9318;&nbsp; Request</B></FONT></TD></TR>
- <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">REST (API key) or<BR ALIGN="LEFT"/>SQL (login account)</TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">REST (API key),<BR ALIGN="LEFT"/>SQL (login account) or<BR ALIGN="LEFT"/>ClusterJ (OnlineFS ingestion)</TD></TR>
 </TABLE>>];
     r2 [label=<
 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
  <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>&#9319;&nbsp; Tag</B></FONT></TD></TR>
- <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">RDRS / mysqld tag the caller&apos;s<BR ALIGN="LEFT"/>account name, once per transaction<BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="9">Marketing_mary01ab</FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">RDRS / mysqld / OnlineFS tag the<BR ALIGN="LEFT"/>caller&apos;s account name, once per<BR ALIGN="LEFT"/>transaction <FONT FACE="Menlo" POINT-SIZE="9">Marketing_mary01ab</FONT></TD></TR>
 </TABLE>>];
     r3 [label=<
 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">

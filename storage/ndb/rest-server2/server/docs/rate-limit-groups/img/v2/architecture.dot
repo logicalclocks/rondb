@@ -86,8 +86,8 @@ digraph architecture {
 </TABLE>>];
     cj [label=<
 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
- <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>ClusterJ</B></FONT></TD></TR>
- <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">untagged today (optional later)</TD></TR>
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>ClusterJ</B> (new: tagging)</FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">tags the project&apos;s OnlineFS account<BR ALIGN="LEFT"/>once per transaction</TD></TR>
 </TABLE>>];
     rest -> rdrs;
     sql -> mysqld;
@@ -97,7 +97,7 @@ digraph architecture {
   installer -> mgmd [label="mgm protocol, per cluster", ltail=cluster_hw];
   rdrs -> tc;
   mysqld -> tc;
-  cj -> tc [style=dashed, color="#566574"];
+  cj -> tc;
 
   { rank=same; admin; newtabs; }
   { rank=same; mgmd; rest; sql; onlinefs; }
