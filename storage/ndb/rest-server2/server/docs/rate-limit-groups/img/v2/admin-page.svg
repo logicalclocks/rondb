@@ -66,7 +66,7 @@
   <line x1="52" y1="320" x2="774" y2="320" stroke="#e6ecef"/>
 
   <!-- allocation summary; the bar spans the 50% cap -->
-  <text x="52" y="372" class="h">Allocated on this cluster</text>
+  <text x="52" y="372" class="h">Allocated on the main cluster</text>
   <rect x="52" y="384" width="722" height="14" rx="7" fill="#e6ecef"/>
   <rect x="430" y="384" width="55" height="14" rx="7" fill="#e3c27e"/>
   <rect x="52" y="384" width="390" height="14" rx="7" fill="#096b67"/>
@@ -75,7 +75,7 @@
 
   <!-- legend -->
   <text x="52" y="476" class="h">State column (per cluster)</text>
-  <text x="52" y="500" class="ok">● installed</text><text x="150" y="500" class="m">Hopsworks has run USER SET for this name on the cluster; the limit is live.</text>
+  <text x="52" y="500" class="ok">● installed</text><text x="150" y="500" class="m">Hopsworks has run USER SET for this name on the main cluster; the limit is live.</text>
   <text x="52" y="524" class="pend">● pending</text><text x="150" y="524" class="m">Saved; not installed yet (or the cluster is unreachable). Traffic runs unlimited until it is.</text>
   <text x="52" y="548" fill="#b3261e" font-size="13">● refused</text><text x="150" y="548" class="m">RonDB rejected USER SET (the 50% cap is full). Lower another budget.</text>
   <text x="52" y="580" class="m">A deleted group leaves the list at once: its state rows are deleted with it.</text>

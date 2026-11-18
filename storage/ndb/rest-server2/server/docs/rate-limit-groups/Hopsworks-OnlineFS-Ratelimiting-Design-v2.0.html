@@ -750,7 +750,7 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     <code>headless-mgmds.&lt;namespace&gt;.svc:1186</code>.</li>
     <li><strong>Pick this cluster&rsquo;s groups.</strong> Groups whose <code>cluster</code>
     is NULL or equal to this cluster&rsquo;s name. Where one person is covered by both a
-    named-cluster group and an every-cluster group, the named one wins on this cluster
+    named-cluster group and an every-cluster group, the named one wins on the main cluster
     (7.4): the person&rsquo;s aliases here point at it.</li>
     <li><strong>Expand Who into account names.</strong> A uid row becomes every account
     that user holds, <code>clip31(projectname + "_" + username)</code> for each of their
@@ -899,8 +899,8 @@ design is the same; this section says what differs.</p>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col"></th><th scope="col">One cluster</th><th scope="col">Several clusters (main + satellites)</th></tr></thead>
   <tbody>
-    <tr><td>Where the <code>hopsworks</code> database lives</td><td>on the cluster</td><td>on the main cluster only; the group tables live with it, and only Hopsworks reads them</td></tr>
-    <tr><td>Where a project&rsquo;s online database lives</td><td>on the cluster</td><td>on the project&rsquo;s satellite (or on main)</td></tr>
+    <tr><td>Where the <code>hopsworks</code> database lives</td><td>on the main cluster</td><td>on the main cluster only; the group tables live with it, and only Hopsworks reads them</td></tr>
+    <tr><td>Where a project&rsquo;s online database lives</td><td>on the main cluster</td><td>on the project&rsquo;s satellite (or on main)</td></tr>
     <tr><td>How a cluster is named</td><td>its namespace; the column can stay NULL</td><td>the labeled namespace (5.4); the admin page&rsquo;s cluster picker lists them</td></tr>
     <tr><td>Which groups are installed where</td><td>all of them</td><td>per cluster: groups naming it, plus every-cluster groups (minus the per-person overrides of 7.4)</td></tr>
     <tr><td>What a percentage means</td><td>% of this cluster&rsquo;s data nodes</td><td>a named-cluster group: % of that cluster; an every-cluster group: N% of <em>each</em> cluster</td></tr>
@@ -1011,7 +1011,7 @@ repoint a person&rsquo;s budget must instead fail loudly and be reconciled.
 <code>DROP</code> drops the alias. The management-server side mirrors the existing
 <code>set user</code> family in <code>Services.cpp</code>.</p>
 <p><code>GET</code> shows one alias. <code>LIST</code> takes no arguments and shows every
-alias on the cluster, in object-id order; there is no filter by target. The installer
+alias on the main cluster, in object-id order; there is no filter by target. The installer
 reconciles every group of the cluster in one pass and needs the whole set, including
 aliases whose target is no longer wanted; the operation-log handler never lists, because
 it already knows the one account it changes. Over the management API the list is paged
@@ -1155,7 +1155,7 @@ ndb_mgm&gt; USER LIST
 ndb_mgm&gt; USER DROP  etl_jobs</code></pre>
 <p>A name may be up to 126 characters and may not begin with <code>$</code>. The NDB API attaches a name to a transaction with
 <code>NdbTransaction::setUserId</code>. A name with no configured limit runs unlimited:
-installing the group on the cluster and installing its members&rsquo; aliases are both
+installing the group on the main cluster and installing its members&rsquo; aliases are both
 required.</p>
 </section>
 
@@ -1205,7 +1205,7 @@ required.</p>
   there and the budget stays counted against the 50% cap: a limit outliving its group,
   the failure mode section 10 rules out. Either keep a record of deleted groups per
   (group, cluster) until each targeted cluster confirms the drop, or mark the installer&rsquo;s
-  objects on the cluster itself (a reserved name prefix or an object flag) so the
+  objects on the main cluster itself (a reserved name prefix or an object flag) so the
   reconciler can find orphans. Decide before the installer is built.</li>
   <li><strong>Ingestion coverage</strong> (13.4): ClusterJ tagging and the OnlineFS
   change are in scope (decided 2026-11-18; the writes were untagged and unmetered in
