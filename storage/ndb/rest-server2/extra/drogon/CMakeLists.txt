@@ -53,6 +53,7 @@ add_compile_options(
     -Wno-parentheses
     -Wno-pessimizing-move
     -Wno-range-loop-construct
+    -Wno-unused-but-set-variable
 )
 
 # Add drogon subdirectory
@@ -75,7 +76,6 @@ target_compile_options(drogon PRIVATE
     -Wno-reorder
     -Wno-type-limits
     -Wno-undef
-    -Wno-unused-but-set-variable
     -Wno-unused-parameter
 )
 target_compile_options(drogon PUBLIC
