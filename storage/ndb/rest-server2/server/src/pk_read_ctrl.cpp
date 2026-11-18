@@ -179,11 +179,10 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
       DEB_PK_CTRL("Error message(5): %s", std::string(status.message).c_str());
       resp->setBody(std::string(status.message));
     } else {
-      if (use_compressed) {
-        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
-      } else {
-        resp->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
-      }
+      // JSON either way; use_compressed only decides whether Drogon may gzip
+      // it.
+      resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+      resp->setAllowCompression(use_compressed);
       // convert resp to json
       PKReadResponseJSON respJson;
       size_t calc_size_json = 20; // Batch overhead
