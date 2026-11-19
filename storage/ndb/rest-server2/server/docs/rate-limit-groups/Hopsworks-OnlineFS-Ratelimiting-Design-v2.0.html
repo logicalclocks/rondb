@@ -1097,10 +1097,17 @@ defect:</p>
   members &times; projects per member, hundreds to a few thousand in a large deployment,
   so they would eat the headroom tables and indexes need. <strong>Decided 2026-11-18: a
   dedicated <code>MaxNoOfUserObjects</code> configuration parameter</strong>, added to
-  the object-slot sum in the kernel with a generous default, so alias capacity has its
+  the object-slot sum in the kernel, so alias capacity has its
   own labeled budget instead of overloading <code>MaxNoOfTables</code> (which also
-  sizes trigger pools through the index parameters). rondb-helm exposes it as an optional
-  override of the kernel default. A slot stores no rows in DataMemory, but its dictionary
+  sizes trigger pools through the index parameters). It is extra schema-file room
+  reserved for <code>USER</code> and alias objects, and <strong>its kernel default is 0
+  (decided 2026-11-19)</strong>: with 0, those objects share the free schema-file entries
+  exactly as today, the startup sum does not change, and a cluster upgraded from a cached
+  binary configuration that still says 20,320 (mgmd starts from its saved configuration
+  when one exists, <code>ConfigManager.cpp:366</code>) starts as before. rondb-helm
+  refuses to render when rate limiting is enabled
+  (<code>mysql.config.ndbUserRateLimits</code> or <code>rdrs.rateLimit.enable</code>)
+  and <code>rondbConfig.MaxNoOfUserObjects</code> is unset. A slot stores no rows in DataMemory, but its dictionary
   records come out of the memory that automatic memory configuration would otherwise give
   to DataMemory (<code>Configuration.cpp:583-621</code>, <code>:1495-1585</code>), so the
   user objects join that accounting too. Mikael agreed on 2026-11-18, provided it
@@ -1117,15 +1124,17 @@ defect:</p>
   what rondb-helm sets, those three default to 8,000, 10,000 and 2,300
   (<code>Configuration.cpp:2299-2325</code>): a configured capacity of 20,300, not
   objects in use. Any <code>MaxNoOfUserObjects</code> allowance above 20 therefore takes
-  the configured sum past 20,320, whether or not a group exists yet, and a deployment on
-  the default <code>MaxNoOfSchemaObjects</code> would fail the startup check. The schema
-  file's capacity must cover the full configured sum, either by resolving an automatic
-  value from the allowance or by a raised default with a documented allowance above which
-  an explicit <code>MaxNoOfSchemaObjects</code> is required; because mgmd fills every omitted
-  integer parameter with its registered default (<code>ConfigInfo.cpp</code>
-  <code>applyDefaultValues</code>), "not set" cannot be detected on the data node and the
-  mechanism needs its own design (an automatic sentinel or a raised default, open in the
-  implementation plan). An explicit value below the sum stays refused. The test runs
+  the configured sum past 20,320, whether or not a group exists yet, and a deployment that
+  sets one on the default <code>MaxNoOfSchemaObjects</code> would fail the startup check.
+  So whenever rondb-helm renders an allowance it also renders a
+  <code>MaxNoOfSchemaObjects</code> covering tables, indexes and the allowance, unless
+  <code>MaxNoOfSchemaObjects</code> is set explicitly. The kernel gets no automatic
+  sentinel: mgmd fills every omitted integer parameter with its registered default
+  (<code>ConfigInfo.cpp</code> <code>applyDefaultValues</code>), so &ldquo;not set&rdquo; cannot
+  be detected on the data node. An explicit value below the sum stays refused. The tests
+  cover the 0 default (value omitted, a start on 20,320, an upgrade from a cached binary
+  configuration) as well as non-zero allowances; Mikael is still to confirm this as the
+  RONDB-136 integration. The scale test runs
   with automatic memory configuration, creates more than 20,320 live schema objects, then
   creates and uses tables and indexes at the resulting high ids, and repeats after a
   restart and a backup and restore.</li>
@@ -1233,9 +1242,11 @@ targeted RonDB.</p>
     <tr><td>RonDB kernel</td><td>new</td><td>Section 13: alias flag and single target (by name) on the <code>$name</code> object in Dbdict (not budgeted, persisted, backed up, re-resolved on target recreate); the alias-to-target swap at the three Dbtc admission points; <code>USER ALIAS SET/DROP/GET/LIST</code> in the mgm server (<code>Services.cpp</code>) and client; MTR tests in <code>suite/ndb_quota</code>: lifecycle, enforcement through an alias on both key and scan paths, restart and backup/restore, target drop and recreate. Two additions from the scale
     measurement (13.5): a <code>MaxNoOfUserObjects</code> configuration parameter added
     to the dictionary object-slot sum, so aliases stop competing with tables for
-    <code>MaxNoOfTables</code>, with RONDB-136&rsquo;s <code>MaxNoOfSchemaObjects</code>
-    covering the full configured sum, resolved automatically or through a raised default
-    with a documented override boundary (an explicit smaller value stays refused),
+    <code>MaxNoOfTables</code>, with a kernel default of 0 (today&rsquo;s sharing, tested,
+    including an upgrade from a cached 20,320 configuration), required by rondb-helm when
+    rate limiting is enabled, and RONDB-136&rsquo;s <code>MaxNoOfSchemaObjects</code>
+    covering the full configured sum, rendered by rondb-helm from the allowance unless set
+    explicitly (an explicit smaller value stays refused),
     the user objects included in automatic memory accounting, and a test with automatic
     memory configuration that creates more than 20,320 live objects and then uses tables
     and indexes at the high ids; and a clean,
