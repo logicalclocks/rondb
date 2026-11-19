@@ -39,19 +39,33 @@
 #define DEBUG_PGMAN_IO 1
 #define DEBUG_PGMAN 1
 #define DEBUG_DISK 1
+//#define DEBUG_DISK_DIRTY_HEADER 1
 #define DEBUG_EXTENT_BITS 1
+//#define DEBUG_EXTENT_BITS_MOVE 1
 //#define DEBUG_EXTENT_BITS_HASH 1
 //#define DEBUG_FREE_EXTENT 1
 //#define DEBUG_UNDO 1
 #define DEBUG_UNDO_LCP 1
 //#define DEBUG_UNDO_ALLOC 1
-#define DEBUG_FREE_SPACE 1
+//#define DEBUG_FREE_SPACE 1
 #endif
 
 #ifdef DEBUG_DISK
 #define DEB_DISK(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_DISK(arglist) do { } while (0)
+#endif
+
+/* One line per disk row update, separate from DEBUG_DISK */
+#ifdef DEBUG_DISK_DIRTY_HEADER
+#define DEB_DISK_DIRTY_HEADER(arglist) \
+  do {                                 \
+    g_eventLogger->info arglist;       \
+  } while (0)
+#else
+#define DEB_DISK_DIRTY_HEADER(arglist) \
+  do {                                 \
+  } while (0)
 #endif
 
 #ifdef DEBUG_REORG
@@ -107,6 +121,18 @@
 #else
 #define DEB_EXTENT_BITS(arglist) \
   do {                           \
+  } while (0)
+#endif
+
+/* One line per move of a dirty page between free space lists */
+#ifdef DEBUG_EXTENT_BITS_MOVE
+#define DEB_EXTENT_BITS_MOVE(arglist) \
+  do {                                \
+    g_eventLogger->info arglist;      \
+  } while (0)
+#else
+#define DEB_EXTENT_BITS_MOVE(arglist) \
+  do {                                \
   } while (0)
 #endif
 
@@ -1319,7 +1345,7 @@ Dbtup::disk_page_move_dirty_page(Disk_alloc_info& alloc,
                                  Uint32 new_idx,
                                  Fragrecord *fragPtrP)
 {
-  DEB_EXTENT_BITS(("(%u)dpmdp:extent(%u) page(%u,%u):%u, old_idx: %u,"
+  DEB_EXTENT_BITS_MOVE(("(%u)dpmdp:extent(%u) page(%u,%u):%u, old_idx: %u,"
                    " new_idx: %u, free_page_count(%u,%u)"
                    ", free_space: %u, uncommitted_space: %u",
                    instance(),
@@ -1666,7 +1692,7 @@ Dbtup::disk_page_dirty_header(Signal *signal,
     safe_cast(&Dbtup::disk_page_dirty_header_callback);
   Uint32 flags = Page_cache_client::DIRTY_HEADER;
 
-  DEB_DISK(("(%u) Set DIRTY_HEADER on disk_row(%u,%u)",
+  DEB_DISK_DIRTY_HEADER(("(%u) Set DIRTY_HEADER on disk_row(%u,%u)",
     instance(),
     key.m_file_no,
     key.m_page_no));
