@@ -32,6 +32,7 @@
 #include "RonSQLParser.y.hpp"
 #include "RonSQLLexer.l.hpp"
 #include "RonSQLPreparer.hpp"
+#include "RonSQLPreparerInternal.hpp"
 #include <iostream>
 #include <new>
 #include <sstream>
@@ -18137,8 +18138,8 @@ std::ostream& operator<<(std::ostream& os, const NdbError& err) {
  * only retried needlessly; it cannot produce a wrong HTTP code, because the
  * caller maps the code carried by the exception through that same mapping.
  */
-static inline bool
-is_rate_limit_error(int ndb_error_code)
+bool
+ronsql_preparer_internal::is_rate_limit_error(int ndb_error_code)
 {
   switch (ndb_error_code) {
   case 243:   // TcKeyRef::WriteRateOverflowError
@@ -18167,8 +18168,8 @@ is_rate_limit_error(int ndb_error_code)
  * RonSQL only reads, so running the statement again is safe, and it
  * succeeds once the cluster serves this node again.
  */
-static inline bool
-is_cluster_unavailable_error(const NdbError& err)
+bool
+ronsql_preparer_internal::is_cluster_unavailable_error(const NdbError& err)
 {
   switch (err.code) {
   case 281:   // Operation not allowed due to cluster shutdown in progress
@@ -18193,8 +18194,8 @@ is_cluster_unavailable_error(const NdbError& err)
  * does) or an unavailable cluster (X-8).  Rate limit and schema errors are
  * decided before this.
  */
-static inline bool
-is_retryable_ndb_error(const NdbError& err)
+bool
+ronsql_preparer_internal::is_retryable_ndb_error(const NdbError& err)
 {
   return err.status == NdbError::TemporaryError ||
          err.mysql_code == HA_ERR_LOCK_WAIT_TIMEOUT ||
@@ -18214,12 +18215,111 @@ is_retryable_ndb_error(const NdbError& err)
  * When the retries of a retryable error run out, ronsql_op reports
  * RESOURCE too.
  */
-static inline bool
-is_resource_ndb_error(const NdbError& err)
+bool
+ronsql_preparer_internal::is_resource_ndb_error(const NdbError& err)
 {
   return is_retryable_ndb_error(err) ||
          err.classification == NdbError::UnknownResultError;
 }
+
+bool
+ronsql_preparer_internal::ndb_error_reloads_schema(
+    const NdbError& err, bool has_rate_limit_identity)
+{
+  if (has_rate_limit_identity && is_rate_limit_error(err.code))
+    return false;
+  return err.classification == NdbError::Classification::SchemaError;
+}
+
+/*
+ * T-16: the verdict of handle_ronsql_exception on the NDB error of the
+ * open transaction, which touches nothing (ErrorClassUnitTest).
+ */
+ronsql_preparer_internal::NdbErrorVerdict
+ronsql_preparer_internal::ndb_error_verdict(const NdbError& err,
+                                            bool has_rate_limit_identity,
+                                            bool schema_changed,
+                                            bool output_started)
+{
+  NdbErrorVerdict verdict;
+  verdict.action = NdbErrorVerdict::Action::FAIL;
+  verdict.error_class = RonSQLErrorClass::INTERNAL;
+  verdict.retryable_error = false;
+  verdict.output_started = false;
+  /*
+   * RONDB-978: a rate limit rejection is the caller's quota being enforced,
+   * not a failure of this query. Report it as such and never retry: the
+   * client-side backoff window outlives our retry budget, so retrying can
+   * only add load to a bucket that is already overflowing.
+   *
+   * Only when this query was tagged with a rate limit identity, which is
+   * what gives it a bucket to overflow in the first place. That keeps
+   * RonSQLRateLimitError reachable only for callers that opted into
+   * tagging, so embedders which did not (ronsql_cli) keep seeing exactly
+   * the two exception types they handle.
+   */
+  if (has_rate_limit_identity && is_rate_limit_error(err.code)) {
+    verdict.action = NdbErrorVerdict::Action::RATE_LIMIT;
+    return verdict;
+  }
+  bool temporary = false;
+  // Decide whether the error is temporary
+  if (err.classification == NdbError::Classification::SchemaError) {
+    // A schema error is temporary when the reload found a change.
+    temporary = schema_changed;
+  } else if (is_retryable_ndb_error(err)) {
+    // Treat error as temporary, no unloading of schema.  X-8: this
+    // includes an unavailable cluster.
+    verdict.retryable_error = true;
+    temporary = true;
+  }
+  if (temporary && output_started) {
+    // Rows already reached out_stream (pass-through drains stream as
+    // they go), which the caller keeps; a retry would repeat them
+    // (RONDB-1120 finding F-6).  X-6: an inner subquery's output is
+    // discarded, so its errors stay retryable.
+    verdict.output_started = true;
+    temporary = false;
+  }
+  if (temporary) {
+    verdict.action = NdbErrorVerdict::Action::RETRY;
+    return verdict;
+  }
+  // RONDB-1124: an NDB error caused by the statement or its data is the
+  // client's (e.g. 1860 arithmetic overflow); anything else is ours.
+  RonSQLErrorClass cls = RonSQLErrorClass::INTERNAL;
+  switch (err.classification) {
+  case NdbError::ApplicationError:
+  case NdbError::NoDataFound:
+  case NdbError::ConstraintViolation:
+  case NdbError::SchemaError:
+  case NdbError::UserDefinedError:
+    cls = RonSQLErrorClass::SEMANTIC;
+    break;
+  case NdbError::InsufficientSpace:
+    cls = RonSQLErrorClass::RESOURCE;
+    break;
+  case NdbError::FunctionNotImplemented:
+    cls = RonSQLErrorClass::UNSUPPORTED;
+    break;
+  default:
+    break;
+  }
+  if (is_resource_ndb_error(err)) {
+    cls = RonSQLErrorClass::RESOURCE;  // X-8
+  }
+  verdict.error_class = cls;
+  return verdict;
+}
+
+// T-16: defined above in ronsql_preparer_internal
+// (RonSQLPreparerInternal.hpp), which ErrorClassUnitTest calls.
+using ronsql_preparer_internal::is_rate_limit_error;
+using ronsql_preparer_internal::is_resource_ndb_error;
+using ronsql_preparer_internal::is_retryable_ndb_error;
+using ronsql_preparer_internal::ndb_error_reloads_schema;
+using ronsql_preparer_internal::ndb_error_verdict;
+using ronsql_preparer_internal::NdbErrorVerdict;
 
 /*
  * WP-F: raise one key read's own error.  In a batch of key reads the
@@ -18495,78 +18595,37 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     std::ostringstream ndb_err_text;
     ndb_err_text << ndb_err;
     cleanup_trans();
-    /*
-     * RONDB-978: a rate limit rejection is the caller's quota being enforced,
-     * not a failure of this query. Report it as such and never retry: the
-     * client-side backoff window outlives our retry budget, so retrying can
-     * only add load to a bucket that is already overflowing.
-     *
-     * Only when this query was tagged with a rate limit identity, which is
-     * what gives it a bucket to overflow in the first place. That keeps
-     * RonSQLRateLimitError reachable only for callers that opted into
-     * tagging, so embedders which did not (ronsql_cli) keep seeing exactly
-     * the two exception types they handle.
-     */
-    if (m_conf.rate_limit_identity != NULL &&
-        is_rate_limit_error(ndb_err.code)) {
+    // T-16: the verdict is ndb_error_verdict(), a function of the error,
+    // the rate limit identity, a schema change and the output that went
+    // out.
+    const bool has_rate_limit_identity = m_conf.rate_limit_identity != NULL;
+    bool schema_changed = false;
+    if (ndb_error_reloads_schema(ndb_err, has_rate_limit_identity)) {
+      DEB_TRACE(); err << ",rl";
+      // Try to reload the schema. If changes were detected then we treat the
+      // error as temporary.
+      schema_changed = unload_schema();
+    }
+    const NdbErrorVerdict verdict =
+        ndb_error_verdict(ndb_err, has_rate_limit_identity, schema_changed,
+                          retry_would_repeat_output());
+    if (verdict.action == NdbErrorVerdict::Action::RATE_LIMIT) {
       DEB_TRACE();
       err << "->RLE\n" << ndb_err_text.str() << '\n';
       throw RonSQLRateLimitError(e.what(), ndb_err.code);
     }
-    bool temporary = false;
-    // Decide whether to unload and whether the error is temporary
-    if (ndb_err.classification == NdbError::Classification::SchemaError) {
-      DEB_TRACE(); err << ",rl";
-      // Try to reload the schema. If changes were detected then we treat the
-      // error as temporary.
-      temporary = unload_schema();
-    } else if (is_retryable_ndb_error(ndb_err)) {
-      DEB_TRACE(); err << ",nu";
-      // Treat error as temporary, no unloading of schema.  X-8: this
-      // includes an unavailable cluster.
-      temporary = true;
-    }
-    if (temporary && retry_would_repeat_output()) {
-      // Rows already reached out_stream (pass-through drains stream as
-      // they go), which the caller keeps; a retry would repeat them
-      // (RONDB-1120 finding F-6).  X-6: an inner subquery's output is
-      // discarded, so its errors stay retryable.
-      DEB_TRACE(); err << ",od";
-      temporary = false;
-    }
+    if (verdict.retryable_error) { DEB_TRACE(); err << ",nu"; }
+    if (verdict.output_started) { DEB_TRACE(); err << ",od"; }
     // Now that the ndb error is described on err stream, we'll rethrow the
     // exception with a new error type.
-    if (temporary) {
+    if (verdict.action == NdbErrorVerdict::Action::RETRY) {
       DEB_TRACE();
       err << "->RRE\n" << ndb_err_text.str() << '\n';
       throw RonSQLRetryableError(e.what(), ndb_err.code);
     }
     DEB_TRACE();
     err << "->RPE\n" << ndb_err_text.str() << '\n';
-    // RONDB-1124: an NDB error caused by the statement or its data is the
-    // client's (e.g. 1860 arithmetic overflow); anything else is ours.
-    RonSQLErrorClass cls = RonSQLErrorClass::INTERNAL;
-    switch (ndb_err.classification) {
-    case NdbError::ApplicationError:
-    case NdbError::NoDataFound:
-    case NdbError::ConstraintViolation:
-    case NdbError::SchemaError:
-    case NdbError::UserDefinedError:
-      cls = RonSQLErrorClass::SEMANTIC;
-      break;
-    case NdbError::InsufficientSpace:
-      cls = RonSQLErrorClass::RESOURCE;
-      break;
-    case NdbError::FunctionNotImplemented:
-      cls = RonSQLErrorClass::UNSUPPORTED;
-      break;
-    default:
-      break;
-    }
-    if (is_resource_ndb_error(ndb_err)) {
-      cls = RonSQLErrorClass::RESOURCE;  // X-8
-    }
-    throw RonSQLPermanentError(cls, e.what(), ndb_err.code);
+    throw RonSQLPermanentError(verdict.error_class, e.what(), ndb_err.code);
   }
   catch (...) {
     // All exceptions thrown should be instances of runtime_error.  X-14:

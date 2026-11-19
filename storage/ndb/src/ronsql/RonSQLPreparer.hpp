@@ -137,6 +137,10 @@ typedef Int32 NdbAttrId;
 
 class RonSQLPreparer
 {
+  // T-16: EncodeConstantUnitTest and ProgramSizeUnitTest each define this
+  // class to run encode_constant() and the aggregation program emitters
+  // without a cluster.
+  friend class RonSQLPreparerTestAccess;
 public:
   enum class ErrState
   {

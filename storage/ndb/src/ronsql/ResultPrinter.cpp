@@ -29,6 +29,7 @@
 #include <string>
 #include "m_string.h"
 #include "ResultPrinter.hpp"
+#include "ResultPrinterInternal.hpp"
 #include "RonSQLParser.y.hpp"
 #include "define_formatter.hpp"
 #include "RonSQLPreparer.hpp"
@@ -128,19 +129,20 @@ DEFINE_FORMATTER(quoted_identifier, LexCString, {
   os.put('`');
 })
 
-static void print_string(std::ostream& output_stream,
-                         LexString ls,
-                         CHARSET_INFO* charset,
-                         bool json_escape,
-                         bool utf8_output,
-                         bool trim_space_suffix);
+// T-16: defined below in ronsql_printer_internal (ResultPrinterInternal.hpp),
+// which ResultPrinterUnitTest calls.
+using ronsql_printer_internal::compare_having_typed;
+using ronsql_printer_internal::decode_temporal_packed;
+using ronsql_printer_internal::double_to_fixed;
+using ronsql_printer_internal::format_fixed_scale;
+using ronsql_printer_internal::having_arithmetic;
+using ronsql_printer_internal::having_negate;
+using ronsql_printer_internal::print_base64;
+using ronsql_printer_internal::print_binary_tsv;
+using ronsql_printer_internal::print_json_ascii;
+using ronsql_printer_internal::print_string;
+using ronsql_printer_internal::print_temporal_packed;
 static double convert_result_to_double(NdbAggregator::Result result);
-static size_t format_fixed_scale(double value, int scale, char* to);
-static void print_base64(std::ostream& out, const unsigned char* bytes,
-                         size_t len);
-static void print_binary_tsv(std::ostream& out, const unsigned char* bytes,
-                             size_t len);
-static void print_json_ascii(std::ostream& out, const std::string& json);
 
 // require or investigate schema version
 static inline void
@@ -761,11 +763,6 @@ ResultPrinter::store_record(NdbAggregator::ResultRecord& record)
   row.avg_keys = NULL;
   return row;
 }
-
-// Defined with the pass-through printers below.
-static void print_temporal_packed(std::ostream& out, Uint64 w,
-                                  ResultPrinter::TemporalDisplay temporal,
-                                  int fsp, const char* quote);
 
 void
 ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
@@ -1389,10 +1386,10 @@ ResultPrinter::setup_output_format()
 // also what a raw column re-packs to (see print_passthrough_value).
 // `quote` wraps the text: the printer's m_quote ("" for TSV, "\"" for
 // JSON), for pass-through columns and aggregate results alike.
-static void
-print_temporal_packed(std::ostream& out, Uint64 w,
-                      ResultPrinter::TemporalDisplay temporal, int fsp,
-                      const char* quote)
+void
+ronsql_printer_internal::print_temporal_packed(
+    std::ostream& out, Uint64 w, ResultPrinter::TemporalDisplay temporal,
+    int fsp, const char* quote)
 {
   using TemporalDisplay = ResultPrinter::TemporalDisplay;
   char buf[64];
@@ -2388,8 +2385,9 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
 // Base64 (RFC 4648, "=" padding, no line breaks) for binary pass-through
 // values under JSON output.  Not mysys' base64_encode, which inserts a
 // newline every 76 characters.
-static void
-print_base64(std::ostream& out, const unsigned char* bytes, size_t len)
+void
+ronsql_printer_internal::print_base64(std::ostream& out,
+                                      const unsigned char* bytes, size_t len)
 {
   static const char alphabet[] =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -2421,8 +2419,9 @@ print_base64(std::ostream& out, const unsigned char* bytes, size_t len)
 // non-ASCII character \u-escaped.  Non-ASCII characters only occur inside
 // JSON strings, where the escape means the same character, so a run of
 // them is printed as the content of a JSON string would be.
-static void
-print_json_ascii(std::ostream& out, const std::string& json)
+void
+ronsql_printer_internal::print_json_ascii(std::ostream& out,
+                                          const std::string& json)
 {
   size_t i = 0;
   while (i < json.size())
@@ -2465,8 +2464,10 @@ ronsql_print_json_string(std::ostream& out,
 // escaping the mysql client applies in batch mode (client/mysql.cc
 // tee_write, MY_PRINT_ESC_0 | MY_PRINT_CTRL): NUL, tab, newline and
 // backslash are written as \0, \t, \n and \\; every other byte as is.
-static void
-print_binary_tsv(std::ostream& out, const unsigned char* bytes, size_t len)
+void
+ronsql_printer_internal::print_binary_tsv(std::ostream& out,
+                                          const unsigned char* bytes,
+                                          size_t len)
 {
   for (size_t i = 0; i < len; i++)
   {
@@ -2492,13 +2493,13 @@ print_binary_tsv(std::ostream& out, const unsigned char* bytes, size_t len)
 // trim_space_suffix == true:  Ignore trailing spaces
 // trim_space_suffix == false: Print trailing spaces
 // Inspired by `well_formed_copy_nchars` in ../../../../sql-common/sql_string.cc
-static void
-print_string(std::ostream& out,
-             LexString ls,
-             CHARSET_INFO* charset,
-             bool json_escape,
-             bool utf8_output,
-             bool trim_space_suffix)
+void
+ronsql_printer_internal::print_string(std::ostream& out,
+                                      LexString ls,
+                                      CHARSET_INFO* charset,
+                                      bool json_escape,
+                                      bool utf8_output,
+                                      bool trim_space_suffix)
 {
   const uchar* str = pointer_cast<const uchar *>(ls.str);
   const uchar* end = pointer_cast<const uchar *>(&ls.str[ls.len]);
@@ -2761,8 +2762,8 @@ print_string(std::ostream& out,
  * 100000000000000000000.  From 0.1 up to 1e15 both functions give the
  * same text.  Inf and NaN set *error in both.
  */
-static size_t
-double_to_fixed(double value, char* to, bool* error)
+size_t
+ronsql_printer_internal::double_to_fixed(double value, char* to, bool* error)
 {
   if (!(std::fabs(value) < 1e15))
     return my_gcvt(value, MY_GCVT_ARG_DOUBLE, FLOATING_POINT_BUFFER, to,
@@ -2846,8 +2847,8 @@ ResultPrinter::print_float_or_double(std::ostream& out, double value,
  * 'to' holds FLOATING_POINT_BUFFER bytes.  Returns the length, or 0 for
  * Inf and NaN.
  */
-static size_t
-format_fixed_scale(double value, int scale, char* to)
+size_t
+ronsql_printer_internal::format_fixed_scale(double value, int scale, char* to)
 {
   ronsql_require_bug(scale >= 0 && scale <= 30,
                      "A fixed-scale value has a scale outside 0 to 30.");
@@ -3290,70 +3291,7 @@ ResultPrinter::scan_having_max_agg(const ConditionalExpression* expr,
   }
 }
 
-/*
- * O-8: one HAVING operand, typed as MySQL types it.  HAVING compared and
- * computed every operand as a double: a BIGINT above 2^53 equalled its
- * neighbours, a SUM over a DECIMAL of 0.10 and 0.20 was not 0.3, a
- * temporal MIN / MAX was its packed integer, and a string MIN / MAX failed
- * as a bug.  An operand is now
- *  - EXACT, an integer or a DECIMAL (MySQL's INT_RESULT and
- *    DECIMAL_RESULT), held as a decimal: COUNT, a SUM, MIN or MAX the data
- *    nodes return as an integer, a SUM, MIN or MAX over an integer or
- *    DECIMAL column that they return as a double (taken at the column's
- *    scale, as print_fixed_scale() prints it), AVG over either, an
- *    integer literal, a literal with a fraction (a DECIMAL in MySQL; the
- *    lexer has no exponent form) and a number a subquery returned (its
- *    exact digits, X-4);
- *  - APPROX, a FLOAT or DOUBLE (REAL_RESULT): an aggregate over a FLOAT or
- *    DOUBLE column, and one over an expression whose result is a double
- *    (its type is not known here);
- *  - STRING: a string MIN / MAX, a string literal, or a string a subquery
- *    returned;
- *  - TEMPORAL: a MIN / MAX over a DATE, DATETIME, TIMESTAMP, TIME or YEAR
- *    column, decoded from the packed value the data nodes return;
- *  - or NULL.
- */
-struct HavingValue
-{
-  enum class Kind { NULL_VALUE, EXACT, APPROX, STRING, TEMPORAL };
-  Kind kind = Kind::NULL_VALUE;
-  // EXACT: dec over digits, 81 digits as in a my_decimal.  A copy keeps
-  // the buf of the original, so decimal() sets it before every use.
-  decimal_digit_t digits[9];
-  decimal_t dec;
-  // APPROX
-  double dbl = 0.0;
-  // STRING: the bytes, in the charset of the MIN / MAX they come from, or
-  // for a constant (charset NULL) in UTF-8, the string of node.
-  const char* str = NULL;
-  Uint32 len = 0;
-  CHARSET_INFO* charset = NULL;
-  const ConditionalExpression* node = NULL;
-  // TEMPORAL: the decoded value; a YEAR sets only time.year.
-  ResultPrinter::TemporalDisplay temporal =
-      ResultPrinter::TemporalDisplay::NONE;
-  MYSQL_TIME time;
-
-  decimal_t* decimal()
-  {
-    dec.buf = digits;
-    return &dec;
-  }
-  // Makes this an EXACT value for a decimal function to write.
-  decimal_t* exact()
-  {
-    kind = Kind::EXACT;
-    dec.len = 9;
-    return decimal();
-  }
-  // decimal_cmp() refuses a negative zero, which a truncated quotient
-  // can be.
-  void clear_negative_zero()
-  {
-    if (dec.sign && decimal_is_zero(decimal()))
-      dec.sign = false;
-  }
-};
+// O-8: HavingValue, one HAVING operand, is in ResultPrinterInternal.hpp.
 
 // The DECIMAL that format_fixed_scale() prints for value: its shortest
 // digits rounded HALF_UP at scale.  False for Inf and NaN, and for a value
@@ -3448,9 +3386,10 @@ ResultPrinter::string_arg_charset(const AggregationAPICompiler::Expr* arg)
 
 // O-8: the value of a packed temporal MIN / MAX, decoded as
 // print_temporal_packed() decodes it for printing.
-static void
-decode_temporal_packed(Uint64 w, ResultPrinter::TemporalDisplay temporal,
-                       int fsp, MYSQL_TIME* mt)
+void
+ronsql_printer_internal::decode_temporal_packed(
+    Uint64 w, ResultPrinter::TemporalDisplay temporal, int fsp,
+    MYSQL_TIME* mt)
 {
   using TemporalDisplay = ResultPrinter::TemporalDisplay;
   memset(mt, 0, sizeof(*mt));
@@ -3564,8 +3503,8 @@ having_arithmetic_operand(HavingValue& v)
   }
 }
 
-static void
-having_negate(HavingValue& v)
+void
+ronsql_printer_internal::having_negate(HavingValue& v)
 {
   if (v.kind == HavingValue::Kind::NULL_VALUE)
     return;
@@ -3588,9 +3527,10 @@ having_negate(HavingValue& v)
  * result that leaves the BIGINT range (MAX(bigint) + 1 at 2^63 - 1) fails
  * in MySQL, which computes integers as BIGINT, and is exact here.
  */
-static void
-having_arithmetic(TokenKind op, HavingValue& left, HavingValue& right,
-                  HavingValue& out)
+void
+ronsql_printer_internal::having_arithmetic(TokenKind op, HavingValue& left,
+                                           HavingValue& right,
+                                           HavingValue& out)
 {
   if (left.kind == HavingValue::Kind::NULL_VALUE ||
       right.kind == HavingValue::Kind::NULL_VALUE)
@@ -3994,16 +3934,27 @@ ResultPrinter::compare_having_strings(HavingValue& left, HavingValue& right)
  * DATETIME or TIMESTAMP with another or with a string as datetimes; a
  * temporal value with a number as a double of its number (a YEAR as an
  * integer).  A string beside a number, a TIME or a YEAR is refused: MySQL
- * converts it with a warning.
+ * converts it with a warning.  Two strings need the printer's constants
+ * in the collation of the MIN or MAX; compare_having_typed() compares
+ * every other pair (T-16: ResultPrinterUnitTest).
  */
 int
 ResultPrinter::compare_having_values(HavingValue& left, HavingValue& right)
 {
+  if (left.kind == HavingValue::Kind::STRING &&
+      right.kind == HavingValue::Kind::STRING)
+    return compare_having_strings(left, right);
+  return compare_having_typed(left, right);
+}
+
+int
+ronsql_printer_internal::compare_having_typed(HavingValue& left,
+                                              HavingValue& right)
+{
   using Kind = HavingValue::Kind;
   if (left.kind == Kind::STRING || right.kind == Kind::STRING)
   {
-    if (left.kind == Kind::STRING && right.kind == Kind::STRING)
-      return compare_having_strings(left, right);
+    // Two strings are refused here as a string beside a number is.
     const bool string_left = (left.kind == Kind::STRING);
     const HavingValue& str = string_left ? left : right;
     const HavingValue& other = string_left ? right : left;

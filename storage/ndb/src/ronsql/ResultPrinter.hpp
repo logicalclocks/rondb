@@ -85,7 +85,8 @@ private:
 static_assert(sizeof(PassthroughValue) % 8 == 0,
               "PassthroughValue data must stay 8-byte aligned");
 
-// O-8: one HAVING operand, typed as MySQL types it (ResultPrinter.cpp).
+// O-8: one HAVING operand, typed as MySQL types it
+// (ResultPrinterInternal.hpp).
 struct HavingValue;
 
 class ResultPrinter
