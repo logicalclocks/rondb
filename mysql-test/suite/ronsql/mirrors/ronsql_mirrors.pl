@@ -372,7 +372,8 @@ for my $name (@family_order) {
     }
     if (@stale == 2 && !$stale[0][1] && !$stale[1][1]) {
       push @problems, "$name: base test $t has no mirror (run --write, or " .
-                      "add an exclude line)";
+                      ($f->{subset} ? "drop its mirror line)"
+                                    : "add an exclude line)");
     } else {
       push @problems, "$name/$_->[0]: " .
         ($_->[1] ? 'differs from the generated file' : 'missing') for @stale;

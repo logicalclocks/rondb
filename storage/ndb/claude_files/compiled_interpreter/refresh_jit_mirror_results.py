@@ -3,7 +3,7 @@
 from its base suite after a rebase, then the RonSQL mirror suites.
 
 The RonSQL mirror suites (ronsql_jit, ronsql_cte_jit, ronsql_fs_jit and the
-topology suites ronsql_cte_ng* and ronsql_fs_ng*) are generated
+topology suites ronsql_cte_ng*, ronsql_fs_ng* and ronsql_ng2r2) are generated
 by mysql-test/suite/ronsql/mirrors/ronsql_mirrors.pl from
 ronsql_mirrors.cfg, which also holds their recorded fallback-delta pins;
 this script only runs it (--write, or --check with --check).  Use that
