@@ -141,14 +141,14 @@
 </header>
 
 <nav aria-label="Contents">
-  <p class="navhead">Part I &mdash; The design at a glance</p>
+  <p class="navhead">Part I: The design at a glance</p>
   <ol>
     <li><a href="#feature">The feature</a></li>
     <li><a href="#flow">The flow, end to end</a></li>
     <li><a href="#admin">The admin page</a></li>
     <li><a href="#glance">What exists and what is new</a></li>
   </ol>
-  <p class="navhead">Part II &mdash; The design</p>
+  <p class="navhead">Part II: The design</p>
   <ol start="5">
     <li><a href="#today">What exists today</a></li>
     <li><a href="#scenario">The scenario, and what Hopsworks already stores</a></li>
@@ -159,7 +159,7 @@
     <li><a href="#rules">Rules when saving and deleting</a></li>
     <li><a href="#deploy">One cluster or several</a></li>
   </ol>
-  <p class="navhead">Part III &mdash; Technical reference</p>
+  <p class="navhead">Part III: Technical reference</p>
   <ol start="13">
     <li><a href="#kernel">RonDB changes: the alias</a></li>
     <li><a href="#reference">How RonDB enforces a limit</a></li>
@@ -777,7 +777,18 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     only in the primary region, where <code>amIThePrimary()</code> can answer true; in
     the secondary region it answers false (<code>PayaraClusterManager.java:144-151</code>).
     After a failover the new primary region&rsquo;s installer reconciles both, and no state
-    row changes meaning because the keys name regions, not roles.</li>
+    row changes meaning because the keys name regions, not roles. One failover case is an
+    accepted residual risk: the group tables reach the secondary region by asynchronous
+    binlog replication (the replica appliers pull from the binlog servers; nothing in the
+    chart enables semi-synchronous replication), while the pass installs the kernel
+    objects in both regions directly. A group saved just before a failover can therefore
+    be missing from the new primary&rsquo;s tables while its <code>USER</code> and aliases
+    already sit in both regions&rsquo; RonDB; objects whose row never arrived match nothing
+    in the ownership test and are never touched, so they keep their budget until an
+    operator drops them. A diagnostic read compares each target&rsquo;s
+    <code>USER LIST</code> and <code>USER ALIAS LIST</code> against the expected set and
+    shows such orphans on the admin page; the failover test saves a group, fails over
+    before it replicates, and asserts the orphans are reported.</li>
     <li><strong>Pick this cluster&rsquo;s groups.</strong> Groups whose <code>cluster</code>
     is NULL or equal to this cluster&rsquo;s name. Where one person is covered by both a
     named-cluster group and an every-cluster group, the named one wins in that cluster&rsquo;s RonDB
@@ -792,11 +803,14 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     once per pass from the cluster itself and never cached across passes,
     so a resized cluster converts correctly on the next pass. For the main cluster the
     read is <code>ndbinfo.threads</code> over the JDBC connection Hopsworks already
-    holds (5.4). For a satellite and for the secondary region&rsquo;s RonDB no such
-    connection exists today, so the transport is an open decision (section 16): a JDBC
-    connection per cluster and where its credentials come from, a management command
-    that returns the thread count, or a value recorded per cluster at deployment. A
-    cluster whose thread count cannot be read stays <em>pending</em>.</li>
+    holds (5.4), and for the secondary region&rsquo;s RonDB over the region-addressed
+    admin connection that already exists
+    (<code>OnlineFeaturestoreFacade.establishAdminConnection(region, &hellip;)</code>,
+    which assumes the secondary shares the primary&rsquo;s admin credentials). For a
+    satellite no such connection exists today, so that transport is an open decision
+    (section 16): a JDBC connection per cluster and where its credentials come from, a
+    management command that returns the thread count, or a value recorded per cluster at
+    deployment. A cluster whose thread count cannot be read stays <em>pending</em>.</li>
     <li><strong>Read back and fix the differences</strong>, in group-id order so a 50%-cap
     refusal is deterministic: <code>USER LIST</code> and <code>USER ALIAS LIST</code>,
     then
@@ -857,7 +871,10 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
   <li><strong>On membership change</strong>: the operation-log handler (5.4) receives the
   member account&rsquo;s create or remove with the account name already computed and
   enqueues a recompute of that person&rsquo;s coverage, all their accounts, every affected
-  cluster. The recompute runs through the same primary-gated writer as every other
+  cluster. The enqueue sits in the facade methods that write the membership row, in the
+  same transaction as the row write, so the rollback paths of a failed member add
+  trigger it too, and a crash can never remove a member without the recompute following.
+  The recompute runs through the same primary-gated writer as every other
   change (below) and issues just the affected <code>USER ALIAS</code> commands, with the
   framework&rsquo;s retries; a burst of changes coalesces into one recompute per cluster. A
   group covering the project picks up the new member here, minutes before any periodic
@@ -907,7 +924,11 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
   <code>rate_limit_group.name</code>, of a live or a deleted row; an alias is the
   installer&rsquo;s when its <em>target</em> is. That is what lets an edit drop a removed
   member: Mike&rsquo;s Who row is gone after the edit, but his alias still points at
-  <code>mary_mike_rl</code>, which is in the table, so the pass drops it. Deleting a
+  <code>mary_mike_rl</code>, which is in the table, so the pass drops it. The same test
+  clears a live group off a cluster it no longer covers: when its cluster field changed,
+  when a stale command installed it elsewhere, or when the name was recreated with a
+  different cluster while one was unreachable, the pass on the no-longer-covered cluster
+  finds owned objects with no desired counterpart and drops them. Deleting a
   group never removes its row: the row is marked deleted (appendix), and every pass drops
   the deleted group&rsquo;s <code>USER</code> and every alias targeting it, on every
   cluster that still holds them. A cluster the delete&rsquo;s immediate pass cannot reach is
@@ -917,7 +938,10 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
   expansion, the no-ties check) skips deleted rows. The contract with operators: they may
   create their own <code>USER</code> and alias objects under names that are not in the
   table, and the installer never touches those; they do not change the installer&rsquo;s
-  objects by hand. One exception reaches into their objects: when a group must map an
+  objects by hand. An alias is protected by its <em>target</em>, not its own name: an
+  alias an operator points at a group&rsquo;s <code>USER</code> becomes the installer&rsquo;s and
+  is dropped by the next pass as not part of the desired set. One exception reaches into
+  their objects: when a group must map an
   account that already has an alias an operator created, the installer replaces that
   alias, and the replacement is a <code>USER ALIAS DROP</code> followed by a
   <code>SET</code>, because a <code>SET</code> naming a different target is refused
@@ -972,7 +996,7 @@ administration, and nothing in the model requires more than one role.</p>
   <thead><tr><th scope="col">Deleted</th><th scope="col">Example</th><th scope="col">Result</th></tr></thead>
   <tbody>
     <tr><td>A group</td><td>Admin deletes <code>mary_mike_rl</code>.</td><td>Its Who rows and state rows are deleted and its row is marked deleted. The immediate pass runs <code>USER DROP</code> and drops the aliases; later passes repeat the drop on any cluster that still holds them. The pass recomputes the members&rsquo; assignments: a member another group still covers (an every-cluster group, say) gets their alias repointed there; a member no group covers falls back to unmetered.</td></tr>
-    <tr><td>A person or project</td><td>Mike leaves the company; user 1002 is deleted.</td><td>His row in group 2 disappears (FK cascade). The group now covers only Mary; his aliases are dropped by the next pass. Harmless.</td></tr>
+    <tr><td>A person or project</td><td>Mike leaves the company: he is removed from his projects, then an administrator deletes user 1002 (a delete is accepted only for a user in no projects).</td><td>Leaving the projects already dropped his aliases through the membership recompute; the user delete cascades his row in group 2 away. The group now covers only Mary. Harmless.</td></tr>
     <tr><td>The person or project that is a group&rsquo;s only Who row</td><td>The Data Owner deletes project Recommender2, the only Who row of <code>recommender2_rl</code>.</td><td>The group is deleted with it, in the same transaction: its state rows are deleted and its row is marked deleted, exactly as a group delete does, and the next pass drops its <code>USER</code> and aliases. The project-delete confirmation names the group beforehand.</td></tr>
     <tr><td>Nothing, but membership changes</td><td>Bob joins Recommender.</td><td>No group rows change. The operation-log handler sees Bob&rsquo;s new account and, because project 13 is in group 1, issues his <code>USER ALIAS SET</code>; his keys and SQL logins are covered from that moment.</td></tr>
     <tr><td>A cluster</td><td>The satellite namespace for cluster M is torn down.</td><td>Groups naming M show <em>pending</em> (not discovered). Nothing is dropped anywhere else; recreating the namespace reinstalls on the next reconcile.</td></tr>
@@ -980,6 +1004,8 @@ administration, and nothing in the model requires more than one role.</p>
 </table></div>
 <p>A group that loses its last Who row to a delete is deleted, because a group that
 covers nobody would keep its budget counted against the 50% cap for nothing. The rule
+fires only on these hard deletes: a group whose members merely left their projects keeps
+its row and its budget, visible on the page, until an administrator edits or deletes it. The rule
 lives in the backend, so every caller gets it. A project is deleted by its Data Owner
 through <code>POST /project/{projectId}/delete</code>
 (<code>hopsworks-api/&hellip;/project/ProjectService.java:768-786</code>), from the UI, the
@@ -1131,7 +1157,9 @@ repoint a person&rsquo;s budget must instead fail loudly and be reconciled.
 <p><code>GET</code> shows one alias. <code>LIST</code> takes no arguments and shows every
 alias in the RonDB it is run against, in object-id order; there is no filter by target. The installer
 reconciles every group of the cluster in one pass and needs the whole set, including
-aliases whose target is no longer wanted; a membership recompute (section 10) never
+aliases whose target is no longer wanted and aliases whose stored target name does not
+currently resolve, which <code>LIST</code> and <code>GET</code> show with that stored
+name; a membership recompute (section 10) never
 lists, because it already knows the accounts it changes. Over the management API the list is paged
 one alias per round trip (<code>ndb_mgm_list_user_aliases(handle, &amp;nextAliasId,
 &amp;buf)</code> until <code>nextAliasId</code> is <code>RNIL</code>), so its cost grows
@@ -1188,15 +1216,31 @@ defect:</p>
   dedicated <code>MaxNoOfUserObjects</code> configuration parameter</strong>, added to
   the object-slot sum in the kernel, so alias capacity has its
   own labeled budget instead of overloading <code>MaxNoOfTables</code> (which also
-  sizes trigger pools through the index parameters). It is extra schema-file room
-  reserved for <code>USER</code> and alias objects, and <strong>its kernel default is 0
+  sizes trigger pools through the index parameters). It adds capacity to the shared
+  schema-file id range for <code>USER</code> and alias objects; the lowest-free id scan
+  is shared, so nothing stops tables from consuming the added slots unless the kernel
+  work splits the ranges, a choice the kernel step records either way.
+  <strong>Its kernel default is 0
   (decided 2026-11-19)</strong>: with 0, those objects share the free schema-file entries
   exactly as today, the startup sum does not change, and a cluster upgraded from a cached
   binary configuration that still says 20,320 (mgmd starts from its saved configuration
   when one exists, <code>ConfigManager.cpp:366</code>) starts as before. rondb-helm
   refuses to render when rate limiting is enabled
-  (<code>mysql.config.ndbUserRateLimits</code> or <code>rdrs.rateLimit.enable</code>)
-  and <code>rondbConfig.MaxNoOfUserObjects</code> is unset. A slot stores no rows in DataMemory, but its dictionary
+  (<code>mysql.config.ndbUserRateLimits</code>, <code>rdrs.rateLimit.enable</code> or
+  the data-node switch <code>rondbConfig.ActivateRateLimits</code>)
+  and <code>rondbConfig.MaxNoOfUserObjects</code> is unset; it renders the allowance and
+  the computed <code>MaxNoOfSchemaObjects</code> whenever they are set, whatever the
+  flags say, because <strong>the configured capacity must never shrink while objects
+  exist</strong>: the schema file is rewritten to the configured size on every start,
+  and the shrink path kills a node when any live object holds an id at or above the new
+  sum (<code>resizeSchemaFile</code>, <code>Dbdict.cpp:22782-22802</code>), a
+  data-dependent failure that can pass on a young cluster and fail after churn. For
+  rolling upgrades the new parameter also needs a registered default and the same
+  missing-parameter handling <code>MaxNoOfSchemaObjects</code> got
+  (<code>Configuration.cpp:2269-2279</code>), or a binary configuration from an older
+  mgmd kills the data node; in the chart this matters less, because rondb-helm starts
+  every mgmd with <code>--initial</code>, which rebuilds the configuration from
+  <code>config.ini</code>. A slot stores no rows in DataMemory, but its dictionary
   records come out of the memory that automatic memory configuration would otherwise give
   to DataMemory (<code>Configuration.cpp:583-621</code>, <code>:1495-1585</code>), so the
   user objects join that accounting too. Mikael agreed on 2026-11-18, provided it
@@ -1402,11 +1446,12 @@ targeted RonDB.</p>
   second option needs OnlineFS to check the name against the producer&rsquo;s identity.</li>
   <li><strong>Unmetered online paths</strong> (section 15): Rondis traffic and RDRS&rsquo;s own
   metadata reads. Meter either, or exempt them explicitly.</li>
-  <li><strong>Thread-count transport</strong> (section 10 step 4): the main cluster&rsquo;s
-  thread count is read over its existing JDBC connection; a satellite and the secondary
-  region&rsquo;s RonDB have none. A JDBC connection per cluster (and its credentials), a
+  <li><strong>Thread-count transport for satellites</strong> (section 10 step 4): the
+  main cluster&rsquo;s thread count is read over its existing JDBC connection, and the
+  secondary region&rsquo;s over the region-addressed admin connection, so only satellites
+  lack one. A JDBC connection per satellite (and its credentials), a
   management command returning the thread count, or a value recorded per cluster at
-  deployment. Until decided, such clusters stay <em>pending</em>.</li>
+  deployment. Until decided, satellites stay <em>pending</em>.</li>
   <li><strong>The query-thread metering gap</strong> (13.2): fixed on its own branch
   (<code>RONDB-1158-query-threads</code>); the locking approach on the LDM hot path needs
   kernel-team sign-off.</li>
