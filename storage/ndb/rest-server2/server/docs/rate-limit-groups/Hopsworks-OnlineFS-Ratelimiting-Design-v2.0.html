@@ -802,13 +802,24 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
     <code>USER ALIAS SET Sales_sam00035 --target=mary_mike_rl</code>, and Mary&rsquo;s alias
     is not touched, so she is metered throughout.
     <strong>Order on each cluster:</strong> alias drops, then <code>USER DROP</code>s, then
-    <code>USER SET</code> / <code>ALTER</code> in group-id order, then alias
+    rate-lowering <code>USER ALTER</code>s, then <code>USER SET</code>s and rate-raising
+    <code>ALTER</code>s in group-id order, then alias
     <code>SET</code>s in group-id order. Drops go first because a moved alias must be
     dropped before its <code>SET</code> (13.3), and because every alias and
     <code>USER</code> holds a dictionary object slot (13.5): freeing slots before taking
-    new ones keeps a pass that replaces many members from running out midway. Aliases carry
+    new ones keeps a pass that replaces many members from running out midway. Rate
+    releases go before rate consumers for the same reason applied to the budget pool:
+    the cluster checks a create against the 50% cap and a raise against the 70% cap
+    (section 14), while a lowering is never refused, so freed rate must be released
+    before anything needs it; a create or raise still refused after all releases is
+    re-planned once within the pass, and refused for the pass if it fails again. Aliases carry
     no budget, so their order never affects the 50% cap; budget changes keep group-id
-    order so a cap refusal always lands on the same group. Version 1.0 ran the drops last,
+    order so a cap refusal always lands on the same group. One state is not repairable
+    by ordering: a total that exceeded the 50% create cap legitimately, through raises
+    (section 14 allows raises up to 70%, and database quotas share the pool), contains
+    entries that cannot be recreated if they are ever dropped, by a stale command or by
+    hand; the pass then records <em>refused</em> (error 1235) and the page shows it,
+    rather than retrying silently forever. Version 1.0 ran the drops last,
     behind a two-run grace, because several writers could hold stale snapshots; a
     primary-gated writer needs neither, because a drop sent from a stale snapshot is
     undone by the next pass like any other stale command (below).</li>
@@ -836,9 +847,10 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
   under the label.</li>
 </ul>
 <ul>
-  <li><strong>Idempotent and primary-gated, repaired on the next pass.</strong>
-  <code>USER SET</code> on an existing
-  name and a repeated <code>USER ALIAS SET</code> with the same target are no-ops, so an
+  <li><strong>Idempotent and primary-gated, eventually repaired.</strong>
+  A repeated <code>USER ALIAS SET</code> with the same target is a no-op, and a
+  <code>USER SET</code> on an existing name is refused with error 721, which the pass
+  reads as &ldquo;already there&rdquo; and follows with a re-list, so an
   immediate pass racing the periodic one is harmless. Only the primary instance writes:
   the installer checks <code>PayaraClusterManager.amIThePrimary()</code> before each
   management command
@@ -848,11 +860,18 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
   stall) can send its command after another instance has become primary and acted, and
   during a Hazelcast split every instance that sees fewer than two members answers that
   it is the primary (<code>:155-156</code>). RonDB has no way to refuse such a stale
-  command, and this design accepts the risk instead of fencing it: the next timer pass
+  command, and this design accepts the risk instead of fencing it: a later pass
   lists each cluster again and converges every object the installer owns back to the
-  tables. The worst case is wrong enforcement for one timer interval, and only when a
-  stale command meets a conflicting change. The v1.0 multi-writer rules (version-counter
-  short-circuit, two-run delete grace, staleness ties) are therefore not needed.</li>
+  tables. The guarantee is eventual repair, not a time bound: the repairing pass is the
+  first one that starts after the stale command has landed, completes its reads, and
+  finds the correction feasible under the caps (section 14). A command that lands after
+  a pass&rsquo;s <code>LIST</code> survives that pass and is caught by the one after; a
+  split that persists can keep producing conflicting commands until it heals; a failed
+  read or an unreachable cluster defers repair by design. Three delays also compose on
+  top of the repair itself and should not be conflated: the reconciler interval (when a
+  pass is requested), the pass&rsquo;s own execution time, and the client name-cache refresh
+  (up to 60 s, section 13). The v1.0 multi-writer rules (version-counter
+  short-circuit, two-run delete grace, staleness ties) are still not needed.</li>
   <li><strong>Deletes are grounded, not grace-counted.</strong> The installer reads the
   group tables in the same transaction-consistent store it is about to reconcile from,
   and reads them again on every pass, so a drop decided from an older snapshot by a stale
@@ -882,8 +901,8 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
   plus the client name-cache refresh (up to 60 s, section 13). A new member is live after
   the operation-log handler fires. Until then that traffic runs unlimited and the page
   shows <em>pending</em>; a limit appearing late is the designed failure mode, a limit
-  outliving its group is not, and it lasts at most until the next pass when a stale
-  command causes one.</li>
+  outliving its group is not, and when a stale command causes one it lasts until the
+  first repair pass that completes after it (above).</li>
   <li><strong>Unreachable clusters.</strong> A cluster whose mgmd Hopsworks cannot reach,
   which includes externally-managed RonDB without network access to its mgmd, keeps its
   groups <em>pending</em> and is retried by the reconciler. This matches what database
