@@ -29,6 +29,15 @@
 # failure).  Reset at the end like $QUERY, so that it covers only the
 # comparison it is set for and cannot switch the check off for the rest
 # of a test, as a $strict_diff left unset did.
+#
+# Row order (T-11): the body lines of the three outputs are sorted before
+# the diffs, except when the query has a top-level ORDER BY (one outside
+# parentheses, so not the ORDER BY of a CTE body or a subquery): then the
+# outputs are compared in the order they come, which checks RonSQL's
+# ORDER BY.  Optional: $skip_sort — never sort; $force_sort — sort even
+# with a top-level ORDER BY, for an ORDER BY whose keys leave ties (rows
+# that mysqld and RonSQL may give in either order).  Both reset at the end
+# like $QUERY.
 --source include/have_util_sed.inc
 --source include/have_util_curl.inc
 if ($RONSQL_PREFIX!='')
@@ -69,6 +78,70 @@ if ($RONSQL_PREFIX=='')
 --exec cat $MYSQL_TMP_DIR/ronsql-rdrs-body-1 $MYSQL_TMP_DIR/ronsql-rdrs-body-2 $MYSQL_TMP_DIR/ronsql-rdrs-body-3 > $MYSQL_TMP_DIR/ronsql-rdrs-body
 --let $QUERY_PARAMS = -D test $QUERY_PARAMS
 
+# T-11: is there an ORDER BY outside parentheses?  Quoted text and comments
+# are blanked first.  The answer goes to ronsql-order-by.inc.
+--perl
+use strict;
+use warnings;
+my $dir = $ENV{MYSQL_TMP_DIR} or die "ronsql_compare.inc: MYSQL_TMP_DIR is not set\n";
+open(my $in, '<', "$dir/ronsql-query.sql") or die "ronsql_compare.inc: ronsql-query.sql: $!\n";
+my $q = do { local $/; <$in> } // '';
+close($in);
+my ($top, $depth, $i, $n) = ('', 0, 0, length($q));
+while ($i < $n) {
+  my $c = substr($q, $i, 1);
+  if ($c eq "'" || $c eq '"' || $c eq '`') {
+    my $j = $i + 1;
+    while ($j < $n) {
+      my $d = substr($q, $j, 1);
+      if ($d eq "\\" && $c ne '`') { $j += 2; next; }
+      if ($d eq $c) {
+        if ($j + 1 < $n && substr($q, $j + 1, 1) eq $c) { $j += 2; next; }
+        last;
+      }
+      $j++;
+    }
+    $top .= ' ' if $depth == 0;
+    $i = $j + 1;
+    next;
+  }
+  if ($c eq '#' || substr($q, $i, 3) =~ /^--\s/) {
+    my $j = index($q, "\n", $i);
+    $i = $j < 0 ? $n : $j;
+    next;
+  }
+  if (substr($q, $i, 2) eq '/*') {
+    my $j = index($q, '*/', $i + 2);
+    $top .= ' ' if $depth == 0;
+    $i = $j < 0 ? $n : $j + 2;
+    next;
+  }
+  if ($c eq '(') { $top .= ' ' if $depth == 0; $depth++; $i++; next; }
+  if ($c eq ')') { $depth-- if $depth > 0; $i++; next; }
+  $top .= $c if $depth == 0;
+  $i++;
+}
+my $ordered = $top =~ /\bORDER\s+BY\b/i ? 'yes' : '';
+open(my $out, '>', "$dir/ronsql-order-by.inc") or die "ronsql_compare.inc: ronsql-order-by.inc: $!\n";
+print $out "--let \$_ronsql_top_order_by = $ordered\n";
+close($out);
+EOF
+--source $MYSQL_TMP_DIR/ronsql-order-by.inc
+--remove_file $MYSQL_TMP_DIR/ronsql-order-by.inc
+--let $_ronsql_sort = yes
+if ($_ronsql_top_order_by != '')
+{
+  --let $_ronsql_sort =
+}
+if ($force_sort != '')
+{
+  --let $_ronsql_sort = yes
+}
+if ($skip_sort != '')
+{
+  --let $_ronsql_sort =
+}
+
 # RonSQL doesn't support time zones yet, and works as if in UTC. MySQL uses
 # system time zone, but it seems mtr somehow sets it to +03:00 before starting a
 # test case. Until RonSQL and RDRS supports time zones, we will set UTC time
@@ -86,11 +159,11 @@ if ($canonicalization_perl)
   --exec perl -pe '$canonicalization_perl' $MYSQL_TMP_DIR/mysql.out > $MYSQL_TMP_DIR/mysql.out.canon
   --move_file $MYSQL_TMP_DIR/mysql.out.canon $MYSQL_TMP_DIR/mysql.out
 }
-if ($skip_sort=='')
+if ($_ronsql_sort!='')
 {
   --exec (head -n 1 $MYSQL_TMP_DIR/mysql.out && tail -n +2 $MYSQL_TMP_DIR/mysql.out | sort) > $MYSQL_TMP_DIR/mysql.out.sorted
 }
-if ($skip_sort!='')
+if ($_ronsql_sort=='')
 {
   --exec cp $MYSQL_TMP_DIR/mysql.out $MYSQL_TMP_DIR/mysql.out.sorted
 }
@@ -108,11 +181,11 @@ if ($canonicalization_perl)
   --exec perl -pe '$canonicalization_perl' $MYSQL_TMP_DIR/ronsql-rdrs.out > $MYSQL_TMP_DIR/ronsql-rdrs.out.canon
   --move_file $MYSQL_TMP_DIR/ronsql-rdrs.out.canon $MYSQL_TMP_DIR/ronsql-rdrs.out
 }
-if ($skip_sort=='')
+if ($_ronsql_sort!='')
 {
   --exec (head -n 1 $MYSQL_TMP_DIR/ronsql-rdrs.out && tail -n +2 $MYSQL_TMP_DIR/ronsql-rdrs.out | sort) > $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted
 }
-if ($skip_sort!='')
+if ($_ronsql_sort=='')
 {
   --exec cp $MYSQL_TMP_DIR/ronsql-rdrs.out $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted
 }
@@ -130,11 +203,11 @@ if ($canonicalization_perl)
   --exec perl -pe '$canonicalization_perl' $MYSQL_TMP_DIR/ronsql-cli.out > $MYSQL_TMP_DIR/ronsql-cli.out.canon
   --move_file $MYSQL_TMP_DIR/ronsql-cli.out.canon $MYSQL_TMP_DIR/ronsql-cli.out
 }
-if ($skip_sort=='')
+if ($_ronsql_sort!='')
 {
   --exec (head -n 1 $MYSQL_TMP_DIR/ronsql-cli.out && tail -n +2 $MYSQL_TMP_DIR/ronsql-cli.out | sort) > $MYSQL_TMP_DIR/ronsql-cli.out.sorted
 }
-if ($skip_sort!='')
+if ($_ronsql_sort=='')
 {
   --exec cp $MYSQL_TMP_DIR/ronsql-cli.out $MYSQL_TMP_DIR/ronsql-cli.out.sorted
 }
@@ -192,5 +265,6 @@ if ($QUERY=='')
 --let $canonicalization_script=
 --let $canonicalization_perl=
 --let $skip_sort=
+--let $force_sort=
 --let $known_diff=
 --let $allow_retry=

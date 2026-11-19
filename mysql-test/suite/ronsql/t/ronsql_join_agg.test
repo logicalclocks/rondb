@@ -1079,6 +1079,9 @@ SELECT o.o_custkey, SUM(l.l_quantity) AS total_qty
 FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
 GROUP BY o.o_custkey
 ORDER BY total_qty;|
+# The ORDER BY has ties (customers 200 and 300 both have 75), which
+# mysqld and RonSQL may give in either order: compare sorted.
+--let $force_sort=yes
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
@@ -1097,6 +1100,9 @@ SELECT o.o_custkey, SUM(l.l_quantity) AS total_qty
 FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
 GROUP BY o.o_custkey
 ORDER BY total_qty DESC;|
+# The ORDER BY has ties (customers 200 and 300 both have 75): compare
+# sorted.
+--let $force_sort=yes
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
@@ -1116,6 +1122,9 @@ FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
 GROUP BY o.o_custkey
 ORDER BY total_qty DESC
 LIMIT 2;|
+# The ORDER BY has ties (customers 200 and 300 both have 75, both within
+# the LIMIT; the third has 50): compare sorted.
+--let $force_sort=yes
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
@@ -1173,6 +1182,8 @@ JOIN orders AS o ON o.o_custkey = c.c_id
 JOIN lineitem AS l ON l.l_orderkey = o.o_id
 GROUP BY c.c_name
 ORDER BY total DESC;|
+# The ORDER BY has ties (Bob and Charlie both have 75): compare sorted.
+--let $force_sort=yes
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
