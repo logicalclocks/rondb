@@ -841,7 +841,10 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     exceeded issues no command of any kind there, membership recomputes included, marks
     the cluster&rsquo;s
     groups <em>refused</em> naming the condition, and leaves it to intervention until
-    the kernel defect is fixed. That refusal is deliberately broader than the exact
+    capacity drains. The cap rework (section 14) closes the assert with parse-time
+    refusals on new kernels; the guard stays regardless, since deployed clusters run
+    older kernels for a long time, and on fixed kernels a slipped command gets error
+    1235 instead of killing a node. That refusal is deliberately broader than the exact
     kernel behavior (a single lowering straight to under the cap would pass), because
     predicting which command sequence survives is the kernel&rsquo;s job, not the
     installer&rsquo;s. The read is one new management command (decided 2026-11-19):
@@ -1409,8 +1412,13 @@ defect:</p>
   in <code>config.ini</code> (section 15). The single cap removes the history-dependent
   50&ndash;70% stretch zone (a total above the create cap was reachable only by raising
   existing entries and could not be rebuilt after a drop) and lets large deployments
-  tune the ceiling. The change and the parameter name go through the kernel team in
-  review.</li>
+  tune the ceiling. The rework also closes the restart-oversubscription assert with
+  parse-time refusals (decided 2026-11-19): while a node&rsquo;s total exceeds the cap, a
+  state only a restart onto fewer threads creates, the parse phase refuses any create, a
+  zero-rate one included, and any alter whose post-change total stays over, with error
+  1235, so the commit-time assertions become invariants that never fire; only the parse
+  phase may refuse, which is why the fix lives there. The change, the parameter name and
+  the refusals go through the kernel team in review.</li>
   <li>The 60-second client re-list: a recreated alias is invisible to a connected mysqld
   for up to a minute.</li>
   <li>The query-thread gap of 13.2 (its own branch and review).</li>
@@ -1526,7 +1534,8 @@ targeted RonDB.</p>
     kernel review; registered with a default and handled like
     <code>MaxNoOfSchemaObjects</code> on the data-node side so a binary configuration
     from an older mgmd still starts); creates, raises and the commit-time checks all use
-    the one limit, the restart exemption stays, and the tests cover the default
+    the one limit, the restart exemption stays, parse-time refusals replace the
+    commit-time asserts for an oversubscribed node (section 14), and the tests cover the default
     matching today&rsquo;s create behavior, a raised cap accepting what formerly needed
     create-then-alter, a recreate after a drop at the same total, and an omitted
     parameter on upgrade.</td></tr>
@@ -1598,7 +1607,8 @@ targeted RonDB.</p>
   300-object break never fires; after a restart that permits an oversubscribed total
   (fewer threads), the commit-time cap checks are <code>ndbrequire</code>s that kill the
   data node instead of refusing the command (<code>Dbdict.cpp:34687</code>,
-  <code>:36034-36037</code>; the installer&rsquo;s guard in section 10 works around it);
+  <code>:36034-36037</code>; the cap rework closes it with parse-time refusals, section
+  14, and the installer&rsquo;s guard in section 10 stays for older kernels);
   the rate-decay timer computes a constant 99 ms
   instead of the elapsed time (<code>DbtcMain.cpp:27573-27575</code>); and exhausting
   the dictionary object pool with repeated creates escalates per refused attempt until
