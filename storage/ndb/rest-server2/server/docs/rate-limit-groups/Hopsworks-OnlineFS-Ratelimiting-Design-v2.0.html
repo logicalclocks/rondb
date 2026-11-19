@@ -809,13 +809,22 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     so a resized cluster is reconverted by the next pass that reads it, with one guard:
     after a restart onto <em>fewer</em> threads the already-allocated total can exceed
     the new 70% cap, a state the restart itself permits, and in that state the data node
-    asserts on <em>any</em> rate change, a lowering included
-    (<code>Dbdict.cpp:36034-36037</code>, a defect recorded in section 16). The pass
-    therefore compares the observed allocated total, groups and database quotas
-    together, against the cluster&rsquo;s current alter cap before issuing any
-    <code>USER ALTER</code>, and when it is exceeded issues none, marks the cluster&rsquo;s
+    asserts on any schema change whose post-change total still exceeds the cap: an alter
+    that does not land under it (<code>Dbdict.cpp:36034-36037</code>), and every
+    create&rsquo;s commit, a zero-rate alias included, whose assertion exempts only restart
+    (<code>:34687</code>); a repeated alias <code>SET</code> reaches the same assertion
+    through the management server&rsquo;s alter fallback. (A defect recorded in section
+    16.) The pass
+    therefore compares the observed allocated total, every <code>USER</code> allocation
+    including operator-owned ones plus database quotas,
+    against the cluster&rsquo;s current alter cap before issuing anything, and when it is
+    exceeded issues no command of any kind there, membership recomputes included, marks
+    the cluster&rsquo;s
     groups <em>refused</em> naming the condition, and leaves it to intervention until
-    the kernel defect is fixed. For the main cluster the
+    the kernel defect is fixed. That refusal is deliberately broader than the exact
+    kernel behavior (a single lowering straight to under the cap would pass), because
+    predicting which command sequence survives is the kernel&rsquo;s job, not the
+    installer&rsquo;s. For the main cluster the
     read is <code>ndbinfo.threads</code> over the JDBC connection Hopsworks already
     holds (5.4), and for the secondary region&rsquo;s RonDB over the region-addressed
     admin connection that already exists
@@ -1548,8 +1557,9 @@ CREATE TABLE `hopsworks`.`rate_limit_group_cluster_state` (
   `cluster_name` varchar(127) COLLATE latin1_general_cs NOT NULL,  -- namespace, or region:&lt;region name&gt; (section 10); a namespace alone may use 63
   `state`        varchar(10) NOT NULL,   -- 'PENDING', 'INSTALLED' or 'REFUSED'
   `desired_revision` bigint   NOT NULL,   -- the group revision this row's desired specification was computed from
-  `applied_revision` bigint   DEFAULT NULL,  -- the revision a successful pass applied; INSTALLED means applied = desired
-  `applied_rate` bigint       DEFAULT NULL,  -- what is actually enforced, for partial outcomes (section 10)
+  `desired_spec` mediumtext   NOT NULL,   -- the desired specification: the converted rate (recomputed on resize with no revision change) and the alias assignments
+  `applied_revision` bigint   DEFAULT NULL,  -- the revision a successful pass applied; INSTALLED means applied = desired, spec included
+  `applied_spec` mediumtext   DEFAULT NULL,  -- what is actually enforced: the applied rate and the aliases confirmed applied, so a partial outcome names which accounts are covered by what
   `updated`      bigint      NOT NULL,   -- epoch milliseconds; when the applied state was observed
   PRIMARY KEY (`group_id`, `cluster_name`),
   CONSTRAINT `rlgs_group_fk` FOREIGN KEY (`group_id`) REFERENCES `rate_limit_group` (`id`) ON DELETE CASCADE
