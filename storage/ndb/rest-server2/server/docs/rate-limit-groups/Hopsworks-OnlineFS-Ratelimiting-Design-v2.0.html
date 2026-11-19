@@ -858,7 +858,8 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
     rate-lowering <code>USER ALTER</code>s, then <code>USER SET</code>s and rate-raising
     <code>ALTER</code>s in group-id order, then alias
     <code>SET</code>s in group-id order. Drops go first because a moved alias must be
-    dropped before its <code>SET</code> (13.3), and because every alias and
+    dropped before its <code>SET</code> (13.3), because the kernel refuses a
+    <code>USER DROP</code> while aliases still point at the target (13.3), and because every alias and
     <code>USER</code> holds a dictionary object slot (13.5): freeing slots before taking
     new ones keeps a pass that replaces many members from running out midway. Rate
     releases go before rate consumers for the same reason applied to the budget pool:
@@ -1147,7 +1148,7 @@ transaction runs unmetered, which is today&rsquo;s unknown-name behavior.</p>
   <thead><tr><th scope="col">Property</th><th scope="col">Behavior</th></tr></thead>
   <tbody>
     <tr><td>Budget</td><td>None. Aliases are excluded from <code>m_current_allocated_rate</code> and never count toward the cap (section 14). A thousand aliases cost the pool nothing.</td></tr>
-    <tr><td>Target</td><td>Stored as the target&rsquo;s <em>name</em>, resolved to its object id when the alias is set and re-resolved whenever a <code>USER</code> with that name is created, so a dropped-and-recreated group picks its aliases back up (object ids are reused; a stale id would silently point elsewhere). An alias whose target does not exist currently charges nothing.</td></tr>
+    <tr><td>Target</td><td>Stored as the target&rsquo;s <em>name</em>, resolved to its object id when the alias is set and re-resolved whenever a <code>USER</code> with that name is created, so a group recreated during restart or restore picks its aliases back up (object ids are reused; a stale id would silently point elsewhere). A target with aliases cannot be dropped: <code>USER DROP</code> is refused until the aliases are dropped (13.3), so outside the restart and restore paths, which resolve by name, a resolved id never outlives its object. An alias whose target does not exist currently charges nothing.</td></tr>
     <tr><td>Name cache</td><td>The <code>LIST_DATABASE</code> walk returns aliases alongside users, so mysqld, RDRS and ClusterJ resolve an alias name to its id with no NDB API change.</td></tr>
     <tr><td>Persistence</td><td>Stored in the schema file like quota objects, recreated on system restart, included in <code>USER BACKUP</code> / restore.</td></tr>
     <tr><td>Name rules</td><td>Same as <code>USER</code>: at most 126 characters, no leading <code>$</code>, exact case-sensitive match. An alias and a user may not share a name.</td></tr>
@@ -1186,6 +1187,18 @@ The refusal protects against an out-of-order writer: a command that would silent
 repoint a person&rsquo;s budget must instead fail loudly and be reconciled.
 <code>DROP</code> drops the alias. The management-server side mirrors the existing
 <code>set user</code> family in <code>Services.cpp</code>.</p>
+<p><strong>A <code>USER</code> with aliases cannot be dropped (decided 2026-11-19).</strong>
+<code>USER DROP</code> on a target that aliases still point at is refused with a new
+error telling the operator to drop the aliases first. Object ids are reused, so an alias
+holding the id of a dropped target would silently charge whatever object the id is given
+next; the refusal makes that state impossible to create, from any client, in any command
+order, and no use-time check is needed. The check runs in Dbdict&rsquo;s drop parse,
+inside the same serialized schema transaction as the drop, against a per-target alias
+count maintained by alias <code>SET</code> and <code>DROP</code>; a check in the
+management server alone would race a concurrent alias <code>SET</code>. System restart
+and backup restore are waived, like the rate cap&rsquo;s restart waiver, because they
+rebuild objects in id order and an alias may briefly exist before its target; those
+paths resolve targets by name, so no stale id arises there.</p>
 <p><code>GET</code> shows one alias. <code>LIST</code> takes no arguments and shows every
 alias in the RonDB it is run against, in object-id order; there is no filter by target. The installer
 reconciles every group of the cluster in one pass and needs the whole set, including
@@ -1344,6 +1357,9 @@ defect:</p>
   <code>USER</code> creates on the base version.</li>
   <li>Restart and backup paths for a new object flag, including that restore re-resolves
   targets by name.</li>
+  <li>The alias drop protection (13.3, decided 2026-11-19): the per-target alias count
+  in Dbdict&rsquo;s drop parse, the new error code, and the restart and restore waiver,
+  reviewed with the kernel team.</li>
   <li>The cost of the one extra indirection on the <code>TCKEYREQ</code> path, and
   sign-off on the new management syntax.</li>
   <li>The rate caps (section 14), decided 2026-11-19: the separate create (50%) and
@@ -1449,7 +1465,7 @@ targeted RonDB.</p>
     <tr><td>Hopsworks installer</td><td>new</td><td>Section 10: extend <code>RonDbManagementClient</code> with the <code>USER</code> / <code>USER ALIAS</code> command family (same framing as its quota commands) and per-cluster endpoints from the namespace discovery; the expansion of Who rows into account names (the clip is <code>OnlineFeaturestoreController.onlineDbUsername</code>&rsquo;s); an <code>OnlinefsOperationHandler</code> implementation for membership churn; a primary-gated reconciler on the <code>TrinoReconciler</code> template; state rows per (group, cluster).</td></tr>
     <tr><td>Hopsworks admin page</td><td>new</td><td>Section 3: list + form, cluster picker from discovery, per-cluster state badges, converted rate shown per cluster, the commands a save will run, the delete confirmation.</td></tr>
     <tr><td>RDRS</td><td>exists</td><td>Username mode (merged on the ticket branch): tag the project-user name. <strong>No group code.</strong></td></tr>
-    <tr><td>RonDB kernel</td><td>new</td><td>Section 13: alias flag and single target (by name) on the <code>$name</code> object in Dbdict (not budgeted, persisted, backed up, re-resolved on target recreate); the alias-to-target swap at the three Dbtc admission points; <code>USER ALIAS SET/DROP/GET/LIST</code> in the mgm server (<code>Services.cpp</code>) and client; MTR tests in <code>suite/ndb_quota</code>: lifecycle, enforcement through an alias on both key and scan paths, restart and backup/restore, target drop and recreate. Two additions from the scale
+    <tr><td>RonDB kernel</td><td>new</td><td>Section 13: alias flag and single target (by name) on the <code>$name</code> object in Dbdict (not budgeted, persisted, backed up, re-resolved on target recreate); <code>USER DROP</code> refused while aliases point at the target (per-target alias count in the drop parse, new error, restart and restore waived; 13.3); the alias-to-target swap at the three Dbtc admission points; <code>USER ALIAS SET/DROP/GET/LIST</code> in the mgm server (<code>Services.cpp</code>) and client; MTR tests in <code>suite/ndb_quota</code>: lifecycle, enforcement through an alias on both key and scan paths, restart and backup/restore, a refused target drop with a live alias, target drop and recreate. Two additions from the scale
     measurement (13.5): a <code>MaxNoOfUserObjects</code> configuration parameter added
     to the dictionary object-slot sum, so aliases stop competing with tables for
     <code>MaxNoOfTables</code>, with a kernel default of 0 (today&rsquo;s sharing, tested,
