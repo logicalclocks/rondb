@@ -887,7 +887,7 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col">Rule checked by Hopsworks on save</th><th scope="col">Example</th></tr></thead>
   <tbody>
-    <tr><td>A Who row names a person or a project, not both; a group has at least one Who row.</td><td>A row with <code>uid = 1001</code> and <code>project_id = 11</code>. Rejected.</td></tr>
+    <tr><td>A Who row names a person or a project, not both; a group has at least one Who row, so an edit that removes every Who row is refused (Delete group removes a group).</td><td>A row with <code>uid = 1001</code> and <code>project_id = 11</code>. Rejected.</td></tr>
     <tr><td>No ties: two groups with the same cluster scope may not cover the same person. A person is &ldquo;covered&rdquo; by a project row if they have any <code>project_team</code> row for that project. A named-cluster group and an every-cluster group may overlap: the named one wins on its cluster (7.4).</td><td>Group X: {Mary}, every cluster. Group Y: {project 11}, every cluster. Mary is in both. Rejected.<br><br>Group X: {project 13}, every cluster, 20%. Group Z: {project 13}, cluster M, 30%. Allowed: on M the members charge Z, elsewhere X.</td></tr>
     <tr><td>Budget between 0 and 50. RonDB will not accept one entry above 50%.</td><td>A group at 60%. Rejected.</td></tr>
     <tr><td>The cluster name, when set, should name a discovered cluster; a free-text name is accepted but flagged.</td><td>A group on cluster <code>mrketing</code> (typo). Saved, shown <em>pending</em> with a &ldquo;no such cluster&rdquo; hint.</td></tr>
@@ -909,10 +909,23 @@ administration, and nothing in the model requires more than one role.</p>
   <tbody>
     <tr><td>A group</td><td>Admin deletes <code>mary_mike_rl</code>.</td><td>Its Who rows and state rows are deleted and its row is marked deleted. The immediate pass runs <code>USER DROP</code> and drops the aliases; later passes repeat the drop on any cluster that still holds them. Mary&rsquo;s and Mike&rsquo;s work falls back to unmetered.</td></tr>
     <tr><td>A person or project</td><td>Mike leaves the company; user 1002 is deleted.</td><td>His row in group 2 disappears (FK cascade). The group now covers only Mary; his aliases are dropped by the next pass. Harmless.</td></tr>
+    <tr><td>The person or project that is a group&rsquo;s only Who row</td><td>The Data Owner deletes project Recommender2, the only Who row of <code>recommender2_rl</code>.</td><td>The group is deleted with it, in the same transaction: its state rows are deleted and its row is marked deleted, exactly as a group delete does, and the next pass drops its <code>USER</code> and aliases. The project-delete confirmation names the group beforehand.</td></tr>
     <tr><td>Nothing, but membership changes</td><td>Bob joins Recommender.</td><td>No group rows change. The operation-log handler sees Bob&rsquo;s new account and, because project 13 is in group 1, issues his <code>USER ALIAS SET</code>; his keys and SQL logins are covered from that moment.</td></tr>
     <tr><td>A cluster</td><td>The satellite namespace for cluster M is torn down.</td><td>Groups naming M show <em>pending</em> (not discovered). Nothing is dropped anywhere else; recreating the namespace reinstalls on the next reconcile.</td></tr>
   </tbody>
 </table></div>
+<p>A group that loses its last Who row to a delete is deleted, because a group that
+covers nobody would keep its budget counted against the 50% cap for nothing. The rule
+lives in the backend, so every caller gets it. A project is deleted by its Data Owner
+through <code>POST /project/{projectId}/delete</code>
+(<code>hopsworks-api/&hellip;/project/ProjectService.java:768-786</code>), from the UI, the
+REST API or the Python client; a user is deleted by an administrator through
+<code>DELETE /admin/users/{id}</code>
+(<code>hopsworks-api/&hellip;/admin/UsersAdminResource.java:357-372</code>), which only
+accepts users without projects. Both paths find the groups whose only Who row the
+delete removes and mark them deleted in the same transaction; the FK cascade removes the
+Who row itself. The project-delete and user-delete confirmations in the UI name those
+groups. A group with other Who rows only loses the one row.</p>
 <p class="meta">Version 1.0 needed a <code>data_scope</code> column here, to keep a
 cascade from a dropped feature group from silently widening a group to &ldquo;all data&rdquo;.
 With no data rows there is no such cascade and no column: a group&rsquo;s coverage can only
@@ -1235,7 +1248,7 @@ targeted RonDB.</p>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col">Area</th><th scope="col">Status</th><th scope="col">Work, and how</th></tr></thead>
   <tbody>
-    <tr><td>Hopsworks tables</td><td>new</td><td>Flyway migration with the two group tables and the state table (appendix); JPA entities; the save rules of section 11 in the controller; re-check &ldquo;no ties&rdquo; in the project-membership path (<code>ProjectController</code>, where <code>createDatabaseUser</code> is already called on member add).</td></tr>
+    <tr><td>Hopsworks tables</td><td>new</td><td>Flyway migration with the two group tables and the state table (appendix); JPA entities; the save rules of section 11 in the controller; re-check &ldquo;no ties&rdquo; in the project-membership path (<code>ProjectController</code>, where <code>createDatabaseUser</code> is already called on member add); in the project-delete and user-delete paths, mark deleted every group whose only Who row the delete removes, and name those groups in the two delete confirmations (section 11).</td></tr>
     <tr><td>Hopsworks installer</td><td>new</td><td>Section 10: extend <code>RonDbManagementClient</code> with the <code>USER</code> / <code>USER ALIAS</code> command family (same framing as its quota commands) and per-cluster endpoints from the namespace discovery; the expansion of Who rows into account names (the clip is <code>OnlineFeaturestoreController.onlineDbUsername</code>&rsquo;s); an <code>OnlinefsOperationHandler</code> implementation for membership churn; a primary-gated reconciler on the <code>TrinoReconciler</code> template; state rows per (group, cluster).</td></tr>
     <tr><td>Hopsworks admin page</td><td>new</td><td>Section 3: list + form, cluster picker from discovery, per-cluster state badges, converted rate shown per cluster, the commands a save will run, the delete confirmation.</td></tr>
     <tr><td>RDRS</td><td>exists</td><td>Username mode (merged on the ticket branch): tag the project-user name. <strong>No group code.</strong></td></tr>
@@ -1368,7 +1381,10 @@ code, as the existing sharing tables do; the unique keys prevent duplicate rows.
 A group row is never deleted (section 10): a group delete deletes its Who rows and state
 rows itself and sets <code>deleted</code>, so the two <code>ON DELETE CASCADE</code>
 constraints from <code>rate_limit_group</code> do not fire on that path, and the unique
-<code>name</code> key keeps a deleted name for reuse by the same row.
+<code>name</code> key keeps a deleted name for reuse by the same row. The
+<code>uid</code> and <code>project_id</code> cascades do fire: a user or project delete
+removes its Who rows, and a group left with none is marked deleted in the same
+transaction (section 11).
 Version 1.0&rsquo;s <code>rate_limit_group_data</code> and
 <code>rate_limit_group_cluster_override</code> tables and the <code>data_scope</code>
 column are gone: data rows with the budgets, the override into the <code>cluster</code>
