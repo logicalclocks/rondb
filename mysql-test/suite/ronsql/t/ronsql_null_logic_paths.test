@@ -109,7 +109,9 @@ INSERT INTO nl_p (id, flt, gr, s)
 # query goes through $QUERY_FILE (the predicates hold quotes), then the
 # same query runs on mysqld for the expected result.
 --let NULL_LOGIC_DIR=$MYSQL_TMP_DIR
---perl
+# Not the default EOF terminator: mysqltest ends the block at the first
+# EOF anywhere in its text, and the generator below writes EOF lines.
+--perl END_OF_PERL
 use strict;
 use warnings;
 use File::Spec;
@@ -250,7 +252,7 @@ for my $placement (@placements) {
   }
 }
 close $out or die "Cannot close $path: $!\n";
-EOF
+END_OF_PERL
 --let NULL_LOGIC_DIR=
 
 DELIMITER |;
