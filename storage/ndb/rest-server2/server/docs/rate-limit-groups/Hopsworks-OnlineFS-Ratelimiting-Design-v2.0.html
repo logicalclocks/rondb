@@ -470,7 +470,16 @@ account, which is never metered.</p>
   namespace labeled <code>hopsworks.ai/onlinefs-cluster</code>; Hopsworks enumerates them
   with one API call (<code>KubeBackupController.java:74</code> defines the label,
   <code>:503</code> lists the namespaces; shipped with the HWORKS-2638 backup API, which
-  offers per-satellite backup targets generated from exactly this list). The main
+  offers per-satellite backup targets generated from exactly this list). Discovery adopts
+  every labeled namespace, so the stated platform assumption is <strong>one Hopsworks
+  installation per Kubernetes cluster</strong> (decided 2026-11-19), the same assumption
+  the backup API shipped with (its listing says so,
+  <code>KubeBackupController.java:497</code>). Two installations sharing one Kubernetes
+  cluster would each adopt the other&rsquo;s satellites, and two groups with the same name
+  would fight over the same <code>USER</code> there; the label&rsquo;s value cannot
+  distinguish owners today, since deploy.hopsworks.ai sets it to the satellite&rsquo;s own
+  namespace (<code>onlinefs_cluster_deployer.go:86</code>). If that topology ever becomes
+  real, an owner label naming the Hopsworks install namespace is the additive fix. The main
   cluster&rsquo;s namespace is the <code>HOPS_HELM_INSTALL_NAMESPACE</code> setting
   (<code>KubeBackupController.java:93</code>). Inside each such namespace, rondb-helm
   creates a stable mgmd Service: <code>headless-mgmds</code>, port 1186
