@@ -6,6 +6,19 @@
 # only; the MySQL baseline runs the bare query.  Requires
 # $suppress_ronsql_cli=yes since the ronsql_cli invocation would need the
 # same prefixing.  Reset at the end like $QUERY.
+#
+# Every comparison is strict (T-1, T-24): a difference between ronsql_cli
+# and RDRS, or between mysqld and RDRS, fails the test instead of being
+# recorded into the .result file.  $strict_diff is still accepted (many
+# tests set it once, and it persists) but changes nothing.
+#
+# Optional: $known_diff — the name of a file in suite/ronsql/known_diffs/
+# that holds the exact diff -u output of mysqld against RDRS for a RonSQL
+# bug that is still present.  The file name starts with the finding ID
+# (e.g. Q-6_...).  The diff must equal the file: a changed wrong value, and
+# a fixed one, fail the test.  On success the include prints one line,
+# "KNOWN-DIFF <file>", instead of the diff.  ronsql_cli against RDRS stays
+# strict.  Reset at the end like $QUERY.
 --source include/have_util_sed.inc
 --source include/have_util_curl.inc
 if ($RONSQL_PREFIX!='')
@@ -115,29 +128,27 @@ if ($skip_sort!='')
 {
   --exec cp $MYSQL_TMP_DIR/ronsql-cli.out $MYSQL_TMP_DIR/ronsql-cli.out.sorted
 }
-if ($strict_diff=='')
-{
-# todo The "|| true" at the end makes this test succeed no matter what the
-# results are. Remove it when possible.
---exec diff -u --label ronsql-cli.out $MYSQL_TMP_DIR/ronsql-cli.out.sorted --label ronsql-rdrs.out $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted || true
-}
-if ($strict_diff!='')
-{
 --exec diff -u --label ronsql-cli.out $MYSQL_TMP_DIR/ronsql-cli.out.sorted --label ronsql-rdrs.out $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted
-}
 }
 
 --echo
 --echo == Diff ==
-if ($strict_diff=='')
-{
-# todo The "|| true" at the end makes this test succeed no matter what the
-# results are. Remove it when possible.
---exec diff -u --label mysql.out $MYSQL_TMP_DIR/mysql.out.sorted --label ronsql.out $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted || true
-}
-if ($strict_diff!='')
+if ($known_diff=='')
 {
 --exec diff -u --label mysql.out $MYSQL_TMP_DIR/mysql.out.sorted --label ronsql.out $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted
+}
+if ($known_diff!='')
+{
+--let $_ronsql_known_diff_file = $MYSQL_TEST_DIR/suite/ronsql/known_diffs/$known_diff
+--file_exists $_ronsql_known_diff_file
+--error 0,1
+--exec diff -u --label mysql.out $MYSQL_TMP_DIR/mysql.out.sorted --label ronsql.out $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted > $MYSQL_TMP_DIR/ronsql-known.diff
+# On a mismatch the failure output shows the diff against the known diff,
+# then the whole diff of this run (the new content of the file if the
+# change is intended; remove $known_diff when the bug is fixed).
+--exec diff -u --label known_diffs/$known_diff $_ronsql_known_diff_file --label this-run $MYSQL_TMP_DIR/ronsql-known.diff || (echo "The diff of mysqld and RonSQL is not the known diff $known_diff. The diff of this run:"; cat $MYSQL_TMP_DIR/ronsql-known.diff; exit 1)
+--echo KNOWN-DIFF $known_diff
+--remove_file $MYSQL_TMP_DIR/ronsql-known.diff
 }
 --remove_file $MYSQL_TMP_DIR/ronsql-query.sql
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
@@ -166,3 +177,4 @@ if ($QUERY=='')
 --let $canonicalization_script=
 --let $canonicalization_perl=
 --let $skip_sort=
+--let $known_diff=

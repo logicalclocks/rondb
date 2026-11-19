@@ -5,7 +5,8 @@
 # bound to keys of the deterministic data set, and compared between the
 # mysql client and RonSQL via suite/ronsql/include/ronsql_compare.inc.
 # Known engine rejections are asserted through ronsql_cli; known wrong
-# results are recorded non-strictly; hazards (crashes) are commented out.
+# results are asserted against their diff in suite/ronsql/known_diffs;
+# hazards (crashes) are commented out.
 # Statements with AVG or DECIMAL/DOUBLE/FLOAT values compare with trailing
 # fractional zeros stripped on both sides (formatting findings F2/F3).
 # Findings: suite/ronsql_fs/findings/smoke.md.
@@ -955,8 +956,8 @@ SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) 
 --write_file $QUERY_FILE
 SELECT SUM(`dec_big`) AS `dec_sum`, MAX(`dec_big`) AS `dec_max` FROM `edge_big_1` WHERE `entity_id` = 2;
 EOF
-# known wrong result (F5): DECIMAL precision loss — recorded, not asserted
---let $strict_diff=
+# known wrong result (F5): DECIMAL precision loss — the diff must equal the known diff
+--let $known_diff=F5_fs_templates_EDGE_decimal_large_0.diff
 # numeric canonicalization (F2/F3): trailing fractional zeros stripped on both sides
 --let $canonicalization_script=s/(\.[0-9]*[1-9])0+(\t|\$)/\1\2/g;s/\.0+(\t|\$)/\1/g
 --source suite/ronsql/include/ronsql_compare.inc

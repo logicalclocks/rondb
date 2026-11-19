@@ -32,12 +32,7 @@ GROUP BY sint8;
 Number of output lines, including header: 2
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,2 +1,2 @@
- sint8	div_overflow
--7	0.000000000000000000000000000000
-+7	0
+KNOWN-DIFF Q-6_overflow_division_underflow.diff
 ==========
 
 

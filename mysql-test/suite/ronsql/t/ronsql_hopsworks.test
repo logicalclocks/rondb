@@ -17,7 +17,9 @@ SET time_zone = "+00:00";
 --enable_query_log
 --let $EXPLAIN_FILE=$MYSQL_TMP_DIR/ronsql-explain.out
 
-# todo: After data node can send DECIMAL type, remove diffs from result file.
+# The DECIMAL aggregates the data nodes compute as doubles (Q-6) are
+# asserted against their known diffs (suite/ronsql/known_diffs, see
+# ronsql_hopsworks.pl); remove them when the data nodes send DECIMALs.
 --source $TEST_INC_FILE
 
 --disable_query_log

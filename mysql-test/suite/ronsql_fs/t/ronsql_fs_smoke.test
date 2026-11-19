@@ -8,13 +8,10 @@
 # shape of shape_catalog.md through the MySQL-vs-RonSQL differential
 # harness (suite/ronsql/include/ronsql_compare.inc).
 #
-# Strictness: the single-table shapes (S1, S2, S6b) are asserted
-# ($strict_diff=yes).  The shapes whose engine support this phase is meant
-# to DISCOVER (S3 batch IN, S6 CTE-form collect = risk R1, S7 snowflake,
-# S8b LEFT snowflake, string keys, hash-only PK, TIMESTAMP(3), composite
-# keys) run with $strict_diff unset: the diff (or the RonSQL error text)
-# is RECORDED in the .result file, not asserted.  E3 turns the green ones
-# strict and moves the rejected ones to the expectation table.
+# Strictness: ronsql_compare.inc asserts every comparison (T-1, T-24); the
+# $strict_diff settings below are kept but change nothing.  A known wrong
+# result is asserted against its exact diff in suite/ronsql/known_diffs
+# ($known_diff), so a changed wrong value fails instead of being recorded.
 #
 # Queries that contain a quoted literal use the QUERY_FILE form: the
 # `let $QUERY=` path of ronsql_compare.inc passes the text through a
@@ -370,6 +367,11 @@ SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) 
 --echo === PROBE EDGE-BIG-B: signed limits (SUM = 0) and large DECIMAL(18,2) ===
 let $QUERY=
 SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) AS `big_max`, SUM(`dec_big`) AS `dec_sum`, MAX(`dec_big`) AS `dec_max` FROM `edge_big_1` WHERE `entity_id` = 2;|
+# Known wrong result F5 (findings/BUGS_TODO.md; Q-6 in
+# storage/ndb/claude_files/ronsql_executor/README.md): the data nodes
+# aggregate DECIMAL(18,2) as a double, so MAX 999999999999999.99 prints
+# 1000000000000000.00.  The diff must stay exactly the known one.
+--let $known_diff=F5_fs_smoke_edge_big_b.diff
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result

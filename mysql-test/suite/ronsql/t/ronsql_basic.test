@@ -105,19 +105,19 @@ SELECT cchar as char_gr
 FROM api_scan
 WHERE sint8 > 1
 GROUP BY cchar;|
-#todo Remove this canonicalization when DECIMAL is fixed.
-# Round every decimal number to 2 places on all outputs.  Three effects
-# make the raw outputs non-deterministic or non-identical here: RonSQL
-# evaluates literal division (14/3, 18/5) in double where MySQL uses
-# DECIMAL; both clients print doubles in shortest-round-trip form (equal
-# sums can still render with different digit counts); and the float
-# SUM's fragment-merge order varies run to run (~1e-6 absolute jitter),
-# which occasionally changed the rendered length and escaped the old sed
-# truncation (it only handled 9-12 decimal digits — a 7-8 digit
-# rendering, or a short one from trailing-zero drop, slipped through).
-# sprintf ROUNDING at 2 decimals — far coarser than the jitter —
-# normalizes all of these identically on every side.
---let $canonicalization_perl=s/(-?[0-9]+\.[0-9]+)/sprintf("%.2f", \$1)/ge;
+# Known bug Q-6 (storage/ndb/claude_files/ronsql_executor/README.md, T-1):
+# an integer / is a DECIMAL in mysqld, with 4 more digits (14 / 3 is
+# 4.666666666 inside, printed 4.6667), but RonSQL divides in double on the
+# data nodes and prints the double: max(14 / 3 + 18 / 5 * sint16) is
+# 117469.06666666668 where mysqld prints 117469.0667, and
+# max((sint8 + 3) / sint8) 2.5 where mysqld prints 2.5000.  The diff must
+# stay exactly the known one.
+# The float SUM is rounded to 2 decimals on every side, and only that
+# column: it is a sum of doubles on both sides, whose last digits follow
+# the order the rows (mysqld) and the fragments (RonSQL) are added in.
+# RonSQL's 14 / 3 changes it by about 3e-7.
+--let $canonicalization_perl=s/^((?:[^\t]*\t){2})(-?[0-9]+\.[0-9]+)/\$1.sprintf("%.2f", \$2)/e;
+--let $known_diff=Q-6_basic_division.diff
 --source suite/ronsql/include/ronsql_compare.inc
 
 
@@ -162,7 +162,13 @@ SELECT cchar as char_gr
 FROM api_scan
 WHERE sint8 <= 1
 GROUP BY cchar;|
-#todo Remove this canonicalization when DECIMAL is fixed
+# Not a value rewrite: t3_min is the MIN of (cfloat DIV 1234) * cfloat,
+# which is 0 * cfloat for -1234 < cfloat < 1234: +0 for a positive cfloat
+# and -0 for a negative one, in mysqld (Item_func_mul::real_op) as in RonSQL
+# (RegMulReg).  Every group has both, MIN keeps the first of two equal
+# values, and which zero comes first depends on the row order (mysqld) and
+# the fragment order (RonSQL), so each side prints 0 or -0 run by run.
+# Only that sign is normalized; every other value is compared as printed.
 --let $canonicalization_script=s/\t-0\t/\t0\t/;
 --source suite/ronsql/include/ronsql_compare.inc
 
@@ -206,8 +212,21 @@ WHERE (sint8 >= -20 and sint8 < 5
        or sint8 > 97 and sint8 <= 109)
       and (sint32 < -100000 or sint32 > 100000)
 GROUP BY sint8;|
-#todo Remove this canonicalization when DECIMAL is fixed
---let $canonicalization_script=s/\t/\.0000\t/g;s/(\.[0-9]+)\.(0000\t)/\1\2/g;s/(\.[0-9])[0-9]*(\t|\$)/\1\2/g;s/2524649312/2524649310/;
+# Known bug Q-6 (storage/ndb/claude_files/ronsql_executor/README.md, T-1):
+# every / here is a DECIMAL in mysqld (4 more digits, kept as 9 inside)
+# and a double in RonSQL, so:
+#   a1t, a2t, c   print the double (-63323.55, 15586380.630254125) where
+#                 mysqld prints the DECIMAL (-63323.5500, 15586380.6303);
+#   a3t           differs in value for sint8 = 103: mysqld divides sint32
+#                 by sint16 / sint8 cut to 9 digits and gets -2524649312,
+#                 RonSQL divides by the double and gets -2524649310;
+#   b1t, b2t      agree.
+# The diff must stay exactly the known one.
+# b3t, a SUM of / results, is rounded to an integer on every side, and only
+# that column: RonSQL sums doubles in fragment order, and mysqld rounds the
+# DECIMAL sum to 4 digits after each row, in row order.
+--let $canonicalization_perl=s/^((?:[^\t]*\t){6})(-?[0-9]+\.[0-9]+)/\$1.sprintf("%.0f", \$2)/e;
+--let $known_diff=Q-6_basic_mixed_division.diff
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo Mixed integer operations:

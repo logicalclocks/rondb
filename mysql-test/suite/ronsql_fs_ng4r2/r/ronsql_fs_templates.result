@@ -1492,12 +1492,7 @@ SELECT SUM(`dec_big`) AS `dec_sum`, MAX(`dec_big`) AS `dec_max` FROM `edge_big_1
 Number of output lines, including header: 2
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,2 +1,2 @@
- dec_sum	dec_max
--0	999999999999999.99
-+0	1000000000000000
+KNOWN-DIFF F5_fs_templates_EDGE_decimal_large_0.diff
 ==========
 
 

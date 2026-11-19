@@ -564,12 +564,7 @@ SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) 
 Number of output lines, including header: 2
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,2 +1,2 @@
- big_sum	big_min	big_max	dec_sum	dec_max
--0	-9223372036854775807	9223372036854775807	0.00	999999999999999.99
-+0	-9223372036854775807	9223372036854775807	0.00	1000000000000000.00
+KNOWN-DIFF F5_fs_smoke_edge_big_b.diff
 ==========
 
 

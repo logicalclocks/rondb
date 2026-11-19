@@ -81,10 +81,17 @@ order by
         l_returnflag,
         l_linestatus;
 EOF
+# Known bug Q-6 (storage/ndb/claude_files/ronsql_executor/README.md, T-1):
+# the data nodes compute DECIMAL arithmetic in double, and the printer has
+# no DECIMAL scale for an aggregate over an expression, so
+# sum(l_extendedprice * (1 - l_discount)) prints the double
+# (26777.986559999998, 20321.500799999998, 25748.064) where mysqld prints
+# the exact DECIMAL (26777.986560, 20321.5008, 25748.0640).  The diff must
+# stay exactly the known one.
+--let $known_diff=Q-6_dbt3_1_2_q1.diff
 --source suite/ronsql/include/ronsql_compare.inc
 #todo:
 # - EXPLAIN and make sure it does an index scan
-# - Conform output format for aggregation over DECIMAL. Probably, we first need to remove convert-to-double shortcut in NdbAggregator.
 
 
 --echo Cleanup
