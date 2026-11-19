@@ -1545,11 +1545,14 @@ targeted RonDB.</p>
 <section id="open">
 <h2>16. Open decisions</h2>
 <ol>
-  <li><strong>Externally-managed RonDB.</strong> A cluster whose mgmd Hopsworks cannot
-  reach keeps its groups <em>pending</em> (section 10). The <code>mgm</code>
+  <li><strong>Externally-managed RonDB</strong>, decided 2026-11-19: a cluster whose
+  mgmd Hopsworks cannot reach keeps its groups <em>pending</em> (section 10), the
+  documented behavior, matching database quotas on such clusters; the groups install on
+  the first pass after the path appears. The <code>mgm</code>
   <code>ExternalName</code> Service (5.4) reaches it when the deployment&rsquo;s networking
-  allows. Accept the pending state as the documented behavior, matching database quotas
-  on such clusters, or require the network path for the feature.</li>
+  allows. Requiring the network path was rejected: a save&rsquo;s validity would depend
+  on current network conditions, against section 7.1&rsquo;s rule that a group may be
+  created before its cluster is reachable.</li>
   <li><strong>Service accounts</strong> (7.2), decided 2026-11-19: the person expansion
   excludes exactly Hopsworks&rsquo; service users, by the existing
   <code>isServiceUser</code> check (<code>OperationHandlerHelper.java:72-76</code>):
