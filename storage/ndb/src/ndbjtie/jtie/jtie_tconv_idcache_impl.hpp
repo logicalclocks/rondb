@@ -31,6 +31,7 @@
 
 #include <assert.h>  // not using namespaces yet
 #include <jni.h>
+#include <atomic>
 
 // #include "helpers.hpp"
 
@@ -118,9 +119,9 @@ inline jfieldID jniGetMemberID<jfieldID>(JNIEnv *env, jclass cls,
   template <>                                                  \
   unsigned long MemberId<T>::nIdLookUps = 0;                   \
   template <>                                                  \
-  jclass MemberIdCache<T>::gClassRef = NULL;                   \
+  std::atomic<jclass> MemberIdCache<T>::gClassRef{nullptr};    \
   template <>                                                  \
-  T::memberID_t MemberIdCache<T>::mid = NULL;                  \
+  std::atomic<T::memberID_t> MemberIdCache<T>::mid{nullptr};   \
   template struct MemberId<T>;                                 \
   template struct MemberIdCache<T>;
 
@@ -139,9 +140,9 @@ inline jfieldID jniGetMemberID<jfieldID>(JNIEnv *env, jclass cls,
   template <>                                                  \
   unsigned long MemberId<T>::nIdLookUps = 0;                   \
   template <>                                                  \
-  jclass MemberIdCache<T>::gClassRef = NULL;                   \
+  std::atomic<jclass> MemberIdCache<T>::gClassRef{nullptr};    \
   template <>                                                  \
-  T::memberID_t MemberIdCache<T>::mid = NULL;                  \
+  std::atomic<T::memberID_t> MemberIdCache<T>::mid{nullptr};   \
   template struct MemberId<T>;                                 \
   template struct MemberIdCache<T>;
 
@@ -296,19 +297,30 @@ struct MemberIdCache : MemberId<M> {
 
   static ID_t getId(JNIEnv *env, jclass cls) {
     assert(cls != NULL);
-    // the cached member id is only valid along with global class ref
-    assert(env->IsSameObject(gClassRef, NULL) == JNI_FALSE);
+    // a cached member id is only valid along with its global class ref; a
+    // failed lookup publishes neither, and NULL returns with the exception
+    // still pending
+    ID_t id = mid.load(std::memory_order_relaxed);
+    assert(id == NULL ||
+           env->IsSameObject(gClassRef.load(std::memory_order_acquire),
+                             NULL) == JNI_FALSE);
     (void)env;
     (void)cls;
-    return mid;
+    return id;
   }
 
  protected:
+  // Threads may call setClass() concurrently on first use. setClass()
+  // stores mid before it publishes gClassRef with release ordering, and
+  // getClass() loads gClassRef with acquire ordering, so a thread that
+  // sees a non-NULL class ref also sees its member id. Otherwise getId()
+  // could return NULL with no exception pending.
+
   // the cached global (weak or strong) class ref
-  static jclass gClassRef;
+  static std::atomic<jclass> gClassRef;
 
   // the cached member id (only valid along with global class ref)
-  static ID_t mid;
+  static std::atomic<ID_t> mid;
 };
 
 /**
@@ -324,8 +336,13 @@ struct MemberIdWeakCache : MemberIdCache<M> {
     assert(cls != NULL);
 
     // multithreaded access ok, sets same class/member object
-    Base::gClassRef = static_cast<jclass>(env->NewWeakGlobalRef(cls));
-    Base::mid = A::getId(env, cls);
+    auto id = A::getId(env, cls);
+    // A failed lookup leaves an exception pending: publishing the class
+    // then would make every later getId() return NULL with none pending.
+    if (id == NULL) return;
+    Base::mid.store(id, std::memory_order_relaxed);
+    Base::gClassRef.store(static_cast<jclass>(env->NewWeakGlobalRef(cls)),
+                          std::memory_order_release);
   }
 
   using Base::getId;  // use as inherited (some compiler wanted this)
@@ -334,7 +351,8 @@ struct MemberIdWeakCache : MemberIdCache<M> {
     // a weak global class ref may refer to a freed object at any time
     //   (i.e.: env->IsSameObject(Base::gClassRef, NULL))
     // unless we've obtained a strong (local or global) non-NULL class ref
-    jclass cls = static_cast<jclass>(env->NewLocalRef(Base::gClassRef));
+    jclass cls = static_cast<jclass>(
+        env->NewLocalRef(Base::gClassRef.load(std::memory_order_acquire)));
     if (cls == NULL) {
       // global class ref was NULL or referencing a freed object
       cls = A::getClass(env);
@@ -366,14 +384,19 @@ struct MemberIdStrongCache : MemberIdCache<M> {
     assert(cls != NULL);
 
     // multithreaded access ok, sets same class/member object
-    Base::gClassRef = static_cast<jclass>(env->NewGlobalRef(cls));
-    Base::mid = A::getId(env, cls);
+    auto id = A::getId(env, cls);
+    // A failed lookup leaves an exception pending: publishing the class
+    // then would make every later getId() return NULL with none pending.
+    if (id == NULL) return;
+    Base::mid.store(id, std::memory_order_relaxed);
+    Base::gClassRef.store(static_cast<jclass>(env->NewGlobalRef(cls)),
+                          std::memory_order_release);
   }
 
   using Base::getId;  // use as inherited (some compiler wanted this)
 
   static jclass getClass(JNIEnv *env) {
-    jclass cls = Base::gClassRef;
+    jclass cls = Base::gClassRef.load(std::memory_order_acquire);
     if (cls == NULL) {
       cls = A::getClass(env);
       if (cls == NULL) {
@@ -406,7 +429,7 @@ struct MemberIdPreloadedWeakCache : MemberIdWeakCache<M> {
 
   static jclass getClass(JNIEnv *env) {
     // weak global class ref is assumed to be preloaded and valid
-    jclass cls = Base::gClassRef;
+    jclass cls = Base::gClassRef.load(std::memory_order_acquire);
     assert(env->IsSameObject(cls, NULL) == JNI_FALSE);
     return cls;
   }
@@ -432,7 +455,7 @@ struct MemberIdPreloadedStrongCache : MemberIdStrongCache<M> {
 
   static jclass getClass(JNIEnv *env) {
     // strong global class ref is assumed to be preloaded and valid
-    jclass cls = Base::gClassRef;
+    jclass cls = Base::gClassRef.load(std::memory_order_acquire);
     assert(env->IsSameObject(cls, NULL) == JNI_FALSE);
     return cls;
   }
