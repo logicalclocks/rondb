@@ -1238,7 +1238,9 @@ follows live alias objects: it changes at alias create commit and alias drop com
 never at parse, so a failed or aborted operation leaves it untouched, and a repeated
 <code>SET</code> that falls back to the management server&rsquo;s ALTER changes no
 object and does not count; the target resolver also refuses a target whose drop is
-pending in the same schema transaction, a state it does not check today. System restart
+pending in the same schema transaction, and the drop refuses a target that a pending
+alias create in the same transaction references, both orders of a state nothing checks
+today, since the count itself moves only at commit. System restart
 is waived (the kernel&rsquo;s restart flag, set only on node and system restart), since
 restart rebuilds objects in id order and an alias may briefly exist before its target,
 resolving by name; the count is rebuilt during that re-resolution. Backup restore needs
