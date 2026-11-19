@@ -2982,6 +2982,16 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
                                    false) == -1)) {
         return false;
       }
+#ifdef DBTUP_HUGO_ROW_CHECK
+      if (unlikely(g_dbtup_hugo_row_check_table.load(
+                       std::memory_order_relaxed) == regFragPtr->fragTableId)) {
+        hugo_row_check(&req_struct, regOperPtr, regTabPtr, regFragPtr,
+                       disk_page != RNIL ||
+                           (req_struct.m_tuple_ptr->m_header_bits &
+                            Tuple_header::DISK_INLINE) != 0,
+                       lqhOpPtrP);
+      }
+#endif
 
       if (tuple_ptr != nullptr) {
         jam();
@@ -3133,6 +3143,16 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
                                    &req_struct, disk_page != RNIL) == -1)) {
         return false;
       }
+#ifdef DBTUP_HUGO_ROW_CHECK
+      if (unlikely(g_dbtup_hugo_row_check_table.load(
+                       std::memory_order_relaxed) == regFragPtr->fragTableId)) {
+        hugo_row_check(&req_struct, regOperPtr, regTabPtr, regFragPtr,
+                       disk_page != RNIL ||
+                           (req_struct.m_tuple_ptr->m_header_bits &
+                            Tuple_header::DISK_INLINE) != 0,
+                       lqhOpPtrP);
+      }
+#endif
       /*
        * Here we set op_type from ZINSERT_TTL to ZUPDATE to make
        * the following trigger stuffs regard this operation as a

@@ -296,8 +296,12 @@ Dbtup::~Dbtup() {
 		MAX_NODES);
   
   deallocRecord((void **)&tablerec,"Tablerec",
-		sizeof(Tablerec), 
+		sizeof(Tablerec),
 		cnoOfTablerec);
+#ifdef DBTUP_HUGO_ROW_CHECK
+  delete[] m_hugo_row_check_buf;
+  m_hugo_row_check_buf = nullptr;
+#endif
 }//Dbtup::~Dbtup()
 
 Dbtup::Apply_undo::Apply_undo() {

@@ -654,6 +654,8 @@ int runRestarter(NDBT_Context *ctx, NDBT_Step *step) {
   int randnode = ctx->getProperty("RandNode", (unsigned)0);
   /* Set again on each restarted node, since a restart loses them */
   const bool nrKeyDebug = ctx->getProperty("NrKeyDebug", (unsigned)0) != 0;
+  const bool hugoRowCheck =
+      ctx->getProperty("HugoRowCheck", (unsigned)0) != 0;
   const int restartErrorInsert =
       ctx->getProperty("RestartErrorInsert", (unsigned)0);
   NdbRestarter restarter;
@@ -696,6 +698,18 @@ int runRestarter(NDBT_Context *ctx, NDBT_Step *step) {
       const int dump[] = {DumpStateOrd::LqhNrKeyDebug, 1};
       if (restarter.dumpStateOneNode(nodeId, dump, 2)) {
         g_err << "Failed to turn on NR key debug in node " << nodeId << endl;
+        result = NDBT_FAILED;
+        break;
+      }
+    }
+
+    if (hugoRowCheck) {
+      /* Before the node restores and copies its rows */
+      const int dump[] = {DumpStateOrd::TupHugoRowCheck,
+                          (int)ctx->getTab()->getTableId()};
+      if (restarter.dumpStateOneNode(nodeId, dump, 2)) {
+        g_err << "Failed to turn on the Hugo row check in node " << nodeId
+              << endl;
         result = NDBT_FAILED;
         break;
       }
@@ -9337,6 +9351,36 @@ int runNrKeyDebugOff(NDBT_Context *ctx, NDBT_Step *step) {
   return setNrKeyDebug(0);
 }
 
+/**
+ * DUMP 2384 <tableId> (TupHugoRowCheck): in debug and error insert builds,
+ * every insert and update of the table crashes the data node if the row
+ * it leaves is not what HugoCalculator writes for its id and update count,
+ * also when RESTORE, the REDO log or the copy fragment phase writes it.
+ * Only for test cases whose writes all go through HugoCalculator.
+ * runRestarter turns it on again in each restarted node when the test
+ * case sets HugoRowCheck.
+ */
+int runHugoRowCheckOn(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  const int dump[] = {DumpStateOrd::TupHugoRowCheck,
+                      (int)ctx->getTab()->getTableId()};
+  if (restarter.dumpStateAllNodes(dump, 2) != 0) {
+    g_err << "Failed to turn on the Hugo row check" << endl;
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
+int runHugoRowCheckOff(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  const int dump[] = {DumpStateOrd::TupHugoRowCheck};
+  if (restarter.dumpStateAllNodes(dump, 1) != 0) {
+    g_err << "Failed to turn off the Hugo row check" << endl;
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
 int runWatchdogSlowShutdown(NDBT_Context *ctx, NDBT_Step *step) {
   /* Steps
    * 1 Set low watchdog threshold
@@ -15077,7 +15121,9 @@ TESTCASE("MixedReadUpdateScan",
          "perform pk read, pk update and scan reads while restarting. Do this "
          "loop number of times") {
   TC_PROPERTY("ReadLockMode", Uint32(-1));
+  TC_PROPERTY("HugoRowCheck", Uint32(1));
   INITIALIZER(runCheckAllNodesStarted);
+  INITIALIZER(runHugoRowCheckOn);
   INITIALIZER(runLoadTable);
   STEP(runRestarter);
   STEP(runPkReadUntilStopped);
@@ -15086,6 +15132,7 @@ TESTCASE("MixedReadUpdateScan",
   STEP(runScanReadUntilStopped);
   STEP(runScanUpdateUntilStopped);
   FINALIZER(runClearTable);
+  FINALIZER(runHugoRowCheckOff);
 }
 TESTCASE("Terror",
          "Test that one node at a time can be stopped and then restarted "

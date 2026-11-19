@@ -213,6 +213,10 @@ class DumpStateOrd {
     TupCheckCopyTupleCount = 2382,
     // RONDB-1056: log every live JIT-compiled interpreter program
     TupDumpJitPrograms = 2383,
+    // <tableId>: crash when an insert or update leaves a row of this table
+    // that is not what Hugo writes for its id and update count. No table
+    // id: off. Debug and error insert builds only.
+    TupHugoRowCheck = 2384,
 
     AccDumpOneScanRec = 2400,
     AccDumpAllScanRec = 2401,
