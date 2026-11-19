@@ -1174,7 +1174,8 @@ defect:</p>
   (<code>:33664</code>); the id-indexed table arrays of DICT, LQH, SPJ and TC are sized
   from the table-and-index sum (<code>Configuration.cpp:2323-2325</code>, <code>:2399</code>,
   <code>:2595-2603</code>, <code>:2679</code>). On the default MTR configuration creation
-  was refused at 306 aliases. Aliases scale as
+  was refused at 306 aliases, when the schema file&rsquo;s page-rounded capacity (381
+  entries on that configuration) ran out. Aliases scale as
   members &times; projects per member, hundreds to a few thousand in a large deployment,
   so they would eat the headroom tables and indexes need. <strong>Decided 2026-11-18: a
   dedicated <code>MaxNoOfUserObjects</code> configuration parameter</strong>, added to
@@ -1195,21 +1196,41 @@ defect:</p>
   integrates with RONDB-136 (in 26.02-main and later), which lets the schema file hold
   more than 20,320 objects (tested at about 200,000): <code>MaxNoOfSchemaObjects</code>
   (default and minimum 20,320, <code>ConfigInfo.cpp:777-787</code>; read at
-  <code>Dbdict.cpp:3204-3207</code>, schema file sized at <code>:3244-3253</code>) must
+  <code>Dbdict.cpp:3204-3207</code>) must
   cover the whole configured object-slot sum, <code>MaxNoOfUserObjects</code> included.
   The sum the data node checks today is <code>MaxNoOfTables + MaxNoOfOrderedIndexes +
   MaxNoOfUniqueHashIndexes</code> (<code>Configuration.cpp:2323-2325</code>; the two
-  system tables are added elsewhere), and RONDB-136 refuses to start a data node whose
+  system tables are added after the sum, <code>:2343-2345</code>, and are not in it),
+  and RONDB-136 refuses to start a data node whose
   <code>MaxNoOfSchemaObjects</code> is below it (<code>:2364-2379</code>). With
   <code>AutomaticMemoryConfig</code>, the default (<code>ConfigInfo.cpp:797</code>) and
-  what rondb-helm sets, those three default to 8,000, 10,000 and 2,300
-  (<code>Configuration.cpp:2299-2325</code>): a configured capacity of 20,300, not
-  objects in use. Any <code>MaxNoOfUserObjects</code> allowance above 20 therefore takes
-  the configured sum past 20,320, whether or not a group exists yet, and a deployment that
-  sets one on the default <code>MaxNoOfSchemaObjects</code> would fail the startup check.
+  what rondb-helm sets, the sum is 8,000 + 128 + 2,300 = 10,428: the ordered-index
+  default is 128 (<code>ConfigInfo.cpp:425-428</code>), and the 10,000 substitution fires
+  only on an explicit 0 (<code>Configuration.cpp:2307-2313</code>), which neither the
+  defaults nor rondb-helm set. The schema <em>file</em> is sized from that sum rounded up
+  to 127-entry pages (<code>Dbdict.cpp:3585-3586</code>; recomputed on restart,
+  <code>:2319-2321</code>); <code>MaxNoOfSchemaObjects</code> itself only bounds the
+  in-memory page buffer (<code>:3244-3254</code>) and the startup check. An allowance
+  therefore grows the sum directly, and <code>MaxNoOfSchemaObjects</code> must grow with
+  it past its 20,320 floor only when the sum does.
   So whenever rondb-helm renders an allowance it also renders a
   <code>MaxNoOfSchemaObjects</code> covering tables, indexes and the allowance, unless
-  <code>MaxNoOfSchemaObjects</code> is set explicitly. The kernel gets no automatic
+  <code>MaxNoOfSchemaObjects</code> is set explicitly.
+  <strong>The id range must be made safe end to end.</strong> Page rounding leaves a tail
+  of ids above the configured sum (113 on the helm default, 61 on the MTR configuration),
+  and today <code>getFreeObjId</code> hands them out once everything below is in use
+  (<code>Dbdict.cpp:2921-2922</code>; the USER create path never checks the sum,
+  <code>:33705-33715</code>, only tables are protected, <code>:2946-2949</code>), while
+  <code>LIST</code> stops at the sum (<code>:36349</code>), <code>ALTER</code> and
+  <code>DROP</code> hit an <code>ndbrequire</code> on such an id (<code>:34970</code>,
+  <code>:35619</code>), and a restart refuses the schema file outright
+  (<code>progError</code>, <code>:22785-22797</code>, <code>:4649-4659</code>): an object
+  in the tail is invisible, immutable and fatal to the next restart. The kernel work
+  establishes the invariant that every id a create can return is enumerable, alterable,
+  droppable and restart-safe, by bounding allocation to the sum or by extending the
+  bounds to the page capacity, one choice applied everywhere, and the tests create into
+  the last legal id and past it under allowance 0, a non-zero allowance, and an
+  explicitly oversized <code>MaxNoOfSchemaObjects</code>. The kernel gets no automatic
   sentinel: mgmd fills every omitted integer parameter with its registered default
   (<code>ConfigInfo.cpp</code> <code>applyDefaultValues</code>), so &ldquo;not set&rdquo; cannot
   be detected on the data node. An explicit value below the sum stays refused. The tests
@@ -1228,7 +1249,12 @@ defect:</p>
   Probably reachable with plain <code>USER</code> creates on the base version too. The
   clean-refusal fix, with an MTR test that drives creates past the limit, is a blocker
   for the kernel PR; error logs and traces are preserved in the ticket workspace
-  (<code>RONDB-1158_alias_bench/</code>). Mikael will investigate the crash given a failing
+  (<code>RONDB-1158_alias_bench/</code>). The saved jam trail (33706, 33709, 33777,
+  33786, 5811, 5820) points at a concrete cause, unconfirmed until reproduced: the create
+  error path (<code>Dbdict.cpp:33785-33787</code>) calls <code>release_object</code>,
+  which removes the object from the name hash (<code>:5821</code>) that only the success
+  path has added it to (<code>:33759-33760</code>), and the abort sits exactly between
+  those jam points. Mikael will investigate the crash given a failing
   test case, so the first deliverable is an MTR reproducer, ideally with plain
   <code>USER</code> creates on the base version.</li>
   <li>Restart and backup paths for a new object flag, including that restore re-resolves
