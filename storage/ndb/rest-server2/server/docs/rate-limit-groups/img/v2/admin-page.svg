@@ -93,7 +93,7 @@
   <text x="66" y="842" class="mono">USER DROP recommender2_rl</text><text x="430" y="842" class="m">the 5% budget</text>
   <rect x="52" y="868" width="722" height="56" rx="6" class="note"/>
   <rect x="52" y="868" width="4" height="56" fill="#b67a12"/>
-  <text x="68" y="891" class="t">Afterwards Rosa's work runs unmetered, as before the group existed.</text>
+  <text x="68" y="891" class="t">Rosa is in no other group, so her work runs unmetered afterwards.</text>
   <text x="68" y="913" class="t">5% of the cap is freed (27% → 22%).</text>
   <text x="52" y="956" class="m">Writes</text>
   <text x="52" y="976" class="c">DELETE FROM rate_limit_group WHERE name = 'recommender2_rl'</text>

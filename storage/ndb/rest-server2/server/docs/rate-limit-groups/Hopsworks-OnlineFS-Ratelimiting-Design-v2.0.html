@@ -295,7 +295,8 @@ aliases. Before Save, the form lists the commands saving will run, and the alloc
 bar shows the total the edit would reach, so a raise that would meet the cluster&rsquo;s
 cap is visible before RonDB refuses it. Deleting a group removes its Who rows and its state
 rows and marks the group row deleted, and the immediate pass drops the group&rsquo;s <code>USER</code> and its members&rsquo; aliases on every
-targeted cluster; the members run unmetered afterwards (<a href="#rules">section 11</a>).
+targeted cluster; a member another group still covers is repointed there, and one no
+group covers runs unmetered afterwards (<a href="#rules">section 11</a>).
 Delete group first opens a confirmation naming the aliases and the <code>USER</code> it
 drops and whose work goes unmetered; once confirmed, the group leaves the list at once,
 because the list skips deleted rows. A cluster the immediate pass cannot reach is
@@ -378,7 +379,7 @@ the NDB transactions it starts:</p>
   a routine declared <code>SQL SECURITY DEFINER</code> it is the definer.</li>
   <li><strong>Off by default, and internal work is untagged.</strong> Both
   <code>ndb_user_rate_limits</code> (mysqld) and <code>ActivateRateLimits</code> (data
-  nodes, <code>common/mgmcommon/ConfigInfo.cpp:650</code>) default to off. The binlog thread, schema
+  nodes, <code>common/mgmcommon/ConfigInfo.cpp:651</code>) default to off. The binlog thread, schema
   distribution and stored-grant replication never tag.</li>
 </ul>
 <p>Online ingestion (<code>onlinefs</code>) writes through ClusterJ and tags nothing today.
@@ -790,7 +791,12 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     (<code>RonDbManagementClient.java:194-202</code>), which cannot feed per-target state
     rows. The state rows are keyed by a <em>stable</em> target identity: the namespace
     for a discovered cluster, and <code>region:&lt;region name&gt;</code> for each
-    region&rsquo;s RonDB, both regions, when multi-region is enabled. Region names stay with
+    region&rsquo;s RonDB, both regions, when multi-region is enabled. With multi-region
+    on, the main RonDB <em>is</em> the primary region&rsquo;s and is keyed
+    <code>region:&lt;its region name&gt;</code>, never by namespace, so one physical
+    cluster never holds two identities; enabling multi-region on an existing install
+    re-keys it, the pass writing rows for the region key and deleting rows whose
+    namespace target left the desired set. Region names stay with
     their physical cluster; the active and secondary <em>roles</em> swap on failover
     (<code>MultiRegionWatchdog.java:125-129</code>), so a role must never be a key, and
     a failed judge poll, which leaves the placeholder name
@@ -816,7 +822,16 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     <li><strong>Pick this cluster&rsquo;s groups.</strong> Groups whose <code>cluster</code>
     is NULL or equal to this cluster&rsquo;s name. Where one person is covered by both a
     named-cluster group and an every-cluster group, the named one wins in that cluster&rsquo;s RonDB
-    (7.4): the person&rsquo;s aliases here point at it.</li>
+    (7.4): the person&rsquo;s aliases here point at it. A group&rsquo;s <code>USER</code>
+    is desired on a cluster only where the group covers someone there: a named group on
+    its cluster, and an every-cluster group on every cluster where at least one of its
+    accounts is <em>not</em> overridden. A fully overridden every-cluster group therefore
+    has no <code>USER</code> on that cluster and its budget is not allocated there, which
+    is what makes the override idiom save capacity, since a <code>USER</code> holds its
+    budget while idle (section 14); a partially overridden one keeps its
+    <code>USER</code> for the uncovered members. When an edit or a membership change
+    makes a <code>USER</code> undesired on a cluster, the pass drops it there in the
+    release phase of the command order (below), freeing its rate.</li>
     <li><strong>Expand Who into account names.</strong> A uid row becomes every account
     that user holds, <code>clip31(projectname + "_" + username)</code> for each of their
     <code>project_team</code> rows; a project row becomes the same for every member,
@@ -840,10 +855,14 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     therefore compares the observed allocated total, every <code>USER</code> allocation
     including operator-owned ones plus database quotas,
     against the cluster&rsquo;s configured cap before issuing anything, and when it is
-    exceeded issues no command of any kind there, membership recomputes included, marks
-    the cluster&rsquo;s
+    exceeded issues no capacity-consuming or altering command there, membership
+    recomputes included, marks the cluster&rsquo;s
     groups <em>refused</em> naming the condition, and leaves it to intervention until
-    capacity drains. The cap rework (section 14) closes the assert with parse-time
+    capacity drains. Pure drops, alias <code>DROP</code> and <code>USER DROP</code>,
+    stay allowed: they strictly drain the pool and are assert-safe on every kernel, the
+    drop path&rsquo;s only rate assertion being the subtraction guard
+    (<code>Dbdict.cpp:35399-35400</code>), so deleting a group drains an oversubscribed
+    cluster without hand intervention. The cap rework (section 14) closes the assert with parse-time
     refusals on new kernels; the guard stays regardless, since deployed clusters run
     older kernels for a long time, and on fixed kernels a slipped command gets error
     1235 instead of killing a node. That refusal is deliberately broader than the exact
@@ -1047,7 +1066,8 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
     <tr><td>A Who row names a person or a project, not both; a group has at least one Who row, so an edit that removes every Who row is refused (Delete group removes a group).</td><td>A row with <code>uid = 1001</code> and <code>project_id = 11</code>. Rejected.</td></tr>
     <tr><td>No ties: two groups with the same cluster scope may not cover the same person. A person is &ldquo;covered&rdquo; by a project row if they have any <code>project_team</code> row for that project. A named-cluster group and an every-cluster group may overlap: the named one wins on its cluster (7.4).</td><td>Group X: {Mary}, every cluster. Group Y: {project 11}, every cluster. Mary is in both. Rejected.<br><br>Group X: {project 13}, every cluster, 20%. Group Z: {project 13}, cluster M, 30%. Allowed: on M the members charge Z, elsewhere X.</td></tr>
     <tr><td>Budget between 0.01 and the configured cap of every targeted cluster (section 14, default 50%), with at most two decimals, as the table stores it. Zero is refused: RonDB reads a rate of 0 as <em>unlimited</em> (section 14), the opposite of what a zero budget would mean. RonDB will not accept one entry above its cap.</td><td>A group at 60% on a cluster with the default cap. Rejected.<br><br>A group at 0%. Rejected: 0 would run unlimited.</td></tr>
-    <tr><td>On every cluster, the budgets of the groups covering it sum to at most that cluster&rsquo;s configured cap (section 14, default 50%): an every-cluster group counts on each cluster, and where a named-cluster group overrides an every-cluster one for the same people (7.4), the named one counts there instead. Enforced on save against each cluster whose cap is readable; a cluster whose cap cannot be read does not block the save and is not guessed at, since save validity must not depend on connectivity (section 16 item 1): the group stays <em>pending</em> there as it already would, and the installer re-checks the sum against the real cap before issuing (section 10), recording <em>refused</em> naming the sum rule when it does not fit. So every configuration Hopsworks accepts fits each cluster it could see and, under the single cap decided in section 14, can always be reinstalled from scratch.</td><td>Groups at 30% and 25%, both on every cluster, caps at the default. The second save is rejected: 55% on each cluster.</td></tr>
+    <tr><td>On every cluster, the budgets sum to at most that cluster&rsquo;s configured cap (section 14, default 50%), counting exactly the groups whose <code>USER</code> is desired there (section 10 step 2): a named group on its cluster, and an every-cluster group on every cluster where at least one of its accounts is not overridden. A full override (7.4) counts only the named group there; a partial override counts both, because the overridden group&rsquo;s <code>USER</code> must still exist for its uncovered members, and a <code>USER</code> holds its budget while idle. Enforced on save against each cluster whose cap is readable; a cluster whose cap cannot be read does not block the save and is not guessed at, since save validity must not depend on connectivity (section 16 item 1): the group stays <em>pending</em> there as it already would, and the installer re-checks the sum against the real cap before issuing (section 10), recording <em>refused</em> naming the sum rule when it does not fit. So every configuration Hopsworks accepts fits each cluster it could see and, under the single cap decided in section 14, can always be reinstalled from scratch.</td><td>Groups at 30% and 25%, both on every cluster, caps at the default. The second save is rejected: 55% on each cluster.</td></tr>
+    <tr><td>The group name may not equal any account name the group would alias: the <code>USER</code> and that member&rsquo;s alias would collide in RonDB&rsquo;s shared namespace and leave the group permanently <em>partial</em>. Checked over the group&rsquo;s own expansion at save; a collision a later join creates surfaces as <em>partial</em> with the error.</td><td>Group <code>Recommender_alice4f2</code> covering Alice. Rejected: her alias would need the group&rsquo;s own name.</td></tr>
     <tr><td>The cluster name, when set, should name a discovered cluster; a free-text name is accepted but flagged.</td><td>A group on cluster <code>mrketing</code> (typo). Saved, shown <em>pending</em> with a &ldquo;no such cluster&rdquo; hint.</td></tr>
   </tbody>
 </table></div>
@@ -1243,7 +1263,10 @@ alias create in the same transaction references, both orders of a state nothing 
 today, since the count itself moves only at commit. System restart
 is waived (the kernel&rsquo;s restart flag, set only on node and system restart), since
 restart rebuilds objects in id order and an alias may briefly exist before its target,
-resolving by name; the count is rebuilt during that re-resolution. Backup restore needs
+resolving by name; the count is rebuilt at <em>every</em> by-name re-resolution, a
+target created during normal operation under existing dangling aliases included, not
+only at restart, or a dangling alias&rsquo;s reference would never be counted and its
+target could be dropped under it. Backup restore needs
 no waiver and gets none: <code>USER BACKUP</code> writes users before aliases exactly so
 a replayed restore creates targets first, and <code>USER RESTORE</code> is ordinary
 command replay with no kernel flag.</p>
@@ -1281,8 +1304,10 @@ configuration the layout follows each host&rsquo;s CPUs, so nodes can differ eve
 one configuration file; no existing signal exposes any of it (<code>GET</code> and
 <code>LIST DATABASE</code> carry per-database fields only). The management server
 therefore asks <em>every</em> data node with a new request/reply pair and returns one
-tuple per node: the thread count, the pool, the configured cap percent (section 14) and
-the allocated total. The installer takes the most restrictive node&rsquo;s allowance as
+tuple per node: the node id, the thread count, the configured cap percent (section 14)
+and the allocated total (the pool is the thread count times 1,000,000). The per-node
+replies are gathered per command, not transaction-consistent across nodes; the gate
+stays conservative and the kernel&rsquo;s own refusal is the backstop. The installer takes the most restrictive node&rsquo;s allowance as
 the cluster&rsquo;s cap for the save-time sum rule (section 11) and the resize gate
 (section 10), converts percentages with the minimum thread count, and treats an answer
 missing any node as unreadable, leaving the cluster <em>pending</em>. All over the same
@@ -1499,7 +1524,7 @@ enforces the full rate on its own work; there is no cluster-wide counter.</p>
 <h3>The rate cap, and why it exists</h3>
 <p>At start, Dbdict sizes a pool of 1,000,000 units per block and send thread, i.e. 100%
 of the node&rsquo;s CPU. Today configured rates may sum to 50% of it on create and 70% on
-alter (<code>Dbdict::initCommonData</code>, <code>Dbdict.cpp:2663</code>); a restart
+alter (<code>Dbdict::initCommonData</code>, <code>Dbdict.cpp:2702-2709</code>); a restart
 never refuses. A rate of 0 means unlimited and consumes nothing. <strong>Decided
 2026-11-19:</strong> this design replaces the two limits with a single cap, default 50%
 of the pool, configurable per data node in <code>config.ini</code> (section 15); the
@@ -1539,7 +1564,7 @@ targeted RonDB.</p>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col">Area</th><th scope="col">Status</th><th scope="col">Work, and how</th></tr></thead>
   <tbody>
-    <tr><td>Hopsworks tables</td><td>new</td><td>Flyway migration with the two group tables and the state table (appendix); JPA entities; the save rules of section 11 in the controller; re-check &ldquo;no ties&rdquo; in the project-membership path (<code>ProjectController</code>, where <code>createDatabaseUser</code> is already called on member add); in the project-delete and user-delete paths, mark deleted every group whose only Who row the delete removes, and name those groups in the two delete confirmations (section 11).</td></tr>
+    <tr><td>Hopsworks tables</td><td>new</td><td>Flyway migration with the two group tables and the state table (appendix); JPA entities; the save rules of section 11 in the controller; re-check &ldquo;no ties&rdquo; in the facade transaction that writes <code>project_team</code>, under the same lock as the save rules, because the controllers on that path run under <code>NEVER</code> and a check outside the writing transaction races a concurrent save (the behavior on a tie is section 16 item 3, still open); in the project-delete and user-delete paths, mark deleted every group whose only Who row the delete removes, and name those groups in the two delete confirmations (section 11).</td></tr>
     <tr><td>Hopsworks installer</td><td>new</td><td>Section 10: extend <code>RonDbManagementClient</code> with the <code>USER</code> / <code>USER ALIAS</code> command family (same framing as its quota commands) and per-cluster endpoints from the namespace discovery; the expansion of Who rows into account names (the clip is <code>OnlineFeaturestoreController.onlineDbUsername</code>&rsquo;s); an <code>OnlinefsOperationHandler</code> implementation for membership churn; a primary-gated reconciler on the <code>TrinoReconciler</code> template; state rows per (group, cluster).</td></tr>
     <tr><td>Hopsworks admin page</td><td>new</td><td>Section 3: list + form, cluster picker from discovery, per-cluster state badges (installed, pending, partial, refused; partial and refused expand to the applied coverage and <code>last_error</code>, section 10), converted rate shown per cluster, the commands a save will run, the delete confirmation.</td></tr>
     <tr><td>RDRS</td><td>exists</td><td>Username mode (merged on the ticket branch): tag the project-user name. <strong>No group code.</strong></td></tr>
