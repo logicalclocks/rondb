@@ -562,6 +562,22 @@ The tests verify the error response structure:
 }
 ```
 
+### Compression Tests (`compression/`)
+
+Tests for the `Content-Type` and `Content-Encoding` response headers of the six handlers that follow `REST.UseCompression`: pk-read, batch, batchwrite, batchdelete, feature_store and batch_feature_store. The handlers set `CT_APPLICATION_JSON` and call `resp->setAllowCompression(use_compressed)`.
+
+| Test | Description |
+|------|-------------|
+| `TestGzipWithUseCompression` | `UseCompression` on: `application/json; charset=utf-8` and `Content-Encoding: gzip` |
+| `TestNoGzipWithoutUseCompression` | `UseCompression` off: same `Content-Type`, no `Content-Encoding` |
+| `TestNoGzipForComplexFeature` | A feature vector with a complex (Avro) feature is never gzipped |
+
+The tests read `UseCompression` from the config file in `RDRS_CONFIG_FILE` and skip the case that does not apply. The normal pass runs the package with the default (on). `./mtr rdrs2-golang.compression_off` runs it against a server with the setting off.
+
+Two things to keep when adding a handler to `plainCases`:
+- The response must be at least 1024 bytes. Drogon compresses nothing smaller, so a small response passes the "no gzip" check without testing it. `checkResponse` fails such a request.
+- Use the package's own client. Go's default transport asks for gzip itself, decompresses the body and removes `Content-Encoding` from the response.
+
 ### Batchcomprehensive Tests (`batchcomprehensive/`)
 
 Comprehensive integration tests (~1700 lines) covering all batch operations with extensive scenarios:

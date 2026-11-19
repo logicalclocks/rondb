@@ -120,8 +120,11 @@ my %groups = (
     # the buffer_pool, memory_regression, ping_starvation and mtls tests);
     # spillfixture and testclient are helper packages without tests. All
     # are listed so the coverage check below can stay strict.
+    # compression runs here against the default REST.UseCompression (on);
+    # the compression_off test runs it against a server with it off.
     'ping_health_stat_jsonerrors_smoke' => {
         packages => [ map { "$it/$_" } qw(ping health stat jsonerrors
+                                           compression
                                            bufferpool starvation mtls
                                            spillfixture testclient) ],
         smoke    => 1,

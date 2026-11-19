@@ -1,0 +1,12 @@
+# Config for compression_off (RONDB-1160): same cluster and rdrs servers as
+# the rest of the suite, except that the plain-HTTP rdrs.1.1 runs with
+# REST.UseCompression off. Its template is the suite's main template plus
+# that one setting, so the options of [rdrs.1.1] in my.cnf (API keys, rate
+# limits) apply unchanged.
+!include suite/rdrs2-golang/my.cnf
+
+[rdrs.1.1]
+config-json-template=suite/rdrs2-golang/rdrs_config_template_nocompress.json
+
+[ENV]
+RDRS_CONFIG_FILE_NOCOMPRESS=   @rdrs.1.1.#config-json
