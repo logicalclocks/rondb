@@ -56,7 +56,6 @@ call mtr.add_suppression("Participant timeout");
 # LoadLinkedColumn at the aggregator-program level, which already
 # widens via AlignedType).
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --echo

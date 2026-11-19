@@ -58,7 +58,6 @@ call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --echo === Bulk-load large dataset (20000 cust, 100000 orders) ===

@@ -23,7 +23,6 @@ call mtr.add_suppression("Participant timeout");
 #      scanCte + filter (still produces the right rows).
 #   4. Single-PK CTE, no WHERE — pure scan path (regression).
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --disable_query_log

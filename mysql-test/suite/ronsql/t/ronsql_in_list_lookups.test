@@ -13,7 +13,6 @@ call mtr.add_suppression("Participant timeout");
 # say which mechanism ran.  Both includes consume and remove
 # $QUERY_FILE, hence the query is written twice per case.
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 --let QUERY_FILE=$MYSQL_TMP_DIR/in_list_query.sql
 --let $EXPLAIN_FILE=$MYSQL_TMP_DIR/in_list_explain.out

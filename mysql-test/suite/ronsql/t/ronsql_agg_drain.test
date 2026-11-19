@@ -17,7 +17,6 @@ call mtr.add_suppression("Participant timeout");
 # Every result is compared strictly with the MySQL server, which does
 # not push the aggregation (ndb_pushdown_aggregate is OFF by default).
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 --let $EXPLAIN_FILE=$MYSQL_TMP_DIR/agg_drain_explain.out
 

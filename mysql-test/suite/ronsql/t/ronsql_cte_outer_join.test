@@ -28,7 +28,6 @@ call mtr.add_suppression("Participant timeout");
 # Test 6: `cte0 JOIN oj_rhs` with main aggregator on the real-table
 #         leaf, GROUP BY linked CTE virt-column (Phase E.1K).
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --disable_query_log

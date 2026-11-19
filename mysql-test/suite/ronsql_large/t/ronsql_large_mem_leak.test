@@ -57,9 +57,10 @@
 #
 # Data: load_ronsql_large, 20000 lg_cust x 100000 lg_orders (5 orders per
 # customer, lg_date 2018..2022).  Runtime: about 330 RDRS executions of
-# 100-20000-group CTE queries plus 17 ronsql_cli runs and ~20 settle
-# waits of >= 5 s; a few minutes on a release build, 5-10 minutes on a
-# debug build.  RONSQL_MEM_LEAK_ROUNDS=1,10,200 in the environment scales
+# 100-20000-group CTE queries plus 17 ronsql_cli runs of the CLI shape,
+# 4 more in the comparisons with mysqld, and ~20 settle waits of >= 5 s;
+# a few minutes on a release build, 5-10 minutes on a debug build.
+# RONSQL_MEM_LEAK_ROUNDS=1,10,200 in the environment scales
 # the rounds (the printed counts then differ from the .result).
 
 --source include/have_ndb.inc
@@ -70,8 +71,6 @@ call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
 
-# Compare mysqld with RDRS only (the CTE-suite convention); strict diff.
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --echo === Bulk-load large dataset (20000 cust, 100000 orders) ===

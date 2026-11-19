@@ -34,7 +34,6 @@ call mtr.add_suppression("Participant timeout");
 #   7.  Unsafe scale-zero DECIMAL declarations are rejected at
 #       prepare time before kernel execution.
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --disable_query_log

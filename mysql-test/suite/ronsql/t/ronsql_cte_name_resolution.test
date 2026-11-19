@@ -12,7 +12,6 @@ call mtr.add_suppression("Participant timeout");
 # and its exposed result columns. Internal aliases from a CTE body must
 # not leak into later CTEs or the main SELECT.
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --disable_query_log

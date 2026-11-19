@@ -15,7 +15,6 @@ call mtr.add_suppression("Participant timeout");
 #   Test 15: scanCte as main-query aggregate leaf
 #   Test 16: scanCte as CTE materialisation root non-leaf
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --disable_query_log

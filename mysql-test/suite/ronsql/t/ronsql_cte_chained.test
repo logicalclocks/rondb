@@ -25,11 +25,6 @@ call mtr.add_suppression("Participant timeout");
 #       FINAL_REP traffic that motivates E.1's owner routing.
 #   D4: empty-intermediate chain — every node hits the empty-gb_map
 #       fast path on every phase.  Maximum exposure to A.
-#
-# Same convention as ronsql_cte_basic.test: skip ronsql_cli (which
-# doesn't refresh dictionary cache for join queries) and rely on
-# RDRS comparison against MySQL.
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --echo

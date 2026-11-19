@@ -35,7 +35,6 @@
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 --source suite/ronsql_cte/include/cte_schema.inc
 --source suite/ronsql_cte/include/cte_data.inc
@@ -61,6 +60,10 @@ GROUP BY c.c_custkey;|
 --echo
 --echo === fpw-2: fs_batch shape, FRAGS_PER_WORKER = 1 ===
 
+# From here on every compared query has a FRAGS_PER_WORKER prefix, which
+# ronsql_compare.inc sends to RDRS only ($RONSQL_PREFIX): ronsql_cli would
+# run the bare query, so ronsql_compare.inc requires its arm off.
+--let $suppress_ronsql_cli=yes
 --let $RONSQL_PREFIX=FRAGS_PER_WORKER = 1
 let $QUERY=
 WITH cust_features AS (

@@ -11,7 +11,6 @@ call mtr.add_suppression("Participant timeout");
 # BRANCH_<inv>_REG_REG.  All opcodes already accepted by
 # s_cte_filter_handlers — no kernel change.
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --echo

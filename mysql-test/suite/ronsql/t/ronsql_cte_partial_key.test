@@ -31,7 +31,6 @@ call mtr.add_suppression("Participant timeout");
 # of the CTE scan, the unfinished Phase N.1 kernel shape that returned
 # wrong results; Tests 11-13 pin its clean rejection.
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --disable_query_log

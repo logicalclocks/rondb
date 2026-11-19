@@ -51,7 +51,6 @@ call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --let $JSON_CANON=perl -MJSON::PP -e 'print JSON::PP->new->canonical->encode(JSON::PP->new->decode(join q(), <STDIN>)), qq(\n)'

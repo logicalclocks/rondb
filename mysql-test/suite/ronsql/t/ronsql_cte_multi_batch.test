@@ -10,11 +10,6 @@ call mtr.add_suppression("Participant timeout");
 # Existing ronsql_cte_* tests use ≤ 7 rows and never trigger this
 # path; this file gives MTR coverage for the protocol-pacing path
 # that's currently exercised only by testCteNdbApiFilter block tests.
-#
-# Same convention as ronsql_cte_basic.test: skip ronsql_cli (which
-# doesn't refresh dictionary cache for join queries) and rely on
-# RDRS comparison.
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --echo

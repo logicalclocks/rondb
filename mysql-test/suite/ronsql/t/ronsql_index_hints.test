@@ -18,7 +18,6 @@ call mtr.add_suppression("Participant timeout");
 # cases are run through ronsql_cli with --error 1 so the rejection
 # message is recorded.
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --disable_query_log

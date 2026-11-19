@@ -57,7 +57,6 @@ call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 --let $RDRS_RONSQL=curl --no-progress-meter --fail-with-body -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql -d
 --let $JSON_VALID=perl -MJSON::PP -e 'print qq(valid JSON\n) if JSON::PP->new->decode(join q(), <STDIN>)'

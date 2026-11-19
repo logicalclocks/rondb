@@ -21,7 +21,6 @@
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 --source suite/ronsql_cte/include/cte_schema.inc
 --source suite/ronsql_cte/include/cte_data.inc
@@ -243,7 +242,14 @@ SELECT COUNT(*),
        MAX(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE -9 END),
        MIN(CASE WHEN c.c_nationkey = 7 THEN gl.cnt ELSE -9 END)
 FROM customer AS c JOIN gl ON gl.k = c.c_custkey;|
+# No CLI arm for big-06b: the ronsql_cte_jit mirror records 2 JIT program
+# rejects for this family, and they are this query's (MAX / MIN of a CASE
+# with a BIGINT UNSIGNED arm and a negative constant arm, rejected on each
+# data node; compiled_interpreter/ronsql_jit_plan.md, dd_bigquery).  A
+# ronsql_cli run would compile, and reject, it again.
+--let $suppress_ronsql_cli=yes
 --source suite/ronsql/include/ronsql_compare.inc
+--let $suppress_ronsql_cli=
 --echo == Expected result ==
 --sorted_result
 WITH gl AS (

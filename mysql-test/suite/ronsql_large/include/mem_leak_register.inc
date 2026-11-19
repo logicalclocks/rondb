@@ -23,7 +23,8 @@
 #      allocation (e.g. a string MIN/MAX slot) fails here after the very
 #      first executions, long before it would fill a segment in the rounds.
 #   5. the MySQL comparison (suite/ronsql/include/ronsql_compare.inc,
-#      $strict_diff as set by the test): RDRS once more, mysqld once.
+#      $strict_diff as set by the test): RDRS once more, mysqld once and
+#      ronsql_cli once.
 #   6. records the phase-2 parameters (rounds, clients, accept mode) in the
 #      temporary table mlk_shapes for mem_leak_measure_all.inc.
 --inc $mlk_count

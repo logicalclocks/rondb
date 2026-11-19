@@ -64,4 +64,6 @@ Reusable infrastructure this framework builds on:
 
 Conventions: the user runs all builds and tests; every phase ends with
 the exact commands. Table aliases in RonSQL need explicit `AS`. Join
-shapes in MTR use `$suppress_ronsql_cli=yes` and `$strict_diff=yes`.
+shapes in MTR run through both `ronsql_cli` and RDRS like any other
+shape; `ronsql_compare.inc` compares strictly by default, and a known
+wrong result is asserted with `$known_diff`.

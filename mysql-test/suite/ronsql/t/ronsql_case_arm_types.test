@@ -41,6 +41,12 @@ call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
 
+# No CLI arm: the ronsql_jit mirror of this test records the JIT program
+# rejects of the whole test (its _jit_fallback_delta, one per compile
+# attempt, not attributed to queries).  A second run of each compared
+# query through ronsql_cli would compile, and reject, its programs again
+# and change that count by an amount only a run can tell.  Turn the CLI
+# arm on together with a re-recorded mirror result.
 --let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
