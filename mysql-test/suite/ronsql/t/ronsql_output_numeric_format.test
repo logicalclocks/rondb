@@ -188,7 +188,7 @@ WITH c AS (SELECT g, MAX(d) AS hi FROM nf_dbl GROUP BY g) SELECT hi, COUNT(*) AS
 
 --echo
 --echo === nf-8: JSON output, the exponent forms are JSON numbers ===
---exec $RDRS_RONSQL '{"query":"SELECT g, MAX(d) AS hi FROM nf_dbl GROUP BY g ORDER BY g","database":"test","outputFormat":"JSON"}' > $MYSQL_TMP_DIR/nf-json.out
+--exec $RDRS_RONSQL '{"query":"SELECT g, MAX(d) AS hi FROM nf_dbl GROUP BY g ORDER BY g;","database":"test","outputFormat":"JSON"}' > $MYSQL_TMP_DIR/nf-json.out
 --exec cat $MYSQL_TMP_DIR/nf-json.out
 --exec $JSON_VALID < $MYSQL_TMP_DIR/nf-json.out
 --remove_file $MYSQL_TMP_DIR/nf-json.out
