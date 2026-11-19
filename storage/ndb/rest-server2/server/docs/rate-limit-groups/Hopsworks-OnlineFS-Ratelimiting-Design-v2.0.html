@@ -573,7 +573,10 @@ tables. Column definitions are in the <a href="#appendix">appendix</a>.</p>
   dropping and recreating the RonDB entry, so the UI does not allow it.</li>
   <li><code>budget_percent</code> is a share of a data node&rsquo;s capacity. It is stored as
   a percentage, not as a RonDB rate, and converted at install time, because each cluster
-  converts with its own thread count (section 12).</li>
+  converts with its own thread count (section 12). The range is 0.01 to the targeted
+  clusters&rsquo; cap, with at most two decimals (the column is <code>decimal(5,2)</code>);
+  the conversion of a two-decimal percentage is always a whole rate. Zero is refused
+  (section 11): RonDB reads a rate of 0 as unlimited.</li>
   <li><code>cluster</code> is NULL (&ldquo;every cluster&rdquo;) or one cluster&rsquo;s name, which is its
   Kubernetes namespace (5.4): the main cluster&rsquo;s install namespace or a satellite&rsquo;s
   labeled namespace. The admin page offers the live list; a name that matches no
@@ -1008,7 +1011,7 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
   <tbody>
     <tr><td>A Who row names a person or a project, not both; a group has at least one Who row, so an edit that removes every Who row is refused (Delete group removes a group).</td><td>A row with <code>uid = 1001</code> and <code>project_id = 11</code>. Rejected.</td></tr>
     <tr><td>No ties: two groups with the same cluster scope may not cover the same person. A person is &ldquo;covered&rdquo; by a project row if they have any <code>project_team</code> row for that project. A named-cluster group and an every-cluster group may overlap: the named one wins on its cluster (7.4).</td><td>Group X: {Mary}, every cluster. Group Y: {project 11}, every cluster. Mary is in both. Rejected.<br><br>Group X: {project 13}, every cluster, 20%. Group Z: {project 13}, cluster M, 30%. Allowed: on M the members charge Z, elsewhere X.</td></tr>
-    <tr><td>Budget between 0 and the configured cap of every targeted cluster (section 14, default 50%). RonDB will not accept one entry above its cap.</td><td>A group at 60% on a cluster with the default cap. Rejected.</td></tr>
+    <tr><td>Budget between 0.01 and the configured cap of every targeted cluster (section 14, default 50%), with at most two decimals, as the table stores it. Zero is refused: RonDB reads a rate of 0 as <em>unlimited</em> (section 14), the opposite of what a zero budget would mean. RonDB will not accept one entry above its cap.</td><td>A group at 60% on a cluster with the default cap. Rejected.<br><br>A group at 0%. Rejected: 0 would run unlimited.</td></tr>
     <tr><td>On every cluster, the budgets of the groups covering it sum to at most that cluster&rsquo;s configured cap (section 14, default 50%): an every-cluster group counts on each cluster, and where a named-cluster group overrides an every-cluster one for the same people (7.4), the named one counts there instead. Enforced on save, so every configuration Hopsworks accepts fits each cluster and, under the single cap decided in section 14, can always be reinstalled from scratch.</td><td>Groups at 30% and 25%, both on every cluster, caps at the default. The second save is rejected: 55% on each cluster.</td></tr>
     <tr><td>The cluster name, when set, should name a discovered cluster; a free-text name is accepted but flagged.</td><td>A group on cluster <code>mrketing</code> (typo). Saved, shown <em>pending</em> with a &ldquo;no such cluster&rdquo; hint.</td></tr>
   </tbody>
