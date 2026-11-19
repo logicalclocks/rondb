@@ -1366,6 +1366,8 @@ JOIN k_lineitem AS l ON l.order_id = o.id
 WHERE l.qty > o.min_qty
 GROUP BY o.id, o.min_qty
 ORDER BY o.id;|
+# The stale-schema paths above may retry the statement (T-7).
+--let $allow_retry=yes
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==

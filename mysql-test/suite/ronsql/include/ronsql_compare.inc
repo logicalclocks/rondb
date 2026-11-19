@@ -19,6 +19,16 @@
 # a fixed one, fail the test.  On success the include prints one line,
 # "KNOWN-DIFF <file>", instead of the diff.  ronsql_cli against RDRS stays
 # strict.  Reset at the end like $QUERY.
+#
+# RDRS must run the statement once (T-7): the request asks for the
+# x-ronsql-phases header, and the comparison fails unless it says
+# attempts=1, printing the response status and the RonSQL headers, so a
+# statement RDRS retried (a temporary error, a stale schema) cannot pass
+# unseen.  Nothing is printed when it holds.  Optional: $allow_retry — set
+# it for a comparison that may be retried (an error insert, a node
+# failure).  Reset at the end like $QUERY, so that it covers only the
+# comparison it is set for and cannot switch the check off for the rest
+# of a test, as a $strict_diff left unset did.
 --source include/have_util_sed.inc
 --source include/have_util_curl.inc
 if ($RONSQL_PREFIX!='')
@@ -87,7 +97,7 @@ if ($skip_sort!='')
 --echo
 --exec echo Number of output lines, including header: `grep -Fc '' '$MYSQL_TMP_DIR/mysql.out.sorted'`
 
---exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--exec curl -s -X POST -H "Content-Type: application/json" -H "x-ronsql-phases: 1" -D $MYSQL_TMP_DIR/ronsql-rdrs.hdr http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
 if ($canonicalization_script)
 {
   --exec sed -r '$canonicalization_script' $MYSQL_TMP_DIR/ronsql-rdrs.out > $MYSQL_TMP_DIR/ronsql-rdrs.out.canon
@@ -150,6 +160,11 @@ if ($known_diff!='')
 --echo KNOWN-DIFF $known_diff
 --remove_file $MYSQL_TMP_DIR/ronsql-known.diff
 }
+if ($allow_retry=='')
+{
+--exec grep -qiE '^x-ronsql-phases:.*,attempts=1,' $MYSQL_TMP_DIR/ronsql-rdrs.hdr || (echo "RDRS did not run the statement exactly once (attempts=1); set allow_retry for a comparison that may be retried. Response status and RonSQL headers:"; grep -iE '^(HTTP/|x-ronsql-)' $MYSQL_TMP_DIR/ronsql-rdrs.hdr | tr -d '\r'; exit 1)
+}
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs.hdr
 --remove_file $MYSQL_TMP_DIR/ronsql-query.sql
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body-1
@@ -178,3 +193,4 @@ if ($QUERY=='')
 --let $canonicalization_perl=
 --let $skip_sort=
 --let $known_diff=
+--let $allow_retry=
