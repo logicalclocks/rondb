@@ -123,6 +123,9 @@ void*
 ArenaMalloc::alloc_bytes(size_t size, size_t alignment) noexcept
 {
   assert(alignment <= MAXIMUM_ALIGNMENT);
+  if (unlikely(m_fail_hook != nullptr) && m_fail_hook(m_fail_hook_ctx)) {
+    return nullptr;  // Injected failure (set_fail_hook)
+  }
   // Large allocations
   if (unlikely(m_half_page_size <= size)) {
     if (unlikely(MAXIMUM_ALLOCATION_SIZE < size)) {

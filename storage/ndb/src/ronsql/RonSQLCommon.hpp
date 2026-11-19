@@ -156,6 +156,10 @@ struct RonSQLAllocationTestHook
     DECIMAL_BUFFER,
     PARSER_STACK,
     LEXER,
+    // Every allocation from the request arena (RonSQLExecParams::amalloc),
+    // the three sites above included: while a RonSQLPreparer lives, the
+    // arena asks the hook first (RonSQLArenaTestHookScope).
+    ARENA,
   };
   Site site;
   size_t fail_on = 0;
@@ -167,6 +171,44 @@ struct RonSQLAllocationTestHook
     ++attempts;
     return fail_on != 0 && attempts == fail_on;
   }
+
+  // The ArenaMalloc::FailHook of Site::ARENA; ctx is the hook.
+  static bool arena_should_fail(void* ctx) noexcept
+  {
+    return static_cast<RonSQLAllocationTestHook*>(ctx)->should_fail(
+        Site::ARENA);
+  }
+};
+
+// Site::ARENA: makes the arena call the hook before each allocation, from
+// construction to destruction.  RonSQLPreparer holds one, so the hook
+// covers each attempt from parsing to the end of execution, an attempt
+// whose constructor throws included.  Does nothing for another site or
+// without a hook.
+class RonSQLArenaTestHookScope
+{
+public:
+  RonSQLArenaTestHookScope(ArenaMalloc* arena,
+                           RonSQLAllocationTestHook* hook) noexcept
+    : m_arena(NULL)
+  {
+    if (arena != NULL && hook != NULL &&
+        hook->site == RonSQLAllocationTestHook::Site::ARENA)
+    {
+      arena->set_fail_hook(&RonSQLAllocationTestHook::arena_should_fail,
+                           hook);
+      m_arena = arena;
+    }
+  }
+  ~RonSQLArenaTestHookScope()
+  {
+    if (m_arena != NULL) m_arena->set_fail_hook(NULL, NULL);
+  }
+  RonSQLArenaTestHookScope(const RonSQLArenaTestHookScope&) = delete;
+  RonSQLArenaTestHookScope& operator=(const RonSQLArenaTestHookScope&) =
+      delete;
+private:
+  ArenaMalloc* m_arena;
 };
 
 struct RonSQLExecParams

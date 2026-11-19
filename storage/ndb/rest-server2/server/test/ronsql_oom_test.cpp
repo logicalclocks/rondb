@@ -26,12 +26,14 @@
 #include <NdbMutex.h>
 #include <ndb_init.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdlib>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <utility>
+#include <vector>
 
 // Owned by main.cc in the server binary.
 NdbMutex *globalConfigsMutex = nullptr;
@@ -270,6 +272,14 @@ struct TransactionCounts {
     EXPECT_EQ(expected_starts, starts);
     EXPECT_EQ(starts, ndb.getClientStat(Ndb::TransCloseCount) - closed);
   }
+
+  // A run that failed somewhere: it started no more transactions than a
+  // successful run, and closed every one it started.
+  void expect_none_open(const Ndb &ndb, Uint64 max_starts) const {
+    const Uint64 starts = ndb.getClientStat(Ndb::TransStartCount) - started;
+    EXPECT_LE(starts, max_starts);
+    EXPECT_EQ(starts, ndb.getClientStat(Ndb::TransCloseCount) - closed);
+  }
 };
 
 TEST(RonSQLDecimalParseOnly, DoesNotEncode) {
@@ -426,6 +436,140 @@ TEST_F(RonSQLDecimalAllocationFailure, RestFailuresAreNotRetried) {
           sql, test_case.expected_output, EntryPoint::RestOperation,
           test_case.transactions, &hook));
       EXPECT_EQ(fail_on + baseline.attempts, hook.attempts);
+    }
+  }
+}
+
+// T-17: every allocation from the request arena (Site::ARENA), one at a
+// time, for each executor shape: the sort buffer, the key-read arrays, the
+// join objects (JoinQueryObjects), the subquery buffers and the printer
+// among them.  The fixture is created by ronsql_parser_oom.test:
+// ronsql_oom_values holds ids 1-3 and ronsql_oom_items the rows
+// (id, vid, qty) = (1, 1, 5), (2, 1, 7), (3, 3, 2), (4, 9, 4).
+struct ArenaShape {
+  const char *name;
+  const char *sql;
+  bool any_order;  // A scan without ORDER BY: compare the rows sorted.
+};
+
+const ArenaShape kArenaShapes[] = {
+    {"ScanAggregate",
+     "SELECT SUM(amount) AS s, MAX(id) AS m FROM ronsql_oom_values;", false},
+    {"GroupByOrderBy",
+     "SELECT id, SUM(amount) AS s FROM ronsql_oom_values GROUP BY id "
+     "ORDER BY s DESC;",
+     false},
+    {"CountStar", "SELECT COUNT(*) AS n FROM ronsql_oom_values;", false},
+    {"KeyLookupAggregate",
+     "SELECT SUM(amount) AS s FROM ronsql_oom_values WHERE id IN (1, 3);",
+     false},
+    {"KeyLookupPassThrough",
+     "SELECT id, amount FROM ronsql_oom_values WHERE id IN (1, 3);", true},
+    {"ScanPassThrough",
+     "SELECT id, amount, unsigned_amount FROM ronsql_oom_values;", true},
+    {"SortedPassThrough",
+     "SELECT id, unsigned_amount FROM ronsql_oom_values "
+     "ORDER BY unsigned_amount DESC LIMIT 2;",
+     false},
+    {"LastNAggregate",
+     "WITH t AS (SELECT id, amount FROM ronsql_oom_values ORDER BY id DESC "
+     "LIMIT 2) SELECT COUNT(*) AS n, SUM(amount) AS s FROM t;",
+     false},
+    {"JoinAggregate",
+     "SELECT COUNT(*) AS n, SUM(i.qty) AS q FROM ronsql_oom_values AS v "
+     "JOIN ronsql_oom_items AS i ON i.vid = v.id;",
+     false},
+    {"CteJoinAggregate",
+     "WITH c AS (SELECT vid AS k, SUM(qty) AS q FROM ronsql_oom_items "
+     "GROUP BY vid) SELECT COUNT(*) AS n, SUM(c.q) AS total "
+     "FROM ronsql_oom_values AS v JOIN c ON c.k = v.id;",
+     false},
+    {"InSubquery",
+     "SELECT COUNT(*) AS n FROM ronsql_oom_values "
+     "WHERE id IN (SELECT vid FROM ronsql_oom_items);",
+     false},
+};
+
+// The output with its rows after the header sorted, when they come in any
+// order.
+std::string comparable_output(const std::string &text, bool any_order) {
+  if (!any_order) return text;
+  std::vector<std::string> lines;
+  size_t start = 0;
+  while (start < text.size()) {
+    size_t end = text.find('\n', start);
+    if (end == std::string::npos) end = text.size();
+    lines.push_back(text.substr(start, end - start));
+    start = end + 1;
+  }
+  if (lines.size() > 1) std::sort(lines.begin() + 1, lines.end());
+  std::string out;
+  for (const std::string &line : lines) {
+    out += line;
+    out += '\n';
+  }
+  return out;
+}
+
+class RonSQLArenaAllocationFailure : public RonSQLDecimalAllocationFailure {
+ protected:
+  void SetUp() override {
+    RonSQLDecimalAllocationFailure::SetUp();
+    ASSERT_NE(nullptr, ndb->getDictionary()->getTable("ronsql_oom_items"))
+        << ndb->getDictionary()->getNdbError().message;
+  }
+};
+
+TEST_F(RonSQLArenaAllocationFailure, EveryAllocationOfEachShape) {
+  for (const ArenaShape &shape : kArenaShapes) {
+    SCOPED_TRACE(shape.name);
+    // A successful run counts the allocations and the transactions.
+    size_t allocations = 0;
+    Uint64 transactions = 0;
+    std::string expected_output;
+    {
+      AllocationHook hook{AllocationSite::ARENA};
+      const TransactionCounts before(*ndb);
+      Request request(shape.sql, &hook, ndb.get());
+      const Outcome result = run_request(request, EntryPoint::RestOperation);
+      ASSERT_EQ(200, result.http_code) << result.message << request.err.str();
+      allocations = hook.attempts;
+      ASSERT_GT(allocations, 0U);
+      transactions =
+          ndb->getClientStat(Ndb::TransStartCount) - before.started;
+      ASSERT_GE(transactions, 1U);
+      before.expect_closed(*ndb, transactions);
+      expected_output = comparable_output(request.out.str(), shape.any_order);
+    }
+
+    for (size_t fail_on = 1; fail_on <= allocations; ++fail_on) {
+      SCOPED_TRACE(::testing::Message()
+                   << "allocation " << fail_on << " of " << allocations);
+      AllocationHook hook{AllocationSite::ARENA, fail_on};
+      {
+        const TransactionCounts before(*ndb);
+        Request request(shape.sql, &hook, ndb.get());
+        const Outcome failure = run_request(request, EntryPoint::RestOperation);
+        ASSERT_GE(hook.attempts, fail_on)
+            << "Fewer allocations than in the counting run: "
+            << failure.message;
+        expect_resource_failure(failure);
+        // No allocation after the failed one: the error is not retried, and
+        // no handler takes the std::bad_alloc for another error and goes on.
+        ASSERT_EQ(fail_on, hook.attempts)
+            << "Allocations after the injected failure.";
+        before.expect_none_open(*ndb, transactions);
+      }
+      // The Ndb object serves the next statement.
+      {
+        Request request(shape.sql, nullptr, ndb.get());
+        const Outcome recovered =
+            run_request(request, EntryPoint::RestOperation);
+        ASSERT_EQ(200, recovered.http_code)
+            << recovered.message << request.err.str();
+        EXPECT_EQ(expected_output,
+                  comparable_output(request.out.str(), shape.any_order));
+      }
     }
   }
 }

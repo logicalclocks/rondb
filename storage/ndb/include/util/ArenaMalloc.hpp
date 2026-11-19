@@ -40,6 +40,9 @@ typedef Uint8 byte;
 
 class ArenaMalloc
 {
+public:
+  // Allocation failure injection for tests, see set_fail_hook().
+  typedef bool (*FailHook)(void* ctx);
 private:
   struct Page
   {
@@ -69,6 +72,8 @@ private:
   Uint64 m_large_alloc_count;
   Uint64 m_small_alloc_count;
 #endif
+  FailHook m_fail_hook = nullptr;
+  void* m_fail_hook_ctx = nullptr;
   void free_memory() noexcept;
   void init_object(size_t) noexcept;
 public:
@@ -98,6 +103,19 @@ public:
   template<typename T> inline T* realloc_exc(const T* ptr,
                                              Uint32 items,
                                              Uint32 original_items);
+  /*
+   * Allocation failure injection, for tests only: while a hook is set,
+   * alloc_bytes() calls hook(ctx) first and fails (returns nullptr) when it
+   * returns true.  Every allocation goes through alloc_bytes() except a
+   * realloc_bytes() that grows in place, which cannot fail.  No hook is set
+   * by default; reset() keeps it, and set_fail_hook(nullptr, nullptr)
+   * removes it.
+   */
+  void set_fail_hook(FailHook hook, void* ctx) noexcept
+  {
+    m_fail_hook = hook;
+    m_fail_hook_ctx = ctx;
+  }
 };
 
 /*

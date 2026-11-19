@@ -273,6 +273,9 @@ private:
   bool m_parse_only = false;
   LexString m_sql = {NULL, 0};
   ArenaMalloc* m_amalloc;
+  // T-17: allocation_test_hook with Site::ARENA fails m_amalloc's
+  // allocations while this preparer lives (C++ tests only).
+  RonSQLArenaTestHookScope m_arena_test_hook;
   Context m_context;
   DynamicArray<LexCString> m_columns;
   DynamicArray<LexCString> m_column_qualifiers; /* table qualifier per col_idx */
