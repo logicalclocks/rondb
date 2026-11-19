@@ -615,8 +615,11 @@ and is recomputed by the installer; storing it would be a second copy that drift
 
 <h3>7.3 <code>rate_limit_group_cluster_state</code></h3>
 <p>One row per (group, cluster) the installer has acted on: <em>pending</em>,
-<em>installed</em>, <em>refused</em> (the cap is full,
-<code>CreateDbNoAvailableRates</code>), with a timestamp. The installer writes it in the
+<em>installed</em>, <em>partial</em> (a pass stopped mid-group; the row says which
+accounts are covered and what failed), <em>refused</em> (the cap is full,
+<code>CreateDbNoAvailableRates</code>), with a timestamp and, for <em>partial</em> and
+<em>refused</em>, the failing command&rsquo;s error (<code>last_error</code>, decided
+2026-11-19). The installer writes it in the
 same pass that issues the commands (section 10), the admin page reads it (section 3).
 Version 1.0 left &ldquo;where the state is stored&rdquo; open because RDRS, in C++, would have had
 to write it back over an NDB connection; with Hopsworks as the installer it is an
@@ -889,12 +892,22 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
     undone by a later pass like any other stale command (below).</li>
     <li><strong>Record the state</strong> per (group, target) in
     <code>rate_limit_group_cluster_state</code>: <em>installed</em> on success,
-    <em>refused</em> when the cluster rejects the rate (the cap), <em>pending</em>
+    <em>partial</em> when the pass stopped mid-group, <em>refused</em> when the cluster
+    rejects the rate (the cap), <em>pending</em>
     otherwise, including for a cluster that is unreachable or not yet discovered.
     <em>Installed</em> means the desired specification, the converted rate and the alias
-    assignments, was applied by a successful pass; a pass that stops mid-group records
-    the partial outcome beside the summary value, what is actually enforced and when it
-    was observed, so the page never shows a half-applied group as simply installed.</li>
+    assignments, was applied by a successful pass. A pass that stops mid-group records
+    <em>partial</em> with what is actually enforced (the applied rate and the covered
+    accounts), the first failed command with its error code and message
+    (<code>last_error</code>), and when it was observed, so the page never shows a
+    half-applied group as simply installed; the admin reads, say, &ldquo;rate 2%
+    installed, Mary covered, Mike not, alias <code>SET</code> failed with 721, last
+    attempt 12:03&rdquo;. There is no undo and no give-up: tearing down the commands that
+    succeeded would strip metering from the covered members because one failed, and
+    every later pass retries just the missing piece, so <em>partial</em> clears by
+    itself once the cause is gone (decided 2026-11-19). <code>last_error</code> is
+    cleared by a fully successful pass and also filled for <em>refused</em>, so a
+    refusal names its reason.</li>
   </ol>
 </div>
 <p>When the pass runs:</p>
@@ -1470,7 +1483,7 @@ targeted RonDB.</p>
   <tbody>
     <tr><td>Hopsworks tables</td><td>new</td><td>Flyway migration with the two group tables and the state table (appendix); JPA entities; the save rules of section 11 in the controller; re-check &ldquo;no ties&rdquo; in the project-membership path (<code>ProjectController</code>, where <code>createDatabaseUser</code> is already called on member add); in the project-delete and user-delete paths, mark deleted every group whose only Who row the delete removes, and name those groups in the two delete confirmations (section 11).</td></tr>
     <tr><td>Hopsworks installer</td><td>new</td><td>Section 10: extend <code>RonDbManagementClient</code> with the <code>USER</code> / <code>USER ALIAS</code> command family (same framing as its quota commands) and per-cluster endpoints from the namespace discovery; the expansion of Who rows into account names (the clip is <code>OnlineFeaturestoreController.onlineDbUsername</code>&rsquo;s); an <code>OnlinefsOperationHandler</code> implementation for membership churn; a primary-gated reconciler on the <code>TrinoReconciler</code> template; state rows per (group, cluster).</td></tr>
-    <tr><td>Hopsworks admin page</td><td>new</td><td>Section 3: list + form, cluster picker from discovery, per-cluster state badges, converted rate shown per cluster, the commands a save will run, the delete confirmation.</td></tr>
+    <tr><td>Hopsworks admin page</td><td>new</td><td>Section 3: list + form, cluster picker from discovery, per-cluster state badges (installed, pending, partial, refused; partial and refused expand to the applied coverage and <code>last_error</code>, section 10), converted rate shown per cluster, the commands a save will run, the delete confirmation.</td></tr>
     <tr><td>RDRS</td><td>exists</td><td>Username mode (merged on the ticket branch): tag the project-user name. <strong>No group code.</strong></td></tr>
     <tr><td>RonDB kernel</td><td>new</td><td>Section 13: alias flag and single target (by name) on the <code>$name</code> object in Dbdict (not budgeted, persisted, backed up, re-resolved on target recreate); <code>USER DROP</code> refused while aliases point at the target (per-target alias count in the drop parse, new error, restart and restore waived; 13.3); the alias-to-target swap at the three Dbtc admission points; <code>USER ALIAS SET/DROP/GET/LIST</code> in the mgm server (<code>Services.cpp</code>) and client; MTR tests in <code>suite/ndb_quota</code>: lifecycle, enforcement through an alias on both key and scan paths, restart and backup/restore, a refused target drop with a live alias, target drop and recreate. Two additions from the scale
     measurement (13.5): a <code>MaxNoOfUserObjects</code> configuration parameter added
@@ -1616,11 +1629,12 @@ CREATE TABLE `hopsworks`.`rate_limit_group_user` (
 CREATE TABLE `hopsworks`.`rate_limit_group_cluster_state` (
   `group_id`     int(11)     NOT NULL,
   `cluster_name` varchar(127) COLLATE latin1_general_cs NOT NULL,  -- namespace, or region:&lt;region name&gt; (section 10); a namespace alone may use 63
-  `state`        varchar(10) NOT NULL,   -- 'PENDING', 'INSTALLED' or 'REFUSED'
+  `state`        varchar(10) NOT NULL,   -- 'PENDING', 'INSTALLED', 'PARTIAL' or 'REFUSED'
   `desired_revision` bigint   NOT NULL,   -- the group revision this row's desired specification was computed from
   `desired_spec` mediumtext   NOT NULL,   -- the desired specification: the converted rate (recomputed on resize with no revision change) and the alias assignments
   `applied_revision` bigint   DEFAULT NULL,  -- the revision a successful pass applied; INSTALLED means applied = desired, spec included
   `applied_spec` mediumtext   DEFAULT NULL,  -- what is actually enforced: the applied rate and the aliases confirmed applied, so a partial outcome names which accounts are covered by what
+  `last_error`   mediumtext   DEFAULT NULL,  -- the last pass's first failed command with its error code and message; NULL after a fully successful pass (section 11)
   `updated`      bigint      NOT NULL,   -- epoch milliseconds; when the applied state was observed
   PRIMARY KEY (`group_id`, `cluster_name`),
   CONSTRAINT `rlgs_group_fk` FOREIGN KEY (`group_id`) REFERENCES `rate_limit_group` (`id`) ON DELETE CASCADE
