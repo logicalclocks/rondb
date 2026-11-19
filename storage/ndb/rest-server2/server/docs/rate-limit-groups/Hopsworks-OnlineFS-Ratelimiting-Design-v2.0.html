@@ -963,9 +963,20 @@ through <code>POST /project/{projectId}/delete</code>
 REST API or the Python client; a user is deleted by an administrator through
 <code>DELETE /admin/users/{id}</code>
 (<code>hopsworks-api/&hellip;/admin/UsersAdminResource.java:357-372</code>), which only
-accepts users without projects. Both paths find the groups whose only Who row the
-delete removes and mark them deleted in the same transaction; the FK cascade removes the
-Who row itself. The project-delete and user-delete confirmations in the UI name those
+accepts users without projects. The entry points cannot host the rule: every controller
+on both chains runs without a transaction
+(<code>TransactionAttributeType.NEVER</code>), the project row is removed only after the
+filesystem cleanup succeeds, and each facade call commits on its own. The rule therefore
+lives where the row actually dies, in the final facade transactions:
+<code>ProjectFacade.removeProject</code> (its own short transaction,
+<code>em.remove</code> at <code>:568</code>) and <code>UserFacade.removeByEmail</code>
+(<code>:448-452</code>, the one production path that deletes a <code>users</code> row).
+Inside that transaction the backend finds the groups whose only Who row the row&rsquo;s
+cascade removes, deletes their state rows, marks them deleted, and then removes the
+project or user row; the FK cascade removes the Who row itself. Placing it there covers
+every route by construction: the owner delete, the admin delete, the admin force
+cleanup, and the removal of a project whose creation failed, all of which end in the
+same facade call. The project-delete and user-delete confirmations in the UI name those
 groups. A group with other Who rows only loses the one row.</p>
 <p class="meta">Version 1.0 needed a <code>data_scope</code> column here, to keep a
 cascade from a dropped feature group from silently widening a group to &ldquo;all data&rdquo;.
