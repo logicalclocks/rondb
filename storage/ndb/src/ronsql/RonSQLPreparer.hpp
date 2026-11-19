@@ -1064,6 +1064,20 @@ private:
   void check_cte_groupby_key_types(QueryScope& scope,
                                    const GroupbyColumns* groupby);
   /**
+   * T-15: refuse, as unsupported, a statement whose scope reads an ENUM
+   * or SET column (NDB keeps the index or bitmap, not the labels), right
+   * after the scope's columns are resolved.
+   */
+  void check_enum_set_columns(const QueryScope& scope) const;
+  /**
+   * T-15: refuse, as unsupported, ORDER BY on a BIT column of more than
+   * 32 bits in the main query or a CTE body with a LIMIT, whose words
+   * every sort compares low word first.
+   */
+  void check_bit_orderby_columns();
+  void check_bit_orderby_columns(QueryScope& scope,
+                                 const SelectStatement& stmt);
+  /**
    * C-6, O-3, O-10: the stored DATE, DATETIME, TIME, TIMESTAMP or YEAR
    * column a CTE output stands for, through CTE outputs that are a column
    * or a MIN / MAX of a column; NULL otherwise.  `packed` is set when a

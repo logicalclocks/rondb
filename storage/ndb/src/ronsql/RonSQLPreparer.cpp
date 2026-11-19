@@ -355,6 +355,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
       check_cte_groupby_key_types();
       check_cte_temporal_outputs();
     }
+    check_bit_orderby_columns();  // T-15
     if (m_cte_scopes.size() > 0 && is_join_query())
       check_pushed_query_size();
     if (!is_join_query())
@@ -2161,6 +2162,7 @@ RonSQLPreparer::load_single_table()
     resolved[col_idx].dict_column = col;
   }
   m_main_scope.resolved_columns = resolved;
+  check_enum_set_columns(m_main_scope);  // T-15
   // F-9, F-11: before plan_index_and_filter takes keys, bounds and
   // filters from the WHERE.
   m_context.ast_root.where_expression = exact_constant_comparisons(
@@ -3664,6 +3666,7 @@ RonSQLPreparer::load_join()
   m_main_scope.table = m_main_scope.join_plan.ops[0].table;
 
   resolve_columns_for_scope(m_main_scope, m_context.ast_root, true);
+  check_enum_set_columns(m_main_scope);  // T-15
 
   // F-9, F-11: comparisons with a stored column; those with a CTE output
   // follow in load(), once the CTE body scopes exist.
@@ -8144,6 +8147,7 @@ RonSQLPreparer::build_cte_scopes()
     scope->table = scope->join_plan.ops[0].table;
     scope->agg = cte->stmt->agg;
     resolve_columns_for_cte_scope(*scope, *cte->stmt);
+    check_enum_set_columns(*scope);  // T-15
     // F-9, F-11: the earlier CTEs' scopes exist, so their outputs are
     // resolved too.
     cte->stmt->where_expression =
@@ -8689,6 +8693,143 @@ RonSQLPreparer::check_json_output_names() const
              " different aliases with AS, or use the TEXT output format.";
       throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, msg.str());
     }
+  }
+}
+
+/*
+ * T-15: NDB stores an ENUM or SET column as NDBCOL::Char without a
+ * character set (ha_ndbcluster's create_ndb_column), so the dictionary
+ * gives it the binary one: an ENUM holds the index of its member in 1 or
+ * 2 bytes, a SET the bitmap of its members in 1 to 8 bytes, both little
+ * endian.  A MySQL CHAR keeps its character set, and CHAR ... CHARACTER
+ * SET binary is BINARY (NDBCOL::Binary), so in a table made by mysqld
+ * only ENUM and SET columns have this shape.  The dictionary does not
+ * tell ENUM from SET and has no labels: they are in the table's SDI
+ * only, which RonSQL does not read.
+ */
+static bool
+is_enum_or_set_column(const NdbDictionary::Column* col)
+{
+  if (col == NULL || col->getType() != NdbDictionary::Column::Char)
+    return false;
+  const CHARSET_INFO* cs = col->getCharset();
+  return cs != NULL && my_charset_same(cs, &my_charset_bin);
+}
+
+static void
+throw_if_enum_or_set_column(const NdbDictionary::Table* table,
+                            const NdbDictionary::Column* col)
+{
+  if (!is_enum_or_set_column(col)) return;
+  std::ostringstream msg;
+  msg << "Column " << quoted_identifier(col->getName());
+  if (table != NULL)
+    msg << " of table " << quoted_identifier(table->getName());
+  msg << " is an ENUM or SET column, which RonSQL does not support: NDB"
+         " stores the member index or the set bitmap of each value, not"
+         " its labels.";
+  throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, msg.str());
+}
+
+/*
+ * T-15: without the labels RonSQL printed an ENUM or SET value as the
+ * bytes of its index or bitmap, compared it with the bytes of a string
+ * literal (e = 'a' matched no row), refused a number (e = 2), took MIN /
+ * MAX and ORDER BY by those bytes and joined two ENUM columns by index,
+ * where mysqld prints the labels, compares with a string by label and
+ * with a number by index, orders an ENUM by index and a SET by bitmap,
+ * takes MIN / MAX by label and joins by label.  Refuse every statement
+ * that reads one, before any plan or program is built: each column the
+ * scope reads is a resolved stored column (load_single_table resolves
+ * every name of the statement, resolve_columns_for_scope those of the
+ * scope's SELECT), except the ON columns, which only the plan's keys
+ * name.  A subquery run as its own statement checks its own scope.
+ */
+void
+RonSQLPreparer::check_enum_set_columns(const QueryScope& scope) const
+{
+  const JoinPlan& plan = scope.join_plan;
+  if (scope.resolved_columns != NULL) {
+    for (Uint32 c = 0; c < m_columns.size(); c++) {
+      const QueryScope::ResolvedColumnRef& ref = scope.resolved_columns[c];
+      if (ref.kind != QueryScope::ResolvedColumnRef::Kind::StoredColumn)
+        continue;
+      const NdbDictionary::Table* table =
+          (ref.join_op_idx < plan.num_ops) ? plan.ops[ref.join_op_idx].table
+                                           : scope.table;
+      throw_if_enum_or_set_column(table, ref.dict_column);
+    }
+  }
+  for (Uint32 t = 0; t < plan.num_ops; t++) {
+    const JoinOp& op = plan.ops[t];
+    for (Uint32 k = 0; k < op.num_key_cols; k++) {
+      if (op.table != NULL)
+        throw_if_enum_or_set_column(
+            op.table, op.table->getColumn(op.child_key_col_names[k]));
+      const JoinOp& src = plan.ops[op.key_parent_op_idx[k]];
+      if (src.table != NULL)
+        throw_if_enum_or_set_column(
+            src.table, src.table->getColumn(op.parent_key_col_names[k]));
+    }
+  }
+}
+
+/*
+ * T-15: a BIT column of more than 32 bits holds two words, the low 32
+ * bits first, and NdbSqlUtil::cmpBit compares the words in that order,
+ * so it put 2^32 before 1.  The pass-through sort
+ * (compare_passthrough_rows), the GROUP BY key sort
+ * (ResultPrinter::compare_rows) and the ORDER BY ... LIMIT of a CTE body
+ * on the data nodes (JoinAggInterpreter::compareGroupsByOrderSpec) all
+ * use it; mysqld orders a BIT by its value.  BIT(1) to BIT(32) is one
+ * word, compared as the number it is.  Refuse ORDER BY on a wider BIT in
+ * the main query and in each CTE body with a LIMIT (without one the body
+ * is not ordered), before any scan.  An ORDER BY on an aggregate needs
+ * no check: no aggregate loads a BIT column (F16).
+ */
+void
+RonSQLPreparer::check_bit_orderby_columns()
+{
+  check_bit_orderby_columns(m_main_scope, m_context.ast_root);
+  Uint32 c = 0;
+  for (const CteDefinition* cte = m_context.ast_root.cte_list;
+       cte != NULL && c < m_cte_scopes.size(); cte = cte->next, c++) {
+    if (m_cte_scopes[c] != NULL && cte->stmt->limit >= 0)
+      check_bit_orderby_columns(*m_cte_scopes[c], *cte->stmt);
+  }
+}
+
+void
+RonSQLPreparer::check_bit_orderby_columns(QueryScope& scope,
+                                          const SelectStatement& stmt)
+{
+  for (const OrderbyColumns* ob = stmt.orderby_columns; ob != NULL;
+       ob = ob->next) {
+    Uint32 col_idx = 0;
+    if (ob->kind == OrderbyColumns::Kind::OUTPUT_REF) {
+      const Outputs* o = stmt.outputs;
+      for (Uint32 i = 0; o != NULL && i < ob->output_idx; i++) o = o->next;
+      if (o == NULL || o->type != Outputs::Type::COLUMN) continue;
+      col_idx = o->column.col_idx;
+    } else {
+      col_idx = ob->col_idx;
+    }
+    if (col_idx >= m_columns.size()) continue;
+    NdbDictionary::Column::Type type = NdbDictionary::Column::Undefined;
+    Uint32 length = 1;
+    const void* cs = NULL;
+    Int32 scale = 0;
+    Int32 precision = 0;
+    if (!resolve_chained_column_type(scope, col_idx, type, length, cs, scale,
+                                     precision))
+      continue;
+    if (type != NdbDictionary::Column::Bit || length <= 32) continue;
+    std::ostringstream msg;
+    msg << "ORDER BY on column "
+        << quoted_identifier(m_columns[col_idx].c_str())
+        << ", a BIT of more than 32 bits, is not supported: RonSQL would"
+           " order its values by their low 32 bits first.";
+    throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, msg.str());
   }
 }
 

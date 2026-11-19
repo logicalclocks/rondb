@@ -1,0 +1,299 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== es-c1: control: a table with ENUM and SET columns, read without them ===
+== Query ==
+SELECT id FROM es WHERE id >= 2;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM es WHERE id >= 2;
+id
+2
+3
+4
+5
+6
+
+=== es-c2: control: COUNT(*) ===
+== Query ==
+SELECT COUNT(*) AS n FROM es;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n FROM es;
+n
+6
+
+=== es-e1: pass-through ENUM and SET ===
+Error handling: RPE
+ronsql_cli caught exception: Column `e` of table `es` is an ENUM or SET column, which RonSQL does not support: NDB stores the member index or the set bitmap of each value, not its labels.
+
+=== es-e2: a printed ENUM GROUP BY key ===
+Error handling: RPE
+ronsql_cli caught exception: Column `e` of table `es` is an ENUM or SET column, which RonSQL does not support: NDB stores the member index or the set bitmap of each value, not its labels.
+
+=== es-e3: a SET GROUP BY key that is not printed ===
+Error handling: RPE
+ronsql_cli caught exception: Column `s` of table `es` is an ENUM or SET column, which RonSQL does not support: NDB stores the member index or the set bitmap of each value, not its labels.
+
+=== es-e4: MIN of an ENUM, MAX of a SET ===
+Error handling: RPE
+ronsql_cli caught exception: Column `e` of table `es` is an ENUM or SET column, which RonSQL does not support: NDB stores the member index or the set bitmap of each value, not its labels.
+
+=== es-e5: COUNT of an ENUM ===
+Error handling: RPE
+ronsql_cli caught exception: Column `e` of table `es` is an ENUM or SET column, which RonSQL does not support: NDB stores the member index or the set bitmap of each value, not its labels.
+
+=== es-e6: ENUM = a string ===
+Error handling: RPE
+ronsql_cli caught exception: Column `e` of table `es` is an ENUM or SET column, which RonSQL does not support: NDB stores the member index or the set bitmap of each value, not its labels.
+
+=== es-e7: ENUM = a number ===
+Error handling: RPE
+ronsql_cli caught exception: Column `e` of table `es` is an ENUM or SET column, which RonSQL does not support: NDB stores the member index or the set bitmap of each value, not its labels.
+
+=== es-e8: ENUM IN a list ===
+Error handling: RPE
+ronsql_cli caught exception: Column `e` of table `es` is an ENUM or SET column, which RonSQL does not support: NDB stores the member index or the set bitmap of each value, not its labels.
+
+=== es-e9: SET = a string ===
+Error handling: RPE
+ronsql_cli caught exception: Column `s` of table `es` is an ENUM or SET column, which RonSQL does not support: NDB stores the member index or the set bitmap of each value, not its labels.
+
+=== es-e10: ENUM IS NULL ===
+Error handling: RPE
+ronsql_cli caught exception: Column `e` of table `es` is an ENUM or SET column, which RonSQL does not support: NDB stores the member index or the set bitmap of each value, not its labels.
+
+=== es-e11: ORDER BY an ENUM ===
+Error handling: RPE
+ronsql_cli caught exception: Column `e` of table `es` is an ENUM or SET column, which RonSQL does not support: NDB stores the member index or the set bitmap of each value, not its labels.
+
+=== es-e12: an indexed ENUM = a string ===
+Error handling: RPE
+ronsql_cli caught exception: Column `e` of table `es2` is an ENUM or SET column, which RonSQL does not support: NDB stores the member index or the set bitmap of each value, not its labels.
+
+=== es-e13: a join on an indexed ENUM ===
+Error handling: RPE
+ronsql_cli caught exception: Column `e` of table `es2` is an ENUM or SET column, which RonSQL does not support: NDB stores the member index or the set bitmap of each value, not its labels.
+
+=== es-e14: an ENUM GROUP BY key in a CTE body ===
+Error handling: RPE
+ronsql_cli caught exception: Column `e` of table `es` is an ENUM or SET column, which RonSQL does not support: NDB stores the member index or the set bitmap of each value, not its labels.
+
+=== es-r1: es-e1 through RDRS ===
+HTTP 400
+x-ronsql-error-class: unsupported
+Error handling: RPE
+[unsupported] Caught exception: Column `e` of table `es` is an ENUM or SET column, which RonSQL does not support: NDB stores the member index or the set bitmap of each value, not its labels.
+
+=== es-r2: es-e13 through RDRS ===
+HTTP 400
+x-ronsql-error-class: unsupported
+Error handling: RPE
+[unsupported] Caught exception: Column `e` of table `es2` is an ENUM or SET column, which RonSQL does not support: NDB stores the member index or the set bitmap of each value, not its labels.
+
+=== bt-c1: GROUP BY a BIT(5) that is not printed ===
+== Query ==
+SELECT COUNT(*) AS n FROM es GROUP BY bt;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n FROM es GROUP BY bt;
+n
+1
+1
+1
+1
+2
+
+=== bt-c2: GROUP BY a BIT(40) that is not printed ===
+== Query ==
+SELECT COUNT(*) AS n FROM es GROUP BY b40;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n FROM es GROUP BY b40;
+n
+1
+1
+1
+1
+2
+
+=== bt-c3: pass-through ORDER BY a BIT(5) that is not printed ===
+== Query ==
+SELECT id FROM es ORDER BY bt, id;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM es ORDER BY bt, id;
+id
+4
+5
+1
+6
+2
+3
+
+=== bt-c4: ORDER BY a BIT(5) GROUP BY key that is not printed ===
+== Query ==
+SELECT COUNT(*) AS n, MIN(id) AS lo FROM es GROUP BY bt ORDER BY bt;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, MIN(id) AS lo FROM es GROUP BY bt ORDER BY bt;
+n	lo
+1	4
+1	5
+2	1
+1	2
+1	3
+
+=== bt-c5: BIT IS NOT NULL and IS NULL ===
+== Query ==
+SELECT id FROM es WHERE bt IS NOT NULL;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM es WHERE bt IS NOT NULL;
+id
+1
+2
+3
+5
+6
+== Query ==
+SELECT COUNT(*) AS n FROM es WHERE b40 IS NULL;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n FROM es WHERE b40 IS NULL;
+n
+1
+
+=== bt-c6: a CTE grouped by a BIT(5), its key not printed ===
+== Query ==
+WITH c AS (SELECT bt, COUNT(*) AS n FROM es GROUP BY bt) SELECT n FROM c;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT bt, COUNT(*) AS n FROM es GROUP BY bt) SELECT n FROM c;
+n
+1
+1
+1
+1
+2
+
+=== bt-e1: a pass-through BIT ===
+Error handling: RPE
+ronsql_cli caught exception: The SELECT output `bt` has type BIT, which RonSQL cannot return.
+
+=== bt-e2: MAX of a BIT ===
+Failed writing aggregation program when attempting to load column `bt`
+Error handling: RMS->RPE
+ronsql_cli caught exception: Aggregation over a column of this type is not supported.
+
+=== bt-e3: COUNT of a BIT ===
+Failed writing aggregation program when attempting to load column `bt`
+Error handling: RMS->RPE
+ronsql_cli caught exception: Aggregation over a column of this type is not supported.
+
+=== bt-e4: BIT = a number ===
+Error handling: RMS->RPE
+ronsql_cli caught exception: Unsupported column type in comparison condition. Supported types are integer types, FLOAT, DOUBLE, DECIMAL, CHAR, VARCHAR, DATE, DATETIME and TIMESTAMP.
+
+=== bt-e5: a join on a BIT (no index) ===
+Cannot push join: no suitable index on join columns for table 'es'. Create a primary key, unique index, or ordered index on the join columns.
+Error handling: RPE
+ronsql_cli caught exception: No suitable index for join columns.
+
+=== bt-e6: pass-through ORDER BY a BIT(40) ===
+Error handling: RPE
+ronsql_cli caught exception: ORDER BY on column `b40`, a BIT of more than 32 bits, is not supported: RonSQL would order its values by their low 32 bits first.
+
+=== bt-e7: ORDER BY a BIT(40) GROUP BY key ===
+Error handling: RPE
+ronsql_cli caught exception: ORDER BY on column `b40`, a BIT of more than 32 bits, is not supported: RonSQL would order its values by their low 32 bits first.
+
+=== bt-e8: ORDER BY a BIT(40) with LIMIT in a CTE body ===
+Error handling: RPE
+ronsql_cli caught exception: ORDER BY on column `b40`, a BIT of more than 32 bits, is not supported: RonSQL would order its values by their low 32 bits first.
+
+=== bt-e9: a BIT key printed through a CTE ===
+Error handling: RPE
+ronsql_cli caught exception: The SELECT output `bt` has type BIT, which RonSQL cannot return.
+
+=== bt-r1: bt-e6 through RDRS ===
+HTTP 400
+x-ronsql-error-class: unsupported
+Error handling: RPE
+[unsupported] Caught exception: ORDER BY on column `b40`, a BIT of more than 32 bits, is not supported: RonSQL would order its values by their low 32 bits first.
+
+=== bt-r2: bt-e4 through RDRS ===
+HTTP 400
+x-ronsql-error-class: unsupported
+Error handling: RMS->RPE
+[unsupported] Caught exception: Unsupported column type in comparison condition. Supported types are integer types, FLOAT, DOUBLE, DECIMAL, CHAR, VARCHAR, DATE, DATETIME and TIMESTAMP.
+
+=== Cleanup ===
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_enum_set_jit_fallback_delta;
+ronsql_enum_set_jit_fallback_delta
+0

@@ -1,0 +1,317 @@
+# ENUM, SET and BIT columns.
+#
+# README finding T-15: no test read an ENUM or SET column, and BIT
+# appeared in two files.  NDB stores ENUM and SET as NDBCOL::Char without
+# a character set (ha_ndbcluster's create_ndb_column), which the
+# dictionary gives the binary one: an ENUM holds the index of its member
+# in 1 or 2 bytes, a SET the bitmap of its members in 1 to 8 bytes.  The
+# dictionary cannot tell ENUM from SET and has no labels (they are in the
+# table's SDI only).  So RonSQL printed an index or a bitmap as a binary
+# string, compared it with the bytes of a string literal (e = 'a' matched
+# no row), refused a number, took MIN / MAX and ORDER BY by those bytes,
+# and joined two ENUM columns by index, where mysqld prints the labels,
+# compares with a string by label and with a number by index, orders an
+# ENUM by index and a SET by bitmap, and takes MIN / MAX and joins by
+# label.  RonSQLPreparer::check_enum_set_columns() now refuses
+# (unsupported) every statement that reads an ENUM or SET column, as soon
+# as the columns of a scope are resolved and before any plan, program or
+# scan.  No CHAR is refused: a MySQL CHAR keeps its character set, and
+# CHAR ... CHARACTER SET binary is BINARY in NDB.
+#
+# BIT (unchanged): a printed BIT column is refused at prepare time (O-13),
+# an aggregate over one when the program is built (F16), a comparison
+# with a constant when the scan filter is built (before the scan and any
+# output), and NDB indexes no BIT column, so a join on one has no index.
+# GROUP BY a BIT that is not printed, IS [NOT] NULL and ORDER BY a BIT of
+# at most 32 bits give mysqld's result.  A wider BIT holds two words, the
+# low 32 bits first, and NdbSqlUtil::cmpBit compares them in that order,
+# so ORDER BY put 2^32 before 1 (the pass-through sort, the GROUP BY key
+# sort and a CTE body's ORDER BY ... LIMIT on the data nodes); it is now
+# refused at prepare time (check_bit_orderby_columns).
+#
+#   es-c1, es-c2   control: es is read when no ENUM or SET column is
+#   es-e1..es-e14  refused through ronsql_cli: pass-through, GROUP BY key
+#                  printed and not, MIN / MAX, COUNT(col), = 'a', = 2,
+#                  IN, a SET = '...', IS NULL, ORDER BY, an indexed ENUM
+#                  = 'a', a join on an indexed ENUM, a CTE body
+#   es-r1, es-r2   es-e1 and es-e13 through RDRS: HTTP 400, unsupported
+#   bt-c1..bt-c6   compared with mysqld: GROUP BY BIT(5) and BIT(40) not
+#                  printed, pass-through ORDER BY BIT(5), aggregate ORDER
+#                  BY a BIT(5) key, IS NOT NULL, IS NULL, a CTE grouped
+#                  by BIT(5) whose key is not printed
+#
+# The ronsql_jit mirror runs the same file with the JIT armed (the GROUP
+# BY and IS NULL programs run on the data nodes).
+#   bt-e1..bt-e9   refused through ronsql_cli: pass-through BIT, MAX and
+#                  COUNT of a BIT, BIT = 5 (when the scan filter is built),
+#                  a join on BIT, ORDER BY a BIT(40) (pass-through,
+#                  aggregate, CTE body with LIMIT; new), a BIT key printed
+#                  through a CTE
+#   bt-r1, bt-r2   bt-e6 and bt-e4 through RDRS: HTTP 400, unsupported
+#
+# es row 6 holds the ENUM error value '' (index 0), stored with
+# sql_mode = '' as mysqld does for a value not in the list.  BIT(40) holds
+# 2^32 and 2^32 + 1 beside 1 and 2.
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE es (
+  id  INT NOT NULL,
+  e   ENUM('b','a','c') NULL,
+  s   SET('x','y','z') NULL,
+  bt  BIT(5) NULL,
+  b40 BIT(40) NULL,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+INSERT INTO es VALUES
+  (1, 'b',  'x',     b'00001', 1),
+  (2, 'a',  'y,z',   b'10000', 4294967296),
+  (3, 'c',  'x,y,z', b'11111', 2),
+  (4, NULL, NULL,    NULL,     NULL),
+  (5, 'a',  '',      b'00000', 4294967297);
+SET @es_sql_mode = @@SESSION.sql_mode;
+SET SESSION sql_mode = '';
+INSERT INTO es VALUES (6, 'q', 'z', b'00001', 1);
+SET SESSION sql_mode = @es_sql_mode;
+CREATE TABLE es2 (
+  id INT NOT NULL,
+  e  ENUM('b','a','c') NULL,
+  PRIMARY KEY (id),
+  INDEX ie (e)
+) ENGINE=NDB;
+INSERT INTO es2 VALUES (1, 'b'), (2, 'a'), (3, 'c'), (4, NULL);
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === es-c1: control: a table with ENUM and SET columns, read without them ===
+--let $QUERY=SELECT id FROM es WHERE id >= 2;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM es WHERE id >= 2;
+
+--echo
+--echo === es-c2: control: COUNT(*) ===
+--let $QUERY=SELECT COUNT(*) AS n FROM es;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS n FROM es;
+
+--echo
+--echo === es-e1: pass-through ENUM and SET ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id, e, s FROM es;' 2>&1
+
+--echo
+--echo === es-e2: a printed ENUM GROUP BY key ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT e, COUNT(*) AS n FROM es GROUP BY e;' 2>&1
+
+--echo
+--echo === es-e3: a SET GROUP BY key that is not printed ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM es GROUP BY s;' 2>&1
+
+--echo
+--echo === es-e4: MIN of an ENUM, MAX of a SET ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT MIN(e) AS mn, MAX(s) AS mx FROM es;' 2>&1
+
+--echo
+--echo === es-e5: COUNT of an ENUM ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(e) AS n FROM es;' 2>&1
+
+--echo
+--echo === es-e6: ENUM = a string ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT id FROM es WHERE e = 'a';" 2>&1
+
+--echo
+--echo === es-e7: ENUM = a number ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id FROM es WHERE e = 2;' 2>&1
+
+--echo
+--echo === es-e8: ENUM IN a list ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT id FROM es WHERE e IN ('a', 'c');" 2>&1
+
+--echo
+--echo === es-e9: SET = a string ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT id FROM es WHERE s = 'x,y,z';" 2>&1
+
+--echo
+--echo === es-e10: ENUM IS NULL ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM es WHERE e IS NULL;' 2>&1
+
+--echo
+--echo === es-e11: ORDER BY an ENUM ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id FROM es ORDER BY e;' 2>&1
+
+--echo
+--echo === es-e12: an indexed ENUM = a string ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT id FROM es2 WHERE e = 'a';" 2>&1
+
+--echo
+--echo === es-e13: a join on an indexed ENUM ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT a.id AS ia, b.id AS ib FROM es AS a JOIN es2 AS b ON b.e = a.e;' 2>&1
+
+--echo
+--echo === es-e14: an ENUM GROUP BY key in a CTE body ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c AS (SELECT e, COUNT(*) AS n FROM es GROUP BY e) SELECT e, n FROM c;' 2>&1
+
+--echo
+--echo === es-r1: es-e1 through RDRS ===
+--exec printf '{"query":"SELECT id, e, s FROM es;","database":"test"}' > $MYSQL_TMP_DIR/es-body
+--exec curl -s -o $MYSQL_TMP_DIR/es-rdrs.out -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/es-hdrs -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/es-body
+--exec grep -i '^x-ronsql-error-class:' $MYSQL_TMP_DIR/es-hdrs | tr -d '\r' | tr '[:upper:]' '[:lower:]'
+--exec cat $MYSQL_TMP_DIR/es-rdrs.out
+
+--echo
+--echo === es-r2: es-e13 through RDRS ===
+--exec printf '{"query":"SELECT a.id AS ia, b.id AS ib FROM es AS a JOIN es2 AS b ON b.e = a.e;","database":"test"}' > $MYSQL_TMP_DIR/es-body
+--exec curl -s -o $MYSQL_TMP_DIR/es-rdrs.out -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/es-hdrs -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/es-body
+--exec grep -i '^x-ronsql-error-class:' $MYSQL_TMP_DIR/es-hdrs | tr -d '\r' | tr '[:upper:]' '[:lower:]'
+--exec cat $MYSQL_TMP_DIR/es-rdrs.out
+
+--echo
+--echo === bt-c1: GROUP BY a BIT(5) that is not printed ===
+--let $QUERY=SELECT COUNT(*) AS n FROM es GROUP BY bt;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM es GROUP BY bt;
+
+--echo
+--echo === bt-c2: GROUP BY a BIT(40) that is not printed ===
+--let $QUERY=SELECT COUNT(*) AS n FROM es GROUP BY b40;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM es GROUP BY b40;
+
+--echo
+--echo === bt-c3: pass-through ORDER BY a BIT(5) that is not printed ===
+--let $skip_sort=yes
+--let $QUERY=SELECT id FROM es ORDER BY bt, id;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT id FROM es ORDER BY bt, id;
+
+--echo
+--echo === bt-c4: ORDER BY a BIT(5) GROUP BY key that is not printed ===
+--let $skip_sort=yes
+--let $QUERY=SELECT COUNT(*) AS n, MIN(id) AS lo FROM es GROUP BY bt ORDER BY bt;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS n, MIN(id) AS lo FROM es GROUP BY bt ORDER BY bt;
+
+--echo
+--echo === bt-c5: BIT IS NOT NULL and IS NULL ===
+--let $QUERY=SELECT id FROM es WHERE bt IS NOT NULL;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM es WHERE bt IS NOT NULL;
+--let $QUERY=SELECT COUNT(*) AS n FROM es WHERE b40 IS NULL;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS n FROM es WHERE b40 IS NULL;
+
+--echo
+--echo === bt-c6: a CTE grouped by a BIT(5), its key not printed ===
+--let $QUERY=WITH c AS (SELECT bt, COUNT(*) AS n FROM es GROUP BY bt) SELECT n FROM c;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT bt, COUNT(*) AS n FROM es GROUP BY bt) SELECT n FROM c;
+
+--echo
+--echo === bt-e1: a pass-through BIT ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id, bt FROM es;' 2>&1
+
+--echo
+--echo === bt-e2: MAX of a BIT ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT MAX(bt) AS mx FROM es;' 2>&1
+
+--echo
+--echo === bt-e3: COUNT of a BIT ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(bt) AS n FROM es;' 2>&1
+
+--echo
+--echo === bt-e4: BIT = a number ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM es WHERE bt = 5;' 2>&1
+
+--echo
+--echo === bt-e5: a join on a BIT (no index) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT a.id AS ia, b.id AS ib FROM es AS a JOIN es AS b ON b.bt = a.bt;' 2>&1
+
+--echo
+--echo === bt-e6: pass-through ORDER BY a BIT(40) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id FROM es ORDER BY b40;' 2>&1
+
+--echo
+--echo === bt-e7: ORDER BY a BIT(40) GROUP BY key ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM es GROUP BY b40 ORDER BY b40;' 2>&1
+
+--echo
+--echo === bt-e8: ORDER BY a BIT(40) with LIMIT in a CTE body ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c AS (SELECT b40, COUNT(*) AS n FROM es GROUP BY b40 ORDER BY b40 LIMIT 2) SELECT n FROM c;' 2>&1
+
+--echo
+--echo === bt-e9: a BIT key printed through a CTE ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c AS (SELECT bt, COUNT(*) AS n FROM es GROUP BY bt) SELECT bt, n FROM c;' 2>&1
+
+--echo
+--echo === bt-r1: bt-e6 through RDRS ===
+--exec printf '{"query":"SELECT id FROM es ORDER BY b40;","database":"test"}' > $MYSQL_TMP_DIR/es-body
+--exec curl -s -o $MYSQL_TMP_DIR/es-rdrs.out -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/es-hdrs -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/es-body
+--exec grep -i '^x-ronsql-error-class:' $MYSQL_TMP_DIR/es-hdrs | tr -d '\r' | tr '[:upper:]' '[:lower:]'
+--exec cat $MYSQL_TMP_DIR/es-rdrs.out
+
+--echo
+--echo === bt-r2: bt-e4 through RDRS ===
+--exec printf '{"query":"SELECT COUNT(*) AS n FROM es WHERE bt = 5;","database":"test"}' > $MYSQL_TMP_DIR/es-body
+--exec curl -s -o $MYSQL_TMP_DIR/es-rdrs.out -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/es-hdrs -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/es-body
+--exec grep -i '^x-ronsql-error-class:' $MYSQL_TMP_DIR/es-hdrs | tr -d '\r' | tr '[:upper:]' '[:lower:]'
+--exec cat $MYSQL_TMP_DIR/es-rdrs.out
+--remove_file $MYSQL_TMP_DIR/es-body
+--remove_file $MYSQL_TMP_DIR/es-hdrs
+--remove_file $MYSQL_TMP_DIR/es-rdrs.out
+
+--let $QUERY=
+
+--echo
+--echo === Cleanup ===
+--disable_query_log
+DROP TABLE es2;
+DROP TABLE es;
+--enable_query_log
