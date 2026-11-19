@@ -1,0 +1,327 @@
+# Three-valued logic over NULL data in every filter placement.
+#
+# README finding T-14: ronsql_emptytable_and_nulls runs predicates
+# mixing NOT, AND, OR, = and != over NULL data, but only as the WHERE of
+# a single-table scan (NdbScanFilter). RonSQL builds a filter in other
+# places too, each its own code: the filter of a joined table, the
+# filter of the root of a pushed join, the residual filter of primary-key
+# lookups (an aggregating and a pass-through arm), the filter of a
+# CTE_LOOKUP on the outputs of a CTE (emit_cte_lookup_filter, its own
+# NULL guards) and a CASE condition in an aggregation program
+# (generate_embedded_condition, its own NULL semantics). This test runs
+# one predicate set in each of them, strictly against mysqld.
+#
+# Tables (both 27 rows; every combination of NULL and non-NULL values):
+#   nl_t (pk, flt, gr, s): pk 1..27, (flt, gr, s) runs through
+#        flt in (NULL, 66, 11) x gr in (NULL, 1, 2) x s in (NULL, 'ab',
+#        'xy') in that order: pk 1 = (NULL, NULL, NULL), pk 2 = (NULL,
+#        NULL, 'ab'), ..., pk 27 = (11, 2, 'xy').
+#   nl_p (id, flt, gr, s): id k holds the values of nl_t pk 28 - k, so a
+#        filter on p selects other ids than the same filter on t, and a
+#        filter applied to the wrong table gives another SUM.
+#
+# Placements (Q. in a predicate is the placement's qualifier):
+#   child  SELECT COUNT(*), SUM(c.pk) FROM nl_p AS p JOIN nl_t AS c
+#          ON c.pk = p.id WHERE <predicate on c>  (filter of a lookup child)
+#   root   the same join, WHERE <predicate on p>  (filter of the root scan)
+#   pkagg  SELECT COUNT(*), SUM(pk) FROM nl_t WHERE pk IN (1, ..., 27)
+#          AND (<predicate>): 27 aggregating primary-key lookups with a
+#          residual filter (EXPLAIN pins the plan)
+#   pkrow  SELECT pk, flt, gr, s with the same WHERE: 27 primary-key
+#          lookups with a residual filter (EXPLAIN pins the plan)
+#   cte    a CTE grouped by pk with MIN(flt) AS flt, MIN(gr) AS gr and
+#          MIN(s) AS s, joined as c to nl_p, WHERE <predicate on c>
+#   case   SUM(CASE WHEN <predicate> THEN 1 ELSE 0 END) and
+#          SUM(CASE WHEN <predicate> THEN pk ELSE 0 END) over nl_t
+#   scan   the single-table scan, for the b predicates only (the a
+#          predicates are those of ronsql_emptytable_and_nulls)
+#
+# Predicates (the perl block below lists them):
+#   a01-a36  the predicates of ronsql_emptytable_and_nulls: flt = 11 and
+#            gr = 2 and their !=, under AND, OR and NOT
+#   b01-b36  LIKE and NOT (... LIKE ...), IS [NOT] NULL and NOT over it,
+#            IN lists and NOT over them, the BETWEEN form (>= AND <=) and
+#            NOT over it, < > <= >=, ! (a NOT since F-14) and ! !,
+#            NOT NOT, XOR, string comparisons, nesting of these
+#
+# A CTE_LOOKUP filter takes only a top-level OR of ANDs of comparisons
+# and IS [NOT] NULL (NOT NOT x is x), and a CASE condition only one
+# comparison or an AND or OR of comparisons; the cte and case
+# placements run the predicates they take (a01-a10 and b05 b06 b08 b10
+# b11 b15 b17 b19 b30 b31 b33 b34 on the CTE, a01-a10 and b11 b15 b17
+# b19 b30 b31 b33 b34 in the CASE), and each kind of refusal is
+# recorded once through ronsql_cli:
+#   cte-e1  NOT over a comparison    cte-e2  LIKE    cte-e3  OR under AND
+#   case-e1 NOT over a comparison    case-e2 IS NULL case-e3 LIKE
+# RonSQL's grammar has no NOT LIKE, NOT IN, BETWEEN or <=> and no NULL
+# literal (IN (11, NULL)); the matrix writes NOT (x LIKE p) and
+# NOT (x IN (...)) and the BETWEEN form, and the syntax errors are
+# recorded once (parse-e1 to parse-e5).
+#
+# Expected results come from mysqld (strict_diff). mysqld warns that !
+# is deprecated; the warnings are not recorded.
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let QUERY_FILE=$MYSQL_TMP_DIR/null_logic_query.sql
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/null_logic_explain.out
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE nl_t (
+  pk INT NOT NULL,
+  flt INT NULL,
+  gr INT NULL,
+  s VARCHAR(10) NULL,
+  PRIMARY KEY USING HASH (pk)
+) ENGINE=NDB CHARSET=latin1;
+CREATE TABLE nl_p (
+  id INT NOT NULL,
+  flt INT NULL,
+  gr INT NULL,
+  s VARCHAR(10) NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB CHARSET=latin1;
+INSERT INTO nl_t VALUES
+  (1, NULL, NULL, NULL), (2, NULL, NULL, 'ab'), (3, NULL, NULL, 'xy'),
+  (4, NULL, 1, NULL), (5, NULL, 1, 'ab'), (6, NULL, 1, 'xy'),
+  (7, NULL, 2, NULL), (8, NULL, 2, 'ab'), (9, NULL, 2, 'xy'),
+  (10, 66, NULL, NULL), (11, 66, NULL, 'ab'), (12, 66, NULL, 'xy'),
+  (13, 66, 1, NULL), (14, 66, 1, 'ab'), (15, 66, 1, 'xy'),
+  (16, 66, 2, NULL), (17, 66, 2, 'ab'), (18, 66, 2, 'xy'),
+  (19, 11, NULL, NULL), (20, 11, NULL, 'ab'), (21, 11, NULL, 'xy'),
+  (22, 11, 1, NULL), (23, 11, 1, 'ab'), (24, 11, 1, 'xy'),
+  (25, 11, 2, NULL), (26, 11, 2, 'ab'), (27, 11, 2, 'xy');
+INSERT INTO nl_p (id, flt, gr, s)
+  SELECT 28 - pk, flt, gr, s FROM nl_t;
+--enable_warnings
+--enable_query_log
+
+# One case per placement and predicate, written as an include file: the
+# query goes through $QUERY_FILE (the predicates hold quotes), then the
+# same query runs on mysqld for the expected result.
+--let NULL_LOGIC_DIR=$MYSQL_TMP_DIR
+--perl
+use strict;
+use warnings;
+use File::Spec;
+
+# [id, placements beyond child, root, pkagg and pkrow (S scan, C cte,
+#  W case), predicate with Q. for the column qualifier]
+my @preds = (
+  ['a01', 'CW', 'Q.flt = 11'],
+  ['a02', 'CW', 'Q.flt != 11'],
+  ['a03', 'CW', 'Q.flt = 11 AND Q.gr = 2'],
+  ['a04', 'CW', 'Q.flt = 11 AND Q.gr != 2'],
+  ['a05', 'CW', 'Q.flt != 11 AND Q.gr = 2'],
+  ['a06', 'CW', 'Q.flt != 11 AND Q.gr != 2'],
+  ['a07', 'CW', 'Q.flt = 11 OR Q.gr = 2'],
+  ['a08', 'CW', 'Q.flt = 11 OR Q.gr != 2'],
+  ['a09', 'CW', 'Q.flt != 11 OR Q.gr = 2'],
+  ['a10', 'CW', 'Q.flt != 11 OR Q.gr != 2'],
+  ['a11', '', 'NOT (Q.flt = 11)'],
+  ['a12', '', 'NOT (Q.flt != 11)'],
+  ['a13', '', '(NOT (Q.flt = 11)) AND Q.gr = 2'],
+  ['a14', '', 'Q.flt = 11 AND (NOT (Q.gr = 2))'],
+  ['a15', '', 'NOT (Q.flt = 11 AND Q.gr = 2)'],
+  ['a16', '', '(NOT (Q.flt = 11)) AND Q.gr != 2'],
+  ['a17', '', 'Q.flt = 11 AND (NOT (Q.gr != 2))'],
+  ['a18', '', 'NOT (Q.flt = 11 AND Q.gr != 2)'],
+  ['a19', '', '(NOT (Q.flt != 11)) AND Q.gr = 2'],
+  ['a20', '', 'Q.flt != 11 AND (NOT (Q.gr = 2))'],
+  ['a21', '', 'NOT (Q.flt != 11 AND Q.gr = 2)'],
+  ['a22', '', '(NOT (Q.flt != 11)) AND Q.gr != 2'],
+  ['a23', '', 'Q.flt != 11 AND (NOT (Q.gr != 2))'],
+  ['a24', '', 'NOT (Q.flt != 11 AND Q.gr != 2)'],
+  ['a25', '', '(NOT (Q.flt = 11)) OR Q.gr = 2'],
+  ['a26', '', 'Q.flt = 11 OR (NOT (Q.gr = 2))'],
+  ['a27', '', 'NOT (Q.flt = 11 OR Q.gr = 2)'],
+  ['a28', '', '(NOT (Q.flt = 11)) OR Q.gr != 2'],
+  ['a29', '', 'Q.flt = 11 OR (NOT (Q.gr != 2))'],
+  ['a30', '', 'NOT (Q.flt = 11 OR Q.gr != 2)'],
+  ['a31', '', '(NOT (Q.flt != 11)) OR Q.gr = 2'],
+  ['a32', '', 'Q.flt != 11 OR (NOT (Q.gr = 2))'],
+  ['a33', '', 'NOT (Q.flt != 11 OR Q.gr = 2)'],
+  ['a34', '', '(NOT (Q.flt != 11)) OR Q.gr != 2'],
+  ['a35', '', 'Q.flt != 11 OR (NOT (Q.gr != 2))'],
+  ['a36', '', 'NOT (Q.flt != 11 OR Q.gr != 2)'],
+  ['b01', 'S', "Q.s LIKE 'a%'"],
+  ['b02', 'S', "NOT (Q.s LIKE 'a%')"],
+  ['b03', 'S', "NOT (Q.s LIKE '%y') OR Q.gr = 2"],
+  ['b04', 'S', "NOT (Q.s LIKE 'a%' AND Q.flt = 11)"],
+  ['b05', 'SC', 'Q.flt IS NULL'],
+  ['b06', 'SC', 'Q.flt IS NOT NULL'],
+  ['b07', 'S', 'NOT (Q.gr IS NULL)'],
+  ['b08', 'SC', 'Q.flt IS NULL OR Q.gr = 2'],
+  ['b09', 'S', 'NOT (Q.s IS NULL OR Q.gr != 2)'],
+  ['b10', 'SC', 'Q.s IS NULL AND Q.gr IS NOT NULL'],
+  ['b11', 'SCW', 'Q.flt IN (11, 66)'],
+  ['b12', 'S', 'NOT (Q.flt IN (11, 66))'],
+  ['b13', 'S', 'NOT (Q.flt IN (11, 66)) OR Q.gr IN (1, 2)'],
+  ['b14', 'S', 'Q.flt IN (11, 66) AND Q.gr != 2'],
+  ['b15', 'SCW', "Q.s IN ('ab', 'zz')"],
+  ['b16', 'S', "NOT (Q.s IN ('ab', 'zz') OR Q.flt = 66)"],
+  ['b17', 'SCW', 'Q.flt >= 11 AND Q.flt <= 60'],
+  ['b18', 'S', 'NOT (Q.flt >= 11 AND Q.flt <= 60)'],
+  ['b19', 'SCW', 'Q.flt < 66 OR Q.gr > 1'],
+  ['b20', 'S', 'NOT (Q.flt < 66) OR Q.gr <= 1'],
+  ['b21', 'S', '!(Q.flt = 11)'],
+  ['b22', 'S', '!(Q.flt != 11 AND Q.gr = 2)'],
+  ['b23', 'S', '!(Q.flt = 11 OR Q.gr = 2)'],
+  ['b24', 'S', '!(!(Q.flt = 11 OR Q.gr != 2))'],
+  ['b25', 'S', '!(Q.flt IS NULL)'],
+  ['b26', 'S', "!(Q.s LIKE 'a%')"],
+  ['b27', 'S', 'NOT (NOT (Q.flt = 11 OR Q.gr != 2))'],
+  ['b28', 'S', 'Q.flt = 11 XOR Q.gr = 2'],
+  ['b29', 'S', 'NOT (Q.flt = 11 XOR Q.gr != 2)'],
+  ['b30', 'SCW', "Q.s = 'ab'"],
+  ['b31', 'SCW', "Q.s != 'ab' OR Q.flt = 11"],
+  ['b32', 'S', "NOT (Q.s = 'xy' AND Q.gr = 1)"],
+  ['b33', 'SCW', '!(!(Q.flt = 11))'],
+  ['b34', 'SCW', 'NOT (NOT (Q.gr != 2))'],
+  ['b35', 'S', "NOT ((Q.flt = 11 OR Q.gr IS NULL) AND NOT (Q.s LIKE 'x%'))"],
+  ['b36', 'S', "(Q.flt != 11 OR Q.s IS NULL) AND (Q.gr = 1 OR NOT (Q.s != 'ab'))"],
+);
+
+my $keys = join(', ', 1 .. 27);
+my $join = 'SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p ' .
+           'JOIN nl_t AS c ON c.pk = p.id WHERE %P';
+# [name, qualifier, flag ('' for every predicate), query, EXPLAIN pin]
+my @placements = (
+  ['child', 'c.', '', $join, ''],
+  ['root', 'p.', '', $join, ''],
+  ['pkagg', '', '',
+   "SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN ($keys) " .
+   'AND (%P)',
+   'Execute as 27 aggregating primary key lookups (IN list on `pk`: ' .
+   '27 values, 27 distinct).'],
+  ['pkrow', '', '',
+   "SELECT pk, flt, gr, s FROM nl_t WHERE pk IN ($keys) AND (%P)",
+   'Execute as 27 primary key lookups (IN list on `pk`: 27 values, ' .
+   '27 distinct).'],
+  ['cte', 'c.', 'C',
+   'WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s ' .
+   'FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm ' .
+   'FROM nl_p AS p JOIN c ON c.pk = p.id WHERE %P', ''],
+  ['case', '', 'W',
+   'SELECT SUM(CASE WHEN %P THEN 1 ELSE 0 END) AS n, ' .
+   'SUM(CASE WHEN %P THEN pk ELSE 0 END) AS sm FROM nl_t', ''],
+  ['scan', '', 'S', 'SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE %P',
+   ''],
+);
+
+my $path = File::Spec->catfile($ENV{NULL_LOGIC_DIR},
+                               'ronsql_null_logic_paths.inc');
+open my $out, '>', $path or die "Cannot write $path: $!\n";
+for my $placement (@placements) {
+  my ($name, $qualifier, $flag, $template, $pin) = @$placement;
+  for my $pred (@preds) {
+    my ($id, $flags, $text) = @$pred;
+    next if $flag ne '' && index($flags, $flag) < 0;
+    (my $predicate = $text) =~ s/Q\./$qualifier/g;
+    (my $query = $template) =~ s/%P/$predicate/g;
+    print {$out} "--echo\n",
+                 "--echo === $name-$id ===\n",
+                 '--write_file $QUERY_FILE', "\n",
+                 "$query;\n",
+                 "EOF\n",
+                 "--source suite/ronsql/include/ronsql_compare.inc\n",
+                 "--echo == Expected result ==\n",
+                 "--sorted_result\n",
+                 "$query|\n"
+      or die "Cannot write $path: $!\n";
+    if ($pin ne '') {
+      print {$out} '--write_file $QUERY_FILE', "\n",
+                   "$query;\n",
+                   "EOF\n",
+                   "--source suite/ronsql/include/ronsql_explain.inc\n",
+                   "--exec grep -qF '$pin' ", '$EXPLAIN_FILE', "\n",
+                   "--exec grep -qF 'FILTER:' ", '$EXPLAIN_FILE', "\n"
+        or die "Cannot write $path: $!\n";
+    }
+  }
+}
+close $out or die "Cannot close $path: $!\n";
+EOF
+--let NULL_LOGIC_DIR=
+
+DELIMITER |;
+--disable_warnings
+--source $MYSQL_TMP_DIR/ronsql_null_logic_paths.inc
+--enable_warnings
+DELIMITER ;|
+--remove_file $MYSQL_TMP_DIR/ronsql_null_logic_paths.inc
+--remove_file $EXPLAIN_FILE
+
+--echo
+--echo === cte-e1: NOT over a comparison on a CTE output is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE NOT (c.flt = 11);" 2>&1
+
+--echo
+--echo === cte-e2: LIKE on a CTE output is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.s LIKE 'a%';" 2>&1
+
+--echo
+--echo === cte-e3: an OR under an AND on CTE outputs is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt IN (11, 66) AND c.gr != 2;" 2>&1
+
+--echo
+--echo === case-e1: NOT over a comparison in a CASE condition is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT SUM(CASE WHEN NOT (flt = 11) THEN 1 ELSE 0 END) AS n FROM nl_t;" 2>&1
+
+--echo
+--echo === case-e2: IS NULL in a CASE condition is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT SUM(CASE WHEN flt IS NULL THEN 1 ELSE 0 END) AS n FROM nl_t;" 2>&1
+
+--echo
+--echo === case-e3: LIKE in a CASE condition is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT SUM(CASE WHEN s LIKE 'a%' THEN 1 ELSE 0 END) AS n FROM nl_t;" 2>&1
+
+--echo
+--echo === parse-e1: NOT LIKE is a syntax error (b02 writes NOT (s LIKE 'a%')) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT COUNT(*) AS n FROM nl_t WHERE s NOT LIKE 'a%';" 2>&1
+
+--echo
+--echo === parse-e2: NOT IN is a syntax error (b12 writes NOT (flt IN (11, 66))) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT COUNT(*) AS n FROM nl_t WHERE flt NOT IN (11, 66);" 2>&1
+
+--echo
+--echo === parse-e3: there is no NULL literal, so no NULL in an IN list ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT COUNT(*) AS n FROM nl_t WHERE flt IN (11, NULL);" 2>&1
+
+--echo
+--echo === parse-e4: BETWEEN is not implemented (b17 writes flt >= 11 AND flt <= 60) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT COUNT(*) AS n FROM nl_t WHERE flt BETWEEN 11 AND 60;" 2>&1
+
+--echo
+--echo === parse-e5: <=> is not implemented ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT COUNT(*) AS n FROM nl_t WHERE flt <=> 11;" 2>&1
+
+--let QUERY_FILE=
+--let $EXPLAIN_FILE=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE nl_p;
+DROP TABLE nl_t;
+--enable_warnings
+--enable_query_log

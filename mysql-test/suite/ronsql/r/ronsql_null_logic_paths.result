@@ -1,0 +1,6676 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== child-a01 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11|
+n	sm
+9	207
+
+=== child-a02 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt != 11;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt != 11|
+n	sm
+9	126
+
+=== child-a03 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11 AND c.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11 AND c.gr = 2|
+n	sm
+3	78
+
+=== child-a04 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11 AND c.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11 AND c.gr != 2|
+n	sm
+3	69
+
+=== child-a05 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt != 11 AND c.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt != 11 AND c.gr = 2|
+n	sm
+3	51
+
+=== child-a06 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt != 11 AND c.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt != 11 AND c.gr != 2|
+n	sm
+3	42
+
+=== child-a07 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11 OR c.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11 OR c.gr = 2|
+n	sm
+15	282
+
+=== child-a08 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11 OR c.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11 OR c.gr != 2|
+n	sm
+15	264
+
+=== child-a09 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt != 11 OR c.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt != 11 OR c.gr = 2|
+n	sm
+15	228
+
+=== child-a10 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt != 11 OR c.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt != 11 OR c.gr != 2|
+n	sm
+15	210
+
+=== child-a11 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt = 11);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt = 11)|
+n	sm
+9	126
+
+=== child-a12 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt != 11);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt != 11)|
+n	sm
+9	207
+
+=== child-a13 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (c.flt = 11)) AND c.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (c.flt = 11)) AND c.gr = 2|
+n	sm
+3	51
+
+=== child-a14 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11 AND (NOT (c.gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11 AND (NOT (c.gr = 2))|
+n	sm
+3	69
+
+=== child-a15 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt = 11 AND c.gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt = 11 AND c.gr = 2)|
+n	sm
+15	210
+
+=== child-a16 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (c.flt = 11)) AND c.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (c.flt = 11)) AND c.gr != 2|
+n	sm
+3	42
+
+=== child-a17 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11 AND (NOT (c.gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11 AND (NOT (c.gr != 2))|
+n	sm
+3	78
+
+=== child-a18 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt = 11 AND c.gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt = 11 AND c.gr != 2)|
+n	sm
+15	228
+
+=== child-a19 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (c.flt != 11)) AND c.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (c.flt != 11)) AND c.gr = 2|
+n	sm
+3	78
+
+=== child-a20 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt != 11 AND (NOT (c.gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt != 11 AND (NOT (c.gr = 2))|
+n	sm
+3	42
+
+=== child-a21 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt != 11 AND c.gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt != 11 AND c.gr = 2)|
+n	sm
+15	264
+
+=== child-a22 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (c.flt != 11)) AND c.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (c.flt != 11)) AND c.gr != 2|
+n	sm
+3	69
+
+=== child-a23 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt != 11 AND (NOT (c.gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt != 11 AND (NOT (c.gr != 2))|
+n	sm
+3	51
+
+=== child-a24 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt != 11 AND c.gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt != 11 AND c.gr != 2)|
+n	sm
+15	282
+
+=== child-a25 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (c.flt = 11)) OR c.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (c.flt = 11)) OR c.gr = 2|
+n	sm
+15	228
+
+=== child-a26 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11 OR (NOT (c.gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11 OR (NOT (c.gr = 2))|
+n	sm
+15	264
+
+=== child-a27 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt = 11 OR c.gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt = 11 OR c.gr = 2)|
+n	sm
+3	42
+
+=== child-a28 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (c.flt = 11)) OR c.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (c.flt = 11)) OR c.gr != 2|
+n	sm
+15	210
+
+=== child-a29 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11 OR (NOT (c.gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11 OR (NOT (c.gr != 2))|
+n	sm
+15	282
+
+=== child-a30 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt = 11 OR c.gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt = 11 OR c.gr != 2)|
+n	sm
+3	51
+
+=== child-a31 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (c.flt != 11)) OR c.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (c.flt != 11)) OR c.gr = 2|
+n	sm
+15	282
+
+=== child-a32 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt != 11 OR (NOT (c.gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt != 11 OR (NOT (c.gr = 2))|
+n	sm
+15	210
+
+=== child-a33 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt != 11 OR c.gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt != 11 OR c.gr = 2)|
+n	sm
+3	69
+
+=== child-a34 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (c.flt != 11)) OR c.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (c.flt != 11)) OR c.gr != 2|
+n	sm
+15	264
+
+=== child-a35 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt != 11 OR (NOT (c.gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt != 11 OR (NOT (c.gr != 2))|
+n	sm
+15	228
+
+=== child-a36 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt != 11 OR c.gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt != 11 OR c.gr != 2)|
+n	sm
+3	78
+
+=== child-b01 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.s LIKE 'a%';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.s LIKE 'a%'|
+n	sm
+9	126
+
+=== child-b02 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.s LIKE 'a%');
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.s LIKE 'a%')|
+n	sm
+9	135
+
+=== child-b03 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.s LIKE '%y') OR c.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.s LIKE '%y') OR c.gr = 2|
+n	sm
+15	228
+
+=== child-b04 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.s LIKE 'a%' AND c.flt = 11);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.s LIKE 'a%' AND c.flt = 11)|
+n	sm
+15	216
+
+=== child-b05 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt IS NULL;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt IS NULL|
+n	sm
+9	45
+
+=== child-b06 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt IS NOT NULL;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt IS NOT NULL|
+n	sm
+18	333
+
+=== child-b07 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.gr IS NULL);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.gr IS NULL)|
+n	sm
+18	279
+
+=== child-b08 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt IS NULL OR c.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt IS NULL OR c.gr = 2|
+n	sm
+15	174
+
+=== child-b09 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.s IS NULL OR c.gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.s IS NULL OR c.gr != 2)|
+n	sm
+6	105
+
+=== child-b10 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.s IS NULL AND c.gr IS NOT NULL;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.s IS NULL AND c.gr IS NOT NULL|
+n	sm
+6	87
+
+=== child-b11 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt IN (11, 66);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt IN (11, 66)|
+n	sm
+18	333
+
+=== child-b12 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt IN (11, 66));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt IN (11, 66))|
+n	sm
+0	NULL
+
+=== child-b13 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt IN (11, 66)) OR c.gr IN (1, 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt IN (11, 66)) OR c.gr IN (1, 2)|
+n	sm
+18	279
+
+=== child-b14 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt IN (11, 66) AND c.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt IN (11, 66) AND c.gr != 2|
+n	sm
+6	111
+
+=== child-b15 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.s IN ('ab', 'zz');
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.s IN ('ab', 'zz')|
+n	sm
+9	126
+
+=== child-b16 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.s IN ('ab', 'zz') OR c.flt = 66);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.s IN ('ab', 'zz') OR c.flt = 66)|
+n	sm
+3	72
+
+=== child-b17 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt >= 11 AND c.flt <= 60;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt >= 11 AND c.flt <= 60|
+n	sm
+9	207
+
+=== child-b18 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt >= 11 AND c.flt <= 60);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt >= 11 AND c.flt <= 60)|
+n	sm
+9	126
+
+=== child-b19 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt < 66 OR c.gr > 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt < 66 OR c.gr > 1|
+n	sm
+15	282
+
+=== child-b20 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt < 66) OR c.gr <= 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt < 66) OR c.gr <= 1|
+n	sm
+15	210
+
+=== child-b21 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(c.flt = 11);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(c.flt = 11)|
+n	sm
+9	126
+
+=== child-b22 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(c.flt != 11 AND c.gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(c.flt != 11 AND c.gr = 2)|
+n	sm
+15	264
+
+=== child-b23 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(c.flt = 11 OR c.gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(c.flt = 11 OR c.gr = 2)|
+n	sm
+3	42
+
+=== child-b24 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(!(c.flt = 11 OR c.gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(!(c.flt = 11 OR c.gr != 2))|
+n	sm
+15	264
+
+=== child-b25 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(c.flt IS NULL);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(c.flt IS NULL)|
+n	sm
+18	333
+
+=== child-b26 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(c.s LIKE 'a%');
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(c.s LIKE 'a%')|
+n	sm
+9	135
+
+=== child-b27 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (NOT (c.flt = 11 OR c.gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (NOT (c.flt = 11 OR c.gr != 2))|
+n	sm
+15	264
+
+=== child-b28 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11 XOR c.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.flt = 11 XOR c.gr = 2|
+n	sm
+6	120
+
+=== child-b29 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt = 11 XOR c.gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.flt = 11 XOR c.gr != 2)|
+n	sm
+6	120
+
+=== child-b30 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.s = 'ab';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.s = 'ab'|
+n	sm
+9	126
+
+=== child-b31 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.s != 'ab' OR c.flt = 11;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE c.s != 'ab' OR c.flt = 11|
+n	sm
+15	270
+
+=== child-b32 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.s = 'xy' AND c.gr = 1);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (c.s = 'xy' AND c.gr = 1)|
+n	sm
+15	228
+
+=== child-b33 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(!(c.flt = 11));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(!(c.flt = 11))|
+n	sm
+9	207
+
+=== child-b34 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (NOT (c.gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (NOT (c.gr != 2))|
+n	sm
+9	126
+
+=== child-b35 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT ((c.flt = 11 OR c.gr IS NULL) AND NOT (c.s LIKE 'x%'));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT ((c.flt = 11 OR c.gr IS NULL) AND NOT (c.s LIKE 'x%'))|
+n	sm
+13	195
+
+=== child-b36 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (c.flt != 11 OR c.s IS NULL) AND (c.gr = 1 OR NOT (c.s != 'ab'));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (c.flt != 11 OR c.s IS NULL) AND (c.gr = 1 OR NOT (c.s != 'ab'))|
+n	sm
+7	96
+
+=== root-a01 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11|
+n	sm
+9	45
+
+=== root-a02 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt != 11;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt != 11|
+n	sm
+9	126
+
+=== root-a03 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11 AND p.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11 AND p.gr = 2|
+n	sm
+3	6
+
+=== root-a04 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11 AND p.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11 AND p.gr != 2|
+n	sm
+3	15
+
+=== root-a05 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt != 11 AND p.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt != 11 AND p.gr = 2|
+n	sm
+3	33
+
+=== root-a06 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt != 11 AND p.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt != 11 AND p.gr != 2|
+n	sm
+3	42
+
+=== root-a07 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11 OR p.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11 OR p.gr = 2|
+n	sm
+15	138
+
+=== root-a08 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11 OR p.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11 OR p.gr != 2|
+n	sm
+15	156
+
+=== root-a09 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt != 11 OR p.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt != 11 OR p.gr = 2|
+n	sm
+15	192
+
+=== root-a10 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt != 11 OR p.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt != 11 OR p.gr != 2|
+n	sm
+15	210
+
+=== root-a11 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt = 11);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt = 11)|
+n	sm
+9	126
+
+=== root-a12 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt != 11);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt != 11)|
+n	sm
+9	45
+
+=== root-a13 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (p.flt = 11)) AND p.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (p.flt = 11)) AND p.gr = 2|
+n	sm
+3	33
+
+=== root-a14 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11 AND (NOT (p.gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11 AND (NOT (p.gr = 2))|
+n	sm
+3	15
+
+=== root-a15 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt = 11 AND p.gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt = 11 AND p.gr = 2)|
+n	sm
+15	210
+
+=== root-a16 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (p.flt = 11)) AND p.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (p.flt = 11)) AND p.gr != 2|
+n	sm
+3	42
+
+=== root-a17 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11 AND (NOT (p.gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11 AND (NOT (p.gr != 2))|
+n	sm
+3	6
+
+=== root-a18 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt = 11 AND p.gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt = 11 AND p.gr != 2)|
+n	sm
+15	192
+
+=== root-a19 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (p.flt != 11)) AND p.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (p.flt != 11)) AND p.gr = 2|
+n	sm
+3	6
+
+=== root-a20 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt != 11 AND (NOT (p.gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt != 11 AND (NOT (p.gr = 2))|
+n	sm
+3	42
+
+=== root-a21 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt != 11 AND p.gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt != 11 AND p.gr = 2)|
+n	sm
+15	156
+
+=== root-a22 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (p.flt != 11)) AND p.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (p.flt != 11)) AND p.gr != 2|
+n	sm
+3	15
+
+=== root-a23 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt != 11 AND (NOT (p.gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt != 11 AND (NOT (p.gr != 2))|
+n	sm
+3	33
+
+=== root-a24 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt != 11 AND p.gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt != 11 AND p.gr != 2)|
+n	sm
+15	138
+
+=== root-a25 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (p.flt = 11)) OR p.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (p.flt = 11)) OR p.gr = 2|
+n	sm
+15	192
+
+=== root-a26 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11 OR (NOT (p.gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11 OR (NOT (p.gr = 2))|
+n	sm
+15	156
+
+=== root-a27 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt = 11 OR p.gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt = 11 OR p.gr = 2)|
+n	sm
+3	42
+
+=== root-a28 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (p.flt = 11)) OR p.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (p.flt = 11)) OR p.gr != 2|
+n	sm
+15	210
+
+=== root-a29 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11 OR (NOT (p.gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11 OR (NOT (p.gr != 2))|
+n	sm
+15	138
+
+=== root-a30 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt = 11 OR p.gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt = 11 OR p.gr != 2)|
+n	sm
+3	33
+
+=== root-a31 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (p.flt != 11)) OR p.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (p.flt != 11)) OR p.gr = 2|
+n	sm
+15	138
+
+=== root-a32 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt != 11 OR (NOT (p.gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt != 11 OR (NOT (p.gr = 2))|
+n	sm
+15	210
+
+=== root-a33 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt != 11 OR p.gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt != 11 OR p.gr = 2)|
+n	sm
+3	15
+
+=== root-a34 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (p.flt != 11)) OR p.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (NOT (p.flt != 11)) OR p.gr != 2|
+n	sm
+15	156
+
+=== root-a35 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt != 11 OR (NOT (p.gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt != 11 OR (NOT (p.gr != 2))|
+n	sm
+15	192
+
+=== root-a36 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt != 11 OR p.gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt != 11 OR p.gr != 2)|
+n	sm
+3	6
+
+=== root-b01 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.s LIKE 'a%';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.s LIKE 'a%'|
+n	sm
+9	126
+
+=== root-b02 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.s LIKE 'a%');
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.s LIKE 'a%')|
+n	sm
+9	117
+
+=== root-b03 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.s LIKE '%y') OR p.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.s LIKE '%y') OR p.gr = 2|
+n	sm
+15	192
+
+=== root-b04 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.s LIKE 'a%' AND p.flt = 11);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.s LIKE 'a%' AND p.flt = 11)|
+n	sm
+15	204
+
+=== root-b05 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt IS NULL;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt IS NULL|
+n	sm
+9	207
+
+=== root-b06 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt IS NOT NULL;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt IS NOT NULL|
+n	sm
+18	171
+
+=== root-b07 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.gr IS NULL);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.gr IS NULL)|
+n	sm
+18	225
+
+=== root-b08 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt IS NULL OR p.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt IS NULL OR p.gr = 2|
+n	sm
+15	246
+
+=== root-b09 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.s IS NULL OR p.gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.s IS NULL OR p.gr != 2)|
+n	sm
+6	63
+
+=== root-b10 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.s IS NULL AND p.gr IS NOT NULL;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.s IS NULL AND p.gr IS NOT NULL|
+n	sm
+6	81
+
+=== root-b11 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt IN (11, 66);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt IN (11, 66)|
+n	sm
+18	171
+
+=== root-b12 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt IN (11, 66));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt IN (11, 66))|
+n	sm
+0	NULL
+
+=== root-b13 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt IN (11, 66)) OR p.gr IN (1, 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt IN (11, 66)) OR p.gr IN (1, 2)|
+n	sm
+18	225
+
+=== root-b14 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt IN (11, 66) AND p.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt IN (11, 66) AND p.gr != 2|
+n	sm
+6	57
+
+=== root-b15 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.s IN ('ab', 'zz');
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.s IN ('ab', 'zz')|
+n	sm
+9	126
+
+=== root-b16 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.s IN ('ab', 'zz') OR p.flt = 66);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.s IN ('ab', 'zz') OR p.flt = 66)|
+n	sm
+3	12
+
+=== root-b17 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt >= 11 AND p.flt <= 60;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt >= 11 AND p.flt <= 60|
+n	sm
+9	45
+
+=== root-b18 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt >= 11 AND p.flt <= 60);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt >= 11 AND p.flt <= 60)|
+n	sm
+9	126
+
+=== root-b19 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt < 66 OR p.gr > 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt < 66 OR p.gr > 1|
+n	sm
+15	138
+
+=== root-b20 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt < 66) OR p.gr <= 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt < 66) OR p.gr <= 1|
+n	sm
+15	210
+
+=== root-b21 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(p.flt = 11);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(p.flt = 11)|
+n	sm
+9	126
+
+=== root-b22 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(p.flt != 11 AND p.gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(p.flt != 11 AND p.gr = 2)|
+n	sm
+15	156
+
+=== root-b23 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(p.flt = 11 OR p.gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(p.flt = 11 OR p.gr = 2)|
+n	sm
+3	42
+
+=== root-b24 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(!(p.flt = 11 OR p.gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(!(p.flt = 11 OR p.gr != 2))|
+n	sm
+15	156
+
+=== root-b25 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(p.flt IS NULL);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(p.flt IS NULL)|
+n	sm
+18	171
+
+=== root-b26 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(p.s LIKE 'a%');
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(p.s LIKE 'a%')|
+n	sm
+9	117
+
+=== root-b27 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (NOT (p.flt = 11 OR p.gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (NOT (p.flt = 11 OR p.gr != 2))|
+n	sm
+15	156
+
+=== root-b28 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11 XOR p.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.flt = 11 XOR p.gr = 2|
+n	sm
+6	48
+
+=== root-b29 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt = 11 XOR p.gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.flt = 11 XOR p.gr != 2)|
+n	sm
+6	48
+
+=== root-b30 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.s = 'ab';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.s = 'ab'|
+n	sm
+9	126
+
+=== root-b31 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.s != 'ab' OR p.flt = 11;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE p.s != 'ab' OR p.flt = 11|
+n	sm
+15	150
+
+=== root-b32 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.s = 'xy' AND p.gr = 1);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (p.s = 'xy' AND p.gr = 1)|
+n	sm
+15	192
+
+=== root-b33 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(!(p.flt = 11));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE !(!(p.flt = 11))|
+n	sm
+9	45
+
+=== root-b34 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (NOT (p.gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT (NOT (p.gr != 2))|
+n	sm
+9	126
+
+=== root-b35 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT ((p.flt = 11 OR p.gr IS NULL) AND NOT (p.s LIKE 'x%'));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE NOT ((p.flt = 11 OR p.gr IS NULL) AND NOT (p.s LIKE 'x%'))|
+n	sm
+13	169
+
+=== root-b36 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (p.flt != 11 OR p.s IS NULL) AND (p.gr = 1 OR NOT (p.s != 'ab'));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN nl_t AS c ON c.pk = p.id WHERE (p.flt != 11 OR p.s IS NULL) AND (p.gr = 1 OR NOT (p.s != 'ab'))|
+n	sm
+7	100
+
+=== pkagg-a01 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11)|
+n	sm
+9	207
+== Explain Query ==
+
+=== pkagg-a02 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11)|
+n	sm
+9	126
+== Explain Query ==
+
+=== pkagg-a03 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 AND gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 AND gr = 2)|
+n	sm
+3	78
+== Explain Query ==
+
+=== pkagg-a04 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 AND gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 AND gr != 2)|
+n	sm
+3	69
+== Explain Query ==
+
+=== pkagg-a05 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 AND gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 AND gr = 2)|
+n	sm
+3	51
+== Explain Query ==
+
+=== pkagg-a06 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 AND gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 AND gr != 2)|
+n	sm
+3	42
+== Explain Query ==
+
+=== pkagg-a07 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 OR gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 OR gr = 2)|
+n	sm
+15	282
+== Explain Query ==
+
+=== pkagg-a08 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 OR gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 OR gr != 2)|
+n	sm
+15	264
+== Explain Query ==
+
+=== pkagg-a09 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 OR gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 OR gr = 2)|
+n	sm
+15	228
+== Explain Query ==
+
+=== pkagg-a10 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 OR gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 OR gr != 2)|
+n	sm
+15	210
+== Explain Query ==
+
+=== pkagg-a11 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11))|
+n	sm
+9	126
+== Explain Query ==
+
+=== pkagg-a12 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11))|
+n	sm
+9	207
+== Explain Query ==
+
+=== pkagg-a13 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt = 11)) AND gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt = 11)) AND gr = 2)|
+n	sm
+3	51
+== Explain Query ==
+
+=== pkagg-a14 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 AND (NOT (gr = 2)));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 AND (NOT (gr = 2)))|
+n	sm
+3	69
+== Explain Query ==
+
+=== pkagg-a15 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 AND gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 AND gr = 2))|
+n	sm
+15	210
+== Explain Query ==
+
+=== pkagg-a16 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt = 11)) AND gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt = 11)) AND gr != 2)|
+n	sm
+3	42
+== Explain Query ==
+
+=== pkagg-a17 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 AND (NOT (gr != 2)));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 AND (NOT (gr != 2)))|
+n	sm
+3	78
+== Explain Query ==
+
+=== pkagg-a18 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 AND gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 AND gr != 2))|
+n	sm
+15	228
+== Explain Query ==
+
+=== pkagg-a19 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt != 11)) AND gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt != 11)) AND gr = 2)|
+n	sm
+3	78
+== Explain Query ==
+
+=== pkagg-a20 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 AND (NOT (gr = 2)));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 AND (NOT (gr = 2)))|
+n	sm
+3	42
+== Explain Query ==
+
+=== pkagg-a21 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11 AND gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11 AND gr = 2))|
+n	sm
+15	264
+== Explain Query ==
+
+=== pkagg-a22 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt != 11)) AND gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt != 11)) AND gr != 2)|
+n	sm
+3	69
+== Explain Query ==
+
+=== pkagg-a23 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 AND (NOT (gr != 2)));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 AND (NOT (gr != 2)))|
+n	sm
+3	51
+== Explain Query ==
+
+=== pkagg-a24 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11 AND gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11 AND gr != 2))|
+n	sm
+15	282
+== Explain Query ==
+
+=== pkagg-a25 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt = 11)) OR gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt = 11)) OR gr = 2)|
+n	sm
+15	228
+== Explain Query ==
+
+=== pkagg-a26 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 OR (NOT (gr = 2)));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 OR (NOT (gr = 2)))|
+n	sm
+15	264
+== Explain Query ==
+
+=== pkagg-a27 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 OR gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 OR gr = 2))|
+n	sm
+3	42
+== Explain Query ==
+
+=== pkagg-a28 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt = 11)) OR gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt = 11)) OR gr != 2)|
+n	sm
+15	210
+== Explain Query ==
+
+=== pkagg-a29 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 OR (NOT (gr != 2)));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 OR (NOT (gr != 2)))|
+n	sm
+15	282
+== Explain Query ==
+
+=== pkagg-a30 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 OR gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 OR gr != 2))|
+n	sm
+3	51
+== Explain Query ==
+
+=== pkagg-a31 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt != 11)) OR gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt != 11)) OR gr = 2)|
+n	sm
+15	282
+== Explain Query ==
+
+=== pkagg-a32 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 OR (NOT (gr = 2)));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 OR (NOT (gr = 2)))|
+n	sm
+15	210
+== Explain Query ==
+
+=== pkagg-a33 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11 OR gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11 OR gr = 2))|
+n	sm
+3	69
+== Explain Query ==
+
+=== pkagg-a34 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt != 11)) OR gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt != 11)) OR gr != 2)|
+n	sm
+15	264
+== Explain Query ==
+
+=== pkagg-a35 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 OR (NOT (gr != 2)));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 OR (NOT (gr != 2)))|
+n	sm
+15	228
+== Explain Query ==
+
+=== pkagg-a36 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11 OR gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11 OR gr != 2))|
+n	sm
+3	78
+== Explain Query ==
+
+=== pkagg-b01 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s LIKE 'a%');
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s LIKE 'a%')|
+n	sm
+9	126
+== Explain Query ==
+
+=== pkagg-b02 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s LIKE 'a%'));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s LIKE 'a%'))|
+n	sm
+9	135
+== Explain Query ==
+
+=== pkagg-b03 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s LIKE '%y') OR gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s LIKE '%y') OR gr = 2)|
+n	sm
+15	228
+== Explain Query ==
+
+=== pkagg-b04 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s LIKE 'a%' AND flt = 11));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s LIKE 'a%' AND flt = 11))|
+n	sm
+15	216
+== Explain Query ==
+
+=== pkagg-b05 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IS NULL);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IS NULL)|
+n	sm
+9	45
+== Explain Query ==
+
+=== pkagg-b06 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IS NOT NULL);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IS NOT NULL)|
+n	sm
+18	333
+== Explain Query ==
+
+=== pkagg-b07 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (gr IS NULL));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (gr IS NULL))|
+n	sm
+18	279
+== Explain Query ==
+
+=== pkagg-b08 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IS NULL OR gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IS NULL OR gr = 2)|
+n	sm
+15	174
+== Explain Query ==
+
+=== pkagg-b09 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s IS NULL OR gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s IS NULL OR gr != 2))|
+n	sm
+6	105
+== Explain Query ==
+
+=== pkagg-b10 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s IS NULL AND gr IS NOT NULL);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s IS NULL AND gr IS NOT NULL)|
+n	sm
+6	87
+== Explain Query ==
+
+=== pkagg-b11 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IN (11, 66));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IN (11, 66))|
+n	sm
+18	333
+== Explain Query ==
+
+=== pkagg-b12 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt IN (11, 66)));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt IN (11, 66)))|
+n	sm
+0	NULL
+== Explain Query ==
+
+=== pkagg-b13 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt IN (11, 66)) OR gr IN (1, 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt IN (11, 66)) OR gr IN (1, 2))|
+n	sm
+18	279
+== Explain Query ==
+
+=== pkagg-b14 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IN (11, 66) AND gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IN (11, 66) AND gr != 2)|
+n	sm
+6	111
+== Explain Query ==
+
+=== pkagg-b15 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s IN ('ab', 'zz'));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s IN ('ab', 'zz'))|
+n	sm
+9	126
+== Explain Query ==
+
+=== pkagg-b16 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s IN ('ab', 'zz') OR flt = 66));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s IN ('ab', 'zz') OR flt = 66))|
+n	sm
+3	72
+== Explain Query ==
+
+=== pkagg-b17 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt >= 11 AND flt <= 60);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt >= 11 AND flt <= 60)|
+n	sm
+9	207
+== Explain Query ==
+
+=== pkagg-b18 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt >= 11 AND flt <= 60));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt >= 11 AND flt <= 60))|
+n	sm
+9	126
+== Explain Query ==
+
+=== pkagg-b19 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt < 66 OR gr > 1);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt < 66 OR gr > 1)|
+n	sm
+15	282
+== Explain Query ==
+
+=== pkagg-b20 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt < 66) OR gr <= 1);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt < 66) OR gr <= 1)|
+n	sm
+15	210
+== Explain Query ==
+
+=== pkagg-b21 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(flt = 11));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(flt = 11))|
+n	sm
+9	126
+== Explain Query ==
+
+=== pkagg-b22 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(flt != 11 AND gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(flt != 11 AND gr = 2))|
+n	sm
+15	264
+== Explain Query ==
+
+=== pkagg-b23 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(flt = 11 OR gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(flt = 11 OR gr = 2))|
+n	sm
+3	42
+== Explain Query ==
+
+=== pkagg-b24 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(!(flt = 11 OR gr != 2)));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(!(flt = 11 OR gr != 2)))|
+n	sm
+15	264
+== Explain Query ==
+
+=== pkagg-b25 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(flt IS NULL));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(flt IS NULL))|
+n	sm
+18	333
+== Explain Query ==
+
+=== pkagg-b26 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(s LIKE 'a%'));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(s LIKE 'a%'))|
+n	sm
+9	135
+== Explain Query ==
+
+=== pkagg-b27 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (NOT (flt = 11 OR gr != 2)));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (NOT (flt = 11 OR gr != 2)))|
+n	sm
+15	264
+== Explain Query ==
+
+=== pkagg-b28 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 XOR gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 XOR gr = 2)|
+n	sm
+6	120
+== Explain Query ==
+
+=== pkagg-b29 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 XOR gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 XOR gr != 2))|
+n	sm
+6	120
+== Explain Query ==
+
+=== pkagg-b30 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s = 'ab');
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s = 'ab')|
+n	sm
+9	126
+== Explain Query ==
+
+=== pkagg-b31 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s != 'ab' OR flt = 11);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s != 'ab' OR flt = 11)|
+n	sm
+15	270
+== Explain Query ==
+
+=== pkagg-b32 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s = 'xy' AND gr = 1));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s = 'xy' AND gr = 1))|
+n	sm
+15	228
+== Explain Query ==
+
+=== pkagg-b33 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(!(flt = 11)));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(!(flt = 11)))|
+n	sm
+9	207
+== Explain Query ==
+
+=== pkagg-b34 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (NOT (gr != 2)));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (NOT (gr != 2)))|
+n	sm
+9	126
+== Explain Query ==
+
+=== pkagg-b35 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT ((flt = 11 OR gr IS NULL) AND NOT (s LIKE 'x%')));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT ((flt = 11 OR gr IS NULL) AND NOT (s LIKE 'x%')))|
+n	sm
+13	195
+== Explain Query ==
+
+=== pkagg-b36 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((flt != 11 OR s IS NULL) AND (gr = 1 OR NOT (s != 'ab')));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((flt != 11 OR s IS NULL) AND (gr = 1 OR NOT (s != 'ab')))|
+n	sm
+7	96
+== Explain Query ==
+
+=== pkrow-a01 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11);
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11)|
+pk	flt	gr	s
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+== Explain Query ==
+
+=== pkrow-a02 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11);
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11)|
+pk	flt	gr	s
+10	66	NULL	NULL
+11	66	NULL	ab
+12	66	NULL	xy
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+== Explain Query ==
+
+=== pkrow-a03 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 AND gr = 2);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 AND gr = 2)|
+pk	flt	gr	s
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+== Explain Query ==
+
+=== pkrow-a04 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 AND gr != 2);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 AND gr != 2)|
+pk	flt	gr	s
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+== Explain Query ==
+
+=== pkrow-a05 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 AND gr = 2);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 AND gr = 2)|
+pk	flt	gr	s
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+== Explain Query ==
+
+=== pkrow-a06 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 AND gr != 2);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 AND gr != 2)|
+pk	flt	gr	s
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+== Explain Query ==
+
+=== pkrow-a07 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 OR gr = 2);
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 OR gr = 2)|
+pk	flt	gr	s
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+7	NULL	2	NULL
+8	NULL	2	ab
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-a08 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 OR gr != 2);
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 OR gr != 2)|
+pk	flt	gr	s
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+4	NULL	1	NULL
+5	NULL	1	ab
+6	NULL	1	xy
+== Explain Query ==
+
+=== pkrow-a09 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 OR gr = 2);
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 OR gr = 2)|
+pk	flt	gr	s
+10	66	NULL	NULL
+11	66	NULL	ab
+12	66	NULL	xy
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+7	NULL	2	NULL
+8	NULL	2	ab
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-a10 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 OR gr != 2);
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 OR gr != 2)|
+pk	flt	gr	s
+10	66	NULL	NULL
+11	66	NULL	ab
+12	66	NULL	xy
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+4	NULL	1	NULL
+5	NULL	1	ab
+6	NULL	1	xy
+== Explain Query ==
+
+=== pkrow-a11 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11));
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11))|
+pk	flt	gr	s
+10	66	NULL	NULL
+11	66	NULL	ab
+12	66	NULL	xy
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+== Explain Query ==
+
+=== pkrow-a12 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11));
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11))|
+pk	flt	gr	s
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+== Explain Query ==
+
+=== pkrow-a13 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt = 11)) AND gr = 2);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt = 11)) AND gr = 2)|
+pk	flt	gr	s
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+== Explain Query ==
+
+=== pkrow-a14 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 AND (NOT (gr = 2)));
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 AND (NOT (gr = 2)))|
+pk	flt	gr	s
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+== Explain Query ==
+
+=== pkrow-a15 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 AND gr = 2));
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 AND gr = 2))|
+pk	flt	gr	s
+10	66	NULL	NULL
+11	66	NULL	ab
+12	66	NULL	xy
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+4	NULL	1	NULL
+5	NULL	1	ab
+6	NULL	1	xy
+== Explain Query ==
+
+=== pkrow-a16 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt = 11)) AND gr != 2);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt = 11)) AND gr != 2)|
+pk	flt	gr	s
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+== Explain Query ==
+
+=== pkrow-a17 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 AND (NOT (gr != 2)));
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 AND (NOT (gr != 2)))|
+pk	flt	gr	s
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+== Explain Query ==
+
+=== pkrow-a18 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 AND gr != 2));
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 AND gr != 2))|
+pk	flt	gr	s
+10	66	NULL	NULL
+11	66	NULL	ab
+12	66	NULL	xy
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+7	NULL	2	NULL
+8	NULL	2	ab
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-a19 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt != 11)) AND gr = 2);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt != 11)) AND gr = 2)|
+pk	flt	gr	s
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+== Explain Query ==
+
+=== pkrow-a20 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 AND (NOT (gr = 2)));
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 AND (NOT (gr = 2)))|
+pk	flt	gr	s
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+== Explain Query ==
+
+=== pkrow-a21 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11 AND gr = 2));
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11 AND gr = 2))|
+pk	flt	gr	s
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+4	NULL	1	NULL
+5	NULL	1	ab
+6	NULL	1	xy
+== Explain Query ==
+
+=== pkrow-a22 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt != 11)) AND gr != 2);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt != 11)) AND gr != 2)|
+pk	flt	gr	s
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+== Explain Query ==
+
+=== pkrow-a23 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 AND (NOT (gr != 2)));
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 AND (NOT (gr != 2)))|
+pk	flt	gr	s
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+== Explain Query ==
+
+=== pkrow-a24 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11 AND gr != 2));
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11 AND gr != 2))|
+pk	flt	gr	s
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+7	NULL	2	NULL
+8	NULL	2	ab
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-a25 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt = 11)) OR gr = 2);
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt = 11)) OR gr = 2)|
+pk	flt	gr	s
+10	66	NULL	NULL
+11	66	NULL	ab
+12	66	NULL	xy
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+7	NULL	2	NULL
+8	NULL	2	ab
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-a26 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 OR (NOT (gr = 2)));
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 OR (NOT (gr = 2)))|
+pk	flt	gr	s
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+4	NULL	1	NULL
+5	NULL	1	ab
+6	NULL	1	xy
+== Explain Query ==
+
+=== pkrow-a27 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 OR gr = 2));
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 OR gr = 2))|
+pk	flt	gr	s
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+== Explain Query ==
+
+=== pkrow-a28 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt = 11)) OR gr != 2);
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt = 11)) OR gr != 2)|
+pk	flt	gr	s
+10	66	NULL	NULL
+11	66	NULL	ab
+12	66	NULL	xy
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+4	NULL	1	NULL
+5	NULL	1	ab
+6	NULL	1	xy
+== Explain Query ==
+
+=== pkrow-a29 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 OR (NOT (gr != 2)));
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 OR (NOT (gr != 2)))|
+pk	flt	gr	s
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+7	NULL	2	NULL
+8	NULL	2	ab
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-a30 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 OR gr != 2));
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 OR gr != 2))|
+pk	flt	gr	s
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+== Explain Query ==
+
+=== pkrow-a31 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt != 11)) OR gr = 2);
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt != 11)) OR gr = 2)|
+pk	flt	gr	s
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+7	NULL	2	NULL
+8	NULL	2	ab
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-a32 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 OR (NOT (gr = 2)));
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 OR (NOT (gr = 2)))|
+pk	flt	gr	s
+10	66	NULL	NULL
+11	66	NULL	ab
+12	66	NULL	xy
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+4	NULL	1	NULL
+5	NULL	1	ab
+6	NULL	1	xy
+== Explain Query ==
+
+=== pkrow-a33 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11 OR gr = 2));
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11 OR gr = 2))|
+pk	flt	gr	s
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+== Explain Query ==
+
+=== pkrow-a34 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt != 11)) OR gr != 2);
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((NOT (flt != 11)) OR gr != 2)|
+pk	flt	gr	s
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+4	NULL	1	NULL
+5	NULL	1	ab
+6	NULL	1	xy
+== Explain Query ==
+
+=== pkrow-a35 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 OR (NOT (gr != 2)));
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt != 11 OR (NOT (gr != 2)))|
+pk	flt	gr	s
+10	66	NULL	NULL
+11	66	NULL	ab
+12	66	NULL	xy
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+7	NULL	2	NULL
+8	NULL	2	ab
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-a36 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11 OR gr != 2));
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt != 11 OR gr != 2))|
+pk	flt	gr	s
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+== Explain Query ==
+
+=== pkrow-b01 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s LIKE 'a%');
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s LIKE 'a%')|
+pk	flt	gr	s
+11	66	NULL	ab
+14	66	1	ab
+17	66	2	ab
+2	NULL	NULL	ab
+20	11	NULL	ab
+23	11	1	ab
+26	11	2	ab
+5	NULL	1	ab
+8	NULL	2	ab
+== Explain Query ==
+
+=== pkrow-b02 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s LIKE 'a%'));
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s LIKE 'a%'))|
+pk	flt	gr	s
+12	66	NULL	xy
+15	66	1	xy
+18	66	2	xy
+21	11	NULL	xy
+24	11	1	xy
+27	11	2	xy
+3	NULL	NULL	xy
+6	NULL	1	xy
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-b03 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s LIKE '%y') OR gr = 2);
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s LIKE '%y') OR gr = 2)|
+pk	flt	gr	s
+11	66	NULL	ab
+14	66	1	ab
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+2	NULL	NULL	ab
+20	11	NULL	ab
+23	11	1	ab
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+5	NULL	1	ab
+7	NULL	2	NULL
+8	NULL	2	ab
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-b04 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s LIKE 'a%' AND flt = 11));
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s LIKE 'a%' AND flt = 11))|
+pk	flt	gr	s
+10	66	NULL	NULL
+11	66	NULL	ab
+12	66	NULL	xy
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+21	11	NULL	xy
+24	11	1	xy
+27	11	2	xy
+3	NULL	NULL	xy
+6	NULL	1	xy
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-b05 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IS NULL);
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IS NULL)|
+pk	flt	gr	s
+1	NULL	NULL	NULL
+2	NULL	NULL	ab
+3	NULL	NULL	xy
+4	NULL	1	NULL
+5	NULL	1	ab
+6	NULL	1	xy
+7	NULL	2	NULL
+8	NULL	2	ab
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-b06 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IS NOT NULL);
+
+Number of output lines, including header: 19
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IS NOT NULL)|
+pk	flt	gr	s
+10	66	NULL	NULL
+11	66	NULL	ab
+12	66	NULL	xy
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+== Explain Query ==
+
+=== pkrow-b07 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (gr IS NULL));
+
+Number of output lines, including header: 19
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (gr IS NULL))|
+pk	flt	gr	s
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+4	NULL	1	NULL
+5	NULL	1	ab
+6	NULL	1	xy
+7	NULL	2	NULL
+8	NULL	2	ab
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-b08 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IS NULL OR gr = 2);
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IS NULL OR gr = 2)|
+pk	flt	gr	s
+1	NULL	NULL	NULL
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+2	NULL	NULL	ab
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+3	NULL	NULL	xy
+4	NULL	1	NULL
+5	NULL	1	ab
+6	NULL	1	xy
+7	NULL	2	NULL
+8	NULL	2	ab
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-b09 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s IS NULL OR gr != 2));
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s IS NULL OR gr != 2))|
+pk	flt	gr	s
+17	66	2	ab
+18	66	2	xy
+26	11	2	ab
+27	11	2	xy
+8	NULL	2	ab
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-b10 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s IS NULL AND gr IS NOT NULL);
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s IS NULL AND gr IS NOT NULL)|
+pk	flt	gr	s
+13	66	1	NULL
+16	66	2	NULL
+22	11	1	NULL
+25	11	2	NULL
+4	NULL	1	NULL
+7	NULL	2	NULL
+== Explain Query ==
+
+=== pkrow-b11 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IN (11, 66));
+
+Number of output lines, including header: 19
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IN (11, 66))|
+pk	flt	gr	s
+10	66	NULL	NULL
+11	66	NULL	ab
+12	66	NULL	xy
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+== Explain Query ==
+
+=== pkrow-b12 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt IN (11, 66)));
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt IN (11, 66)))|
+pk	flt	gr	s
+== Explain Query ==
+
+=== pkrow-b13 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt IN (11, 66)) OR gr IN (1, 2));
+
+Number of output lines, including header: 19
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt IN (11, 66)) OR gr IN (1, 2))|
+pk	flt	gr	s
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+4	NULL	1	NULL
+5	NULL	1	ab
+6	NULL	1	xy
+7	NULL	2	NULL
+8	NULL	2	ab
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-b14 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IN (11, 66) AND gr != 2);
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt IN (11, 66) AND gr != 2)|
+pk	flt	gr	s
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+== Explain Query ==
+
+=== pkrow-b15 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s IN ('ab', 'zz'));
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s IN ('ab', 'zz'))|
+pk	flt	gr	s
+11	66	NULL	ab
+14	66	1	ab
+17	66	2	ab
+2	NULL	NULL	ab
+20	11	NULL	ab
+23	11	1	ab
+26	11	2	ab
+5	NULL	1	ab
+8	NULL	2	ab
+== Explain Query ==
+
+=== pkrow-b16 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s IN ('ab', 'zz') OR flt = 66));
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s IN ('ab', 'zz') OR flt = 66))|
+pk	flt	gr	s
+21	11	NULL	xy
+24	11	1	xy
+27	11	2	xy
+== Explain Query ==
+
+=== pkrow-b17 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt >= 11 AND flt <= 60);
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt >= 11 AND flt <= 60)|
+pk	flt	gr	s
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+== Explain Query ==
+
+=== pkrow-b18 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt >= 11 AND flt <= 60));
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt >= 11 AND flt <= 60))|
+pk	flt	gr	s
+10	66	NULL	NULL
+11	66	NULL	ab
+12	66	NULL	xy
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+== Explain Query ==
+
+=== pkrow-b19 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt < 66 OR gr > 1);
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt < 66 OR gr > 1)|
+pk	flt	gr	s
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+7	NULL	2	NULL
+8	NULL	2	ab
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-b20 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt < 66) OR gr <= 1);
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt < 66) OR gr <= 1)|
+pk	flt	gr	s
+10	66	NULL	NULL
+11	66	NULL	ab
+12	66	NULL	xy
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+4	NULL	1	NULL
+5	NULL	1	ab
+6	NULL	1	xy
+== Explain Query ==
+
+=== pkrow-b21 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(flt = 11));
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(flt = 11))|
+pk	flt	gr	s
+10	66	NULL	NULL
+11	66	NULL	ab
+12	66	NULL	xy
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+== Explain Query ==
+
+=== pkrow-b22 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(flt != 11 AND gr = 2));
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(flt != 11 AND gr = 2))|
+pk	flt	gr	s
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+4	NULL	1	NULL
+5	NULL	1	ab
+6	NULL	1	xy
+== Explain Query ==
+
+=== pkrow-b23 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(flt = 11 OR gr = 2));
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(flt = 11 OR gr = 2))|
+pk	flt	gr	s
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+== Explain Query ==
+
+=== pkrow-b24 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(!(flt = 11 OR gr != 2)));
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(!(flt = 11 OR gr != 2)))|
+pk	flt	gr	s
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+4	NULL	1	NULL
+5	NULL	1	ab
+6	NULL	1	xy
+== Explain Query ==
+
+=== pkrow-b25 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(flt IS NULL));
+
+Number of output lines, including header: 19
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(flt IS NULL))|
+pk	flt	gr	s
+10	66	NULL	NULL
+11	66	NULL	ab
+12	66	NULL	xy
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+== Explain Query ==
+
+=== pkrow-b26 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(s LIKE 'a%'));
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(s LIKE 'a%'))|
+pk	flt	gr	s
+12	66	NULL	xy
+15	66	1	xy
+18	66	2	xy
+21	11	NULL	xy
+24	11	1	xy
+27	11	2	xy
+3	NULL	NULL	xy
+6	NULL	1	xy
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-b27 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (NOT (flt = 11 OR gr != 2)));
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (NOT (flt = 11 OR gr != 2)))|
+pk	flt	gr	s
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+4	NULL	1	NULL
+5	NULL	1	ab
+6	NULL	1	xy
+== Explain Query ==
+
+=== pkrow-b28 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 XOR gr = 2);
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (flt = 11 XOR gr = 2)|
+pk	flt	gr	s
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+== Explain Query ==
+
+=== pkrow-b29 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 XOR gr != 2));
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (flt = 11 XOR gr != 2))|
+pk	flt	gr	s
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+== Explain Query ==
+
+=== pkrow-b30 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s = 'ab');
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s = 'ab')|
+pk	flt	gr	s
+11	66	NULL	ab
+14	66	1	ab
+17	66	2	ab
+2	NULL	NULL	ab
+20	11	NULL	ab
+23	11	1	ab
+26	11	2	ab
+5	NULL	1	ab
+8	NULL	2	ab
+== Explain Query ==
+
+=== pkrow-b31 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s != 'ab' OR flt = 11);
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (s != 'ab' OR flt = 11)|
+pk	flt	gr	s
+12	66	NULL	xy
+15	66	1	xy
+18	66	2	xy
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+3	NULL	NULL	xy
+6	NULL	1	xy
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-b32 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s = 'xy' AND gr = 1));
+
+Number of output lines, including header: 16
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (s = 'xy' AND gr = 1))|
+pk	flt	gr	s
+11	66	NULL	ab
+14	66	1	ab
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+2	NULL	NULL	ab
+20	11	NULL	ab
+23	11	1	ab
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+5	NULL	1	ab
+7	NULL	2	NULL
+8	NULL	2	ab
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-b33 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(!(flt = 11)));
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (!(!(flt = 11)))|
+pk	flt	gr	s
+19	11	NULL	NULL
+20	11	NULL	ab
+21	11	NULL	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+25	11	2	NULL
+26	11	2	ab
+27	11	2	xy
+== Explain Query ==
+
+=== pkrow-b34 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (NOT (gr != 2)));
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT (NOT (gr != 2)))|
+pk	flt	gr	s
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+22	11	1	NULL
+23	11	1	ab
+24	11	1	xy
+4	NULL	1	NULL
+5	NULL	1	ab
+6	NULL	1	xy
+== Explain Query ==
+
+=== pkrow-b35 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT ((flt = 11 OR gr IS NULL) AND NOT (s LIKE 'x%')));
+
+Number of output lines, including header: 14
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND (NOT ((flt = 11 OR gr IS NULL) AND NOT (s LIKE 'x%')))|
+pk	flt	gr	s
+12	66	NULL	xy
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+16	66	2	NULL
+17	66	2	ab
+18	66	2	xy
+21	11	NULL	xy
+24	11	1	xy
+27	11	2	xy
+3	NULL	NULL	xy
+6	NULL	1	xy
+9	NULL	2	xy
+== Explain Query ==
+
+=== pkrow-b36 ===
+== Query ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((flt != 11 OR s IS NULL) AND (gr = 1 OR NOT (s != 'ab')));
+
+Number of output lines, including header: 8
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT pk, flt, gr, s FROM nl_t WHERE pk IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27) AND ((flt != 11 OR s IS NULL) AND (gr = 1 OR NOT (s != 'ab')))|
+pk	flt	gr	s
+11	66	NULL	ab
+13	66	1	NULL
+14	66	1	ab
+15	66	1	xy
+17	66	2	ab
+22	11	1	NULL
+4	NULL	1	NULL
+== Explain Query ==
+
+=== cte-a01 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt = 11;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt = 11|
+n	sm
+9	207
+
+=== cte-a02 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt != 11;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt != 11|
+n	sm
+9	126
+
+=== cte-a03 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt = 11 AND c.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt = 11 AND c.gr = 2|
+n	sm
+3	78
+
+=== cte-a04 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt = 11 AND c.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt = 11 AND c.gr != 2|
+n	sm
+3	69
+
+=== cte-a05 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt != 11 AND c.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt != 11 AND c.gr = 2|
+n	sm
+3	51
+
+=== cte-a06 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt != 11 AND c.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt != 11 AND c.gr != 2|
+n	sm
+3	42
+
+=== cte-a07 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt = 11 OR c.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt = 11 OR c.gr = 2|
+n	sm
+15	282
+
+=== cte-a08 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt = 11 OR c.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt = 11 OR c.gr != 2|
+n	sm
+15	264
+
+=== cte-a09 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt != 11 OR c.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt != 11 OR c.gr = 2|
+n	sm
+15	228
+
+=== cte-a10 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt != 11 OR c.gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt != 11 OR c.gr != 2|
+n	sm
+15	210
+
+=== cte-b05 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt IS NULL;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt IS NULL|
+n	sm
+9	45
+
+=== cte-b06 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt IS NOT NULL;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt IS NOT NULL|
+n	sm
+18	333
+
+=== cte-b08 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt IS NULL OR c.gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt IS NULL OR c.gr = 2|
+n	sm
+15	174
+
+=== cte-b10 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.s IS NULL AND c.gr IS NOT NULL;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.s IS NULL AND c.gr IS NOT NULL|
+n	sm
+6	87
+
+=== cte-b11 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt IN (11, 66);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt IN (11, 66)|
+n	sm
+18	333
+
+=== cte-b15 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.s IN ('ab', 'zz');
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.s IN ('ab', 'zz')|
+n	sm
+9	126
+
+=== cte-b17 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt >= 11 AND c.flt <= 60;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt >= 11 AND c.flt <= 60|
+n	sm
+9	207
+
+=== cte-b19 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt < 66 OR c.gr > 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.flt < 66 OR c.gr > 1|
+n	sm
+15	282
+
+=== cte-b30 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.s = 'ab';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.s = 'ab'|
+n	sm
+9	126
+
+=== cte-b31 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.s != 'ab' OR c.flt = 11;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE c.s != 'ab' OR c.flt = 11|
+n	sm
+15	270
+
+=== cte-b33 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE !(!(c.flt = 11));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE !(!(c.flt = 11))|
+n	sm
+9	207
+
+=== cte-b34 ===
+== Query ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE NOT (NOT (c.gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT pk, MIN(flt) AS flt, MIN(gr) AS gr, MIN(s) AS s FROM nl_t GROUP BY pk) SELECT COUNT(*) AS n, SUM(c.pk) AS sm FROM nl_p AS p JOIN c ON c.pk = p.id WHERE NOT (NOT (c.gr != 2))|
+n	sm
+9	126
+
+=== case-a01 ===
+== Query ==
+SELECT SUM(CASE WHEN flt = 11 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt = 11 THEN pk ELSE 0 END) AS sm FROM nl_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN flt = 11 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt = 11 THEN pk ELSE 0 END) AS sm FROM nl_t|
+n	sm
+9	207
+
+=== case-a02 ===
+== Query ==
+SELECT SUM(CASE WHEN flt != 11 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt != 11 THEN pk ELSE 0 END) AS sm FROM nl_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN flt != 11 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt != 11 THEN pk ELSE 0 END) AS sm FROM nl_t|
+n	sm
+9	126
+
+=== case-a03 ===
+== Query ==
+SELECT SUM(CASE WHEN flt = 11 AND gr = 2 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt = 11 AND gr = 2 THEN pk ELSE 0 END) AS sm FROM nl_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN flt = 11 AND gr = 2 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt = 11 AND gr = 2 THEN pk ELSE 0 END) AS sm FROM nl_t|
+n	sm
+3	78
+
+=== case-a04 ===
+== Query ==
+SELECT SUM(CASE WHEN flt = 11 AND gr != 2 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt = 11 AND gr != 2 THEN pk ELSE 0 END) AS sm FROM nl_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN flt = 11 AND gr != 2 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt = 11 AND gr != 2 THEN pk ELSE 0 END) AS sm FROM nl_t|
+n	sm
+3	69
+
+=== case-a05 ===
+== Query ==
+SELECT SUM(CASE WHEN flt != 11 AND gr = 2 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt != 11 AND gr = 2 THEN pk ELSE 0 END) AS sm FROM nl_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN flt != 11 AND gr = 2 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt != 11 AND gr = 2 THEN pk ELSE 0 END) AS sm FROM nl_t|
+n	sm
+3	51
+
+=== case-a06 ===
+== Query ==
+SELECT SUM(CASE WHEN flt != 11 AND gr != 2 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt != 11 AND gr != 2 THEN pk ELSE 0 END) AS sm FROM nl_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN flt != 11 AND gr != 2 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt != 11 AND gr != 2 THEN pk ELSE 0 END) AS sm FROM nl_t|
+n	sm
+3	42
+
+=== case-a07 ===
+== Query ==
+SELECT SUM(CASE WHEN flt = 11 OR gr = 2 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt = 11 OR gr = 2 THEN pk ELSE 0 END) AS sm FROM nl_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN flt = 11 OR gr = 2 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt = 11 OR gr = 2 THEN pk ELSE 0 END) AS sm FROM nl_t|
+n	sm
+15	282
+
+=== case-a08 ===
+== Query ==
+SELECT SUM(CASE WHEN flt = 11 OR gr != 2 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt = 11 OR gr != 2 THEN pk ELSE 0 END) AS sm FROM nl_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN flt = 11 OR gr != 2 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt = 11 OR gr != 2 THEN pk ELSE 0 END) AS sm FROM nl_t|
+n	sm
+15	264
+
+=== case-a09 ===
+== Query ==
+SELECT SUM(CASE WHEN flt != 11 OR gr = 2 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt != 11 OR gr = 2 THEN pk ELSE 0 END) AS sm FROM nl_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN flt != 11 OR gr = 2 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt != 11 OR gr = 2 THEN pk ELSE 0 END) AS sm FROM nl_t|
+n	sm
+15	228
+
+=== case-a10 ===
+== Query ==
+SELECT SUM(CASE WHEN flt != 11 OR gr != 2 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt != 11 OR gr != 2 THEN pk ELSE 0 END) AS sm FROM nl_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN flt != 11 OR gr != 2 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt != 11 OR gr != 2 THEN pk ELSE 0 END) AS sm FROM nl_t|
+n	sm
+15	210
+
+=== case-b11 ===
+== Query ==
+SELECT SUM(CASE WHEN flt IN (11, 66) THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt IN (11, 66) THEN pk ELSE 0 END) AS sm FROM nl_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN flt IN (11, 66) THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt IN (11, 66) THEN pk ELSE 0 END) AS sm FROM nl_t|
+n	sm
+18	333
+
+=== case-b15 ===
+== Query ==
+SELECT SUM(CASE WHEN s IN ('ab', 'zz') THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN s IN ('ab', 'zz') THEN pk ELSE 0 END) AS sm FROM nl_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN s IN ('ab', 'zz') THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN s IN ('ab', 'zz') THEN pk ELSE 0 END) AS sm FROM nl_t|
+n	sm
+9	126
+
+=== case-b17 ===
+== Query ==
+SELECT SUM(CASE WHEN flt >= 11 AND flt <= 60 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt >= 11 AND flt <= 60 THEN pk ELSE 0 END) AS sm FROM nl_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN flt >= 11 AND flt <= 60 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt >= 11 AND flt <= 60 THEN pk ELSE 0 END) AS sm FROM nl_t|
+n	sm
+9	207
+
+=== case-b19 ===
+== Query ==
+SELECT SUM(CASE WHEN flt < 66 OR gr > 1 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt < 66 OR gr > 1 THEN pk ELSE 0 END) AS sm FROM nl_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN flt < 66 OR gr > 1 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN flt < 66 OR gr > 1 THEN pk ELSE 0 END) AS sm FROM nl_t|
+n	sm
+15	282
+
+=== case-b30 ===
+== Query ==
+SELECT SUM(CASE WHEN s = 'ab' THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN s = 'ab' THEN pk ELSE 0 END) AS sm FROM nl_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN s = 'ab' THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN s = 'ab' THEN pk ELSE 0 END) AS sm FROM nl_t|
+n	sm
+9	126
+
+=== case-b31 ===
+== Query ==
+SELECT SUM(CASE WHEN s != 'ab' OR flt = 11 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN s != 'ab' OR flt = 11 THEN pk ELSE 0 END) AS sm FROM nl_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN s != 'ab' OR flt = 11 THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN s != 'ab' OR flt = 11 THEN pk ELSE 0 END) AS sm FROM nl_t|
+n	sm
+15	270
+
+=== case-b33 ===
+== Query ==
+SELECT SUM(CASE WHEN !(!(flt = 11)) THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN !(!(flt = 11)) THEN pk ELSE 0 END) AS sm FROM nl_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN !(!(flt = 11)) THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN !(!(flt = 11)) THEN pk ELSE 0 END) AS sm FROM nl_t|
+n	sm
+9	207
+
+=== case-b34 ===
+== Query ==
+SELECT SUM(CASE WHEN NOT (NOT (gr != 2)) THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN NOT (NOT (gr != 2)) THEN pk ELSE 0 END) AS sm FROM nl_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN NOT (NOT (gr != 2)) THEN 1 ELSE 0 END) AS n, SUM(CASE WHEN NOT (NOT (gr != 2)) THEN pk ELSE 0 END) AS sm FROM nl_t|
+n	sm
+9	126
+
+=== scan-b01 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE s LIKE 'a%';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE s LIKE 'a%'|
+n	sm
+9	126
+
+=== scan-b02 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (s LIKE 'a%');
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (s LIKE 'a%')|
+n	sm
+9	135
+
+=== scan-b03 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (s LIKE '%y') OR gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (s LIKE '%y') OR gr = 2|
+n	sm
+15	228
+
+=== scan-b04 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (s LIKE 'a%' AND flt = 11);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (s LIKE 'a%' AND flt = 11)|
+n	sm
+15	216
+
+=== scan-b05 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE flt IS NULL;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE flt IS NULL|
+n	sm
+9	45
+
+=== scan-b06 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE flt IS NOT NULL;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE flt IS NOT NULL|
+n	sm
+18	333
+
+=== scan-b07 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (gr IS NULL);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (gr IS NULL)|
+n	sm
+18	279
+
+=== scan-b08 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE flt IS NULL OR gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE flt IS NULL OR gr = 2|
+n	sm
+15	174
+
+=== scan-b09 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (s IS NULL OR gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (s IS NULL OR gr != 2)|
+n	sm
+6	105
+
+=== scan-b10 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE s IS NULL AND gr IS NOT NULL;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE s IS NULL AND gr IS NOT NULL|
+n	sm
+6	87
+
+=== scan-b11 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE flt IN (11, 66);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE flt IN (11, 66)|
+n	sm
+18	333
+
+=== scan-b12 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (flt IN (11, 66));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (flt IN (11, 66))|
+n	sm
+0	NULL
+
+=== scan-b13 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (flt IN (11, 66)) OR gr IN (1, 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (flt IN (11, 66)) OR gr IN (1, 2)|
+n	sm
+18	279
+
+=== scan-b14 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE flt IN (11, 66) AND gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE flt IN (11, 66) AND gr != 2|
+n	sm
+6	111
+
+=== scan-b15 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE s IN ('ab', 'zz');
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE s IN ('ab', 'zz')|
+n	sm
+9	126
+
+=== scan-b16 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (s IN ('ab', 'zz') OR flt = 66);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (s IN ('ab', 'zz') OR flt = 66)|
+n	sm
+3	72
+
+=== scan-b17 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE flt >= 11 AND flt <= 60;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE flt >= 11 AND flt <= 60|
+n	sm
+9	207
+
+=== scan-b18 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (flt >= 11 AND flt <= 60);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (flt >= 11 AND flt <= 60)|
+n	sm
+9	126
+
+=== scan-b19 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE flt < 66 OR gr > 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE flt < 66 OR gr > 1|
+n	sm
+15	282
+
+=== scan-b20 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (flt < 66) OR gr <= 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (flt < 66) OR gr <= 1|
+n	sm
+15	210
+
+=== scan-b21 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE !(flt = 11);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE !(flt = 11)|
+n	sm
+9	126
+
+=== scan-b22 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE !(flt != 11 AND gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE !(flt != 11 AND gr = 2)|
+n	sm
+15	264
+
+=== scan-b23 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE !(flt = 11 OR gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE !(flt = 11 OR gr = 2)|
+n	sm
+3	42
+
+=== scan-b24 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE !(!(flt = 11 OR gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE !(!(flt = 11 OR gr != 2))|
+n	sm
+15	264
+
+=== scan-b25 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE !(flt IS NULL);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE !(flt IS NULL)|
+n	sm
+18	333
+
+=== scan-b26 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE !(s LIKE 'a%');
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE !(s LIKE 'a%')|
+n	sm
+9	135
+
+=== scan-b27 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (NOT (flt = 11 OR gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (NOT (flt = 11 OR gr != 2))|
+n	sm
+15	264
+
+=== scan-b28 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE flt = 11 XOR gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE flt = 11 XOR gr = 2|
+n	sm
+6	120
+
+=== scan-b29 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (flt = 11 XOR gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (flt = 11 XOR gr != 2)|
+n	sm
+6	120
+
+=== scan-b30 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE s = 'ab';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE s = 'ab'|
+n	sm
+9	126
+
+=== scan-b31 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE s != 'ab' OR flt = 11;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE s != 'ab' OR flt = 11|
+n	sm
+15	270
+
+=== scan-b32 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (s = 'xy' AND gr = 1);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (s = 'xy' AND gr = 1)|
+n	sm
+15	228
+
+=== scan-b33 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE !(!(flt = 11));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE !(!(flt = 11))|
+n	sm
+9	207
+
+=== scan-b34 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (NOT (gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT (NOT (gr != 2))|
+n	sm
+9	126
+
+=== scan-b35 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT ((flt = 11 OR gr IS NULL) AND NOT (s LIKE 'x%'));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE NOT ((flt = 11 OR gr IS NULL) AND NOT (s LIKE 'x%'))|
+n	sm
+13	195
+
+=== scan-b36 ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE (flt != 11 OR s IS NULL) AND (gr = 1 OR NOT (s != 'ab'));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(pk) AS sm FROM nl_t WHERE (flt != 11 OR s IS NULL) AND (gr = 1 OR NOT (s != 'ab'))|
+n	sm
+7	96
+
+=== cte-e1: NOT over a comparison on a CTE output is refused ===
+Error handling: RPE
+ronsql_cli caught exception: CTE_LOOKUP filter supports only simple comparisons (=, !=, <, <=, >, >=), IS NULL / IS NOT NULL, and DNF combinations of these; column expressions and other nesting are not supported.
+
+=== cte-e2: LIKE on a CTE output is refused ===
+Error handling: RPE
+ronsql_cli caught exception: CTE_LOOKUP filter supports only simple comparisons (=, !=, <, <=, >, >=), IS NULL / IS NOT NULL, and DNF combinations of these; column expressions and other nesting are not supported.
+
+=== cte-e3: an OR under an AND on CTE outputs is refused ===
+Error handling: RPE
+ronsql_cli caught exception: CTE_LOOKUP filter: only top-level OR / DNF is supported. Rewrite '(A OR B) AND C' as '(A AND C) OR (B AND C)'.
+
+=== case-e1: NOT over a comparison in a CASE condition is refused ===
+Error handling: RPE
+ronsql_cli caught exception: CASE condition atom: only =, !=, <, <=, >, >= supported.
+
+=== case-e2: IS NULL in a CASE condition is refused ===
+Error handling: RPE
+ronsql_cli caught exception: CASE condition atom: only =, !=, <, <=, >, >= supported.
+
+=== case-e3: LIKE in a CASE condition is refused ===
+Error handling: RPE
+ronsql_cli caught exception: CASE condition atom: only =, !=, <, <=, >, >= supported.
+
+=== parse-e1: NOT LIKE is a syntax error (b02 writes NOT (s LIKE 'a%')) ===
+Syntax error in SQL statement: Unexpected at this point
+> SELECT COUNT(*) AS n FROM nl_t WHERE s NOT LIKE 'a%';
+!                                        ^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+
+=== parse-e2: NOT IN is a syntax error (b12 writes NOT (flt IN (11, 66))) ===
+Syntax error in SQL statement: Unexpected at this point
+> SELECT COUNT(*) AS n FROM nl_t WHERE flt NOT IN (11, 66);
+!                                          ^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+
+=== parse-e3: there is no NULL literal, so no NULL in an IN list ===
+Syntax error in SQL statement: Unexpected at this point
+> SELECT COUNT(*) AS n FROM nl_t WHERE flt IN (11, NULL);
+!                                                  ^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+
+=== parse-e4: BETWEEN is not implemented (b17 writes flt >= 11 AND flt <= 60) ===
+Syntax error in SQL statement: Unimplemented keyword. If this was intended as an identifier, use backtick quotation.
+> SELECT COUNT(*) AS n FROM nl_t WHERE flt BETWEEN 11 AND 60;
+!                                          ^^^^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+
+=== parse-e5: <=> is not implemented ===
+Syntax error in SQL statement: Unexpected at this point
+> SELECT COUNT(*) AS n FROM nl_t WHERE flt <=> 11;
+!                                            ^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
