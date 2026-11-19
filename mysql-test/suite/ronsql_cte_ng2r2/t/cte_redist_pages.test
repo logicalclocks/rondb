@@ -1,0 +1,97 @@
+# RONDB-1120 node_failure_test_plan.md section 5.5 (PG-1) through RonSQL.
+#
+# 5134 queues every incoming group until local redistribution and all
+# declared peer requests are complete. Each entry gets its own page.
+# Require a page-chain completion event from each owner, with at least
+# one chain freeing more than 256 pages, then a clean DUMP 2364 from every
+# node. Cookies distinguish this execution from earlier runs.
+# Query results must match MySQL, including the run without the insert.
+
+--source include/have_ndb.inc
+--source include/have_debug.inc
+--source include/have_ndb_debug.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# All data-driven CTE tests involve joins; ronsql_cli does not refresh the NDB
+# dictionary cache for join queries, so we compare the mysql client against
+# RDRS only (matching the ronsql suite's CTE convention).
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--source suite/ronsql_cte/include/cte_schema.inc
+--source suite/ronsql_cte/include/cte_data.inc
+
+--echo
+--echo === crp-1 (PG-1): wide GROUP BY CTE redistributed under ALL ERROR 5134 ===
+# Keep local names distinct from exported names: mysqltest variable
+# lookup is case-insensitive, but the Perl environment is case-sensitive.
+--let $redist_cookie = `SELECT FLOOR(RAND() * 2147483646) + 1`
+--let $redist_nodes = `SELECT GROUP_CONCAT(node_id ORDER BY node_id) FROM ndbinfo.nodes`
+--let PG_COOKIE = $redist_cookie
+--let PG_NODES = $redist_nodes
+--let PG_LOG_DIR = $MYSQLTEST_VARDIR/mysql_cluster.1/ndb_mgmd.1
+--exec $NDB_MGM -e "ALL ERROR 5134 $redist_cookie" > /dev/null
+DELIMITER |;
+let $QUERY=
+WITH li AS (SELECT l_orderkey AS k, COUNT(*) AS n,
+                   SUM(l_quantity) AS q, MIN(l_quantity) AS qmin,
+                   MAX(l_quantity) AS qmax, SUM(l_partkey) AS pk,
+                   SUM(l_suppkey) AS sk, MIN(l_shipdate) AS d1,
+                   MAX(l_shipdate) AS d2
+            FROM lineitem GROUP BY l_orderkey)
+SELECT o.o_orderstatus, COUNT(*), SUM(li.n), SUM(li.q), SUM(li.qmin),
+       SUM(li.qmax), SUM(li.pk), SUM(li.sk), MIN(li.d1), MAX(li.d2)
+FROM orders AS o JOIN li ON li.k = o.o_orderkey
+GROUP BY o.o_orderstatus;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH li AS (SELECT l_orderkey AS k, COUNT(*) AS n,
+                   SUM(l_quantity) AS q, MIN(l_quantity) AS qmin,
+                   MAX(l_quantity) AS qmax, SUM(l_partkey) AS pk,
+                   SUM(l_suppkey) AS sk, MIN(l_shipdate) AS d1,
+                   MAX(l_shipdate) AS d2
+            FROM lineitem GROUP BY l_orderkey)
+SELECT o.o_orderstatus, COUNT(*), SUM(li.n), SUM(li.q), SUM(li.qmin),
+       SUM(li.qmax), SUM(li.pk), SUM(li.sk), MIN(li.d1), MAX(li.d2)
+FROM orders AS o JOIN li ON li.k = o.o_orderkey
+GROUP BY o.o_orderstatus|
+DELIMITER ;|
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+--let PG_STAGE = freed
+--source suite/ronsql_cte/include/cte_redist_wait.inc
+
+--echo
+--echo === crp-2: leak checks (each dump crashes its node on a leak) ===
+--exec $NDB_MGM -e "ALL DUMP 2364 $redist_cookie" > /dev/null
+--let PG_STAGE = checked
+--source suite/ronsql_cte/include/cte_redist_wait.inc
+--exec $NDB_MGM -e "ALL DUMP 2361" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2362" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2363" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2560" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2650" > /dev/null
+
+--echo
+--echo === crp-3: the same query with normal pages ===
+DELIMITER |;
+let $QUERY=
+WITH li AS (SELECT l_orderkey AS k, COUNT(*) AS n,
+                   SUM(l_quantity) AS q, MIN(l_quantity) AS qmin,
+                   MAX(l_quantity) AS qmax, SUM(l_partkey) AS pk,
+                   SUM(l_suppkey) AS sk, MIN(l_shipdate) AS d1,
+                   MAX(l_shipdate) AS d2
+            FROM lineitem GROUP BY l_orderkey)
+SELECT o.o_orderstatus, COUNT(*), SUM(li.n), SUM(li.q), SUM(li.qmin),
+       SUM(li.qmax), SUM(li.pk), SUM(li.sk), MIN(li.d1), MAX(li.d2)
+FROM orders AS o JOIN li ON li.k = o.o_orderkey
+GROUP BY o.o_orderstatus;|
+--source suite/ronsql/include/ronsql_compare.inc
+DELIMITER ;|
+
+--source suite/ronsql_cte/include/cte_drop.inc

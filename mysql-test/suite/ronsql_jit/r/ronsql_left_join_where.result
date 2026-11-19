@@ -1,0 +1,203 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== lj-0: LEFT JOIN without WHERE (control) ===
+== Query ==
+SELECT p.grp, COUNT(*), COUNT(c.id), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+GROUP BY p.grp;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.grp, COUNT(*), COUNT(c.id), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+GROUP BY p.grp|
+grp	COUNT(*)	COUNT(c.id)	SUM(c.v)
+0	4	3	10
+1	4	3	40
+
+=== lj-1: LIKE on the right side rejects NULL (promoted to INNER) ===
+== Query ==
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE c.label LIKE 'a%'
+GROUP BY p.grp;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE c.label LIKE 'a%'
+GROUP BY p.grp|
+grp	COUNT(*)	SUM(c.v)
+0	1	5
+1	1	10
+
+=== lj-2: NOT (col IS NULL) rejects NULL (promoted to INNER) ===
+== Query ==
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE NOT (c.v IS NULL)
+GROUP BY p.grp;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE NOT (c.v IS NULL)
+GROUP BY p.grp|
+grp	COUNT(*)	SUM(c.v)
+0	2	10
+1	2	40
+
+=== lj-3: XOR with a comparison on the right side rejects NULL (promoted to INNER) ===
+== Query ==
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE (c.v > 5) XOR (c.id > 3)
+GROUP BY p.grp;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE (c.v > 5) XOR (c.id > 3)
+GROUP BY p.grp|
+grp	COUNT(*)	SUM(c.v)
+0	2	10
+1	2	40
+
+=== lj-4: NOT over that XOR rejects NULL (promoted to INNER) ===
+== Query ==
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE NOT ((c.v > 5) XOR (c.id > 4))
+GROUP BY p.grp;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE NOT ((c.v > 5) XOR (c.id > 4))
+GROUP BY p.grp|
+grp	COUNT(*)	SUM(c.v)
+0	1	5
+
+=== lj-5: OR over two tables, every branch on the right side (promoted to INNER) ===
+== Query ==
+SELECT p.grp, COUNT(*), COUNT(c.id)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE c.id > p.grp OR c.id > 4
+GROUP BY p.grp;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.grp, COUNT(*), COUNT(c.id)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE c.id > p.grp OR c.id > 4
+GROUP BY p.grp|
+grp	COUNT(*)	COUNT(c.id)
+0	3	3
+1	2	2
+
+=== lj-6: as lj-5 on a CTE, pass-through (promoted to INNER) ===
+== Query ==
+WITH s AS (SELECT id AS k, COUNT(*) AS n FROM lj_child GROUP BY id)
+SELECT p.id, s.n
+FROM lj_parent AS p LEFT JOIN s ON s.k = p.id
+WHERE s.k > p.grp OR s.n > 4;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT id AS k, COUNT(*) AS n FROM lj_child GROUP BY id)
+SELECT p.id, s.n
+FROM lj_parent AS p LEFT JOIN s ON s.k = p.id
+WHERE s.k > p.grp OR s.n > 4|
+id	n
+2	1
+3	1
+4	1
+5	1
+6	1
+
+=== lj-r1 (rejection): col IS NULL on the right side ===
+WHERE condition on 'c' is not supported: 'c' is the right side of a LEFT JOIN and the condition can hold for its NULL-extended rows (as col IS NULL does). RonSQL would apply it as part of the join condition, keeping rows the WHERE should remove.
+Error handling: RPE
+ronsql_cli caught exception: WHERE on a LEFT JOIN's right side that holds for NULL is not supported.
+
+=== lj-r2 (rejection): IS NULL in an OR on the right side ===
+WHERE condition on 'c' is not supported: 'c' is the right side of a LEFT JOIN and the condition can hold for its NULL-extended rows (as col IS NULL does). RonSQL would apply it as part of the join condition, keeping rows the WHERE should remove.
+Error handling: RPE
+ronsql_cli caught exception: WHERE on a LEFT JOIN's right side that holds for NULL is not supported.
+
+=== lj-r3 (rejection): NOT (col IS NOT NULL) on the right side ===
+WHERE condition on 'c' is not supported: 'c' is the right side of a LEFT JOIN and the condition can hold for its NULL-extended rows (as col IS NULL does). RonSQL would apply it as part of the join condition, keeping rows the WHERE should remove.
+Error handling: RPE
+ronsql_cli caught exception: WHERE on a LEFT JOIN's right side that holds for NULL is not supported.
+
+=== lj-r4 (rejection): XOR of IS NULL tests on the right side (TRUE for the NULL-extended row) ===
+WHERE condition on 'c' is not supported: 'c' is the right side of a LEFT JOIN and the condition can hold for its NULL-extended rows (as col IS NULL does). RonSQL would apply it as part of the join condition, keeping rows the WHERE should remove.
+Error handling: RPE
+ronsql_cli caught exception: WHERE on a LEFT JOIN's right side that holds for NULL is not supported.
+
+=== lj-r5 (rejection): OR over two tables with a branch on the left side only ===
+WHERE condition on 'c' is not supported: 'c' is the right side of a LEFT JOIN and the condition can hold for its NULL-extended rows (as col IS NULL does). RonSQL would apply it as part of the join condition, keeping rows the WHERE should remove.
+Error handling: RPE
+ronsql_cli caught exception: WHERE on a LEFT JOIN's right side that holds for NULL is not supported.
+
+=== lj-r6 (rejection): as lj-r5 on a CTE, pass-through ===
+WHERE condition on 's' is not supported: 's' is the right side of a LEFT JOIN and the condition can hold for its NULL-extended rows (as col IS NULL does). RonSQL would apply it as part of the join condition, keeping rows the WHERE should remove.
+Error handling: RPE
+ronsql_cli caught exception: WHERE on a LEFT JOIN's right side that holds for NULL is not supported.
+
+=== lj-r7 (rejection): IS NULL in an OR on a CTE (not an anti-join) ===
+WHERE condition on 's' is not supported: 's' is the right side of a LEFT JOIN and the condition can hold for its NULL-extended rows (as col IS NULL does). RonSQL would apply it as part of the join condition, keeping rows the WHERE should remove.
+Error handling: RPE
+ronsql_cli caught exception: WHERE on a LEFT JOIN's right side that holds for NULL is not supported.
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_left_join_where_jit_fallback_delta;
+ronsql_left_join_where_jit_fallback_delta
+0

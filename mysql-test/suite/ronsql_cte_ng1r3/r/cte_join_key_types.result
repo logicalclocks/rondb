@@ -1,0 +1,66 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== f29-1: MAX(INT) CTE output joined to an INT key — permanent rejection ===
+Join columns 't.merchant_id' (BIGINT) and 'm.merchant_id' (INT) must have identical type, precision, scale, length and character set: NDB pushed joins do not convert linked values. A CTE MIN, MAX, SUM or COUNT output is carried as a 64-bit value (BIGINT, BIGINT UNSIGNED or DOUBLE) whatever the type of the aggregated column; a GROUP BY column keeps its type.
+Error handling: RPE
+ronsql_cli caught exception: Join column type mismatch.
+
+=== f29-2: MAX(INT) CTE output joined to a BIGINT key ===
+== Query ==
+WITH t AS (SELECT grp, MAX(merchant_id) AS merchant_id
+FROM f29_tx GROUP BY grp)
+SELECT m.mcc, COUNT(*) AS n
+FROM t JOIN f29_m_big AS m ON m.merchant_id = t.merchant_id
+GROUP BY m.mcc;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT grp, MAX(merchant_id) AS merchant_id
+FROM f29_tx GROUP BY grp)
+SELECT m.mcc, COUNT(*) AS n
+FROM t JOIN f29_m_big AS m ON m.merchant_id = t.merchant_id
+GROUP BY m.mcc|
+mcc	n
+5001	1
+5002	1
+5003	1
+
+=== f29-3: BIGINT column joined to a CTE grouped by INT — permanent rejection ===
+Join columns 'b.merchant_id' (BIGINT) and 't.merchant_id' (INT) must have identical type, precision, scale, length and character set: NDB pushed joins do not convert linked values.
+Error handling: RPE
+ronsql_cli caught exception: Join column type mismatch.
+
+=== f29-4: GROUP BY carrier (J0 form) keeps the INT type ===
+== Query ==
+WITH t AS (SELECT grp, merchant_id, COUNT(*) AS c
+FROM f29_tx GROUP BY grp, merchant_id)
+SELECT m.mcc, COUNT(*) AS n
+FROM t JOIN f29_m_int AS m ON m.merchant_id = t.merchant_id
+GROUP BY m.mcc;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT grp, merchant_id, COUNT(*) AS c
+FROM f29_tx GROUP BY grp, merchant_id)
+SELECT m.mcc, COUNT(*) AS n
+FROM t JOIN f29_m_int AS m ON m.merchant_id = t.merchant_id
+GROUP BY m.mcc|
+mcc	n
+5001	2
+5002	2
+5003	1
+
+=== Cleanup ===

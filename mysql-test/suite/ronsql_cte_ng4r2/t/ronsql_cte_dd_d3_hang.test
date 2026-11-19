@@ -1,0 +1,75 @@
+# D3 regression test — projection-only main SELECT over a CTE_LOOKUP child.
+#
+# Finding D3 (cte_test_driven_findings.md) / fix-plan H1: a main SELECT that
+# reads only CTE columns through a CTE_LOOKUP child WITHOUT a main aggregate
+# used to HANG — RonSQL's execute_passthrough_drain registered no getValue on
+# the main root op (all projected columns came from the CTE child), so the root
+# scan was never set up to receive rows and nextResult(true) blocked forever.
+#
+# FIXED in RonSQLPreparer::execute_passthrough_drain: when no output column is
+# read off the main root op, a throwaway getValue is registered on the root's
+# first column (mirrors testCteNdbApi.cpp Test 17's mainQueryOp->getValue),
+# sizing the root receiver so nextResult drains to scanComplete. This test is
+# the green regression guard for that fix (minimal region + nation schema).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+# Minimal self-contained schema (region + nation only).
+--disable_query_log
+--disable_warnings
+CREATE TABLE region (
+  r_regionkey TINYINT NOT NULL,
+  r_name      CHAR(12) NOT NULL,
+  PRIMARY KEY USING HASH (r_regionkey)
+) ENGINE=NDB;
+CREATE TABLE nation (
+  n_nationkey TINYINT NOT NULL,
+  n_name      CHAR(15) NOT NULL,
+  n_regionkey TINYINT NOT NULL,
+  PRIMARY KEY USING HASH (n_nationkey)
+) ENGINE=NDB;
+INSERT INTO region VALUES
+  (0,'AFRICA'),(1,'AMERICA'),(2,'ASIA'),(3,'EUROPE'),(4,'MIDEAST');
+INSERT INTO nation VALUES
+  (0,'N0',0),(1,'N1',1),(2,'N2',2),(3,'N3',3),(4,'N4',4),
+  (5,'N5',0),(6,'N6',1),(7,'N7',2),(8,'N8',3),(9,'N9',4);
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === D3: projection-only main SELECT over a CTE_LOOKUP child (was a hang) ===
+
+DELIMITER |;
+let $QUERY=
+WITH nat AS (
+  SELECT n_regionkey AS rk, MIN(n_nationkey) AS mn, MAX(n_nationkey) AS mx, COUNT(*) AS n
+  FROM nation GROUP BY n_regionkey)
+SELECT nat.rk, nat.mn, nat.mx, nat.n
+FROM region AS r
+JOIN nat ON nat.rk = r.r_regionkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH nat AS (
+  SELECT n_regionkey AS rk, MIN(n_nationkey) AS mn, MAX(n_nationkey) AS mx, COUNT(*) AS n
+  FROM nation GROUP BY n_regionkey)
+SELECT nat.rk, nat.mn, nat.mx, nat.n
+FROM region AS r
+JOIN nat ON nat.rk = r.r_regionkey|
+DELIMITER ;|
+
+--disable_query_log
+--disable_warnings
+DROP TABLE nation;
+DROP TABLE region;
+--enable_warnings
+--enable_query_log

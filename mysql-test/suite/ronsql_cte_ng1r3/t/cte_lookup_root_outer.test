@@ -1,0 +1,211 @@
+# RONDB-1121 finding F19 (envelope fuzzer, probe cte-scan-outer-child): an
+# aggregating main query whose root is a key lookup and whose outer-joined
+# CTE_LOOKUP child misses dropped the parent row.  MySQL returns the
+# NULL-extended row; RonSQL returned no row (f19-1 is the fuzzer repro).
+#
+# DBSPJ builds the NULL-extended row for the aggregation from the parent
+# row buffered on the nearest scan ancestor (execCTE_LOOKUP_REF).  A
+# key-lookup root (readTuple for a PK-bound real table, lookupCte for a
+# key-bound CTE, Phase I.7 / G4) has none, so the injection was skipped.
+# Fixed in RonSQLPreparer::emit_root_op: an aggregating scope with a
+# LEFT / ANTI_JOIN child takes a scan root (a PK-bound ordered-index scan,
+# a filtered table scan for a hash-only PK, scanCte for a CTE root); the
+# filtered scalar CTE root, which has only the lookup form, is rejected.
+#
+# Case map (t groups: k=1 n=2, k=2 n=2, k=3 n=1; b groups: k=1, 2, 9):
+#   f19-1  ordered-PK root, miss (id 5)            -> (9, NULL)
+#   f19-2  ordered-PK root, hit (id 2)             -> (1, 2)
+#   f19-3  hash-PK root, miss (id 4)               -> (2, NULL)
+#   f19-4  scalar aggregate, ordered-PK root, miss -> (1, NULL)
+#   f19-5  anti-join form (t.k IS NULL), miss      -> (9, 1)
+#   f19-6  I.7 lookupCte root (a.k = 3), miss      -> (3, NULL)
+#   f19-7  G4 single-group CTE root, miss          -> (1, NULL)
+#   f19-8  filtered scalar CTE root: clean permanent rejection
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Joins: compare the mysql client against RDRS only (the ronsql suite's CTE
+# convention).
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE f19_src (
+  pk  INT NOT NULL,
+  grp INT NOT NULL,
+  val INT NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+CREATE INDEX idx_f19_src_grp ON f19_src (grp);
+
+# Ordered PK index (the default): the fallback root is a PK-bound index scan.
+CREATE TABLE f19_ord (
+  id  INT NOT NULL,
+  cat INT NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+
+# Hash-only PK: the fallback root is a filtered table scan.
+CREATE TABLE f19_hash (
+  id  INT NOT NULL,
+  cat INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+INSERT INTO f19_src VALUES (1,1,10), (2,1,20), (3,2,30), (4,2,40), (5,3,50);
+INSERT INTO f19_ord VALUES (1,1), (2,1), (3,2), (4,2), (5,9);
+INSERT INTO f19_hash VALUES (1,1), (2,1), (3,2), (4,2), (5,9);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === f19-1: ordered-PK root LEFT JOIN cte, miss ===
+let $QUERY=
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, SUM(t.n) AS n
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 5 GROUP BY o.cat;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, SUM(t.n) AS n
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 5 GROUP BY o.cat|
+
+--echo
+--echo === f19-2: ordered-PK root LEFT JOIN cte, hit ===
+let $QUERY=
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, SUM(t.n) AS n
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 2 GROUP BY o.cat;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, SUM(t.n) AS n
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 2 GROUP BY o.cat|
+
+--echo
+--echo === f19-3: hash-PK root LEFT JOIN cte, miss ===
+let $QUERY=
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT h.cat, SUM(t.n) AS n
+FROM f19_hash AS h LEFT JOIN t ON t.k = h.id
+WHERE h.id = 4 GROUP BY h.cat;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT h.cat, SUM(t.n) AS n
+FROM f19_hash AS h LEFT JOIN t ON t.k = h.id
+WHERE h.id = 4 GROUP BY h.cat|
+
+--echo
+--echo === f19-4: scalar aggregate, ordered-PK root LEFT JOIN cte, miss ===
+let $QUERY=
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT COUNT(*) AS c, SUM(t.s) AS s
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 5;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT COUNT(*) AS c, SUM(t.s) AS s
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 5|
+
+--echo
+--echo === f19-5: anti-join form (WHERE t.k IS NULL), ordered-PK root, miss ===
+let $QUERY=
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, COUNT(*) AS c
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 5 AND t.k IS NULL GROUP BY o.cat;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, COUNT(*) AS c
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 5 AND t.k IS NULL GROUP BY o.cat|
+
+--echo
+--echo === f19-6: key-bound CTE root (I.7) LEFT JOIN cte, miss ===
+let $QUERY=
+WITH a AS (SELECT grp AS k, COUNT(*) AS n FROM f19_src GROUP BY grp),
+b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat)
+SELECT a.k, SUM(b.m) AS m
+FROM a LEFT JOIN b ON b.k = a.k
+WHERE a.k = 3 GROUP BY a.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT grp AS k, COUNT(*) AS n FROM f19_src GROUP BY grp),
+b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat)
+SELECT a.k, SUM(b.m) AS m
+FROM a LEFT JOIN b ON b.k = a.k
+WHERE a.k = 3 GROUP BY a.k|
+
+--echo
+--echo === f19-7: single-group CTE root (G4) LEFT JOIN cte, miss ===
+let $QUERY=
+WITH a AS (SELECT grp AS k, COUNT(*) AS n FROM f19_src
+WHERE grp = 3 GROUP BY grp),
+b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat)
+SELECT COUNT(*) AS c, SUM(b.m) AS m
+FROM a LEFT JOIN b ON b.k = a.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT grp AS k, COUNT(*) AS n FROM f19_src
+WHERE grp = 3 GROUP BY grp),
+b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat)
+SELECT COUNT(*) AS c, SUM(b.m) AS m
+FROM a LEFT JOIN b ON b.k = a.k|
+
+DELIMITER ;|
+
+--echo
+--echo === f19-8: filtered scalar CTE root LEFT JOIN cte — permanent rejection ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH s AS (SELECT MAX(grp) AS mx FROM f19_src), b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat) SELECT COUNT(*) AS c, SUM(b.m) AS m FROM s LEFT JOIN b ON b.k = s.mx WHERE s.mx > 0;' 2>&1
+
+--echo
+--echo === Cleanup ===
+
+--disable_query_log
+DROP TABLE f19_src;
+DROP TABLE f19_ord;
+DROP TABLE f19_hash;
+--enable_query_log

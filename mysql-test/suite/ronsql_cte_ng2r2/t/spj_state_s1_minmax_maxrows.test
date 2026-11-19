@@ -1,0 +1,153 @@
+# spj_state_s1_minmax_maxrows
+#
+# Finding S-1 (storage/ndb/claude_files/dbspj/dbspj_state_machine.html,
+# section 10): the maxRows early close in
+# Dbspj::scanFrag_execSCAN_FRAGCONF() is not counted.
+#
+# Fixed 2026-10-29: the close is counted in m_frags_outstanding and its
+# CONF completes the fragment.  The description below is of the code
+# before the fix.
+#
+# When a fragment has delivered >= maxRows rows and is not done, DBSPJ
+# sends SCAN_NEXTREQ(close) after it has already decremented
+# ScanFragData::m_frags_outstanding for that CONF, and never counts the
+# close.  The tree node is then reported complete, and the CONF that
+# answers the close (fragmentCompleted != 0) reaches
+# ndbrequire(data.m_frags_outstanding) with the counter at 0 (debug
+# builds already stop at ndbassert(!completed || aborting) in
+# execSCAN_FRAGCONF).  With more than one fragment in flight the counter
+# goes one too low and the node completes a CONF early instead.
+#
+# Real queries reach it.  RonSQL turns a single-op CTE body that is a
+# scalar MIN/MAX over a NOT NULL column leading an ordered index, with no
+# WHERE and no GROUP BY, into scanIndex(..., setMaxRows(1)) with
+# ascending (MIN) or descending (MAX) ordering plus a readTuple self-join
+# leaf carrying the aggregation (RonSQLPreparer::select_cte_body_minmax_index
+# and the INDEX_SCAN body emit, "[I.10 MIN_ASC|MAX_DESC maxRows=1]").
+# Each DBSPJ worker scans one fragment of the source table.  A CTE-body
+# scan uses batch_size_rows = 990 (NdbQueryOperation.cpp, isCteEmbedded),
+# so the first SCAN_FRAGCONF of a fragment with more than 990 rows has
+# fragmentCompleted = 0, which is exactly when the close is sent.
+#
+# The existing ronsql_cte_minmax_index test uses 8 rows, so every first
+# CONF is final and the bug stays hidden.  Here s1_big has 64000 rows:
+# with the base suite's 2 data nodes and PartitionsPerNode=4 the table
+# has at most 8 fragments, i.e. at least ~8000 rows per fragment (8 x
+# the batch), and it stays over 990 rows per fragment up to ~64
+# fragments.
+#
+# Expected (MySQL): MAX(v) = 100002, MIN(v) = 1 (v = n*7919 mod 100003
+# over n = 1..64000, all values distinct).
+# Before the fix both data nodes stopped (debug build: spjCheck on
+# m_frags_outstanding in DBSPJ, ndbassert in scanFrag_send_NEXTREQ), so
+# the RDRS request failed.
+#
+# Run:    ./mtr --suite=ronsql_cte spj_state_s1_minmax_maxrows
+# Record: ./mtr --suite=ronsql_cte --record spj_state_s1_minmax_maxrows
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/spj-state-s1-explain.out
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE s1_big (
+  id INT NOT NULL,
+  v  BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_s1_v (v)
+) ENGINE=NDB;
+
+# Numbers helper 1..100000 (MEMORY, dropped at the end).
+CREATE TABLE s1_d (d INT) ENGINE=MEMORY;
+INSERT INTO s1_d VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+CREATE TABLE s1_seq (n INT NOT NULL PRIMARY KEY) ENGINE=MEMORY;
+INSERT INTO s1_seq
+  SELECT a.d*10000 + b.d*1000 + c.d*100 + e.d*10 + f.d + 1
+  FROM s1_d a, s1_d b, s1_d c, s1_d e, s1_d f;
+
+# 64000 rows, inserted 4000 per transaction to stay well below
+# MaxNoOfConcurrentOperations (10000 in the MTR default config).
+--let $s1_lo=1
+while ($s1_lo <= 64000)
+{
+  --let $s1_hi=`SELECT $s1_lo + 3999`
+  eval INSERT INTO s1_big
+    SELECT n, MOD(n * 7919, 100003) FROM s1_seq
+    WHERE n BETWEEN $s1_lo AND $s1_hi;
+  --let $s1_lo=`SELECT $s1_lo + 4000`
+}
+DROP TABLE s1_seq;
+DROP TABLE s1_d;
+
+--enable_warnings
+--enable_query_log
+
+SELECT COUNT(*) AS s1_rows FROM s1_big;
+
+DELIMITER |;
+
+--echo
+--echo === s1-1: scalar MAX CTE body -> descending scanIndex, maxRows=1 ===
+let $QUERY=
+WITH mx AS (SELECT MAX(v) AS m FROM s1_big)
+SELECT m FROM mx;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using idx_s1_v [I.10 MAX_DESC maxRows=1]' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+let $QUERY=
+WITH mx AS (SELECT MAX(v) AS m FROM s1_big)
+SELECT m FROM mx;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH mx AS (SELECT MAX(v) AS m FROM s1_big)
+SELECT m FROM mx|
+
+--echo
+--echo === s1-2: scalar MIN CTE body -> ascending scanIndex, maxRows=1 ===
+let $QUERY=
+WITH mn AS (SELECT MIN(v) AS m FROM s1_big)
+SELECT m FROM mn;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using idx_s1_v [I.10 MIN_ASC maxRows=1]' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+let $QUERY=
+WITH mn AS (SELECT MIN(v) AS m FROM s1_big)
+SELECT m FROM mn;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH mn AS (SELECT MIN(v) AS m FROM s1_big)
+SELECT m FROM mn|
+
+--echo
+--echo === s1-3: MAX and MIN bodies in one query (both scan directions) ===
+let $QUERY=
+WITH mx AS (SELECT MAX(v) AS max_v FROM s1_big),
+     mn AS (SELECT MIN(v) AS min_v FROM s1_big)
+SELECT SUM(max_v) AS max_v, SUM(min_v) AS min_v FROM mx, mn;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH mx AS (SELECT MAX(v) AS max_v FROM s1_big),
+     mn AS (SELECT MIN(v) AS min_v FROM s1_big)
+SELECT SUM(max_v) AS max_v, SUM(min_v) AS min_v FROM mx, mn|
+
+DELIMITER ;|
+
+--echo
+--echo === s1-4: no DBSPJ request left behind (DUMP 2650 stops a node on a leak) ===
+--exec $NDB_MGM -e "ALL DUMP 2650" > /dev/null
+
+--disable_query_log
+DROP TABLE s1_big;
+--enable_query_log

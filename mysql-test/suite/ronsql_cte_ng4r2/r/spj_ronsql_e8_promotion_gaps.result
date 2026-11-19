@@ -1,0 +1,80 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== e8-0: the trees are chains t -> c -> n ===
+== Explain Query ==
+== Explain Query ==
+
+=== e8-1: a null-rejecting WHERE on the last table of a LEFT-LEFT chain ===
+== Query ==
+SELECT COUNT(*) AS cnt, SUM(n.r) AS s
+FROM e8_t AS t
+LEFT JOIN e8_c AS c ON c.ck = t.ref
+LEFT JOIN e8_n AS n ON n.nk = c.nk
+WHERE n.r >= 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS cnt, SUM(n.r) AS s
+FROM e8_t AS t
+LEFT JOIN e8_c AS c ON c.ck = t.ref
+LEFT JOIN e8_n AS n ON n.nk = c.nk
+WHERE n.r >= 0|
+cnt	s
+10	200
+
+=== e8-2: an INNER JOIN after a LEFT JOIN inside a CTE body ===
+== Query ==
+WITH e8_b AS (SELECT t.grp AS g, COUNT(*) AS cnt
+FROM e8_t AS t
+LEFT JOIN e8_c AS c ON c.ck = t.ref
+JOIN e8_n AS n ON n.nk = c.nk
+GROUP BY t.grp)
+SELECT SUM(cnt) AS s FROM e8_b;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH e8_b AS (SELECT t.grp AS g, COUNT(*) AS cnt
+FROM e8_t AS t
+LEFT JOIN e8_c AS c ON c.ck = t.ref
+JOIN e8_n AS n ON n.nk = c.nk
+GROUP BY t.grp)
+SELECT SUM(cnt) AS s FROM e8_b|
+s
+10
+
+=== e8-3: control, the same chain in the main query ===
+== Query ==
+SELECT COUNT(*) AS cnt
+FROM e8_t AS t
+LEFT JOIN e8_c AS c ON c.ck = t.ref
+JOIN e8_n AS n ON n.nk = c.nk;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS cnt
+FROM e8_t AS t
+LEFT JOIN e8_c AS c ON c.ck = t.ref
+JOIN e8_n AS n ON n.nk = c.nk|
+cnt
+10
+
+=== e8-4: no DBSPJ request left behind ===

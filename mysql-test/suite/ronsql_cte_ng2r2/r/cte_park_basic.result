@@ -1,0 +1,74 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== cpb-1: CTE probed by lookups, one SETUP held 20 ms (5151) ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, COUNT(*) AS norders, SUM(o_shippriority) AS prio
+FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(cust.norders), SUM(cust.prio)
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_mktsegment;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (
+SELECT o_custkey AS k, COUNT(*) AS norders, SUM(o_shippriority) AS prio
+FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(cust.norders), SUM(cust.prio)
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_mktsegment|
+c_mktsegment	SUM(cust.norders)	SUM(cust.prio)
+AUTOMOBILE	300	0
+BUILDING	300	300
+FURNITURE	300	600
+HOUSEHOLD	300	900
+MACHINERY	300	1200
+
+=== cpb-2: outer join onto a CTE with NULL and missing keys (5151) ===
+== Query ==
+WITH cl AS (SELECT o_clerk AS k, COUNT(*) AS n
+FROM orders WHERE o_clerk IS NOT NULL GROUP BY o_clerk)
+SELECT o.o_orderstatus, COUNT(*), SUM(cl.n)
+FROM orders AS o LEFT JOIN cl ON cl.k = o.o_clerk
+GROUP BY o.o_orderstatus;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cl AS (SELECT o_clerk AS k, COUNT(*) AS n
+FROM orders WHERE o_clerk IS NOT NULL GROUP BY o_clerk)
+SELECT o.o_orderstatus, COUNT(*), SUM(cl.n)
+FROM orders AS o LEFT JOIN cl ON cl.k = o.o_clerk
+GROUP BY o.o_orderstatus|
+o_orderstatus	COUNT(*)	SUM(cl.n)
+F	500	13766
+O	500	13798
+P	500	13798
+
+=== cpb-3: pass-through scanCte root (5151) ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey)
+SELECT k, n FROM cf;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+
+=== cpb-4: leak checks (each dump crashes its node on a leak) ===

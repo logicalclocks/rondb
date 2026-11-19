@@ -1,0 +1,174 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== gl-0: the plans: LEFT JOIN INDEX_SCAN and PK_LOOKUP aggregate leaves ===
+== Explain Query ==
+== Explain Query ==
+
+=== gl-1: nullable inner column, both argument orders, grouped ===
+== Query ==
+SELECT c.id,
+SUM(GREATEST(o.amt, c.fl)) AS g_oc,
+SUM(GREATEST(c.fl, o.amt)) AS g_co,
+COUNT(LEAST(o.amt, c.fl)) AS l_oc,
+COUNT(LEAST(c.fl, o.amt)) AS l_co,
+COUNT(*) AS n
+FROM glo_c AS c
+LEFT JOIN glo_o AS o ON o.cid = c.id
+GROUP BY c.id;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.id,
+SUM(GREATEST(o.amt, c.fl)) AS g_oc,
+SUM(GREATEST(c.fl, o.amt)) AS g_co,
+COUNT(LEAST(o.amt, c.fl)) AS l_oc,
+COUNT(LEAST(c.fl, o.amt)) AS l_co,
+COUNT(*) AS n
+FROM glo_c AS c
+LEFT JOIN glo_o AS o ON o.cid = c.id
+GROUP BY c.id|
+id	g_oc	g_co	l_oc	l_co	n
+1	25	25	2	2	2
+2	NULL	NULL	0	0	1
+3	NULL	NULL	0	0	1
+4	45	45	1	1	1
+5	NULL	NULL	0	0	1
+
+=== gl-2: NOT NULL inner column, both argument orders, grouped ===
+== Query ==
+SELECT c.id,
+SUM(GREATEST(o.amt_nn, c.fl)) AS g_oc,
+SUM(GREATEST(c.fl, o.amt_nn)) AS g_co,
+COUNT(LEAST(o.amt_nn, c.fl)) AS l_oc,
+COUNT(LEAST(c.fl, o.amt_nn)) AS l_co,
+COUNT(*) AS n
+FROM glo_c AS c
+LEFT JOIN glo_o AS o ON o.cid = c.id
+GROUP BY c.id;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.id,
+SUM(GREATEST(o.amt_nn, c.fl)) AS g_oc,
+SUM(GREATEST(c.fl, o.amt_nn)) AS g_co,
+COUNT(LEAST(o.amt_nn, c.fl)) AS l_oc,
+COUNT(LEAST(c.fl, o.amt_nn)) AS l_co,
+COUNT(*) AS n
+FROM glo_c AS c
+LEFT JOIN glo_o AS o ON o.cid = c.id
+GROUP BY c.id|
+id	g_oc	g_co	l_oc	l_co	n
+1	25	25	2	2	2
+2	25	25	1	1	1
+3	NULL	NULL	0	0	1
+4	40	40	1	1	1
+5	NULL	NULL	0	0	1
+
+=== gl-3: constant operand, n-ary forms, MIN and MAX ===
+== Query ==
+SELECT c.id,
+SUM(GREATEST(o.amt_nn, 30)) AS gk,
+MAX(LEAST(o.amt, c.fl, 100)) AS lmax,
+MIN(GREATEST(o.amt_nn, c.fl, 0)) AS gmin,
+COUNT(*) AS n
+FROM glo_c AS c
+LEFT JOIN glo_o AS o ON o.cid = c.id
+GROUP BY c.id;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.id,
+SUM(GREATEST(o.amt_nn, 30)) AS gk,
+MAX(LEAST(o.amt, c.fl, 100)) AS lmax,
+MIN(GREATEST(o.amt_nn, c.fl, 0)) AS gmin,
+COUNT(*) AS n
+FROM glo_c AS c
+LEFT JOIN glo_o AS o ON o.cid = c.id
+GROUP BY c.id|
+id	gk	lmax	gmin	n
+1	60	10	10	2
+2	30	NULL	25	1
+3	NULL	NULL	NULL	1
+4	35	40	40	1
+5	NULL	NULL	NULL	1
+
+=== gl-4: nullable and NOT NULL inner columns without GROUP BY ===
+== Query ==
+SELECT SUM(GREATEST(o.amt, c.fl)) AS g_oc,
+SUM(GREATEST(o.amt_nn, c.fl)) AS gn_oc,
+COUNT(LEAST(o.amt_nn, c.fl)) AS ln_oc,
+COUNT(*) AS n
+FROM glo_c AS c
+LEFT JOIN glo_o AS o ON o.cid = c.id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(GREATEST(o.amt, c.fl)) AS g_oc,
+SUM(GREATEST(o.amt_nn, c.fl)) AS gn_oc,
+COUNT(LEAST(o.amt_nn, c.fl)) AS ln_oc,
+COUNT(*) AS n
+FROM glo_c AS c
+LEFT JOIN glo_o AS o ON o.cid = c.id|
+g_oc	gn_oc	ln_oc	n
+70	90	4	6
+
+=== gl-5: PK_LOOKUP leaf, a missed key and a NULL key ===
+== Query ==
+SELECT c.id,
+SUM(GREATEST(o.amt_nn, c.fl)) AS gn,
+SUM(GREATEST(o.amt, c.fl)) AS g,
+COUNT(LEAST(o.amt_nn, c.fl)) AS ln,
+COUNT(*) AS n
+FROM glo_c AS c
+LEFT JOIN glo_o AS o ON o.id = c.oref
+GROUP BY c.id;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.id,
+SUM(GREATEST(o.amt_nn, c.fl)) AS gn,
+SUM(GREATEST(o.amt, c.fl)) AS g,
+COUNT(LEAST(o.amt_nn, c.fl)) AS ln,
+COUNT(*) AS n
+FROM glo_c AS c
+LEFT JOIN glo_o AS o ON o.id = c.oref
+GROUP BY c.id|
+id	gn	g	ln	n
+1	10	10	1	1
+2	25	NULL	1	1
+3	NULL	NULL	0	1
+4	NULL	NULL	0	1
+5	50	50	1	1
+
+=== gl-6: no DBSPJ request left behind ===

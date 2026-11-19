@@ -1,0 +1,45 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== e5-0: e5-2 is a CTE_LOOKUP into the grouped CTE ===
+== Explain Query ==
+
+=== e5-1: CTE GROUP BY a string, values equal under the collation ===
+== Query ==
+WITH e5_c AS (SELECT v, COUNT(*) AS n FROM e5_t GROUP BY v)
+SELECT COUNT(*) AS ng, SUM(n) AS s, MAX(n) AS mx FROM e5_c;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH e5_c AS (SELECT v, COUNT(*) AS n FROM e5_t GROUP BY v)
+SELECT COUNT(*) AS ng, SUM(n) AS s, MAX(n) AS mx FROM e5_c|
+ng	s	mx
+2	8	6
+
+=== e5-2: CTE_LOOKUP into the same CTE ===
+== Query ==
+WITH e5_c AS (SELECT v, COUNT(*) AS n FROM e5_t GROUP BY v)
+SELECT d.id, e5_c.n FROM e5_d AS d JOIN e5_c ON e5_c.v = d.v;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH e5_c AS (SELECT v, COUNT(*) AS n FROM e5_t GROUP BY v)
+SELECT d.id, e5_c.n FROM e5_d AS d JOIN e5_c ON e5_c.v = d.v|
+id	n
+1	6
+2	6
+3	2
+
+=== e5-3: no DBSPJ request left behind ===

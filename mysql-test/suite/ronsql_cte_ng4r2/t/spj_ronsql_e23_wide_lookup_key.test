@@ -1,0 +1,106 @@
+# spj_ronsql_e23_wide_lookup_key
+#
+# Finding E-23 (storage/ndb/claude_files/dbspj/dbspj_query_execution.html,
+# section 8), second site: a CTE_LOOKUP whose key from the parent row is
+# wider than MAX_KEY_SIZE_IN_WORDS (1023).  cte_lookup_send in
+# DbspjMain.cpp has two branches: the single-row branch returns an error
+# for such a key, but the branch for a grouped CTE with more than one
+# owner node has ndbrequire(keyPtr.sz <= MAX_KEY_SIZE_IN_WORDS) and stops
+# the data node.
+#
+# The CTE itself groups short values, so it gets past the redistribution
+# receiver that spj_ronsql_e23_wide_group_key stops.  RonSQL requires the
+# two sides of a CTE join key to be declared alike, so both columns are
+# VARCHAR(6000) latin1.
+#
+# Data: e23_s.v holds the short values 'k1'..'k5', two rows each.
+# e23_w.v holds 'k1', 'k2' and three values of 5000 bytes (1251 words
+# with the length bytes).
+#   CTE = SELECT v, COUNT(*) AS n FROM e23_s GROUP BY v
+#
+#   e23l-1  MySQL gives (cnt, s) = (2, 4): only 'k1' and 'k2' match.
+#           Before the RonSQL fix the data nodes stopped on the
+#           ndbrequire (observed 2026-10-31: data node 1 stops on the
+#           ndbrequire in cte_lookup_send, DbspjMain.cpp); mtr restarts
+#           the cluster for the next test.
+#           Expected: RonSQL refuses the query with the limit error of
+#           spj_ronsql_e23_wide_group_key.  The two sides of a CTE join
+#           key are declared alike, so the CTE's GROUP BY key, checked
+#           at the declared sizes, bounds the lookup key too.
+# The kernel still needs its own check for other NDB API clients; that
+# is the kernel round, with an NDB API test.
+#
+# A failing grep at e23l-0 means RonSQL chose another plan: adjust the
+# test.
+#
+# Run:    ./mtr --suite=ronsql_cte spj_ronsql_e23_wide_lookup_key
+# Record: ./mtr --suite=ronsql_cte --record spj_ronsql_e23_wide_lookup_key
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/spj-ronsql-e23l-explain.out
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE e23_s (
+  id INT NOT NULL,
+  v  VARCHAR(6000) CHARACTER SET latin1 NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE e23_w (
+  id INT NOT NULL,
+  v  VARCHAR(6000) CHARACTER SET latin1 NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+INSERT INTO e23_s VALUES
+  (1,'k1'), (2,'k1'), (3,'k2'), (4,'k2'), (5,'k3'),
+  (6,'k3'), (7,'k4'), (8,'k4'), (9,'k5'), (10,'k5');
+INSERT INTO e23_w VALUES
+  (1, 'k1'), (2, 'k2'),
+  (3, CONCAT('w3', REPEAT('x', 4998))),
+  (4, CONCAT('w4', REPEAT('x', 4998))),
+  (5, CONCAT('w5', REPEAT('x', 4998)));
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === e23l-0: the plan is root scan -> CTE_LOOKUP into the grouped CTE ===
+let $QUERY=
+WITH e23_c AS (SELECT v, COUNT(*) AS n FROM e23_s GROUP BY v)
+SELECT COUNT(*) AS cnt, SUM(e23_c.n) AS s
+FROM e23_w AS w JOIN e23_c ON e23_c.v = w.v;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF '[INNER] CTE_LOOKUP CTE:e23_c' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+DELIMITER ;|
+
+--echo
+--echo === e23l-1: CTE_LOOKUP with 5000-byte keys is a limit error ===
+--exec printf '{"query":"WITH e23_c AS (SELECT v, COUNT(*) AS n FROM e23_s GROUP BY v) SELECT COUNT(*) AS cnt, SUM(e23_c.n) AS s FROM e23_w AS w JOIN e23_c ON e23_c.v = w.v;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--exec grep -oF '[limit] Caught exception: The GROUP BY columns of a CTE can need more than 4092 bytes, counted at the declared column sizes.' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected a limit error for a CTE key over 4092 bytes"
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out
+
+--echo
+--echo === e23l-2: no DBSPJ request left behind ===
+--exec $NDB_MGM -e "ALL DUMP 2650" > /dev/null
+
+--disable_query_log
+DROP TABLE e23_s;
+DROP TABLE e23_w;
+--enable_query_log

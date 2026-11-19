@@ -1,0 +1,146 @@
+# spj_state_s15_eviction_cte
+#
+# Finding S-15 (storage/ndb/claude_files/dbspj/dbspj_state_machine.html,
+# section 10), CTE form.
+#
+# Fixed 2026-10-29: lookup_execLQHKEYCONF() no longer adds readLen (the
+# evicted groups) to Request::m_rows.  The description below is of the
+# code before the fix.
+#
+# For a join aggregation DBSPJ continues a batch by itself (no
+# SCAN_FRAGCONF to DBTC) only while Request::m_rows == 0
+# (Dbspj::batchComplete -> handleJoinAggNextBatch).  m_rows counts rows
+# delivered to the API, and for a LOOKUP aggregate leaf
+# lookup_execLQHKEYCONF() adds LQHKEYCONF.readLen, which DBTUP sets to
+# the number of groups evicted by that row (handleJoinAggRow).  A batch
+# with an eviction therefore ends with a mid-fragment SCAN_FRAGCONF
+# (fragmentCompleted = 0, completedOps = #evictions).  For a query with
+# CTEs and a main aggregation DBTC treats that as a protocol violation
+# and fails the scan with 1270 (ZCTE_AGG_BATCH_PROTOCOL_ERROR,
+# DbtcMain.cpp ~19577).  Scan aggregate leaves never report evictions
+# (DBLQH leaves completedOps at 0), which is why the scan-leaf eviction
+# test in ronsql_join_agg (Test 44, error insert 5126) is green.
+#
+# Shape: the main root is a CTE_SCAN of c0 (3000 groups, so every DBSPJ
+# worker needs several CTE_SCAN batches of at most 256 groups) and the
+# main aggregation sits on a PK lookup of s15c_rhs (an LQHKEYREQ leaf),
+# grouped by s15c_rhs.g (25 groups).  DBTUP error insert 4041 evicts a
+# group every ~7th fed row per LDM thread while more than 2 groups are
+# resident; it skips CTE materialisation states, so c0 itself is built
+# normally.  (DBLQH 5126 would also force evictions but fails the CTE
+# body, which cannot evict.)
+#
+# Expected (MySQL): 25 rows, e.g. g=0 -> COUNT(*) 120, SUM 9000;
+# g=1 -> 120, 9240.  s15c-1 (no error insert) must match.
+# Before the fix s15c-2 failed with NDB error 1270 instead of returning
+# the 25 rows.
+#
+# Run:    ./mtr --suite=ronsql_cte spj_state_s15_eviction_cte
+# Record: ./mtr --suite=ronsql_cte --record spj_state_s15_eviction_cte
+
+--source include/have_ndb.inc
+--source include/have_debug.inc
+--source include/have_ndb_debug.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/spj-state-s15c-explain.out
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE s15c_src (
+  id  INT NOT NULL,
+  grp INT NOT NULL,
+  val INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE s15c_rhs (
+  id INT NOT NULL,
+  g  INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE s15c_d (d INT) ENGINE=MEMORY;
+INSERT INTO s15c_d VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+CREATE TABLE s15c_seq (n INT NOT NULL PRIMARY KEY) ENGINE=MEMORY;
+INSERT INTO s15c_seq SELECT a.d*1000 + b.d*100 + c.d*10 + e.d + 1
+  FROM s15c_d a, s15c_d b, s15c_d c, s15c_d e;
+
+# 6000 source rows, 2 per group: grp 1..3000.
+INSERT INTO s15c_src
+  SELECT n, MOD(n - 1, 3000) + 1, MOD(n, 100) FROM s15c_seq WHERE n <= 4000;
+INSERT INTO s15c_src
+  SELECT n + 4000, MOD(n + 4000 - 1, 3000) + 1, MOD(n + 4000, 100)
+  FROM s15c_seq WHERE n <= 2000;
+# One s15c_rhs row per c0 group, 25 main groups.
+INSERT INTO s15c_rhs SELECT n, MOD(n, 25) FROM s15c_seq WHERE n <= 3000;
+DROP TABLE s15c_seq;
+DROP TABLE s15c_d;
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === s15c-0: the plan is CTE_SCAN root -> PK_LOOKUP aggregate leaf ===
+let $QUERY=
+WITH c0 AS (SELECT grp AS k, SUM(val) AS total
+            FROM s15c_src GROUP BY grp)
+SELECT r.g, COUNT(*), SUM(c0.total)
+FROM c0 JOIN s15c_rhs AS r ON r.id = c0.k
+GROUP BY r.g;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF '[ROOT] CTE_SCAN CTE:c0' $EXPLAIN_FILE
+--exec grep -qF '[INNER] PK_LOOKUP s15c_rhs AS r' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+--echo
+--echo === s15c-1: control, no forced eviction ===
+let $QUERY=
+WITH c0 AS (SELECT grp AS k, SUM(val) AS total
+            FROM s15c_src GROUP BY grp)
+SELECT r.g, COUNT(*), SUM(c0.total)
+FROM c0 JOIN s15c_rhs AS r ON r.id = c0.k
+GROUP BY r.g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c0 AS (SELECT grp AS k, SUM(val) AS total
+            FROM s15c_src GROUP BY grp)
+SELECT r.g, COUNT(*), SUM(c0.total)
+FROM c0 JOIN s15c_rhs AS r ON r.id = c0.k
+GROUP BY r.g|
+
+--echo
+--echo === s15c-2: lookup-leaf evictions forced (DBTUP 4041) ===
+--exec $NDB_MGM -e "ALL ERROR 4041" > /dev/null
+let $QUERY=
+WITH c0 AS (SELECT grp AS k, SUM(val) AS total
+            FROM s15c_src GROUP BY grp)
+SELECT r.g, COUNT(*), SUM(c0.total)
+FROM c0 JOIN s15c_rhs AS r ON r.id = c0.k
+GROUP BY r.g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+
+DELIMITER ;|
+
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+
+--echo
+--echo === s15c-3: no DBSPJ request or join-aggregation state left behind ===
+--exec $NDB_MGM -e "ALL DUMP 2650" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2361" > /dev/null
+
+--disable_query_log
+DROP TABLE s15c_rhs;
+DROP TABLE s15c_src;
+--enable_query_log

@@ -1,0 +1,88 @@
+# RONDB-1120 node_failure_test_plan.md section 5.1 through RonSQL.
+#
+# A CTE scanned as the main-query root (QN_CTE_SCAN, pass-through) with
+# more groups on every data node than one 256-row API batch, so each
+# source runs through several CTE_SCAN_REQ continuations and DBSPJ's
+# per-source batch obligation is exercised end to end (SM-1).  Then the
+# same query with DBLQH error insert 5129 armed on every node: the first
+# continuation is answered CTE_SCAN_REF 1251 with the iterator token
+# released, so the query fails with 1251 instead of hanging or returning
+# a partial result (SM-2).  Rows of the first batches were already
+# streamed when the failure arrived, so RonSQL must not retry the query
+# (finding F-6: a retry repeated the delivered rows); ronsql_cli exits 1
+# with the NDB error on stderr.  The leak dumps then run and the clean
+# query is repeated.
+#
+# 1500 orders -> GROUP BY o_orderkey gives 1500 groups, about 750 per
+# node in this 2-node suite, three batches per source.  The block-level
+# cases with exact batch accounting are testCteDbtc Tests 12 and 13.
+
+--source include/have_ndb.inc
+--source include/have_debug.inc
+--source include/have_ndb_debug.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# All data-driven CTE tests involve joins; ronsql_cli does not refresh the NDB
+# dictionary cache for join queries, so we compare the mysql client against
+# RDRS only (matching the ronsql suite's CTE convention).
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--source suite/ronsql_cte/include/cte_schema.inc
+--source suite/ronsql_cte/include/cte_data.inc
+
+--echo
+--echo === csb-1 (SM-1): scanCte root, 1500 groups over several batches ===
+DELIMITER |;
+let $QUERY=
+WITH ok AS (SELECT o_orderkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS prio
+            FROM orders GROUP BY o_orderkey)
+SELECT k, n, prio FROM ok;|
+--source suite/ronsql/include/ronsql_compare.inc
+DELIMITER ;|
+
+--echo == Expected row count ==
+WITH ok AS (SELECT o_orderkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS prio
+            FROM orders GROUP BY o_orderkey)
+SELECT COUNT(*) AS cte_groups, SUM(n) AS rows_covered FROM ok;
+
+--echo
+--echo === csb-2 (SM-2): ALL ERROR 5129, the first continuation is refused ===
+# ronsql_cli streams the first batches, then reports the NDB error of
+# the refused continuation on stderr ("... (code 1251)") and exits 1
+# without retrying, because rows were already delivered.  The rows that
+# did reach stdout are fewer than the 1500 groups.
+--exec $NDB_MGM -e "ALL ERROR 5129" > /dev/null
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH ok AS (SELECT o_orderkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS prio FROM orders GROUP BY o_orderkey) SELECT k, n, prio FROM ok;' > $MYSQL_TMP_DIR/cte_scan_batches.out 2> $MYSQL_TMP_DIR/cte_scan_batches.err
+--exec grep -q "code 1251" $MYSQL_TMP_DIR/cte_scan_batches.err
+--echo RonSQL query failed with NDB error 1251 (CTE scan continuation refused)
+--exec test `grep -Fc '' $MYSQL_TMP_DIR/cte_scan_batches.out` -lt 1501
+--echo Fewer than the 1500 groups were delivered before the failure
+--remove_file $MYSQL_TMP_DIR/cte_scan_batches.out
+--remove_file $MYSQL_TMP_DIR/cte_scan_batches.err
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+
+--echo
+--echo === csb-3: leak checks (each dump crashes its node on a leak) ===
+--exec $NDB_MGM -e "ALL DUMP 2361" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2362" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2363" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2560" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2650" > /dev/null
+
+--echo
+--echo === csb-4: the clean scan again after the refused continuation ===
+DELIMITER |;
+let $QUERY=
+WITH ok AS (SELECT o_orderkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS prio
+            FROM orders GROUP BY o_orderkey)
+SELECT k, n, prio FROM ok;|
+--source suite/ronsql/include/ronsql_compare.inc
+DELIMITER ;|
+
+--source suite/ronsql_cte/include/cte_drop.inc

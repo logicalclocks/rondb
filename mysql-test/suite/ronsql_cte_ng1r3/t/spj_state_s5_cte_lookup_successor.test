@@ -1,0 +1,143 @@
+# spj_state_s5_cte_lookup_successor
+#
+# Finding S-5 (storage/ndb/claude_files/dbspj/dbspj_state_machine.html,
+# section 10): Dbspj::execCTE_LOOKUP_CONF() / execCTE_LOOKUP_REF() retire
+# the last reply of a CTE_LOOKUP tree node and set its completed bit
+# (cte_lookup_checkComplete), but never call handleTreeNodeComplete().
+# Every other lookup path does (lookup_execLQHKEYCONF/REF,
+# execTRANSID_AI).
+#
+# Fixed 2026-10-29: both call handleTreeNodeComplete() once the last
+# reply is retired.  The description below is of the code before the
+# fix.
+#
+# Dbspj::planSequentialExec() first chains every INNER-joined lookup
+# (a CTE_LOOKUP is a lookup) after the root scan, then appends the next
+# INNER-joined scan branch after the LAST of those lookups.  For
+#     customer c (root scan)
+#       +- JOIN pc  ON pc.k = c.c_custkey          (INNER CTE_LOOKUP  L)
+#       +- JOIN orders o ON o.o_custkey = c.c_custkey (INNER INDEX_SCAN B)
+# B is therefore only in L.m_next_nodes, and B's first SCAN_FRAGREQ is
+# sent from scanFrag_parent_batch_complete(), which only
+# reportAncestorsComplete() reaches.  DBLQH sends a CTE lookup's
+# TRANSID_AI before its CONF, so L normally completes on a CONF, after
+# the root's last SCAN_FRAGCONF (the lookups are only sent when the root
+# rows arrive).  Then nobody reports L complete, B never scans, and the
+# rows that need B are missing from the result without any error.
+#
+# s5-1 is the projection-only (pass-through) query; s5-2 the same with
+# DBLQH error insert 5131 (hold ONE CTE lookup 50 ms per data node) so L
+# completes after the root on every node; s5-3 is the aggregating form
+# with the aggregation on B.  It reads no column of pc: the planner
+# only chains CTE_LOOKUP siblings, so a pc column would be a
+# non-ancestor linked source for the leaf B, which RonSQL rejects at
+# prepare (finding D5).  pc is then a pure INNER filter on the root,
+# and the execution plan is the same root -> L -> B sequence.
+#
+# Expected (MySQL): s5-1/s5-2 100 rows (customers 1..20, 5 orders each,
+# pc.cnt = 5 on every row); s5-3 COUNT(*) = 100,
+# SUM(o.o_shippriority) = 200.
+# Before the fix s5-1 returned 15 of the 100 rows on one run and 10 on
+# the next, without an error: how many rows are lost depends on timing.
+#
+# Run:    ./mtr --suite=ronsql_cte spj_state_s5_cte_lookup_successor
+# Record: ./mtr --suite=ronsql_cte --record spj_state_s5_cte_lookup_successor
+
+--source include/have_ndb.inc
+--source include/have_debug.inc
+--source include/have_ndb_debug.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/spj-state-s5-explain.out
+
+--source suite/ronsql_cte/include/cte_schema.inc
+--source suite/ronsql_cte/include/cte_data.inc
+
+DELIMITER |;
+
+--echo
+--echo === s5-0: the plan really is root -> CTE_LOOKUP + INDEX_SCAN ===
+let $QUERY=
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, pc.cnt, o.o_orderkey
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+JOIN orders AS o ON o.o_custkey = c.c_custkey
+WHERE c.c_custkey <= 20;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF '[INNER] CTE_LOOKUP CTE:pc' $EXPLAIN_FILE
+--exec grep -qF '[INNER] INDEX_SCAN orders AS o' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+--echo
+--echo === s5-1: projection-only star, CTE lookup completes after the root ===
+let $QUERY=
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, pc.cnt, o.o_orderkey
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+JOIN orders AS o ON o.o_custkey = c.c_custkey
+WHERE c.c_custkey <= 20;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, pc.cnt, o.o_orderkey
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+JOIN orders AS o ON o.o_custkey = c.c_custkey
+WHERE c.c_custkey <= 20|
+
+--echo
+--echo === s5-2: same, one CTE lookup per data node held 50 ms (5131) ===
+--exec $NDB_MGM -e "ALL ERROR 5131" > /dev/null
+let $QUERY=
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, pc.cnt, o.o_orderkey
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+JOIN orders AS o ON o.o_custkey = c.c_custkey
+WHERE c.c_custkey <= 20;|
+--source suite/ronsql/include/ronsql_compare.inc
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+
+--echo
+--echo === s5-3: aggregating form of the same star ===
+let $QUERY=
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey)
+SELECT COUNT(*), SUM(o.o_shippriority)
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+JOIN orders AS o ON o.o_custkey = c.c_custkey
+WHERE c.c_custkey <= 20;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+            FROM orders GROUP BY o_custkey)
+SELECT COUNT(*), SUM(o.o_shippriority)
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+JOIN orders AS o ON o.o_custkey = c.c_custkey
+WHERE c.c_custkey <= 20|
+
+DELIMITER ;|
+
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+
+--echo
+--echo === s5-4: no DBSPJ request left behind ===
+--exec $NDB_MGM -e "ALL DUMP 2650" > /dev/null
+
+--source suite/ronsql_cte/include/cte_drop.inc

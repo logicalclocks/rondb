@@ -1,0 +1,352 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== D19 base: no parent WHERE (green) ===
+== Query ==
+WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders GROUP BY o_custkey)
+SELECT cust.k, SUM(cust.t) FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+GROUP BY cust.k;
+
+Number of output lines, including header: 301
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders GROUP BY o_custkey)
+SELECT cust.k, SUM(cust.t) FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+GROUP BY cust.k|
+k	SUM(cust.t)
+1	5
+10	0
+100	0
+101	5
+102	10
+103	15
+104	20
+105	0
+106	5
+107	10
+108	15
+109	20
+11	5
+110	0
+111	5
+112	10
+113	15
+114	20
+115	0
+116	5
+117	10
+118	15
+119	20
+12	10
+120	0
+121	5
+122	10
+123	15
+124	20
+125	0
+126	5
+127	10
+128	15
+129	20
+13	15
+130	0
+131	5
+132	10
+133	15
+134	20
+135	0
+136	5
+137	10
+138	15
+139	20
+14	20
+140	0
+141	5
+142	10
+143	15
+144	20
+145	0
+146	5
+147	10
+148	15
+149	20
+15	0
+150	0
+151	5
+152	10
+153	15
+154	20
+155	0
+156	5
+157	10
+158	15
+159	20
+16	5
+160	0
+161	5
+162	10
+163	15
+164	20
+165	0
+166	5
+167	10
+168	15
+169	20
+17	10
+170	0
+171	5
+172	10
+173	15
+174	20
+175	0
+176	5
+177	10
+178	15
+179	20
+18	15
+180	0
+181	5
+182	10
+183	15
+184	20
+185	0
+186	5
+187	10
+188	15
+189	20
+19	20
+190	0
+191	5
+192	10
+193	15
+194	20
+195	0
+196	5
+197	10
+198	15
+199	20
+2	10
+20	0
+200	0
+201	5
+202	10
+203	15
+204	20
+205	0
+206	5
+207	10
+208	15
+209	20
+21	5
+210	0
+211	5
+212	10
+213	15
+214	20
+215	0
+216	5
+217	10
+218	15
+219	20
+22	10
+220	0
+221	5
+222	10
+223	15
+224	20
+225	0
+226	5
+227	10
+228	15
+229	20
+23	15
+230	0
+231	5
+232	10
+233	15
+234	20
+235	0
+236	5
+237	10
+238	15
+239	20
+24	20
+240	0
+241	5
+242	10
+243	15
+244	20
+245	0
+246	5
+247	10
+248	15
+249	20
+25	0
+250	0
+251	5
+252	10
+253	15
+254	20
+255	0
+256	5
+257	10
+258	15
+259	20
+26	5
+260	0
+261	5
+262	10
+263	15
+264	20
+265	0
+266	5
+267	10
+268	15
+269	20
+27	10
+270	0
+271	5
+272	10
+273	15
+274	20
+275	0
+276	5
+277	10
+278	15
+279	20
+28	15
+280	0
+281	5
+282	10
+283	15
+284	20
+285	0
+286	5
+287	10
+288	15
+289	20
+29	20
+290	0
+291	5
+292	10
+293	15
+294	20
+295	0
+296	5
+297	10
+298	15
+299	20
+3	15
+30	0
+300	0
+31	5
+32	10
+33	15
+34	20
+35	0
+36	5
+37	10
+38	15
+39	20
+4	20
+40	0
+41	5
+42	10
+43	15
+44	20
+45	0
+46	5
+47	10
+48	15
+49	20
+5	0
+50	0
+51	5
+52	10
+53	15
+54	20
+55	0
+56	5
+57	10
+58	15
+59	20
+6	5
+60	0
+61	5
+62	10
+63	15
+64	20
+65	0
+66	5
+67	10
+68	15
+69	20
+7	10
+70	0
+71	5
+72	10
+73	15
+74	20
+75	0
+76	5
+77	10
+78	15
+79	20
+8	15
+80	0
+81	5
+82	10
+83	15
+84	20
+85	0
+86	5
+87	10
+88	15
+89	20
+9	20
+90	0
+91	5
+92	10
+93	15
+94	20
+95	0
+96	5
+97	10
+98	15
+99	20
+
+=== D19a: WHERE c.c_nationkey = 5 (parent-column filter, green) ===
+== Query ==
+WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders GROUP BY o_custkey)
+SELECT cust.k, SUM(cust.t) FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_nationkey = 5 GROUP BY cust.k;
+
+Number of output lines, including header: 13
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cust AS (SELECT o_custkey AS k, SUM(o_shippriority) AS t FROM orders GROUP BY o_custkey)
+SELECT cust.k, SUM(cust.t) FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+WHERE c.c_nationkey = 5 GROUP BY cust.k|
+k	SUM(cust.t)
+105	0
+130	0
+155	0
+180	0
+205	0
+230	0
+255	0
+280	0
+30	0
+5	0
+55	0
+80	0

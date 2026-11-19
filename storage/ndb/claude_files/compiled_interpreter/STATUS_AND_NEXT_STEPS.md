@@ -214,6 +214,12 @@ engines; flag to the pushdown team), then the per-row glue diet.**
   after ANY rebase — it is byte-wise, since some results carry non-UTF-8
   bytes, and leaves the native canaries alone). Pins of the grown tests
   may still move on the first run — that is the census number to re-pin.
+  (RONDB-1124 T-22, 2026-11-19: the RonSQL mirror suites are now generated
+  by `mysql-test/suite/ronsql/mirrors/ronsql_mirrors.pl` from
+  `ronsql_mirrors.cfg`, which holds the pins; the always-run test
+  `ronsql.ronsql_mirror_check` fails when a mirror is stale or missing.
+  `refresh_jit_mirror_results.py` now refreshes only `ndb_push_agg_jit` and
+  then runs that script.)
 
 
 
