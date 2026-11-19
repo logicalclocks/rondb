@@ -762,10 +762,22 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     region&rsquo;s, found by service discovery in that region
     (<code>RonDbManagementClient.java:144-147</code>, <code>:151-189</code>). It receives
     the groups the main RonDB receives, converts with its own thread count, has its own
-    state rows, and gets the same ownership and repair (below). The pass itself runs
+    state rows, and gets the same ownership and repair (below). Each regional write is
+    its own call with its own result, through the client&rsquo;s per-endpoint methods: the
+    existing quota wrappers fire both regions but discard the second response
+    (<code>RonDbManagementClient.java:194-202</code>), which cannot feed per-target state
+    rows. The state rows are keyed by a <em>stable</em> target identity: the namespace
+    for a discovered cluster, and <code>region:&lt;region name&gt;</code> for each
+    region&rsquo;s RonDB, both regions, when multi-region is enabled. Region names stay with
+    their physical cluster; the active and secondary <em>roles</em> swap on failover
+    (<code>MultiRegionWatchdog.java:125-129</code>), so a role must never be a key, and
+    a failed judge poll, which leaves the placeholder name
+    <code>could-not-poll-judge</code> in the role fields, must never reach a state row.
+    The pass itself runs
     only in the primary region, where <code>amIThePrimary()</code> can answer true; in
     the secondary region it answers false (<code>PayaraClusterManager.java:144-151</code>).
-    After a failover the new primary region&rsquo;s installer reconciles both.</li>
+    After a failover the new primary region&rsquo;s installer reconciles both, and no state
+    row changes meaning because the keys name regions, not roles.</li>
     <li><strong>Pick this cluster&rsquo;s groups.</strong> Groups whose <code>cluster</code>
     is NULL or equal to this cluster&rsquo;s name. Where one person is covered by both a
     named-cluster group and an every-cluster group, the named one wins in that cluster&rsquo;s RonDB
@@ -823,10 +835,14 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
     behind a two-run grace, because several writers could hold stale snapshots; a
     primary-gated writer needs neither, because a drop sent from a stale snapshot is
     undone by the next pass like any other stale command (below).</li>
-    <li><strong>Record the state</strong> per (group, cluster) in
+    <li><strong>Record the state</strong> per (group, target) in
     <code>rate_limit_group_cluster_state</code>: <em>installed</em> on success,
     <em>refused</em> when the cluster rejects the rate (50% cap), <em>pending</em>
-    otherwise, including for a cluster that is unreachable or not yet discovered.</li>
+    otherwise, including for a cluster that is unreachable or not yet discovered.
+    <em>Installed</em> means the desired specification, the converted rate and the alias
+    assignments, was applied by a successful pass; a pass that stops mid-group records
+    the partial outcome beside the summary value, what is actually enforced and when it
+    was observed, so the page never shows a half-applied group as simply installed.</li>
   </ol>
 </div>
 <p>When the pass runs:</p>
@@ -1390,7 +1406,9 @@ targeted RonDB.</p>
 constraints on <code>name</code> come from the cluster: at most 126 characters, no
 leading <code>$</code>, and it must survive the management command line unquoted, so the
 save rules of section 11 should restrict it to something like <code>[A-Za-z0-9_]</code>.
-The cluster name is a Kubernetes namespace, at most 63 characters by the DNS label rule.
+The cluster name is a Kubernetes namespace, at most 63 characters by the DNS label rule;
+a state row&rsquo;s target key may also be the region-qualified form
+<code>region:&lt;region name&gt;</code> (section 10), which is why that column is wider.
 Check the unique keys over nullable columns against the RonDB migration limits before
 the migration is written.</p>
 <pre><code>CREATE TABLE `hopsworks`.`rate_limit_group` (
@@ -1423,7 +1441,7 @@ CREATE TABLE `hopsworks`.`rate_limit_group_user` (
 -- Written by the installer (section 10), read by the admin page (section 3).
 CREATE TABLE `hopsworks`.`rate_limit_group_cluster_state` (
   `group_id`     int(11)     NOT NULL,
-  `cluster_name` varchar(63) COLLATE latin1_general_cs NOT NULL,
+  `cluster_name` varchar(127) COLLATE latin1_general_cs NOT NULL,  -- namespace, or region:&lt;region name&gt; (section 10); a namespace alone may use 63
   `state`        varchar(10) NOT NULL,   -- 'PENDING', 'INSTALLED' or 'REFUSED'
   `updated`      bigint      NOT NULL,   -- epoch milliseconds
   PRIMARY KEY (`group_id`, `cluster_name`),
