@@ -476,9 +476,11 @@ static const char* const case_queries[] = {
   "SELECT a, AVG(CASE WHEN a <> b AND s = 'abc' THEN d ELSE 0 END) "
   "FROM t GROUP BY a;",
   // DATETIME constants (5 bytes, two data words) and a nullable column.
-  "SELECT MIN(CASE WHEN dt >= '2026-01-01 00:00:00' THEN d ELSE d END), "
+  // Aliased: an unaliased output may be at most 64 bytes long.
+  "SELECT MIN(CASE WHEN dt >= '2026-01-01 00:00:00' THEN d ELSE d END) "
+  "AS m1, "
   "SUM(CASE WHEN dt < '2026-01-01 00:00:00' AND n > 0 THEN b ELSE 1 END) "
-  "FROM t;",
+  "AS s1 FROM t;",
 };
 
 static void
