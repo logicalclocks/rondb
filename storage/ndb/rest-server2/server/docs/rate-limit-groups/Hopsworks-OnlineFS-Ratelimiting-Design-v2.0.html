@@ -823,7 +823,8 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     excluding Hopsworks&rsquo; service users, <code>onlinefs</code>,
     <code>srvmanager</code> and the configured Airflow user (7.2).</li>
     <li><strong>Convert each percentage</strong> using this cluster&rsquo;s data-node thread
-    count: with 20 threads, 20% &rarr; 4,000,000 (section 14). The thread count is read
+    count: with 20 threads, 20% &rarr; 4,000,000 (section 14). The thread count, the
+    configured cap percent and the allocated total are read
     once per pass from the cluster itself and never cached across passes,
     so a resized cluster is reconverted by the next pass that reads it, with one guard:
     after a restart onto <em>fewer</em> threads the already-allocated total can exceed
@@ -843,16 +844,19 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     the kernel defect is fixed. That refusal is deliberately broader than the exact
     kernel behavior (a single lowering straight to under the cap would pass), because
     predicting which command sequence survives is the kernel&rsquo;s job, not the
-    installer&rsquo;s. For the main cluster the
-    read is <code>ndbinfo.threads</code> over the JDBC connection Hopsworks already
-    holds (5.4), and for the secondary region&rsquo;s RonDB over the region-addressed
-    admin connection that already exists
-    (<code>OnlineFeaturestoreFacade.establishAdminConnection(region, &hellip;)</code>,
-    which assumes the secondary shares the primary&rsquo;s admin credentials). For a
-    satellite no such connection exists today, so that transport is an open decision
-    (section 16): a JDBC connection per cluster and where its credentials come from, a
-    management command that returns the thread count, or a value recorded per cluster at
-    deployment. A cluster whose thread count cannot be read stays <em>pending</em>.</li>
+    installer&rsquo;s. The read is one new management command (decided 2026-11-19):
+    <code>USER CAPACITY</code> (13.3, name settled in review), answered by each
+    cluster&rsquo;s management server from Dbdict, returns the per-node thread count, the
+    configured cap percent (section 14) and the currently allocated total, the
+    kernel&rsquo;s own counter covering every <code>USER</code> allocation, operator
+    entries and database quotas included. Every target answers it over the mgmd endpoint
+    discovery already provides (5.4), main cluster, secondary region and satellites
+    alike, with no per-cluster credentials, and the guard above uses the same
+    answer&rsquo;s allocated total. The main cluster&rsquo;s <code>ndbinfo.threads</code>
+    JDBC read and the region-addressed admin connection
+    (<code>OnlineFeaturestoreFacade.establishAdminConnection(region, &hellip;)</code>)
+    remain available but are no longer needed for this. A cluster whose capacity cannot
+    be read, an older kernel included, stays <em>pending</em>.</li>
     <li><strong>Read back and fix the differences</strong>, in group-id order so a cap
     refusal is deterministic: <code>USER LIST</code> and <code>USER ALIAS LIST</code>,
     then
@@ -1255,6 +1259,14 @@ User alias Recommender2_rosa9e1f
   aliasId = 418
   target = recommender2_rl
 User Alias List command completed</code></pre>
+<p><strong><code>USER CAPACITY</code> (decided 2026-11-19; name settled in review).</strong>
+One more command in the same family: the management server answers from Dbdict with the
+per-node thread count, the configured cap percent (section 14) and the currently
+allocated total, Dbdict&rsquo;s own counter, so the installer converts percentages,
+checks the save-time sum rule (section 11) and gates a resized cluster (section 10) from
+one consistent answer, over the same mgmd socket the other commands use and with no
+per-cluster database credentials. It is version-gated like the alias commands: a cluster
+whose kernel does not answer it stays <em>pending</em>.</p>
 
 <h3>13.4 What the other components do</h3>
 <div class="tablewrap"><table>
@@ -1494,7 +1506,7 @@ targeted RonDB.</p>
     <tr><td>Hopsworks installer</td><td>new</td><td>Section 10: extend <code>RonDbManagementClient</code> with the <code>USER</code> / <code>USER ALIAS</code> command family (same framing as its quota commands) and per-cluster endpoints from the namespace discovery; the expansion of Who rows into account names (the clip is <code>OnlineFeaturestoreController.onlineDbUsername</code>&rsquo;s); an <code>OnlinefsOperationHandler</code> implementation for membership churn; a primary-gated reconciler on the <code>TrinoReconciler</code> template; state rows per (group, cluster).</td></tr>
     <tr><td>Hopsworks admin page</td><td>new</td><td>Section 3: list + form, cluster picker from discovery, per-cluster state badges (installed, pending, partial, refused; partial and refused expand to the applied coverage and <code>last_error</code>, section 10), converted rate shown per cluster, the commands a save will run, the delete confirmation.</td></tr>
     <tr><td>RDRS</td><td>exists</td><td>Username mode (merged on the ticket branch): tag the project-user name. <strong>No group code.</strong></td></tr>
-    <tr><td>RonDB kernel</td><td>new</td><td>Section 13: alias flag and single target (by name) on the <code>$name</code> object in Dbdict (not budgeted, persisted, backed up, re-resolved on target recreate); <code>USER DROP</code> refused while aliases point at the target (per-target alias count in the drop parse, new error, restart and restore waived; 13.3); the alias-to-target swap at the three Dbtc admission points; <code>USER ALIAS SET/DROP/GET/LIST</code> in the mgm server (<code>Services.cpp</code>) and client; MTR tests in <code>suite/ndb_quota</code>: lifecycle, enforcement through an alias on both key and scan paths, restart and backup/restore, a refused target drop with a live alias, target drop and recreate. Two additions from the scale
+    <tr><td>RonDB kernel</td><td>new</td><td>Section 13: alias flag and single target (by name) on the <code>$name</code> object in Dbdict (not budgeted, persisted, backed up, re-resolved on target recreate); <code>USER DROP</code> refused while aliases point at the target (per-target alias count in the drop parse, new error, restart and restore waived; 13.3); the alias-to-target swap at the three Dbtc admission points; <code>USER ALIAS SET/DROP/GET/LIST</code> and <code>USER CAPACITY</code> (per-node thread count, configured cap percent, allocated total; 13.3) in the mgm server (<code>Services.cpp</code>) and client; MTR tests in <code>suite/ndb_quota</code>: lifecycle, enforcement through an alias on both key and scan paths, restart and backup/restore, a refused target drop with a live alias, target drop and recreate. Two additions from the scale
     measurement (13.5): a <code>MaxNoOfUserObjects</code> configuration parameter added
     to the dictionary object-slot sum, so aliases stop competing with tables for
     <code>MaxNoOfTables</code>, with a kernel default of 0 (today&rsquo;s sharing, tested,
@@ -1554,12 +1566,11 @@ targeted RonDB.</p>
   second option needs OnlineFS to check the name against the producer&rsquo;s identity.</li>
   <li><strong>Unmetered online paths</strong> (section 15): Rondis traffic and RDRS&rsquo;s own
   metadata reads. Meter either, or exempt them explicitly.</li>
-  <li><strong>Thread-count transport for satellites</strong> (section 10 step 4): the
-  main cluster&rsquo;s thread count is read over its existing JDBC connection, and the
-  secondary region&rsquo;s over the region-addressed admin connection, so only satellites
-  lack one. A JDBC connection per satellite (and its credentials), a
-  management command returning the thread count, or a value recorded per cluster at
-  deployment. Until decided, satellites stay <em>pending</em>.</li>
+  <li><strong>Cluster metadata transport</strong> (section 10 step 4), decided
+  2026-11-19: the <code>USER CAPACITY</code> management command (13.3) answers with the
+  per-node thread count, the configured cap percent and the allocated total, for every
+  target over its mgmd endpoint, so satellites need no JDBC connection and no
+  credentials. A cluster whose kernel does not answer it stays <em>pending</em>.</li>
   <li><strong>The query-thread metering gap</strong> (13.2): fixed on its own branch
   (<code>RONDB-1158-query-threads</code>); the locking approach on the LDM hot path needs
   kernel-team sign-off.</li>
