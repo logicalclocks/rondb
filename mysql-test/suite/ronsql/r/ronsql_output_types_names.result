@@ -199,8 +199,11 @@ n
 2
 
 === ot-c2: control: MIN and MAX of YEAR and TIME ===
+== RonSQL alone, YEAR 0000 ==
+ylo	yhi	tlo	thi
+0000	2155	-01:02:03.500	838:59:59.000
 == Query ==
-SELECT MIN(y) AS ylo, MAX(y) AS yhi, MIN(t3) AS tlo, MAX(t3) AS thi FROM otn;
+SELECT MIN(y) AS ylo, MAX(y) AS yhi, MIN(t3) AS tlo, MAX(t3) AS thi FROM otn WHERE id <> 5;
 
 Number of output lines, including header: 2
 
@@ -210,9 +213,9 @@ Number of output lines, including header: 2
 
 
 == Expected result ==
-SELECT MIN(y) AS ylo, MAX(y) AS yhi, MIN(t3) AS tlo, MAX(t3) AS thi FROM otn;
+SELECT MIN(y) AS ylo, MAX(y) AS yhi, MIN(t3) AS tlo, MAX(t3) AS thi FROM otn WHERE id <> 5;
 ylo	yhi	tlo	thi
-0000	2155	-01:02:03.500	838:59:59.000
+1901	2155	-01:02:03.500	14:30:00.125
 
 === ot-e1: a BIT GROUP BY key ===
 Error handling: RPE

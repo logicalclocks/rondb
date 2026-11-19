@@ -196,10 +196,19 @@ SELECT COUNT(*) AS n FROM otn GROUP BY bt;
 
 --echo
 --echo === ot-c2: control: MIN and MAX of YEAR and TIME ===
---let $QUERY=SELECT MIN(y) AS ylo, MAX(y) AS yhi, MIN(t3) AS tlo, MAX(t3) AS thi FROM otn;
+# mysqld prints a YEAR MIN / MAX of 0000 by plan: without a temporary
+# table Item::send sends it as the number 0 (store_short without the
+# padding of Field_year::send_to_protocol); through a temporary table it
+# is a copy of the column's Field_year, 0000.  RonSQL prints a YEAR as
+# the column prints, 0000.  So the query with YEAR 0000 (id 5) runs
+# through ronsql_cli alone, and the query without it is compared with
+# mysqld.
+--echo == RonSQL alone, YEAR 0000 ==
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT MIN(y) AS ylo, MAX(y) AS yhi, MIN(t3) AS tlo, MAX(t3) AS thi FROM otn;'
+--let $QUERY=SELECT MIN(y) AS ylo, MAX(y) AS yhi, MIN(t3) AS tlo, MAX(t3) AS thi FROM otn WHERE id <> 5;
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
-SELECT MIN(y) AS ylo, MAX(y) AS yhi, MIN(t3) AS tlo, MAX(t3) AS thi FROM otn;
+SELECT MIN(y) AS ylo, MAX(y) AS yhi, MIN(t3) AS tlo, MAX(t3) AS thi FROM otn WHERE id <> 5;
 
 --echo
 --echo === ot-e1: a BIT GROUP BY key ===
