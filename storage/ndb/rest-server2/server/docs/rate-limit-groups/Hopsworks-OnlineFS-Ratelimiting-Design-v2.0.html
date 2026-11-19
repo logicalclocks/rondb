@@ -592,9 +592,13 @@ tables. Column definitions are in the <a href="#appendix">appendix</a>.</p>
   <li>A <strong>project row is a rule, not a list.</strong> It means &ldquo;every user who has a
   <code>project_team</code> row for this project at the moment the installer runs&rdquo;
   (<code>team_member</code> holds an email, not a uid; every role counts;
-  <code>team_role</code> is not consulted). The service users <code>onlinefs</code> and
-  <code>srvmanager</code> are excluded from this person expansion by username: they are
-  on every team and carry ordinary roles. Membership changes
+  <code>team_role</code> is not consulted). Hopsworks&rsquo; service users are excluded
+  from this person expansion with the existing <code>isServiceUser</code> check
+  (<code>OperationHandlerHelper.java:72-76</code>, decided 2026-11-19):
+  <code>onlinefs</code>, <code>srvmanager</code> and the configured Airflow user, never a
+  copied list. The first two are on every team with ordinary roles and real accounts, so
+  aliasing them would charge platform machinery to a team budget; the Airflow user never
+  gets an account (5.3) and is excluded for uniformity. Membership changes
   write nothing here: when Bob joins Recommender he is covered after the next install
   pass, and when Ava leaves she drops out the same way (section 10).</li>
 </ul>
@@ -804,8 +808,8 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     <li><strong>Expand Who into account names.</strong> A uid row becomes every account
     that user holds, <code>clip31(projectname + "_" + username)</code> for each of their
     <code>project_team</code> rows; a project row becomes the same for every member,
-    excluding the <code>onlinefs</code> and <code>srvmanager</code> service users
-    (7.2).</li>
+    excluding Hopsworks&rsquo; service users, <code>onlinefs</code>,
+    <code>srvmanager</code> and the configured Airflow user (7.2).</li>
     <li><strong>Convert each percentage</strong> using this cluster&rsquo;s data-node thread
     count: with 20 threads, 20% &rarr; 4,000,000 (section 14). The thread count is read
     once per pass from the cluster itself and never cached across passes,
@@ -1497,7 +1501,7 @@ targeted RonDB.</p>
     <tr><td>MySQL server</td><td>exists</td><td>Nothing to code. Enable <code>ndb_user_rate_limits</code> through rondb-helm.</td></tr>
     <tr><td>Data nodes</td><td>exists</td><td><code>ActivateRateLimits=true</code> in the cluster configuration.</td></tr>
     <tr><td>Testing without a Hopsworks deployment</td><td>new tests</td><td>RonDB&rsquo;s rigs replicate the installer&rsquo;s mechanics: MTR and the rdrs2 C++ tests issue the same <code>USER</code> / <code>USER ALIAS</code> sequences the installer would, against a live cluster, and assert enforcement, restart survival and the cap refusal order. Hopsworks unit tests mock the management client; the end-to-end check on a deployed cluster drives the admin page and reads the state table.</td></tr>
-    <tr><td>Unmetered paths</td><td>open</td><td>Rondis traffic (never tagged) and RDRS&rsquo;s own metadata reads run unmetered; <code>srvmanager</code> stays excluded by design. OnlineFS ingestion stays unmetered until phase 2, when each write is tagged with the producing user&rsquo;s account (13.4). Decide whether the remaining paths should ever be metered.</td></tr>
+    <tr><td>Unmetered paths</td><td>open</td><td>Rondis traffic (never tagged) and RDRS&rsquo;s own metadata reads run unmetered; the service users stay excluded by design (7.2). OnlineFS ingestion stays unmetered until phase 2, when each write is tagged with the producing user&rsquo;s account (13.4). Decide whether the remaining paths should ever be metered.</td></tr>
     <tr><td>Several clusters</td><td>new, small</td><td>Section 12: the cluster column, the picker, per-cluster endpoints. No override table, no location data.</td></tr>
     <tr><td>Multi-region</td><td>new, small</td><td>Section 10: with multi-region enabled, the secondary region&rsquo;s RonDB as one more target of the primary region&rsquo;s pass, reached as database quotas reach it, with its own thread count and state rows. Tests: both regions converge; an unreachable secondary region stays <em>pending</em>; a failover, then convergence.</td></tr>
   </tbody>
@@ -1512,9 +1516,10 @@ targeted RonDB.</p>
   <code>ExternalName</code> Service (5.4) reaches it when the deployment&rsquo;s networking
   allows. Accept the pending state as the documented behavior, matching database quotas
   on such clusters, or require the network path for the feature.</li>
-  <li><strong>Service accounts</strong> (7.2): <code>onlinefs</code> and
-  <code>srvmanager</code> are excluded from the person expansion by username. Confirm
-  the exclusion list.</li>
+  <li><strong>Service accounts</strong> (7.2), decided 2026-11-19: the person expansion
+  excludes exactly Hopsworks&rsquo; service users, by the existing
+  <code>isServiceUser</code> check (<code>OperationHandlerHelper.java:72-76</code>):
+  <code>onlinefs</code>, <code>srvmanager</code> and the configured Airflow user.</li>
   <li><strong>A tie created by a membership change</strong> (section 11): refuse the
   change, or accept it and mark both groups conflicting. Refusing is the proposal.</li>
   <li><strong>Ingestion identity, phase 2</strong> (13.4): the ClusterJ tag is phase 1,
