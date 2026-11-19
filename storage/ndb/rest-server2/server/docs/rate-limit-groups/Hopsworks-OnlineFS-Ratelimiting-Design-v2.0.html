@@ -789,10 +789,14 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     (7.2).</li>
     <li><strong>Convert each percentage</strong> using this cluster&rsquo;s data-node thread
     count: with 20 threads, 20% &rarr; 4,000,000 (section 14). The thread count is read
-    once per pass from the cluster itself (its <code>ndbinfo.threads</code> over the
-    per-cluster JDBC connection Hopsworks already holds, 5.4; or a mgm config read
-    through the same client; implementation&rsquo;s choice) and never cached across passes,
-    so a resized cluster converts correctly on the next pass.</li>
+    once per pass from the cluster itself and never cached across passes,
+    so a resized cluster converts correctly on the next pass. For the main cluster the
+    read is <code>ndbinfo.threads</code> over the JDBC connection Hopsworks already
+    holds (5.4). For a satellite and for the secondary region&rsquo;s RonDB no such
+    connection exists today, so the transport is an open decision (section 16): a JDBC
+    connection per cluster and where its credentials come from, a management command
+    that returns the thread count, or a value recorded per cluster at deployment. A
+    cluster whose thread count cannot be read stays <em>pending</em>.</li>
     <li><strong>Read back and fix the differences</strong>, in group-id order so a 50%-cap
     refusal is deterministic: <code>USER LIST</code> and <code>USER ALIAS LIST</code>,
     then
@@ -851,10 +855,13 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
   an immediate pass for the affected clusters; the admin sees <em>installed</em> within
   seconds, not at the next tick.</li>
   <li><strong>On membership change</strong>: the operation-log handler (5.4) receives the
-  member account&rsquo;s create or remove with the account name already computed, checks
-  whether any group covers that person, and issues just the affected
-  <code>USER ALIAS</code> commands, with the framework&rsquo;s retries. A group covering the
-  project picks up the new member here, minutes before any periodic pass.</li>
+  member account&rsquo;s create or remove with the account name already computed and
+  enqueues a recompute of that person&rsquo;s coverage, all their accounts, every affected
+  cluster. The recompute runs through the same primary-gated writer as every other
+  change (below) and issues just the affected <code>USER ALIAS</code> commands, with the
+  framework&rsquo;s retries; a burst of changes coalesces into one recompute per cluster. A
+  group covering the project picks up the new member here, minutes before any periodic
+  pass.</li>
   <li><strong>On a timer</strong>: the reconciler (TrinoReconciler pattern, primary-gated
   <code>@Singleton</code>, 5.4) replays the full pass on every cluster, repairing
   entries lost to a cluster restore, a manual drop, a missed event, a stale command or a
@@ -964,7 +971,7 @@ administration, and nothing in the model requires more than one role.</p>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col">Deleted</th><th scope="col">Example</th><th scope="col">Result</th></tr></thead>
   <tbody>
-    <tr><td>A group</td><td>Admin deletes <code>mary_mike_rl</code>.</td><td>Its Who rows and state rows are deleted and its row is marked deleted. The immediate pass runs <code>USER DROP</code> and drops the aliases; later passes repeat the drop on any cluster that still holds them. Mary&rsquo;s and Mike&rsquo;s work falls back to unmetered.</td></tr>
+    <tr><td>A group</td><td>Admin deletes <code>mary_mike_rl</code>.</td><td>Its Who rows and state rows are deleted and its row is marked deleted. The immediate pass runs <code>USER DROP</code> and drops the aliases; later passes repeat the drop on any cluster that still holds them. The pass recomputes the members&rsquo; assignments: a member another group still covers (an every-cluster group, say) gets their alias repointed there; a member no group covers falls back to unmetered.</td></tr>
     <tr><td>A person or project</td><td>Mike leaves the company; user 1002 is deleted.</td><td>His row in group 2 disappears (FK cascade). The group now covers only Mary; his aliases are dropped by the next pass. Harmless.</td></tr>
     <tr><td>The person or project that is a group&rsquo;s only Who row</td><td>The Data Owner deletes project Recommender2, the only Who row of <code>recommender2_rl</code>.</td><td>The group is deleted with it, in the same transaction: its state rows are deleted and its row is marked deleted, exactly as a group delete does, and the next pass drops its <code>USER</code> and aliases. The project-delete confirmation names the group beforehand.</td></tr>
     <tr><td>Nothing, but membership changes</td><td>Bob joins Recommender.</td><td>No group rows change. The operation-log handler sees Bob&rsquo;s new account and, because project 13 is in group 1, issues his <code>USER ALIAS SET</code>; his keys and SQL logins are covered from that moment.</td></tr>
@@ -1124,8 +1131,8 @@ repoint a person&rsquo;s budget must instead fail loudly and be reconciled.
 <p><code>GET</code> shows one alias. <code>LIST</code> takes no arguments and shows every
 alias in the RonDB it is run against, in object-id order; there is no filter by target. The installer
 reconciles every group of the cluster in one pass and needs the whole set, including
-aliases whose target is no longer wanted; the operation-log handler never lists, because
-it already knows the one account it changes. Over the management API the list is paged
+aliases whose target is no longer wanted; a membership recompute (section 10) never
+lists, because it already knows the accounts it changes. Over the management API the list is paged
 one alias per round trip (<code>ndb_mgm_list_user_aliases(handle, &amp;nextAliasId,
 &amp;buf)</code> until <code>nextAliasId</code> is <code>RNIL</code>), so its cost grows
 with the alias count: 64&nbsp;ms for 306 objects on a debug build (13.5).
@@ -1395,6 +1402,11 @@ targeted RonDB.</p>
   second option needs OnlineFS to check the name against the producer&rsquo;s identity.</li>
   <li><strong>Unmetered online paths</strong> (section 15): Rondis traffic and RDRS&rsquo;s own
   metadata reads. Meter either, or exempt them explicitly.</li>
+  <li><strong>Thread-count transport</strong> (section 10 step 4): the main cluster&rsquo;s
+  thread count is read over its existing JDBC connection; a satellite and the secondary
+  region&rsquo;s RonDB have none. A JDBC connection per cluster (and its credentials), a
+  management command returning the thread count, or a value recorded per cluster at
+  deployment. Until decided, such clusters stay <em>pending</em>.</li>
   <li><strong>The query-thread metering gap</strong> (13.2): fixed on its own branch
   (<code>RONDB-1158-query-threads</code>); the locking approach on the LDM hot path needs
   kernel-team sign-off.</li>
