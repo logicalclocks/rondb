@@ -756,7 +756,16 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     <li><strong>Discover the clusters.</strong> The main cluster
     (<code>HOPS_HELM_INSTALL_NAMESPACE</code>) plus every namespace labeled
     <code>hopsworks.ai/onlinefs-cluster</code> (5.4). Each cluster&rsquo;s mgmd endpoint is
-    <code>headless-mgmds.&lt;namespace&gt;.svc:1186</code>.</li>
+    <code>headless-mgmds.&lt;namespace&gt;.svc:1186</code>. With multi-region enabled, the
+    secondary region&rsquo;s RonDB is one more target, mirrored the way database quotas
+    are: every quota command goes to the main RonDB and then to the secondary
+    region&rsquo;s, found by service discovery in that region
+    (<code>RonDbManagementClient.java:144-147</code>, <code>:151-189</code>). It receives
+    the groups the main RonDB receives, converts with its own thread count, has its own
+    state rows, and gets the same ownership and repair (below). The pass itself runs
+    only in the primary region, where <code>amIThePrimary()</code> can answer true; in
+    the secondary region it answers false (<code>PayaraClusterManager.java:144-151</code>).
+    After a failover the new primary region&rsquo;s installer reconciles both.</li>
     <li><strong>Pick this cluster&rsquo;s groups.</strong> Groups whose <code>cluster</code>
     is NULL or equal to this cluster&rsquo;s name. Where one person is covered by both a
     named-cluster group and an every-cluster group, the named one wins in that cluster&rsquo;s RonDB
@@ -1273,6 +1282,7 @@ targeted RonDB.</p>
     <tr><td>Testing without a Hopsworks deployment</td><td>new tests</td><td>RonDB&rsquo;s rigs replicate the installer&rsquo;s mechanics: MTR and the rdrs2 C++ tests issue the same <code>USER</code> / <code>USER ALIAS</code> sequences the installer would, against a live cluster, and assert enforcement, restart survival and the 50%-cap refusal order. Hopsworks unit tests mock the management client; the end-to-end check on a deployed cluster drives the admin page and reads the state table.</td></tr>
     <tr><td>Unmetered paths</td><td>open</td><td>Rondis traffic (never tagged) and RDRS&rsquo;s own metadata reads run unmetered; <code>srvmanager</code> stays excluded by design. OnlineFS ingestion stays unmetered until phase 2, when each write is tagged with the producing user&rsquo;s account (13.4). Decide whether the remaining paths should ever be metered.</td></tr>
     <tr><td>Several clusters</td><td>new, small</td><td>Section 12: the cluster column, the picker, per-cluster endpoints. No override table, no location data.</td></tr>
+    <tr><td>Multi-region</td><td>new, small</td><td>Section 10: with multi-region enabled, the secondary region&rsquo;s RonDB as one more target of the primary region&rsquo;s pass, reached as database quotas reach it, with its own thread count and state rows. Tests: both regions converge; an unreachable secondary region stays <em>pending</em>; a failover, then convergence.</td></tr>
   </tbody>
 </table></div>
 </section>
