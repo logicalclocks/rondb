@@ -872,7 +872,11 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
     (section 14 allows raises up to 70%, and database quotas share the pool), contains
     entries that cannot be recreated if they are ever dropped, by a stale command or by
     hand; the pass then records <em>refused</em> (error 1235) and the page shows it,
-    rather than retrying silently forever. Version 1.0 ran the drops last,
+    rather than retrying silently forever. Under section 11&rsquo;s proposed sum rule
+    Hopsworks itself never builds that state, which then can arise only from database
+    quotas or operator entries
+    sharing the pool, and the <em>refused</em> handling stays as the backstop for
+    those; the cap question posted to the kernel team (13.5) decides the final shape. Version 1.0 ran the drops last,
     behind a two-run grace, because several writers could hold stale snapshots; a
     primary-gated writer needs neither, because a drop sent from a stale snapshot is
     undone by a later pass like any other stale command (below).</li>
@@ -1005,6 +1009,7 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
     <tr><td>A Who row names a person or a project, not both; a group has at least one Who row, so an edit that removes every Who row is refused (Delete group removes a group).</td><td>A row with <code>uid = 1001</code> and <code>project_id = 11</code>. Rejected.</td></tr>
     <tr><td>No ties: two groups with the same cluster scope may not cover the same person. A person is &ldquo;covered&rdquo; by a project row if they have any <code>project_team</code> row for that project. A named-cluster group and an every-cluster group may overlap: the named one wins on its cluster (7.4).</td><td>Group X: {Mary}, every cluster. Group Y: {project 11}, every cluster. Mary is in both. Rejected.<br><br>Group X: {project 13}, every cluster, 20%. Group Z: {project 13}, cluster M, 30%. Allowed: on M the members charge Z, elsewhere X.</td></tr>
     <tr><td>Budget between 0 and 50. RonDB will not accept one entry above 50%.</td><td>A group at 60%. Rejected.</td></tr>
+    <tr><td><em>Proposed, pending the kernel-team answer on the caps (13.5):</em> on every cluster, the budgets of the groups covering it sum to at most 50%: an every-cluster group counts on each cluster, and where a named-cluster group overrides an every-cluster one for the same people (7.4), the named one counts there instead. Enforced on save, so every configuration Hopsworks accepts stays under RonDB&rsquo;s create cap and can always be reinstalled from scratch (section 14: the 50&ndash;70% stretch zone is reachable only by raising existing entries and is not reconstructible after a drop; groups would never use it). A single configurable kernel cap, if the kernel team accepts one, makes this rule redundant rather than wrong.</td><td>Groups at 30% and 25%, both on every cluster. The second save is rejected: 55% on each cluster.</td></tr>
     <tr><td>The cluster name, when set, should name a discovered cluster; a free-text name is accepted but flagged.</td><td>A group on cluster <code>mrketing</code> (typo). Saved, shown <em>pending</em> with a &ldquo;no such cluster&rdquo; hint.</td></tr>
   </tbody>
 </table></div>
@@ -1013,9 +1018,11 @@ create an overlap that did not exist at save time: a group for project 13 and a 
 for project 11 are both valid until Alice joins Marketing. Hopsworks then has to either
 refuse the membership change with a message naming the two groups, or accept it and mark
 both groups as conflicting on the admin page. Refusing is simpler and is the proposal.
-Whether all budgets <em>add up</em> under 50% on a given cluster is checked by RonDB when
-the entry is installed; Hopsworks can warn, and the installer surfaces a refusal
-(<em>refused</em> state).</p>
+Whether all budgets <em>add up</em> under 50% on a given cluster is, under the proposed
+sum rule above, enforced by Hopsworks at save time; RonDB&rsquo;s own caps remain the
+backstop either way,
+since database quotas and operator-created entries share the same pool, and a backstop
+refusal from the cluster is surfaced as the <em>refused</em> state.</p>
 <p>Who may create groups is a product decision; they live under Hopsworks
 administration, and nothing in the model requires more than one role.</p>
 <h3>What happens when something is deleted</h3>
@@ -1341,6 +1348,14 @@ defect:</p>
   targets by name.</li>
   <li>The cost of the one extra indirection on the <code>TCKEYREQ</code> path, and
   sign-off on the new management syntax.</li>
+  <li>The two rate caps (section 14), question posted to the kernel team: the reason
+  for the separate
+  create (50%) and alter (70%) caps, hardcoded per node
+  (<code>Dbdict.cpp:2706-2709</code>), and whether a single cap, made configurable in
+  <code>config.ini</code>, is acceptable. The answer settles the cap policy (section
+  11&rsquo;s proposed 50% sum rule); a single
+  configurable cap would remove the history-dependent stretch zone and let large
+  deployments tune the ceiling.</li>
   <li>The 60-second client re-list: a recreated alias is invisible to a connected mysqld
   for up to a minute.</li>
   <li>The query-thread gap of 13.2 (its own branch and review).</li>
@@ -1400,7 +1415,12 @@ threads, schema operations, backups, and every unmetered identity (the admin acc
 unknown names, databases without a quota) still need CPU. Half the node is kept for them,
 so that even with every group at its ceiling the metered work cannot saturate the node and
 the ceilings keep meaning something. The 50/70 split lets an administrator grow an existing
-entry without first shrinking another.</p>
+entry without first shrinking another; its cost is that a total above 50% depends on its
+history (created low, then raised) and cannot be rebuilt after a drop, which is why
+section 11 proposes keeping group sums at or under 50% and why the split itself is an
+open question posted to
+the kernel team (13.5): whether a single cap, made configurable in
+<code>config.ini</code>, would serve better.</p>
 <p>For this design: a <code>USER</code> counts toward the cap while idle, so there is one
 budgeted <code>USER</code> per group per cluster and aliases are deliberately free; the
 example uses 27 of the 50 points; and on a given cluster the installer applies groups in
