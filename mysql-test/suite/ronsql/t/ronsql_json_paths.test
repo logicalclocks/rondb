@@ -1,0 +1,342 @@
+# JSON framing on each result path.
+#
+# README finding T-12: JSON is the RDRS default output format and what
+# Hopsworks reads, and several executor paths frame their JSON with
+# their own code (ResultPrinter's pass-through, aggregate and COUNT(*)
+# printers, called from the single-table, key-lookup, join, CTE and
+# API-side aggregate arms of RonSQLPreparer).  None of them was tested
+# on an empty result, a LIMIT 0 or a row miss, and JSON and JSON_ASCII
+# output was never compared with mysqld.  Every path frames a JSON
+# array of row objects; this test records the exact text of each, under
+# JSON and JSON_ASCII, on ronsql_cli and RDRS (with an explicit and the
+# default output format), checks each body with a JSON parser and
+# compares the rows of the RDRS bodies with mysqld's
+# (ronsql_json_paths.inc).  Aliases and values hold non-ASCII
+# characters, so JSON_ASCII differs from JSON in names and values.
+#
+#   jp-1..jp-4    single-table pass-through scan: one row, an empty
+#                 result, LIMIT 0 (framed before the early close) and a
+#                 LIMIT that stops the scan after a row
+#   jp-5..jp-8    ORDER BY: on the key with LIMIT, the client-side sort
+#                 with LIMIT, empty and with LIMIT 0
+#   jp-9..jp-13   primary key lookup: a hit, a miss, a row the residual
+#                 filter rejects, an IN list where every key misses and
+#                 one where some hit
+#   jp-14..jp-20  aggregate printers: GROUP BY streaming, empty, LIMIT 0;
+#                 the buffered printer (ORDER BY with LIMIT, ORDER BY
+#                 with LIMIT 0, a HAVING that drops every group); no
+#                 GROUP BY over no row
+#   jp-21..jp-23  the COUNT(*) shortcut: a table, an empty table, LIMIT 0
+#   jp-24, jp-25  aggregate over the key reads of an IN list where every
+#                 key misses, without and with GROUP BY
+#   jp-26, jp-27  the last N rows aggregated in RonSQL (API-side
+#                 aggregate), with rows and over no row
+#   jp-28..jp-32  join pass-through: one row, empty, LIMIT 0, sorted,
+#                 sorted and empty
+#   jp-33..jp-36  join aggregate: streaming, empty, ORDER BY, no GROUP BY
+#                 over no row
+#   jp-37..jp-40  CTE: its result passed through (ORDER BY, empty CTE),
+#                 an aggregate over it (rows, empty CTE)
+#   jp-41, jp-42  a subquery in the SELECT list, with rows and with no
+#                 outer row
+#   jp-e1..jp-e4  T-9: EXPLAIN under JSON, the RDRS default, and
+#                 JSON_ASCII is refused before any output (class
+#                 unsupported, HTTP 400): EXPLAIN prints a text plan,
+#                 which inside the JSON frame of RDRS would be an invalid
+#                 body.  RDRS without outputFormat, RDRS with JSON_ASCII,
+#                 RDRS with explainMode FORCE, and ronsql_cli
+#
+# No framing error was found: each path writes '[' ... ']' around its
+# rows (an empty result is []), aggregate rows end with a newline and
+# pass-through rows do not.
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE jp (
+  id    INT NOT NULL,
+  grp   INT NOT NULL,
+  v     INT NOT NULL,
+  label VARCHAR(20) CHARACTER SET utf8mb4 NULL,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+INSERT INTO jp VALUES
+  (1, 1, 10, 'café'),
+  (2, 1, 20, 'Zoë'),
+  (3, 2, 30, 'plain'),
+  (4, 2, 40, NULL),
+  (5, 3, 50, 'naïve');
+CREATE TABLE jq (
+  id  INT NOT NULL,
+  jid INT NOT NULL,
+  w   INT NOT NULL,
+  PRIMARY KEY (id),
+  INDEX idx_jq_jid (jid)
+) ENGINE=NDB;
+INSERT INTO jq VALUES (1, 1, 100), (2, 1, 200), (3, 3, 300), (4, 5, 500);
+CREATE TABLE jpe (
+  id INT NOT NULL,
+  v  INT NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+--enable_warnings
+--enable_query_log
+
+--let $JSON_CANON=perl -MJSON::PP -e 'print JSON::PP->new->utf8->canonical->encode(JSON::PP->new->utf8->decode(join q(), <STDIN>)), qq(\n)'
+let $RDRS_RONSQL = curl --no-progress-meter --fail-with-body -X POST
+  -H "Content-Type: application/json"
+  http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql -d;
+
+--echo
+--echo === jp-1: pass-through scan, one row (control) ===
+--let $QUERY=SELECT id, label FROM jp WHERE v = 20;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-2: pass-through scan, empty result ===
+--let $QUERY=SELECT id, label FROM jp WHERE v > 1000;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-3: pass-through scan, LIMIT 0 (framed before the early close) ===
+--let $QUERY=SELECT id, label FROM jp LIMIT 0;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-4: pass-through scan, LIMIT stops the scan after a row ===
+--let $QUERY=SELECT grp FROM jp WHERE grp = 1 LIMIT 1;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-5: ORDER BY the key with LIMIT ===
+--let $QUERY=SELECT id, label AS libellé FROM jp ORDER BY id LIMIT 2;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-6: sorted pass-through (client-side sort), LIMIT ===
+--let $QUERY=SELECT id, v AS värde, label FROM jp ORDER BY v DESC LIMIT 3;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-7: sorted pass-through, empty result ===
+--let $QUERY=SELECT id, label FROM jp WHERE v > 1000 ORDER BY v;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-8: sorted pass-through, LIMIT 0 ===
+--let $QUERY=SELECT id, label FROM jp ORDER BY v LIMIT 0;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-9: primary key lookup, hit (control) ===
+--let $QUERY=SELECT id, label FROM jp WHERE id = 5;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-10: primary key lookup, miss ===
+--let $QUERY=SELECT id, label FROM jp WHERE id = 99;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-11: primary key lookup, the residual filter rejects the row ===
+--let $QUERY=SELECT id, label FROM jp WHERE id = 1 AND v = 99;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-12: IN list on the key, every key misses ===
+--let $QUERY=SELECT id, label FROM jp WHERE id IN (97, 98, 99);
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-13: IN list on the key, some keys hit (control) ===
+--let $QUERY=SELECT id, label FROM jp WHERE id IN (1, 4, 99);
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-14: GROUP BY, streaming aggregate printer ===
+--let $QUERY=SELECT grp, COUNT(*) AS antal, SUM(v) AS summa_€ FROM jp GROUP BY grp;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-15: GROUP BY, empty result ===
+--let $QUERY=SELECT grp, COUNT(*) AS antal FROM jp WHERE v > 1000 GROUP BY grp;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-16: GROUP BY, LIMIT 0, streaming aggregate printer ===
+--let $QUERY=SELECT grp, COUNT(*) AS antal FROM jp GROUP BY grp LIMIT 0;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-17: ORDER BY an aggregate alias with LIMIT, buffered aggregate printer ===
+--let $QUERY=SELECT grp, SUM(v) AS summa_€ FROM jp GROUP BY grp ORDER BY summa_€ DESC LIMIT 2;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-18: ORDER BY with LIMIT 0, buffered aggregate printer ===
+--let $QUERY=SELECT grp, COUNT(*) AS antal FROM jp GROUP BY grp ORDER BY grp LIMIT 0;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-19: HAVING drops every group, buffered aggregate printer ===
+--let $QUERY=SELECT grp, COUNT(*) AS antal FROM jp GROUP BY grp HAVING COUNT(*) > 5;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-20: no GROUP BY, no row passes the WHERE ===
+--let $QUERY=SELECT COUNT(*) AS antal, SUM(v) AS summa_€ FROM jp WHERE v > 1000;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-21: COUNT(*) shortcut ===
+--let $QUERY=SELECT COUNT(*) AS antal FROM jp;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-22: COUNT(*) shortcut, empty table ===
+--let $QUERY=SELECT COUNT(*) AS antal FROM jpe;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-23: COUNT(*) shortcut, LIMIT 0 ===
+--let $QUERY=SELECT COUNT(*) AS antal FROM jp LIMIT 0;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-24: aggregate over key reads of an IN list, every key misses ===
+--let $QUERY=SELECT COUNT(*) AS antal, SUM(v) AS summa_€ FROM jp WHERE id IN (97, 98, 99);
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-25: the same with GROUP BY ===
+--let $QUERY=SELECT grp, COUNT(*) AS antal FROM jp WHERE id IN (97, 98) GROUP BY grp;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-26: last-N rows aggregated in RonSQL (API-side aggregate) ===
+--let $QUERY=WITH t AS (SELECT id, v FROM jp ORDER BY id DESC LIMIT 2) SELECT COUNT(*) AS antal, SUM(v) AS summa_€, MAX(v) AS störst FROM t;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-27: API-side aggregate over no rows ===
+--let $QUERY=WITH t AS (SELECT id, v FROM jp WHERE v > 1000 ORDER BY id DESC LIMIT 2) SELECT COUNT(*) AS antal, SUM(v) AS summa_€ FROM t;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-28: join pass-through, one row (control) ===
+--let $QUERY=SELECT a.id, a.label, b.w FROM jp AS a JOIN jq AS b ON b.jid = a.id WHERE b.w = 300;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-29: join pass-through, empty result ===
+--let $QUERY=SELECT a.id, b.w FROM jp AS a JOIN jq AS b ON b.jid = a.id WHERE b.w > 1000;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-30: join pass-through, LIMIT 0 ===
+--let $QUERY=SELECT a.id, b.w FROM jp AS a JOIN jq AS b ON b.jid = a.id LIMIT 0;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-31: join pass-through, sorted ===
+--let $QUERY=SELECT a.id, a.label AS libellé, b.w FROM jp AS a JOIN jq AS b ON b.jid = a.id ORDER BY b.w DESC;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-32: join pass-through, sorted, empty result ===
+--let $QUERY=SELECT a.id, b.w FROM jp AS a JOIN jq AS b ON b.jid = a.id WHERE b.w > 1000 ORDER BY b.w;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-33: join aggregate, streaming aggregate printer ===
+--let $QUERY=SELECT a.grp, COUNT(*) AS antal, SUM(b.w) AS summa_€ FROM jp AS a JOIN jq AS b ON b.jid = a.id GROUP BY a.grp;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-34: join aggregate, empty result ===
+--let $QUERY=SELECT a.grp, SUM(b.w) AS summa_€ FROM jp AS a JOIN jq AS b ON b.jid = a.id WHERE b.w > 1000 GROUP BY a.grp;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-35: join aggregate, ORDER BY, buffered aggregate printer ===
+--let $QUERY=SELECT a.grp, SUM(b.w) AS summa_€ FROM jp AS a JOIN jq AS b ON b.jid = a.id GROUP BY a.grp ORDER BY a.grp DESC;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-36: join aggregate without GROUP BY, no row joins ===
+--let $QUERY=SELECT COUNT(*) AS antal, SUM(b.w) AS summa_€ FROM jp AS a JOIN jq AS b ON b.jid = a.id WHERE b.w > 1000;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-37: CTE result passed through, ORDER BY ===
+--let $QUERY=WITH c AS (SELECT grp, COUNT(*) AS antal FROM jp GROUP BY grp) SELECT grp, antal FROM c ORDER BY grp;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-38: CTE result passed through, empty CTE ===
+--let $QUERY=WITH c AS (SELECT grp, COUNT(*) AS antal FROM jp WHERE v > 1000 GROUP BY grp) SELECT grp, antal FROM c;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-39: aggregate over a CTE ===
+--let $QUERY=WITH c AS (SELECT grp, SUM(v) AS s FROM jp GROUP BY grp) SELECT COUNT(*) AS antal, SUM(s) AS summa_€ FROM c;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-40: aggregate over an empty CTE ===
+--let $QUERY=WITH c AS (SELECT grp, SUM(v) AS s FROM jp WHERE v > 1000 GROUP BY grp) SELECT COUNT(*) AS antal, SUM(s) AS summa_€ FROM c;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-41: subquery in the SELECT list ===
+--let $QUERY=SELECT a.id, (SELECT SUM(b.w) FROM jq AS b WHERE b.jid = a.id) AS summa_€ FROM jp AS a;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+--echo
+--echo === jp-42: subquery in the SELECT list, no outer row ===
+--let $QUERY=SELECT a.id, (SELECT SUM(b.w) FROM jq AS b WHERE b.jid = a.id) AS summa_€ FROM jp AS a WHERE a.v > 1000;
+--source suite/ronsql/include/ronsql_json_paths.inc
+
+# T-9: EXPLAIN prints a text plan.  Under JSON and JSON_ASCII
+# RonSQLPreparer::execute() refuses it (feature_not_implemented, class
+# unsupported) before anything is printed, so RDRS answers 400 with the
+# text/plain error body instead of a JSON body with a text plan in it.
+--echo
+--echo === jp-e1: EXPLAIN through RDRS, default output format (JSON) ===
+--exec printf '{"query":"EXPLAIN SELECT id, label FROM jp WHERE id = 5;","database":"test"}' > $MYSQL_TMP_DIR/jp-body
+--exec curl -s -o $MYSQL_TMP_DIR/jp-err.out -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/jp-hdrs -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/jp-body
+--exec grep -i '^x-ronsql-error-class:' $MYSQL_TMP_DIR/jp-hdrs | tr -d '\r' | tr '[:upper:]' '[:lower:]'
+--exec cat $MYSQL_TMP_DIR/jp-err.out
+
+--echo
+--echo === jp-e2: EXPLAIN through RDRS, JSON_ASCII ===
+--exec printf '{"query":"EXPLAIN SELECT id, label FROM jp WHERE id = 5;","database":"test","outputFormat":"JSON_ASCII"}' > $MYSQL_TMP_DIR/jp-body
+--exec curl -s -o $MYSQL_TMP_DIR/jp-err.out -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/jp-hdrs -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/jp-body
+--exec grep -i '^x-ronsql-error-class:' $MYSQL_TMP_DIR/jp-hdrs | tr -d '\r' | tr '[:upper:]' '[:lower:]'
+--exec cat $MYSQL_TMP_DIR/jp-err.out
+
+--echo
+--echo === jp-e3: explainMode FORCE through RDRS, default output format (JSON) ===
+--exec printf '{"query":"SELECT id, label FROM jp WHERE id = 5;","database":"test","explainMode":"FORCE"}' > $MYSQL_TMP_DIR/jp-body
+--exec curl -s -o $MYSQL_TMP_DIR/jp-err.out -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/jp-hdrs -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/jp-body
+--exec grep -i '^x-ronsql-error-class:' $MYSQL_TMP_DIR/jp-hdrs | tr -d '\r' | tr '[:upper:]' '[:lower:]'
+--exec cat $MYSQL_TMP_DIR/jp-err.out
+--remove_file $MYSQL_TMP_DIR/jp-body
+--remove_file $MYSQL_TMP_DIR/jp-hdrs
+--remove_file $MYSQL_TMP_DIR/jp-err.out
+
+--echo
+--echo === jp-e4: EXPLAIN through ronsql_cli under JSON ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --output-format JSON -e 'EXPLAIN SELECT id, label FROM jp WHERE id = 5;' 2>&1
+
+--disable_query_log
+DROP TABLE jp, jq, jpe;
+--enable_query_log

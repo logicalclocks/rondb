@@ -1,0 +1,1372 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== jp-1: pass-through scan, one row (control) ===
+== Query ==
+SELECT id, label FROM jp WHERE v = 20;
+== ronsql_cli JSON ==
+[{"id":2,"label":"Zoë"}]
+[{"id":2,"label":"Zoë"}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"id":2,"label":"Zoë"}]
+}
+{"data":[{"id":2,"label":"Zoë"}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"id":2,"label":"Zoë"}]
+}
+{"data":[{"id":2,"label":"Zoë"}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"id":2,"label":"Zo\u00eb"}]
+[{"id":2,"label":"Zoë"}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"id":2,"label":"Zo\u00eb"}]
+}
+{"data":[{"id":2,"label":"Zoë"}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 1 row(s), as mysqld
+RDRS JSON_ASCII: 1 row(s), as mysqld, ASCII only
+
+=== jp-2: pass-through scan, empty result ===
+== Query ==
+SELECT id, label FROM jp WHERE v > 1000;
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-3: pass-through scan, LIMIT 0 (framed before the early close) ===
+== Query ==
+SELECT id, label FROM jp LIMIT 0;
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-4: pass-through scan, LIMIT stops the scan after a row ===
+== Query ==
+SELECT grp FROM jp WHERE grp = 1 LIMIT 1;
+== ronsql_cli JSON ==
+[{"grp":1}]
+[{"grp":1}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"grp":1}]
+}
+{"data":[{"grp":1}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"grp":1}]
+}
+{"data":[{"grp":1}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"grp":1}]
+[{"grp":1}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"grp":1}]
+}
+{"data":[{"grp":1}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 1 row(s), as mysqld
+RDRS JSON_ASCII: 1 row(s), as mysqld, ASCII only
+
+=== jp-5: ORDER BY the key with LIMIT ===
+== Query ==
+SELECT id, label AS libellé FROM jp ORDER BY id LIMIT 2;
+== ronsql_cli JSON ==
+[{"id":1,"libellé":"café"},{"id":2,"libellé":"Zoë"}]
+[{"id":1,"libellé":"café"},{"id":2,"libellé":"Zoë"}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"id":1,"libellé":"café"},{"id":2,"libellé":"Zoë"}]
+}
+{"data":[{"id":1,"libellé":"café"},{"id":2,"libellé":"Zoë"}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"id":1,"libellé":"café"},{"id":2,"libellé":"Zoë"}]
+}
+{"data":[{"id":1,"libellé":"café"},{"id":2,"libellé":"Zoë"}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"id":1,"libell\u00e9":"caf\u00e9"},{"id":2,"libell\u00e9":"Zo\u00eb"}]
+[{"id":1,"libellé":"café"},{"id":2,"libellé":"Zoë"}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"id":1,"libell\u00e9":"caf\u00e9"},{"id":2,"libell\u00e9":"Zo\u00eb"}]
+}
+{"data":[{"id":1,"libellé":"café"},{"id":2,"libellé":"Zoë"}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 2 row(s), as mysqld
+RDRS JSON_ASCII: 2 row(s), as mysqld, ASCII only
+
+=== jp-6: sorted pass-through (client-side sort), LIMIT ===
+== Query ==
+SELECT id, v AS värde, label FROM jp ORDER BY v DESC LIMIT 3;
+== ronsql_cli JSON ==
+[{"id":5,"värde":50,"label":"naïve"},{"id":4,"värde":40,"label":null},{"id":3,"värde":30,"label":"plain"}]
+[{"id":5,"label":"naïve","värde":50},{"id":4,"label":null,"värde":40},{"id":3,"label":"plain","värde":30}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"id":5,"värde":50,"label":"naïve"},{"id":4,"värde":40,"label":null},{"id":3,"värde":30,"label":"plain"}]
+}
+{"data":[{"id":5,"label":"naïve","värde":50},{"id":4,"label":null,"värde":40},{"id":3,"label":"plain","värde":30}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"id":5,"värde":50,"label":"naïve"},{"id":4,"värde":40,"label":null},{"id":3,"värde":30,"label":"plain"}]
+}
+{"data":[{"id":5,"label":"naïve","värde":50},{"id":4,"label":null,"värde":40},{"id":3,"label":"plain","värde":30}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"id":5,"v\u00e4rde":50,"label":"na\u00efve"},{"id":4,"v\u00e4rde":40,"label":null},{"id":3,"v\u00e4rde":30,"label":"plain"}]
+[{"id":5,"label":"naïve","värde":50},{"id":4,"label":null,"värde":40},{"id":3,"label":"plain","värde":30}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"id":5,"v\u00e4rde":50,"label":"na\u00efve"},{"id":4,"v\u00e4rde":40,"label":null},{"id":3,"v\u00e4rde":30,"label":"plain"}]
+}
+{"data":[{"id":5,"label":"naïve","värde":50},{"id":4,"label":null,"värde":40},{"id":3,"label":"plain","värde":30}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 3 row(s), as mysqld
+RDRS JSON_ASCII: 3 row(s), as mysqld, ASCII only
+
+=== jp-7: sorted pass-through, empty result ===
+== Query ==
+SELECT id, label FROM jp WHERE v > 1000 ORDER BY v;
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-8: sorted pass-through, LIMIT 0 ===
+== Query ==
+SELECT id, label FROM jp ORDER BY v LIMIT 0;
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-9: primary key lookup, hit (control) ===
+== Query ==
+SELECT id, label FROM jp WHERE id = 5;
+== ronsql_cli JSON ==
+[{"id":5,"label":"naïve"}]
+[{"id":5,"label":"naïve"}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"id":5,"label":"naïve"}]
+}
+{"data":[{"id":5,"label":"naïve"}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"id":5,"label":"naïve"}]
+}
+{"data":[{"id":5,"label":"naïve"}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"id":5,"label":"na\u00efve"}]
+[{"id":5,"label":"naïve"}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"id":5,"label":"na\u00efve"}]
+}
+{"data":[{"id":5,"label":"naïve"}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 1 row(s), as mysqld
+RDRS JSON_ASCII: 1 row(s), as mysqld, ASCII only
+
+=== jp-10: primary key lookup, miss ===
+== Query ==
+SELECT id, label FROM jp WHERE id = 99;
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-11: primary key lookup, the residual filter rejects the row ===
+== Query ==
+SELECT id, label FROM jp WHERE id = 1 AND v = 99;
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-12: IN list on the key, every key misses ===
+== Query ==
+SELECT id, label FROM jp WHERE id IN (97, 98, 99);
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-13: IN list on the key, some keys hit (control) ===
+== Query ==
+SELECT id, label FROM jp WHERE id IN (1, 4, 99);
+== ronsql_cli JSON ==
+[{"id":1,"label":"café"},{"id":4,"label":null}]
+[{"id":1,"label":"café"},{"id":4,"label":null}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"id":1,"label":"café"},{"id":4,"label":null}]
+}
+{"data":[{"id":1,"label":"café"},{"id":4,"label":null}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"id":1,"label":"café"},{"id":4,"label":null}]
+}
+{"data":[{"id":1,"label":"café"},{"id":4,"label":null}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"id":1,"label":"caf\u00e9"},{"id":4,"label":null}]
+[{"id":1,"label":"café"},{"id":4,"label":null}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"id":1,"label":"caf\u00e9"},{"id":4,"label":null}]
+}
+{"data":[{"id":1,"label":"café"},{"id":4,"label":null}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 2 row(s), as mysqld
+RDRS JSON_ASCII: 2 row(s), as mysqld, ASCII only
+
+=== jp-14: GROUP BY, streaming aggregate printer ===
+== Query ==
+SELECT grp, COUNT(*) AS antal, SUM(v) AS summa_€ FROM jp GROUP BY grp;
+== ronsql_cli JSON ==
+[{"grp":1,"antal":2,"summa_€":30}
+,{"grp":2,"antal":2,"summa_€":70}
+,{"grp":3,"antal":1,"summa_€":50}
+]
+[{"antal":2,"grp":1,"summa_€":30},{"antal":2,"grp":2,"summa_€":70},{"antal":1,"grp":3,"summa_€":50}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"grp":1,"antal":2,"summa_€":30}
+,{"grp":2,"antal":2,"summa_€":70}
+,{"grp":3,"antal":1,"summa_€":50}
+]
+}
+{"data":[{"antal":2,"grp":1,"summa_€":30},{"antal":2,"grp":2,"summa_€":70},{"antal":1,"grp":3,"summa_€":50}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"grp":1,"antal":2,"summa_€":30}
+,{"grp":2,"antal":2,"summa_€":70}
+,{"grp":3,"antal":1,"summa_€":50}
+]
+}
+{"data":[{"antal":2,"grp":1,"summa_€":30},{"antal":2,"grp":2,"summa_€":70},{"antal":1,"grp":3,"summa_€":50}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"grp":1,"antal":2,"summa_\u20ac":30}
+,{"grp":2,"antal":2,"summa_\u20ac":70}
+,{"grp":3,"antal":1,"summa_\u20ac":50}
+]
+[{"antal":2,"grp":1,"summa_€":30},{"antal":2,"grp":2,"summa_€":70},{"antal":1,"grp":3,"summa_€":50}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"grp":1,"antal":2,"summa_\u20ac":30}
+,{"grp":2,"antal":2,"summa_\u20ac":70}
+,{"grp":3,"antal":1,"summa_\u20ac":50}
+]
+}
+{"data":[{"antal":2,"grp":1,"summa_€":30},{"antal":2,"grp":2,"summa_€":70},{"antal":1,"grp":3,"summa_€":50}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 3 row(s), as mysqld
+RDRS JSON_ASCII: 3 row(s), as mysqld, ASCII only
+
+=== jp-15: GROUP BY, empty result ===
+== Query ==
+SELECT grp, COUNT(*) AS antal FROM jp WHERE v > 1000 GROUP BY grp;
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-16: GROUP BY, LIMIT 0, streaming aggregate printer ===
+== Query ==
+SELECT grp, COUNT(*) AS antal FROM jp GROUP BY grp LIMIT 0;
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-17: ORDER BY an aggregate alias with LIMIT, buffered aggregate printer ===
+== Query ==
+SELECT grp, SUM(v) AS summa_€ FROM jp GROUP BY grp ORDER BY summa_€ DESC LIMIT 2;
+== ronsql_cli JSON ==
+[{"grp":2,"summa_€":70}
+,{"grp":3,"summa_€":50}
+]
+[{"grp":2,"summa_€":70},{"grp":3,"summa_€":50}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"grp":2,"summa_€":70}
+,{"grp":3,"summa_€":50}
+]
+}
+{"data":[{"grp":2,"summa_€":70},{"grp":3,"summa_€":50}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"grp":2,"summa_€":70}
+,{"grp":3,"summa_€":50}
+]
+}
+{"data":[{"grp":2,"summa_€":70},{"grp":3,"summa_€":50}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"grp":2,"summa_\u20ac":70}
+,{"grp":3,"summa_\u20ac":50}
+]
+[{"grp":2,"summa_€":70},{"grp":3,"summa_€":50}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"grp":2,"summa_\u20ac":70}
+,{"grp":3,"summa_\u20ac":50}
+]
+}
+{"data":[{"grp":2,"summa_€":70},{"grp":3,"summa_€":50}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 2 row(s), as mysqld
+RDRS JSON_ASCII: 2 row(s), as mysqld, ASCII only
+
+=== jp-18: ORDER BY with LIMIT 0, buffered aggregate printer ===
+== Query ==
+SELECT grp, COUNT(*) AS antal FROM jp GROUP BY grp ORDER BY grp LIMIT 0;
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-19: HAVING drops every group, buffered aggregate printer ===
+== Query ==
+SELECT grp, COUNT(*) AS antal FROM jp GROUP BY grp HAVING COUNT(*) > 5;
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-20: no GROUP BY, no row passes the WHERE ===
+== Query ==
+SELECT COUNT(*) AS antal, SUM(v) AS summa_€ FROM jp WHERE v > 1000;
+== ronsql_cli JSON ==
+[{"antal":0,"summa_€":null}
+]
+[{"antal":0,"summa_€":null}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"antal":0,"summa_€":null}
+]
+}
+{"data":[{"antal":0,"summa_€":null}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"antal":0,"summa_€":null}
+]
+}
+{"data":[{"antal":0,"summa_€":null}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"antal":0,"summa_\u20ac":null}
+]
+[{"antal":0,"summa_€":null}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"antal":0,"summa_\u20ac":null}
+]
+}
+{"data":[{"antal":0,"summa_€":null}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 1 row(s), as mysqld
+RDRS JSON_ASCII: 1 row(s), as mysqld, ASCII only
+
+=== jp-21: COUNT(*) shortcut ===
+== Query ==
+SELECT COUNT(*) AS antal FROM jp;
+== ronsql_cli JSON ==
+[{"antal":5}
+]
+[{"antal":5}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"antal":5}
+]
+}
+{"data":[{"antal":5}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"antal":5}
+]
+}
+{"data":[{"antal":5}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"antal":5}
+]
+[{"antal":5}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"antal":5}
+]
+}
+{"data":[{"antal":5}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 1 row(s), as mysqld
+RDRS JSON_ASCII: 1 row(s), as mysqld, ASCII only
+
+=== jp-22: COUNT(*) shortcut, empty table ===
+== Query ==
+SELECT COUNT(*) AS antal FROM jpe;
+== ronsql_cli JSON ==
+[{"antal":0}
+]
+[{"antal":0}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"antal":0}
+]
+}
+{"data":[{"antal":0}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"antal":0}
+]
+}
+{"data":[{"antal":0}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"antal":0}
+]
+[{"antal":0}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"antal":0}
+]
+}
+{"data":[{"antal":0}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 1 row(s), as mysqld
+RDRS JSON_ASCII: 1 row(s), as mysqld, ASCII only
+
+=== jp-23: COUNT(*) shortcut, LIMIT 0 ===
+== Query ==
+SELECT COUNT(*) AS antal FROM jp LIMIT 0;
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-24: aggregate over key reads of an IN list, every key misses ===
+== Query ==
+SELECT COUNT(*) AS antal, SUM(v) AS summa_€ FROM jp WHERE id IN (97, 98, 99);
+== ronsql_cli JSON ==
+[{"antal":0,"summa_€":null}
+]
+[{"antal":0,"summa_€":null}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"antal":0,"summa_€":null}
+]
+}
+{"data":[{"antal":0,"summa_€":null}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"antal":0,"summa_€":null}
+]
+}
+{"data":[{"antal":0,"summa_€":null}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"antal":0,"summa_\u20ac":null}
+]
+[{"antal":0,"summa_€":null}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"antal":0,"summa_\u20ac":null}
+]
+}
+{"data":[{"antal":0,"summa_€":null}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 1 row(s), as mysqld
+RDRS JSON_ASCII: 1 row(s), as mysqld, ASCII only
+
+=== jp-25: the same with GROUP BY ===
+== Query ==
+SELECT grp, COUNT(*) AS antal FROM jp WHERE id IN (97, 98) GROUP BY grp;
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-26: last-N rows aggregated in RonSQL (API-side aggregate) ===
+== Query ==
+WITH t AS (SELECT id, v FROM jp ORDER BY id DESC LIMIT 2) SELECT COUNT(*) AS antal, SUM(v) AS summa_€, MAX(v) AS störst FROM t;
+== ronsql_cli JSON ==
+[{"antal":2,"summa_€":90,"störst":50}
+]
+[{"antal":2,"störst":50,"summa_€":90}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"antal":2,"summa_€":90,"störst":50}
+]
+}
+{"data":[{"antal":2,"störst":50,"summa_€":90}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"antal":2,"summa_€":90,"störst":50}
+]
+}
+{"data":[{"antal":2,"störst":50,"summa_€":90}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"antal":2,"summa_\u20ac":90,"st\u00f6rst":50}
+]
+[{"antal":2,"störst":50,"summa_€":90}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"antal":2,"summa_\u20ac":90,"st\u00f6rst":50}
+]
+}
+{"data":[{"antal":2,"störst":50,"summa_€":90}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 1 row(s), as mysqld
+RDRS JSON_ASCII: 1 row(s), as mysqld, ASCII only
+
+=== jp-27: API-side aggregate over no rows ===
+== Query ==
+WITH t AS (SELECT id, v FROM jp WHERE v > 1000 ORDER BY id DESC LIMIT 2) SELECT COUNT(*) AS antal, SUM(v) AS summa_€ FROM t;
+== ronsql_cli JSON ==
+[{"antal":0,"summa_€":null}
+]
+[{"antal":0,"summa_€":null}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"antal":0,"summa_€":null}
+]
+}
+{"data":[{"antal":0,"summa_€":null}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"antal":0,"summa_€":null}
+]
+}
+{"data":[{"antal":0,"summa_€":null}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"antal":0,"summa_\u20ac":null}
+]
+[{"antal":0,"summa_€":null}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"antal":0,"summa_\u20ac":null}
+]
+}
+{"data":[{"antal":0,"summa_€":null}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 1 row(s), as mysqld
+RDRS JSON_ASCII: 1 row(s), as mysqld, ASCII only
+
+=== jp-28: join pass-through, one row (control) ===
+== Query ==
+SELECT a.id, a.label, b.w FROM jp AS a JOIN jq AS b ON b.jid = a.id WHERE b.w = 300;
+== ronsql_cli JSON ==
+[{"id":3,"label":"plain","w":300}]
+[{"id":3,"label":"plain","w":300}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"id":3,"label":"plain","w":300}]
+}
+{"data":[{"id":3,"label":"plain","w":300}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"id":3,"label":"plain","w":300}]
+}
+{"data":[{"id":3,"label":"plain","w":300}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"id":3,"label":"plain","w":300}]
+[{"id":3,"label":"plain","w":300}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"id":3,"label":"plain","w":300}]
+}
+{"data":[{"id":3,"label":"plain","w":300}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 1 row(s), as mysqld
+RDRS JSON_ASCII: 1 row(s), as mysqld, ASCII only
+
+=== jp-29: join pass-through, empty result ===
+== Query ==
+SELECT a.id, b.w FROM jp AS a JOIN jq AS b ON b.jid = a.id WHERE b.w > 1000;
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-30: join pass-through, LIMIT 0 ===
+== Query ==
+SELECT a.id, b.w FROM jp AS a JOIN jq AS b ON b.jid = a.id LIMIT 0;
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-31: join pass-through, sorted ===
+== Query ==
+SELECT a.id, a.label AS libellé, b.w FROM jp AS a JOIN jq AS b ON b.jid = a.id ORDER BY b.w DESC;
+== ronsql_cli JSON ==
+[{"id":5,"libellé":"naïve","w":500},{"id":3,"libellé":"plain","w":300},{"id":1,"libellé":"café","w":200},{"id":1,"libellé":"café","w":100}]
+[{"id":5,"libellé":"naïve","w":500},{"id":3,"libellé":"plain","w":300},{"id":1,"libellé":"café","w":200},{"id":1,"libellé":"café","w":100}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"id":5,"libellé":"naïve","w":500},{"id":3,"libellé":"plain","w":300},{"id":1,"libellé":"café","w":200},{"id":1,"libellé":"café","w":100}]
+}
+{"data":[{"id":5,"libellé":"naïve","w":500},{"id":3,"libellé":"plain","w":300},{"id":1,"libellé":"café","w":200},{"id":1,"libellé":"café","w":100}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"id":5,"libellé":"naïve","w":500},{"id":3,"libellé":"plain","w":300},{"id":1,"libellé":"café","w":200},{"id":1,"libellé":"café","w":100}]
+}
+{"data":[{"id":5,"libellé":"naïve","w":500},{"id":3,"libellé":"plain","w":300},{"id":1,"libellé":"café","w":200},{"id":1,"libellé":"café","w":100}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"id":5,"libell\u00e9":"na\u00efve","w":500},{"id":3,"libell\u00e9":"plain","w":300},{"id":1,"libell\u00e9":"caf\u00e9","w":200},{"id":1,"libell\u00e9":"caf\u00e9","w":100}]
+[{"id":5,"libellé":"naïve","w":500},{"id":3,"libellé":"plain","w":300},{"id":1,"libellé":"café","w":200},{"id":1,"libellé":"café","w":100}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"id":5,"libell\u00e9":"na\u00efve","w":500},{"id":3,"libell\u00e9":"plain","w":300},{"id":1,"libell\u00e9":"caf\u00e9","w":200},{"id":1,"libell\u00e9":"caf\u00e9","w":100}]
+}
+{"data":[{"id":5,"libellé":"naïve","w":500},{"id":3,"libellé":"plain","w":300},{"id":1,"libellé":"café","w":200},{"id":1,"libellé":"café","w":100}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 4 row(s), as mysqld
+RDRS JSON_ASCII: 4 row(s), as mysqld, ASCII only
+
+=== jp-32: join pass-through, sorted, empty result ===
+== Query ==
+SELECT a.id, b.w FROM jp AS a JOIN jq AS b ON b.jid = a.id WHERE b.w > 1000 ORDER BY b.w;
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-33: join aggregate, streaming aggregate printer ===
+== Query ==
+SELECT a.grp, COUNT(*) AS antal, SUM(b.w) AS summa_€ FROM jp AS a JOIN jq AS b ON b.jid = a.id GROUP BY a.grp;
+== ronsql_cli JSON ==
+[{"grp":1,"antal":2,"summa_€":300}
+,{"grp":2,"antal":1,"summa_€":300}
+,{"grp":3,"antal":1,"summa_€":500}
+]
+[{"antal":2,"grp":1,"summa_€":300},{"antal":1,"grp":2,"summa_€":300},{"antal":1,"grp":3,"summa_€":500}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"grp":1,"antal":2,"summa_€":300}
+,{"grp":2,"antal":1,"summa_€":300}
+,{"grp":3,"antal":1,"summa_€":500}
+]
+}
+{"data":[{"antal":2,"grp":1,"summa_€":300},{"antal":1,"grp":2,"summa_€":300},{"antal":1,"grp":3,"summa_€":500}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"grp":1,"antal":2,"summa_€":300}
+,{"grp":2,"antal":1,"summa_€":300}
+,{"grp":3,"antal":1,"summa_€":500}
+]
+}
+{"data":[{"antal":2,"grp":1,"summa_€":300},{"antal":1,"grp":2,"summa_€":300},{"antal":1,"grp":3,"summa_€":500}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"grp":1,"antal":2,"summa_\u20ac":300}
+,{"grp":2,"antal":1,"summa_\u20ac":300}
+,{"grp":3,"antal":1,"summa_\u20ac":500}
+]
+[{"antal":2,"grp":1,"summa_€":300},{"antal":1,"grp":2,"summa_€":300},{"antal":1,"grp":3,"summa_€":500}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"grp":1,"antal":2,"summa_\u20ac":300}
+,{"grp":2,"antal":1,"summa_\u20ac":300}
+,{"grp":3,"antal":1,"summa_\u20ac":500}
+]
+}
+{"data":[{"antal":2,"grp":1,"summa_€":300},{"antal":1,"grp":2,"summa_€":300},{"antal":1,"grp":3,"summa_€":500}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 3 row(s), as mysqld
+RDRS JSON_ASCII: 3 row(s), as mysqld, ASCII only
+
+=== jp-34: join aggregate, empty result ===
+== Query ==
+SELECT a.grp, SUM(b.w) AS summa_€ FROM jp AS a JOIN jq AS b ON b.jid = a.id WHERE b.w > 1000 GROUP BY a.grp;
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-35: join aggregate, ORDER BY, buffered aggregate printer ===
+== Query ==
+SELECT a.grp, SUM(b.w) AS summa_€ FROM jp AS a JOIN jq AS b ON b.jid = a.id GROUP BY a.grp ORDER BY a.grp DESC;
+== ronsql_cli JSON ==
+[{"grp":3,"summa_€":500}
+,{"grp":2,"summa_€":300}
+,{"grp":1,"summa_€":300}
+]
+[{"grp":3,"summa_€":500},{"grp":2,"summa_€":300},{"grp":1,"summa_€":300}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"grp":3,"summa_€":500}
+,{"grp":2,"summa_€":300}
+,{"grp":1,"summa_€":300}
+]
+}
+{"data":[{"grp":3,"summa_€":500},{"grp":2,"summa_€":300},{"grp":1,"summa_€":300}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"grp":3,"summa_€":500}
+,{"grp":2,"summa_€":300}
+,{"grp":1,"summa_€":300}
+]
+}
+{"data":[{"grp":3,"summa_€":500},{"grp":2,"summa_€":300},{"grp":1,"summa_€":300}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"grp":3,"summa_\u20ac":500}
+,{"grp":2,"summa_\u20ac":300}
+,{"grp":1,"summa_\u20ac":300}
+]
+[{"grp":3,"summa_€":500},{"grp":2,"summa_€":300},{"grp":1,"summa_€":300}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"grp":3,"summa_\u20ac":500}
+,{"grp":2,"summa_\u20ac":300}
+,{"grp":1,"summa_\u20ac":300}
+]
+}
+{"data":[{"grp":3,"summa_€":500},{"grp":2,"summa_€":300},{"grp":1,"summa_€":300}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 3 row(s), as mysqld
+RDRS JSON_ASCII: 3 row(s), as mysqld, ASCII only
+
+=== jp-36: join aggregate without GROUP BY, no row joins ===
+== Query ==
+SELECT COUNT(*) AS antal, SUM(b.w) AS summa_€ FROM jp AS a JOIN jq AS b ON b.jid = a.id WHERE b.w > 1000;
+== ronsql_cli JSON ==
+[{"antal":0,"summa_€":null}
+]
+[{"antal":0,"summa_€":null}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"antal":0,"summa_€":null}
+]
+}
+{"data":[{"antal":0,"summa_€":null}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"antal":0,"summa_€":null}
+]
+}
+{"data":[{"antal":0,"summa_€":null}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"antal":0,"summa_\u20ac":null}
+]
+[{"antal":0,"summa_€":null}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"antal":0,"summa_\u20ac":null}
+]
+}
+{"data":[{"antal":0,"summa_€":null}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 1 row(s), as mysqld
+RDRS JSON_ASCII: 1 row(s), as mysqld, ASCII only
+
+=== jp-37: CTE result passed through, ORDER BY ===
+== Query ==
+WITH c AS (SELECT grp, COUNT(*) AS antal FROM jp GROUP BY grp) SELECT grp, antal FROM c ORDER BY grp;
+== ronsql_cli JSON ==
+[{"grp":1,"antal":2},{"grp":2,"antal":2},{"grp":3,"antal":1}]
+[{"antal":2,"grp":1},{"antal":2,"grp":2},{"antal":1,"grp":3}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"grp":1,"antal":2},{"grp":2,"antal":2},{"grp":3,"antal":1}]
+}
+{"data":[{"antal":2,"grp":1},{"antal":2,"grp":2},{"antal":1,"grp":3}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"grp":1,"antal":2},{"grp":2,"antal":2},{"grp":3,"antal":1}]
+}
+{"data":[{"antal":2,"grp":1},{"antal":2,"grp":2},{"antal":1,"grp":3}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"grp":1,"antal":2},{"grp":2,"antal":2},{"grp":3,"antal":1}]
+[{"antal":2,"grp":1},{"antal":2,"grp":2},{"antal":1,"grp":3}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"grp":1,"antal":2},{"grp":2,"antal":2},{"grp":3,"antal":1}]
+}
+{"data":[{"antal":2,"grp":1},{"antal":2,"grp":2},{"antal":1,"grp":3}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 3 row(s), as mysqld
+RDRS JSON_ASCII: 3 row(s), as mysqld, ASCII only
+
+=== jp-38: CTE result passed through, empty CTE ===
+== Query ==
+WITH c AS (SELECT grp, COUNT(*) AS antal FROM jp WHERE v > 1000 GROUP BY grp) SELECT grp, antal FROM c;
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-39: aggregate over a CTE ===
+== Query ==
+WITH c AS (SELECT grp, SUM(v) AS s FROM jp GROUP BY grp) SELECT COUNT(*) AS antal, SUM(s) AS summa_€ FROM c;
+== ronsql_cli JSON ==
+[{"antal":3,"summa_€":150}
+]
+[{"antal":3,"summa_€":150}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"antal":3,"summa_€":150}
+]
+}
+{"data":[{"antal":3,"summa_€":150}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"antal":3,"summa_€":150}
+]
+}
+{"data":[{"antal":3,"summa_€":150}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"antal":3,"summa_\u20ac":150}
+]
+[{"antal":3,"summa_€":150}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"antal":3,"summa_\u20ac":150}
+]
+}
+{"data":[{"antal":3,"summa_€":150}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 1 row(s), as mysqld
+RDRS JSON_ASCII: 1 row(s), as mysqld, ASCII only
+
+=== jp-40: aggregate over an empty CTE ===
+== Query ==
+WITH c AS (SELECT grp, SUM(v) AS s FROM jp WHERE v > 1000 GROUP BY grp) SELECT COUNT(*) AS antal, SUM(s) AS summa_€ FROM c;
+== ronsql_cli JSON ==
+[{"antal":0,"summa_€":null}
+]
+[{"antal":0,"summa_€":null}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"antal":0,"summa_€":null}
+]
+}
+{"data":[{"antal":0,"summa_€":null}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"antal":0,"summa_€":null}
+]
+}
+{"data":[{"antal":0,"summa_€":null}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"antal":0,"summa_\u20ac":null}
+]
+[{"antal":0,"summa_€":null}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"antal":0,"summa_\u20ac":null}
+]
+}
+{"data":[{"antal":0,"summa_€":null}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 1 row(s), as mysqld
+RDRS JSON_ASCII: 1 row(s), as mysqld, ASCII only
+
+=== jp-41: subquery in the SELECT list ===
+== Query ==
+SELECT a.id, (SELECT SUM(b.w) FROM jq AS b WHERE b.jid = a.id) AS summa_€ FROM jp AS a;
+== ronsql_cli JSON ==
+[{"id":1,"summa_€":300}
+,{"id":2,"summa_€":null}
+,{"id":3,"summa_€":300}
+,{"id":4,"summa_€":null}
+,{"id":5,"summa_€":500}
+]
+[{"id":1,"summa_€":300},{"id":2,"summa_€":null},{"id":3,"summa_€":300},{"id":4,"summa_€":null},{"id":5,"summa_€":500}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"id":1,"summa_€":300}
+,{"id":2,"summa_€":null}
+,{"id":3,"summa_€":300}
+,{"id":4,"summa_€":null}
+,{"id":5,"summa_€":500}
+]
+}
+{"data":[{"id":1,"summa_€":300},{"id":2,"summa_€":null},{"id":3,"summa_€":300},{"id":4,"summa_€":null},{"id":5,"summa_€":500}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"id":1,"summa_€":300}
+,{"id":2,"summa_€":null}
+,{"id":3,"summa_€":300}
+,{"id":4,"summa_€":null}
+,{"id":5,"summa_€":500}
+]
+}
+{"data":[{"id":1,"summa_€":300},{"id":2,"summa_€":null},{"id":3,"summa_€":300},{"id":4,"summa_€":null},{"id":5,"summa_€":500}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"id":1,"summa_\u20ac":300}
+,{"id":2,"summa_\u20ac":null}
+,{"id":3,"summa_\u20ac":300}
+,{"id":4,"summa_\u20ac":null}
+,{"id":5,"summa_\u20ac":500}
+]
+[{"id":1,"summa_€":300},{"id":2,"summa_€":null},{"id":3,"summa_€":300},{"id":4,"summa_€":null},{"id":5,"summa_€":500}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"id":1,"summa_\u20ac":300}
+,{"id":2,"summa_\u20ac":null}
+,{"id":3,"summa_\u20ac":300}
+,{"id":4,"summa_\u20ac":null}
+,{"id":5,"summa_\u20ac":500}
+]
+}
+{"data":[{"id":1,"summa_€":300},{"id":2,"summa_€":null},{"id":3,"summa_€":300},{"id":4,"summa_€":null},{"id":5,"summa_€":500}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 5 row(s), as mysqld
+RDRS JSON_ASCII: 5 row(s), as mysqld, ASCII only
+
+=== jp-42: subquery in the SELECT list, no outer row ===
+== Query ==
+SELECT a.id, (SELECT SUM(b.w) FROM jq AS b WHERE b.jid = a.id) AS summa_€ FROM jp AS a WHERE a.v > 1000;
+== ronsql_cli JSON ==
+[]
+[]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[]
+}
+{"data":[]}
+== RDRS JSON (default output format) ==
+{"data":
+[]
+}
+{"data":[]}
+
+== ronsql_cli JSON_ASCII ==
+[]
+[]
+== RDRS JSON_ASCII ==
+{"data":
+[]
+}
+{"data":[]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 0 row(s), as mysqld
+RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-e1: EXPLAIN through RDRS, default output format (JSON) ===
+HTTP 400
+x-ronsql-error-class: unsupported
+Error handling: RPE
+[unsupported] Caught exception: RonSQL feature not implemented: JSON format for EXPLAIN output
+
+=== jp-e2: EXPLAIN through RDRS, JSON_ASCII ===
+HTTP 400
+x-ronsql-error-class: unsupported
+Error handling: RPE
+[unsupported] Caught exception: RonSQL feature not implemented: JSON_ASCII format for EXPLAIN output
+
+=== jp-e3: explainMode FORCE through RDRS, default output format (JSON) ===
+HTTP 400
+x-ronsql-error-class: unsupported
+Error handling: RPE
+[unsupported] Caught exception: RonSQL feature not implemented: JSON format for EXPLAIN output
+
+=== jp-e4: EXPLAIN through ronsql_cli under JSON ===
+Error handling: RPE
+ronsql_cli caught exception: RonSQL feature not implemented: JSON format for EXPLAIN output
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_json_paths_jit_fallback_delta;
+ronsql_json_paths_jit_fallback_delta
+0
