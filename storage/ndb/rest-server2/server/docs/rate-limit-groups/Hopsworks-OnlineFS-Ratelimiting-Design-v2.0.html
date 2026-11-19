@@ -229,20 +229,23 @@ for each person no longer covered, and a person moving between groups gets a DRO
 SET, because the kernel refuses pointing an existing alias at a different target (13.3).
 Deleting a group removes its Who rows, marks the group row deleted and runs the pass:
 the installer drops the members&rsquo;
-aliases, then the group&rsquo;s <code>USER</code>, and the members&rsquo; traffic falls back to
-unmetered (<a href="#rules">section 11</a>). The deleted row stays, so every later pass
+aliases, then the group&rsquo;s <code>USER</code>, and each member&rsquo;s traffic falls back to
+whichever other group still covers them, or to unmetered
+(<a href="#rules">section 11</a>). The deleted row stays, so every later pass
 drops whatever of the group a cluster still holds (section 10).</p>
 <p><strong>Implicit changes travel the same way, without an administrator.</strong> A
 project Who row is a rule, &ldquo;everyone in this project&rdquo;, and membership keeps changing
 after the group is saved. Suppose a group gives everyone in project Recommender 2% of a
 cluster, and Bob later joins the project. Hopsworks creates his MySQL account exactly as
-it does today (5.3), and the operation-log callback that creates the account also checks
-whether any group covers the project. One does, so the handler issues
+it does today (5.3), and the operation-log callback that creates the account also
+enqueues a recompute of Bob&rsquo;s coverage. The installer&rsquo;s writer runs it: it reads the
+current alias of each of Bob&rsquo;s accounts, sees that a group covers the project, and
+issues
 <code>USER ALIAS SET Recommender_bob91cd --target=recommender_team_rl</code> on each
 targeted cluster, with the framework&rsquo;s retries. One alias appears; the budget and every
 other alias are untouched, and Bob&rsquo;s REST keys and SQL logins are metered from that
-moment. When Mary is removed from a covered project, the same callback sees her account
-removal and issues <code>USER ALIAS DROP</code> for that account on the affected
+moment. When Mary is removed from a covered project, the same callback enqueues her
+recompute, which issues <code>USER ALIAS DROP</code> for that account on the affected
 clusters; her remaining traffic is unmetered again, or keeps charging whichever other
 group still covers her. A missed callback, for example across a Hopsworks restart, is
 repaired by the periodic reconciler, which replays the full pass and converges every
@@ -746,7 +749,7 @@ it already has the retry and reconcile frameworks (5.4). One primary-gated write
 replaces the leaderless fleet of RDRS sync loops that version 1.0 coordinated with
 version counters, two-run delete grace and idempotent-conflict rules; most of that
 section disappears because concurrent writers with stale snapshots become a short,
-rare window whose effects the next pass repairs (below). Version 1.0&rsquo;s stated reasons for RDRS, no cluster registry
+rare window whose effects a later pass repairs (below). Version 1.0&rsquo;s stated reasons for RDRS, no cluster registry
 and no Hopsworks-to-cluster path, were both wrong by the time they were written: the
 namespace label and <code>RonDbManagementClient</code> predate the design
 (header note; 5.4).</p>
@@ -787,8 +790,10 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     in the ownership test and are never touched, so they keep their budget until an
     operator drops them. A diagnostic read compares each target&rsquo;s
     <code>USER LIST</code> and <code>USER ALIAS LIST</code> against the expected set and
-    shows such orphans on the admin page; the failover test saves a group, fails over
-    before it replicates, and asserts the orphans are reported.</li>
+    shows the unmatched objects on the admin page; without provenance it cannot tell a
+    lost-row orphan from an operator&rsquo;s own object, which the operator contract keeps
+    recognizable by name (section 10). The failover test saves a group, fails over
+    before it replicates, and asserts the objects are reported.</li>
     <li><strong>Pick this cluster&rsquo;s groups.</strong> Groups whose <code>cluster</code>
     is NULL or equal to this cluster&rsquo;s name. Where one person is covered by both a
     named-cluster group and an every-cluster group, the named one wins in that cluster&rsquo;s RonDB
@@ -801,7 +806,16 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     <li><strong>Convert each percentage</strong> using this cluster&rsquo;s data-node thread
     count: with 20 threads, 20% &rarr; 4,000,000 (section 14). The thread count is read
     once per pass from the cluster itself and never cached across passes,
-    so a resized cluster converts correctly on the next pass. For the main cluster the
+    so a resized cluster is reconverted by the next pass that reads it, with one guard:
+    after a restart onto <em>fewer</em> threads the already-allocated total can exceed
+    the new 70% cap, a state the restart itself permits, and in that state the data node
+    asserts on <em>any</em> rate change, a lowering included
+    (<code>Dbdict.cpp:36034-36037</code>, a defect recorded in section 16). The pass
+    therefore compares the observed allocated total, groups and database quotas
+    together, against the cluster&rsquo;s current alter cap before issuing any
+    <code>USER ALTER</code>, and when it is exceeded issues none, marks the cluster&rsquo;s
+    groups <em>refused</em> naming the condition, and leaves it to intervention until
+    the kernel defect is fixed. For the main cluster the
     read is <code>ndbinfo.threads</code> over the JDBC connection Hopsworks already
     holds (5.4), and for the secondary region&rsquo;s RonDB over the region-addressed
     admin connection that already exists
@@ -852,7 +866,7 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
     rather than retrying silently forever. Version 1.0 ran the drops last,
     behind a two-run grace, because several writers could hold stale snapshots; a
     primary-gated writer needs neither, because a drop sent from a stale snapshot is
-    undone by the next pass like any other stale command (below).</li>
+    undone by a later pass like any other stale command (below).</li>
     <li><strong>Record the state</strong> per (group, target) in
     <code>rate_limit_group_cluster_state</code>: <em>installed</em> on success,
     <em>refused</em> when the cluster rejects the rate (50% cap), <em>pending</em>
@@ -889,9 +903,12 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
 <ul>
   <li><strong>Idempotent and primary-gated, eventually repaired.</strong>
   A repeated <code>USER ALIAS SET</code> with the same target is a no-op, and a
-  <code>USER SET</code> on an existing name is refused with error 721, which the pass
-  reads as &ldquo;already there&rdquo; and follows with a re-list, so an
-  immediate pass racing the periodic one is harmless. Only the primary instance writes:
+  <code>USER SET</code> on an existing name is refused, usually with 721, but with 1235
+  when the rate check fires first (it runs before the duplicate-name check,
+  <code>Dbdict.cpp:33561</code> before <code>:33632</code>), so the pass classifies name
+  collisions from the lists it already holds and treats either refusal as a trigger to
+  re-read rather than a verdict; an
+  immediate pass racing the periodic one is therefore harmless. Only the primary instance writes:
   the installer checks <code>PayaraClusterManager.amIThePrimary()</code> before each
   management command
   (<code>hopsworks-common/&hellip;/util/PayaraClusterManager.java:141-169</code>). The
@@ -933,14 +950,14 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
   the deleted group&rsquo;s <code>USER</code> and every alias targeting it, on every
   cluster that still holds them. A cluster the delete&rsquo;s immediate pass cannot reach is
   therefore cleaned when a later pass reaches it, and a <code>USER</code> that a stale
-  command re-created after the drop is dropped again by the next pass. Recreating a
+  command re-created after the drop is dropped again by a later pass. Recreating a
   deleted name reuses its row. Every read of the groups (the admin list, the Who
   expansion, the no-ties check) skips deleted rows. The contract with operators: they may
   create their own <code>USER</code> and alias objects under names that are not in the
   table, and the installer never touches those; they do not change the installer&rsquo;s
   objects by hand. An alias is protected by its <em>target</em>, not its own name: an
   alias an operator points at a group&rsquo;s <code>USER</code> becomes the installer&rsquo;s and
-  is dropped by the next pass as not part of the desired set. One exception reaches into
+  is dropped by a later pass as not part of the desired set. One exception reaches into
   their objects: when a group must map an
   account that already has an alias an operator created, the installer replaces that
   alias, and the replacement is a <code>USER ALIAS DROP</code> followed by a
@@ -955,7 +972,8 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
   <code>USER</code>s and aliases share one name space (13.1), the create is refused as a
   duplicate name, and altering across kinds is refused too. The pass stops that
   group&rsquo;s sequence and writes <em>refused</em> naming the colliding alias; the admin
-  renames the group, or the operator drops the alias. The installer never drops an
+  deletes the refused group and creates one under a different name (a group&rsquo;s name is
+  immutable, 7.1), or the operator drops the alias. The installer never drops an
   unowned alias to free a name.</li>
   <li><strong>Propagation delay.</strong> A saved group is live after its immediate pass
   plus the client name-cache refresh (up to 60 s, section 13). A new member is live after
@@ -997,8 +1015,8 @@ administration, and nothing in the model requires more than one role.</p>
   <tbody>
     <tr><td>A group</td><td>Admin deletes <code>mary_mike_rl</code>.</td><td>Its Who rows and state rows are deleted and its row is marked deleted. The immediate pass runs <code>USER DROP</code> and drops the aliases; later passes repeat the drop on any cluster that still holds them. The pass recomputes the members&rsquo; assignments: a member another group still covers (an every-cluster group, say) gets their alias repointed there; a member no group covers falls back to unmetered.</td></tr>
     <tr><td>A person or project</td><td>Mike leaves the company: he is removed from his projects, then an administrator deletes user 1002 (a delete is accepted only for a user in no projects).</td><td>Leaving the projects already dropped his aliases through the membership recompute; the user delete cascades his row in group 2 away. The group now covers only Mary. Harmless.</td></tr>
-    <tr><td>The person or project that is a group&rsquo;s only Who row</td><td>The Data Owner deletes project Recommender2, the only Who row of <code>recommender2_rl</code>.</td><td>The group is deleted with it, in the same transaction: its state rows are deleted and its row is marked deleted, exactly as a group delete does, and the next pass drops its <code>USER</code> and aliases. The project-delete confirmation names the group beforehand.</td></tr>
-    <tr><td>Nothing, but membership changes</td><td>Bob joins Recommender.</td><td>No group rows change. The operation-log handler sees Bob&rsquo;s new account and, because project 13 is in group 1, issues his <code>USER ALIAS SET</code>; his keys and SQL logins are covered from that moment.</td></tr>
+    <tr><td>The person or project that is a group&rsquo;s only Who row</td><td>The Data Owner deletes project Recommender2, the only Who row of <code>recommender2_rl</code>.</td><td>The group is deleted with it, in the same transaction: its state rows are deleted and its row is marked deleted, exactly as a group delete does, and the delete&rsquo;s immediate pass drops its <code>USER</code> and aliases. The project-delete confirmation names the group beforehand.</td></tr>
+    <tr><td>Nothing, but membership changes</td><td>Bob joins Recommender.</td><td>No group rows change. The operation-log handler sees Bob&rsquo;s new account and enqueues his recompute; the writer, because project 13 is in group 1, issues his <code>USER ALIAS SET</code>; his keys and SQL logins are covered from that moment.</td></tr>
     <tr><td>A cluster</td><td>The satellite namespace for cluster M is torn down.</td><td>Groups naming M show <em>pending</em> (not discovered). Nothing is dropped anywhere else; recreating the namespace reinstalls on the next reconcile.</td></tr>
   </tbody>
 </table></div>
@@ -1159,8 +1177,10 @@ alias in the RonDB it is run against, in object-id order; there is no filter by 
 reconciles every group of the cluster in one pass and needs the whole set, including
 aliases whose target is no longer wanted and aliases whose stored target name does not
 currently resolve, which <code>LIST</code> and <code>GET</code> show with that stored
-name; a membership recompute (section 10) never
-lists, because it already knows the accounts it changes. Over the management API the list is paged
+name; a membership recompute (section 10) does not take the full list: it reads just its
+person&rsquo;s accounts, one <code>GET</code> each, and reconciles those observations against
+the desired state under the same ownership, dependency and failure rules as a full pass,
+deferring to the reconciler when a read fails. Over the management API the list is paged
 one alias per round trip (<code>ndb_mgm_list_user_aliases(handle, &amp;nextAliasId,
 &amp;buf)</code> until <code>nextAliasId</code> is <code>RNIL</code>), so its cost grows
 with the alias count: 64&nbsp;ms for 306 objects on a debug build (13.5).
@@ -1502,6 +1522,7 @@ the migration is written.</p>
   `created`        timestamp    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `created_by`     int(11)      DEFAULT NULL,   -- kept after the creator is deleted
   `deleted`        tinyint(1)   NOT NULL DEFAULT 0,  -- 1 = deleted; the row and name stay
+  `revision`       bigint       NOT NULL DEFAULT 0,  -- bumped by every change to the group or its coverage; never reset, so it stays monotonic across delete and name reuse
   PRIMARY KEY (`id`),
   UNIQUE KEY `name` (`name`),
   CONSTRAINT `rlg_created_by_fk` FOREIGN KEY (`created_by`) REFERENCES `users` (`uid`)
@@ -1526,7 +1547,10 @@ CREATE TABLE `hopsworks`.`rate_limit_group_cluster_state` (
   `group_id`     int(11)     NOT NULL,
   `cluster_name` varchar(127) COLLATE latin1_general_cs NOT NULL,  -- namespace, or region:&lt;region name&gt; (section 10); a namespace alone may use 63
   `state`        varchar(10) NOT NULL,   -- 'PENDING', 'INSTALLED' or 'REFUSED'
-  `updated`      bigint      NOT NULL,   -- epoch milliseconds
+  `desired_revision` bigint   NOT NULL,   -- the group revision this row's desired specification was computed from
+  `applied_revision` bigint   DEFAULT NULL,  -- the revision a successful pass applied; INSTALLED means applied = desired
+  `applied_rate` bigint       DEFAULT NULL,  -- what is actually enforced, for partial outcomes (section 10)
+  `updated`      bigint      NOT NULL,   -- epoch milliseconds; when the applied state was observed
   PRIMARY KEY (`group_id`, `cluster_name`),
   CONSTRAINT `rlgs_group_fk` FOREIGN KEY (`group_id`) REFERENCES `rate_limit_group` (`id`) ON DELETE CASCADE
 ) ENGINE = ndbcluster;</code></pre>
@@ -1538,7 +1562,11 @@ constraints from <code>rate_limit_group</code> do not fire on that path, and the
 <code>name</code> key keeps a deleted name for reuse by the same row. The
 <code>uid</code> and <code>project_id</code> cascades do fire: a user or project delete
 removes its Who rows, and a group left with none is marked deleted in the same
-transaction (section 11).
+transaction (section 11). The <code>revision</code> column is what lets a pass refuse to
+publish stale state (section 10): every transaction that changes the group or its
+coverage bumps it, delete and recreate included, so a state write computed from an older
+revision, a stale primary&rsquo;s or the deleted incarnation&rsquo;s, compares lower and is not
+published; a test spans delete and recreation of the same name.
 Version 1.0&rsquo;s <code>rate_limit_group_data</code> and
 <code>rate_limit_group_cluster_override</code> tables and the <code>data_scope</code>
 column are gone: data rows with the budgets, the override into the <code>cluster</code>
