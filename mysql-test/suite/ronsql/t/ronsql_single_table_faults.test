@@ -1,0 +1,197 @@
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+--source suite/ndb_push_agg/t/have_ndb_error_insert.inc
+
+# NDB errors on the single-table executor paths.
+#
+# README findings T-4 and X-28: the fault-injection tests drove CTEs,
+# joins and subqueries only.  No test made a single-table path of
+# RonSQLPreparer::execute() meet an NDB error: the scan aggregate
+# (DoAggregation), the COUNT(*) shortcut, the primary-key lookup
+# aggregate (throw_key_read_error), the pass-through key lookups and
+# scans of execute_single_table_passthrough, and the aggregate over the
+# last N rows computed in RonSQL (execute_api_side_aggregate).  A
+# temporary error that comes before anything was written must be retried
+# without the client seeing it, by RDRS and by ronsql_cli.
+#
+# The trigger.  stf has one fragment and READ_BACKUP=0, so every
+# committed read of it, a key read or a scan, goes to the LDM instance
+# that holds the fragment's primary replica, on one data node, whatever
+# the transaction's TC node.  The test reads that node from ndbinfo and
+# arms a DBLQH error insert on it alone:
+#   5055  the next SCAN_FRAGREQ fails with 1217 (out of operation
+#         records in the local data manager, temporary)
+#   5047  the next LQHKEYREQ fails with 1218 (send buffers overloaded,
+#         temporary)
+# Both are ERROR_INSERTED_CLEAR: the LDM instance that gets the request
+# fails it and clears its insert; the node's other LDM instances hold no
+# fragment of stf and keep theirs until "all error 0" after the request.
+# The first attempt fails and the second succeeds: attempts=2 in
+# x-ronsql-phases, and one retry in ronsql_cli.  sf-3 and sf-4 fail one
+# key read of an IN list, which the lookup arms raise before they print
+# anything (X-34).
+#
+#   sf-1  scan aggregate with GROUP BY (5055)
+#   sf-2  COUNT(*) shortcut (5055)
+#   sf-3  primary-key lookup aggregate, an IN list (5047)
+#   sf-4  pass-through primary-key lookups, an IN list (5047)
+#   sf-5  pass-through scan with a filter (5055)
+#   sf-6  pass-through scan with ORDER BY and LIMIT, sorted in RonSQL
+#         (5055)
+#   sf-7  aggregate over the last N rows, computed in RonSQL (WP-J J5)
+#         (5055)
+#   sf-8  an error after rows reached the output: error insert 5030
+#         drops the second batch request of the unsorted pass-through
+#         scan (800 rows in one fragment), and DBTC fails the scan with
+#         274 after TransactionDeadlockDetectionTimeout (3 s).  RDRS
+#         rewinds its response buffer and runs the statement again
+#         (X-7): HTTP 200, the 800 rows once, rows=800 and attempts=2.
+#         ronsql_cli has printed the first batch to stdout and does not
+#         retry (",od"): exit code 1, the first batch once.
+#
+# Every result is compared with mysqld (strict).  The other retry paths
+# of X-28 have their own tests: an IN subquery that fails after it wrote
+# rows (ronsql_subquery_retry, X-6), a pass-through scan through RDRS's
+# response cap with the insert on every node (ronsql_retry_after_output,
+# X-7), and a cluster that refuses the API node (ronsql_cluster_unavailable,
+# X-8).
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE stf (
+  id INT NOT NULL,
+  g  INT NOT NULL,
+  v  INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB COMMENT="NDB_TABLE=READ_BACKUP=0"
+  PARTITION BY KEY (id) PARTITIONS 1;
+INSERT INTO stf
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 800)
+  SELECT n, n MOD 7, 3 * n FROM seq;
+--let $sf_table_id = `SELECT table_id FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/stf' LIMIT 1`
+--let $fault_node = `SELECT DISTINCT current_primary FROM ndbinfo.table_fragments WHERE table_id = $sf_table_id AND fragment_id = 0`
+--enable_warnings
+--enable_query_log
+if (!$fault_node)
+{
+  --die The primary replica of stf's fragment was not found in ndbinfo
+}
+--let $fault_ordered=
+
+--echo
+--echo === sf-1: scan aggregate with GROUP BY (5055, NDB error 1217) ===
+--let $QUERY=SELECT g, COUNT(*) AS n, SUM(v) AS s FROM stf GROUP BY g;
+--let $fault_insert=5055
+--let $fault_error=1217
+--source suite/ronsql/include/ronsql_fault_retry.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, COUNT(*) AS n, SUM(v) AS s FROM stf GROUP BY g;
+
+--echo
+--echo === sf-2: COUNT(*) shortcut (5055, NDB error 1217) ===
+--let $QUERY=SELECT COUNT(*) AS n FROM stf;
+--let $fault_insert=5055
+--let $fault_error=1217
+--source suite/ronsql/include/ronsql_fault_retry.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS n FROM stf;
+
+--echo
+--echo === sf-3: primary-key lookup aggregate (5047, NDB error 1218) ===
+--let $QUERY=SELECT COUNT(*) AS n, SUM(v) AS s FROM stf WHERE id IN (1, 2, 3);
+--let $fault_insert=5047
+--let $fault_error=1218
+--source suite/ronsql/include/ronsql_fault_retry.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS n, SUM(v) AS s FROM stf WHERE id IN (1, 2, 3);
+
+--echo
+--echo === sf-4: pass-through primary-key lookups (5047, NDB error 1218) ===
+--let $QUERY=SELECT id, v FROM stf WHERE id IN (1, 2, 3);
+--let $fault_insert=5047
+--let $fault_error=1218
+--source suite/ronsql/include/ronsql_fault_retry.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, v FROM stf WHERE id IN (1, 2, 3);
+
+--echo
+--echo === sf-5: pass-through scan with a filter (5055, NDB error 1217) ===
+--let $QUERY=SELECT id, v FROM stf WHERE id > 790;
+--let $fault_insert=5055
+--let $fault_error=1217
+--source suite/ronsql/include/ronsql_fault_retry.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, v FROM stf WHERE id > 790;
+
+--echo
+--echo === sf-6: pass-through scan sorted in RonSQL (5055, NDB error 1217) ===
+--let $QUERY=SELECT id, v FROM stf WHERE g = 5 ORDER BY v DESC LIMIT 4;
+--let $fault_insert=5055
+--let $fault_error=1217
+--let $fault_ordered=yes
+--source suite/ronsql/include/ronsql_fault_retry.inc
+--echo == Expected result ==
+SELECT id, v FROM stf WHERE g = 5 ORDER BY v DESC LIMIT 4;
+
+--echo
+--echo === sf-7: aggregate over the last N rows in RonSQL (5055, NDB error 1217) ===
+--let $QUERY=WITH t AS (SELECT id, v FROM stf ORDER BY id DESC LIMIT 10) SELECT COUNT(*) AS n, SUM(v) AS s, MIN(id) AS lo FROM t;
+--let $fault_insert=5055
+--let $fault_error=1217
+--source suite/ronsql/include/ronsql_fault_retry.inc
+--echo == Expected result ==
+WITH t AS (SELECT id, v FROM stf ORDER BY id DESC LIMIT 10) SELECT COUNT(*) AS n, SUM(v) AS s, MIN(id) AS lo FROM t;
+
+--echo
+--echo === sf-8: an error after rows reached the output (5030, NDB error 274) ===
+--let $QUERY=SELECT id, v FROM stf;
+--echo == Query ==
+--echo $QUERY
+--exec $MYSQL -D test -e '$QUERY' > $MYSQL_TMP_DIR/sf-mysql.out
+--exec (head -n 1 $MYSQL_TMP_DIR/sf-mysql.out && tail -n +2 $MYSQL_TMP_DIR/sf-mysql.out | sort) > $MYSQL_TMP_DIR/sf-mysql.cmp
+--echo == RDRS, error insert 5030 armed: retried after it wrote the first batch (X-7) ==
+--exec printf '{"query":"%s","database":"test","outputFormat":"TEXT"}' '$QUERY' > $MYSQL_TMP_DIR/sf-body
+--exec $NDB_MGM -e "$fault_node error 5030" >> $NDB_TOOLS_OUTPUT
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/sf-hdrs -o $MYSQL_TMP_DIR/sf-rdrs.out -X POST -H "Content-Type: application/json" -H "x-ronsql-phases: 1" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/sf-body
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec (head -n 1 $MYSQL_TMP_DIR/sf-rdrs.out && tail -n +2 $MYSQL_TMP_DIR/sf-rdrs.out | sort) > $MYSQL_TMP_DIR/sf-rdrs.cmp
+--exec echo Number of output lines, including header: `grep -Fc '' '$MYSQL_TMP_DIR/sf-rdrs.cmp'`
+--echo == Diff with mysqld ==
+--exec diff -u --label mysql.out $MYSQL_TMP_DIR/sf-mysql.cmp --label ronsql.out $MYSQL_TMP_DIR/sf-rdrs.cmp
+--echo == The last attempt drained 800 rows, after one retry (must be rows=800,attempts=2) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/sf-hdrs | tr -d '\r' | grep -oE 'rows=[0-9]+,attempts=[0-9]+'
+--echo == ronsql_cli, error insert 5030 armed: not retried after it printed rows ==
+--exec $NDB_MGM -e "$fault_node error 5030" >> $NDB_TOOLS_OUTPUT
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e '$QUERY' > $MYSQL_TMP_DIR/sf-cli.out 2> $MYSQL_TMP_DIR/sf-cli.err || echo "ronsql_cli failed"
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec awk 'END { if (NR > 1 && NR < 801) print "partial output: the header and the first batch"; else print "UNEXPECTED: " NR " lines" }' $MYSQL_TMP_DIR/sf-cli.out
+--exec tail -n +2 $MYSQL_TMP_DIR/sf-cli.out | sort | uniq -d | awk 'END { print NR " rows printed twice" }'
+--exec grep -x 'Error handling: SRE,te,nu,od->RPE' $MYSQL_TMP_DIR/sf-cli.err
+--exec grep '^ronsql_cli caught' $MYSQL_TMP_DIR/sf-cli.err
+--echo == Expected result (summary) ==
+SELECT COUNT(*) AS n, MIN(id) AS lo, MAX(id) AS hi, SUM(v) AS sum_v FROM stf;
+
+--remove_file $MYSQL_TMP_DIR/sf-body
+--remove_file $MYSQL_TMP_DIR/sf-hdrs
+--remove_file $MYSQL_TMP_DIR/sf-mysql.out
+--remove_file $MYSQL_TMP_DIR/sf-mysql.cmp
+--remove_file $MYSQL_TMP_DIR/sf-rdrs.out
+--remove_file $MYSQL_TMP_DIR/sf-rdrs.cmp
+--remove_file $MYSQL_TMP_DIR/sf-cli.out
+--remove_file $MYSQL_TMP_DIR/sf-cli.err
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE stf;
+--enable_warnings
+--enable_query_log
+--remove_file $NDB_TOOLS_OUTPUT
