@@ -70,15 +70,16 @@
   <rect x="52" y="384" width="722" height="14" rx="7" fill="#e6ecef"/>
   <rect x="430" y="384" width="55" height="14" rx="7" fill="#e3c27e"/>
   <rect x="52" y="384" width="390" height="14" rx="7" fill="#096b67"/>
-  <text x="52" y="420" class="m">27% of the 50% RonDB allows for configured limits (20 + 2 + 5). 23% remains.</text>
+  <text x="52" y="420" class="m">27% of the cluster's configured cap, 50% by default (20 + 2 + 5). 23% remains.</text>
   <text x="52" y="440" class="pend">Saving the edit on the right raises it to 30% (20 + 2 + 8); 20% would remain.</text>
 
   <!-- legend -->
   <text x="52" y="476" class="h">State column (per cluster)</text>
   <text x="52" y="500" class="ok">● installed</text><text x="150" y="500" class="m">Hopsworks has run USER SET for this name on the main cluster; the limit is live.</text>
   <text x="52" y="524" class="pend">● pending</text><text x="150" y="524" class="m">Saved; not installed yet (or the cluster is unreachable). Traffic runs unlimited until it is.</text>
-  <text x="52" y="548" fill="#b3261e" font-size="13">● refused</text><text x="150" y="548" class="m">RonDB rejected USER SET (the 50% cap is full). Lower another budget.</text>
-  <text x="52" y="580" class="m">A deleted group leaves the list at once: its state rows are deleted with it.</text>
+  <text x="52" y="548" fill="#b3261e" font-size="13">● refused</text><text x="150" y="548" class="m">RonDB rejected USER SET (the cap is full); the row shows the stored error. Lower another budget.</text>
+  <text x="52" y="572" fill="#b67a12" font-size="13">● partial</text><text x="150" y="572" class="m">Stopped mid-group: the rate and some aliases are live; the row shows the coverage and the error.</text>
+  <text x="52" y="600" class="m">A deleted group leaves the list at once: its state rows are deleted with it.</text>
 
   <!-- LEFT, below: the delete confirmation -->
   <text x="52" y="674" class="m">Confirmation dialog, opened by Delete group on the form</text>
@@ -93,7 +94,7 @@
   <rect x="52" y="868" width="722" height="56" rx="6" class="note"/>
   <rect x="52" y="868" width="4" height="56" fill="#b67a12"/>
   <text x="68" y="891" class="t">Afterwards Rosa's work runs unmetered, as before the group existed.</text>
-  <text x="68" y="913" class="t">5% of the 50% is freed (27% → 22%).</text>
+  <text x="68" y="913" class="t">5% of the cap is freed (27% → 22%).</text>
   <text x="52" y="956" class="m">Writes</text>
   <text x="52" y="976" class="c">DELETE FROM rate_limit_group WHERE name = 'recommender2_rl'</text>
   <text x="52" y="994" class="c">Who and state rows go with it (ON DELETE CASCADE).</text>
@@ -115,7 +116,7 @@
 
   <!-- Budget -->
   <text x="850" y="282" class="h">Budget</text>
-  <text x="850" y="302" class="m">Percent of each targeted cluster's database-work capacity. 1 to 50.</text>
+  <text x="850" y="302" class="m">Percent of each targeted cluster's database-work capacity. 0.01 to the cluster's cap (default 50).</text>
   <rect x="850" y="312" width="110" height="40" rx="6" fill="#fff" stroke="#b67a12" stroke-width="2"/>
   <text x="864" y="338" class="t">8</text>
   <text x="970" y="338" class="t">%</text>

@@ -828,7 +828,9 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     once per pass from the cluster itself and never cached across passes,
     so a resized cluster is reconverted by the next pass that reads it, with one guard:
     after a restart onto <em>fewer</em> threads the already-allocated total can exceed
-    the new cap, a state the restart itself permits, and in that state the data node
+    the new cap, a state the restart itself permits (an upgrade to the new 50% default
+    over a larger total, or a lowered cap, creates the same state, section 14), and in
+    that state the data node
     asserts on any schema change whose post-change total still exceeds the cap: an alter
     that does not land under it (<code>Dbdict.cpp:36034-36037</code>), and every
     create&rsquo;s commit, a zero-rate alias included, whose assertion exempts only restart
@@ -1045,7 +1047,7 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
     <tr><td>A Who row names a person or a project, not both; a group has at least one Who row, so an edit that removes every Who row is refused (Delete group removes a group).</td><td>A row with <code>uid = 1001</code> and <code>project_id = 11</code>. Rejected.</td></tr>
     <tr><td>No ties: two groups with the same cluster scope may not cover the same person. A person is &ldquo;covered&rdquo; by a project row if they have any <code>project_team</code> row for that project. A named-cluster group and an every-cluster group may overlap: the named one wins on its cluster (7.4).</td><td>Group X: {Mary}, every cluster. Group Y: {project 11}, every cluster. Mary is in both. Rejected.<br><br>Group X: {project 13}, every cluster, 20%. Group Z: {project 13}, cluster M, 30%. Allowed: on M the members charge Z, elsewhere X.</td></tr>
     <tr><td>Budget between 0.01 and the configured cap of every targeted cluster (section 14, default 50%), with at most two decimals, as the table stores it. Zero is refused: RonDB reads a rate of 0 as <em>unlimited</em> (section 14), the opposite of what a zero budget would mean. RonDB will not accept one entry above its cap.</td><td>A group at 60% on a cluster with the default cap. Rejected.<br><br>A group at 0%. Rejected: 0 would run unlimited.</td></tr>
-    <tr><td>On every cluster, the budgets of the groups covering it sum to at most that cluster&rsquo;s configured cap (section 14, default 50%): an every-cluster group counts on each cluster, and where a named-cluster group overrides an every-cluster one for the same people (7.4), the named one counts there instead. Enforced on save, so every configuration Hopsworks accepts fits each cluster and, under the single cap decided in section 14, can always be reinstalled from scratch.</td><td>Groups at 30% and 25%, both on every cluster, caps at the default. The second save is rejected: 55% on each cluster.</td></tr>
+    <tr><td>On every cluster, the budgets of the groups covering it sum to at most that cluster&rsquo;s configured cap (section 14, default 50%): an every-cluster group counts on each cluster, and where a named-cluster group overrides an every-cluster one for the same people (7.4), the named one counts there instead. Enforced on save against each cluster whose cap is readable; a cluster whose cap cannot be read does not block the save and is not guessed at, since save validity must not depend on connectivity (section 16 item 1): the group stays <em>pending</em> there as it already would, and the installer re-checks the sum against the real cap before issuing (section 10), recording <em>refused</em> naming the sum rule when it does not fit. So every configuration Hopsworks accepts fits each cluster it could see and, under the single cap decided in section 14, can always be reinstalled from scratch.</td><td>Groups at 30% and 25%, both on every cluster, caps at the default. The second save is rejected: 55% on each cluster.</td></tr>
     <tr><td>The cluster name, when set, should name a discovered cluster; a free-text name is accepted but flagged.</td><td>A group on cluster <code>mrketing</code> (typo). Saved, shown <em>pending</em> with a &ldquo;no such cluster&rdquo; hint.</td></tr>
   </tbody>
 </table></div>
@@ -1184,7 +1186,7 @@ transaction runs unmetered, which is today&rsquo;s unknown-name behavior.</p>
   <thead><tr><th scope="col">Property</th><th scope="col">Behavior</th></tr></thead>
   <tbody>
     <tr><td>Budget</td><td>None. Aliases are excluded from <code>m_current_allocated_rate</code> and never count toward the cap (section 14). A thousand aliases cost the pool nothing.</td></tr>
-    <tr><td>Target</td><td>Stored as the target&rsquo;s <em>name</em>, resolved to its object id when the alias is set and re-resolved whenever a <code>USER</code> with that name is created, so a group recreated during restart or restore picks its aliases back up (object ids are reused; a stale id would silently point elsewhere). A target with aliases cannot be dropped: <code>USER DROP</code> is refused until the aliases are dropped (13.3), so outside the restart and restore paths, which resolve by name, a resolved id never outlives its object. An alias whose target does not exist currently charges nothing.</td></tr>
+    <tr><td>Target</td><td>Stored as the target&rsquo;s <em>name</em>, resolved to its object id when the alias is set and re-resolved whenever a <code>USER</code> with that name is created, so a group recreated during restart or restore picks its aliases back up (object ids are reused; a stale id would silently point elsewhere). A target with aliases cannot be dropped: <code>USER DROP</code> is refused until the aliases are dropped (13.3), so outside the restart path, which resolves by name, a resolved id never outlives its object (restore replays users before aliases, 13.3). An alias whose target does not exist currently charges nothing.</td></tr>
     <tr><td>Name cache</td><td>The <code>LIST_DATABASE</code> walk returns aliases alongside users, so mysqld, RDRS and ClusterJ resolve an alias name to its id with no NDB API change.</td></tr>
     <tr><td>Persistence</td><td>Stored in the schema file like quota objects, recreated on system restart, included in <code>USER BACKUP</code> / restore.</td></tr>
     <tr><td>Name rules</td><td>Same as <code>USER</code>: at most 126 characters, no leading <code>$</code>, exact case-sensitive match. An alias and a user may not share a name.</td></tr>
@@ -1230,11 +1232,19 @@ holding the id of a dropped target would silently charge whatever object the id 
 next; the refusal makes that state impossible to create, from any client, in any command
 order, and no use-time check is needed. The check runs in Dbdict&rsquo;s drop parse,
 inside the same serialized schema transaction as the drop, against a per-target alias
-count maintained by alias <code>SET</code> and <code>DROP</code>; a check in the
-management server alone would race a concurrent alias <code>SET</code>. System restart
-and backup restore are waived, like the rate cap&rsquo;s restart waiver, because they
-rebuild objects in id order and an alias may briefly exist before its target; those
-paths resolve targets by name, so no stale id arises there.</p>
+count; a check in the
+management server alone would race a concurrent alias <code>SET</code>. The count
+follows live alias objects: it changes at alias create commit and alias drop complete,
+never at parse, so a failed or aborted operation leaves it untouched, and a repeated
+<code>SET</code> that falls back to the management server&rsquo;s ALTER changes no
+object and does not count; the target resolver also refuses a target whose drop is
+pending in the same schema transaction, a state it does not check today. System restart
+is waived (the kernel&rsquo;s restart flag, set only on node and system restart), since
+restart rebuilds objects in id order and an alias may briefly exist before its target,
+resolving by name; the count is rebuilt during that re-resolution. Backup restore needs
+no waiver and gets none: <code>USER BACKUP</code> writes users before aliases exactly so
+a replayed restore creates targets first, and <code>USER RESTORE</code> is ordinary
+command replay with no kernel flag.</p>
 <p><code>GET</code> shows one alias. <code>LIST</code> takes no arguments and shows every
 alias in the RonDB it is run against, in object-id order; there is no filter by target. The installer
 reconciles every group of the cluster in one pass and needs the whole set, including
@@ -1263,13 +1273,20 @@ User alias Recommender2_rosa9e1f
   target = recommender2_rl
 User Alias List command completed</code></pre>
 <p><strong><code>USER CAPACITY</code> (decided 2026-11-19; name settled in review).</strong>
-One more command in the same family: the management server answers from Dbdict with the
-per-node thread count, the configured cap percent (section 14) and the currently
-allocated total, Dbdict&rsquo;s own counter, so the installer converts percentages,
-checks the save-time sum rule (section 11) and gates a resized cluster (section 10) from
-one consistent answer, over the same mgmd socket the other commands use and with no
-per-cluster database credentials. It is version-gated like the alias commands: a cluster
-whose kernel does not answer it stays <em>pending</em>.</p>
+One more command in the same family. Each data node sizes its rate pool from its own
+thread count and keeps its own allocated counter, and with automatic thread
+configuration the layout follows each host&rsquo;s CPUs, so nodes can differ even under
+one configuration file; no existing signal exposes any of it (<code>GET</code> and
+<code>LIST DATABASE</code> carry per-database fields only). The management server
+therefore asks <em>every</em> data node with a new request/reply pair and returns one
+tuple per node: the thread count, the pool, the configured cap percent (section 14) and
+the allocated total. The installer takes the most restrictive node&rsquo;s allowance as
+the cluster&rsquo;s cap for the save-time sum rule (section 11) and the resize gate
+(section 10), converts percentages with the minimum thread count, and treats an answer
+missing any node as unreadable, leaving the cluster <em>pending</em>. All over the same
+mgmd socket the other commands use, with no per-cluster database credentials, and
+version-gated like the alias commands: a cluster whose kernel does not answer it stays
+<em>pending</em>.</p>
 
 <h3>13.4 What the other components do</h3>
 <div class="tablewrap"><table>
@@ -1402,7 +1419,7 @@ defect:</p>
   <li>Restart and backup paths for a new object flag, including that restore re-resolves
   targets by name.</li>
   <li>The alias drop protection (13.3, decided 2026-11-19): the per-target alias count
-  in Dbdict&rsquo;s drop parse, the new error code, and the restart and restore waiver,
+  in Dbdict&rsquo;s drop parse, the new error code, and the restart waiver,
   reviewed with the kernel team.</li>
   <li>The cost of the one extra indirection on the <code>TCKEYREQ</code> path, and
   sign-off on the new management syntax.</li>
@@ -1412,12 +1429,22 @@ defect:</p>
   in <code>config.ini</code> (section 15). The single cap removes the history-dependent
   50&ndash;70% stretch zone (a total above the create cap was reachable only by raising
   existing entries and could not be rebuilt after a drop) and lets large deployments
-  tune the ceiling. The rework also closes the restart-oversubscription assert with
-  parse-time refusals (decided 2026-11-19): while a node&rsquo;s total exceeds the cap, a
-  state only a restart onto fewer threads creates, the parse phase refuses any create, a
-  zero-rate one included, and any alter whose post-change total stays over, with error
-  1235, so the commit-time assertions become invariants that never fire; only the parse
-  phase may refuse, which is why the fix lives there. The change, the parameter name and
+  tune the ceiling. The rework also closes the oversubscription assert with parse-time
+  refusals (decided 2026-11-19): one monotonic rule for the parse and commit checks, a
+  command is refused with error 1235 when its post-change total would exceed both the
+  node&rsquo;s cap and the pre-change total, so nothing may worsen an over-cap total,
+  while a lowering, which never worsens it, stays legal and a node drains stepwise; on a
+  node under its cap the rule reduces to today&rsquo;s check, and a zero-rate alias
+  create still reaches the duplicate-name path unchanged. A total past the cap arises
+  from a restart onto fewer threads, from an upgrade that brings the 50% default to a
+  cluster allocated into the old 50&ndash;70% stretch, or from a lowered cap; the parse
+  checks already run on every participating node and a refusal aborts the schema
+  transaction cleanly, which is why the fix lives at parse, where refusing is allowed,
+  and not at commit, which cannot fail. Every management client sends one database
+  operation per schema transaction and the dictionary serializes transactions, so parse
+  always sees the committed total; the rework also refuses a second allocation-changing
+  operation inside one schema transaction, closing the one path, a hand-built signal
+  client, where parse could not. The change, the parameter name and
   the refusals go through the kernel team in review.</li>
   <li>The 60-second client re-list: a recreated alias is invisible to a connected mysqld
   for up to a minute.</li>
