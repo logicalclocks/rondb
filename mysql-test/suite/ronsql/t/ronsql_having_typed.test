@@ -366,8 +366,12 @@ SELECT g, MAX(ts) AS mx FROM hv_t GROUP BY g HAVING MAX(ts) >= '1996-06-15 12:00
 EOF
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
+# mysqld warns (1292, '0000-00-00 00:00:00' for max(hv_t.ts) and mx) for
+# the group whose MAX(ts) is NULL; the rows are right.
+--disable_warnings
 --sorted_result
 SELECT g, MAX(ts) AS mx FROM hv_t GROUP BY g HAVING MAX(ts) >= '1996-06-15 12:00:01' AND MAX(ts) < '2000-01-01'|
+--enable_warnings
 
 --echo
 --echo === tt-10: MAX(DATE) > MIN(DATETIME(3)) ===
