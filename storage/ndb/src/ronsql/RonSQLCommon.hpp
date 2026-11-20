@@ -160,10 +160,13 @@ struct RonSQLAllocationTestHook
     DECIMAL_BUFFER,
     PARSER_STACK,
     LEXER,
+#ifdef ERROR_INSERT
     // Every allocation from the request arena (RonSQLExecParams::amalloc),
     // the three sites above included: while a RonSQLPreparer lives, the
-    // arena asks the hook first (RonSQLArenaTestHookScope).
+    // arena asks the hook first (RonSQLArenaTestHookScope).  ERROR_INSERT
+    // builds only, as ArenaMalloc's fail hook.
     ARENA,
+#endif
   };
   Site site;
   size_t fail_on = 0;
@@ -176,14 +179,17 @@ struct RonSQLAllocationTestHook
     return fail_on != 0 && attempts == fail_on;
   }
 
+#ifdef ERROR_INSERT
   // The ArenaMalloc::FailHook of Site::ARENA; ctx is the hook.
   static bool arena_should_fail(void* ctx) noexcept
   {
     return static_cast<RonSQLAllocationTestHook*>(ctx)->should_fail(
         Site::ARENA);
   }
+#endif
 };
 
+#ifdef ERROR_INSERT
 // Site::ARENA: makes the arena call the hook before each allocation, from
 // construction to destruction.  RonSQLPreparer holds one, so the hook
 // covers each attempt from parsing to the end of execution, an attempt
@@ -214,6 +220,7 @@ public:
 private:
   ArenaMalloc* m_arena;
 };
+#endif
 
 struct RonSQLExecParams
 {

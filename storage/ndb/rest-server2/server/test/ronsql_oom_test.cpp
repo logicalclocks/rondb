@@ -440,6 +440,7 @@ TEST_F(RonSQLDecimalAllocationFailure, RestFailuresAreNotRetried) {
   }
 }
 
+#ifdef ERROR_INSERT
 // T-17: every allocation from the request arena (Site::ARENA), one at a
 // time, for each executor shape: the sort buffer, the key-read arrays, the
 // join objects (JoinQueryObjects), the subquery buffers and the printer
@@ -573,6 +574,16 @@ TEST_F(RonSQLArenaAllocationFailure, EveryAllocationOfEachShape) {
     }
   }
 }
+
+#else
+// T-17: the arena fail hook (ArenaMalloc::set_fail_hook, Site::ARENA) is
+// built only with ERROR_INSERT, like the data nodes' error inserts.  The
+// suite stays, with this one case, so that ronsql_parser_oom.test finds
+// it and every case completes.
+TEST(RonSQLArenaAllocationFailure, NotBuiltWithoutErrorInsert) {
+  RecordProperty("arena_fail_hook", "not built (no ERROR_INSERT)");
+}
+#endif
 
 }  // namespace
 

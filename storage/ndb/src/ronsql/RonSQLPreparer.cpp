@@ -296,7 +296,9 @@ groupby_or_fail(NdbAggregator* agg, bool ok, const char* msg,
 RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_conf(conf),
   m_amalloc(conf.amalloc),
+#ifdef ERROR_INSERT
   m_arena_test_hook(conf.amalloc, conf.allocation_test_hook),
+#endif
   m_context(*this),
   m_columns(conf.amalloc),
   m_column_qualifiers(conf.amalloc),
@@ -395,7 +397,9 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf, ParseOnly parse_only):
   m_conf(conf),
   m_parse_only(true),
   m_amalloc(conf.amalloc),
+#ifdef ERROR_INSERT
   m_arena_test_hook(conf.amalloc, conf.allocation_test_hook),
+#endif
   m_context(*this),
   m_columns(conf.amalloc),
   m_column_qualifiers(conf.amalloc),
