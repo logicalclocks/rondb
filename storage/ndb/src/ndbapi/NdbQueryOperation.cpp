@@ -3619,6 +3619,9 @@ int NdbQueryImpl::close(bool forceSend) {
       ndb->closeTransaction(m_scanTransaction);
       ndb->theRemainingStartTransactions--;  // Compensate; m_scanTransaction
                                              // was not a real Txn
+      // Ndb::hupp() did not count a start for it, so do not count its
+      // close either (as NdbScanOperation::close does).
+      ndb->theImpl->decClientStat(Ndb::TransCloseCount, 1);
       m_scanTransaction = nullptr;
     }
 
