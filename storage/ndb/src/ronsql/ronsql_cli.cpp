@@ -99,7 +99,11 @@ main(int argc, char** argv)
   {
     // Ndb connection
     Ndb_cluster_connection cluster_connection(config.connectstring);
-    if (cluster_connection.connect(4, 5, 1))
+    // Retry every second for 30 s: a node id the previous ronsql_cli used
+    // is refused until the data nodes finish its API failure handling,
+    // and with a 5 s retry delay every back-to-back run in the tests
+    // waited 5 s for it.  The retries print nothing.
+    if (cluster_connection.connect(30, 1, 1))
     {
       cerr << "Unable to connect to cluster within 30 secs." << endl;
       return 1;
