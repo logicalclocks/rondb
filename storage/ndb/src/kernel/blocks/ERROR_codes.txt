@@ -32,6 +32,14 @@ Next DBACC 3007
       7th row of a fragment scan while more than 2 groups are resident
 4043: Force a QueryMemory drain in standalone GROUP BY aggregation once the
       resident groups need two result batches (2 x DEF_AGG_RESULT_BATCH_BYTES)
+4044: Move a growing disk row of an update to a new disk page (DISK_REORG)
+      even if it fits in its current page
+4045: As 4044, and fail the allocation of the new disk row with 1601
+      (after the in-memory varpart may have grown)
+4046: Fail Init of the interpreter of a pushed single-table aggregation or
+      vector search (fragment scan or primary-key read) as if QueryMemory
+      ran out: the scan / read fails with 1870 (persistent until cleared;
+      also checked for query threads, through the LDM instance)
 4060: RONDB-1056 JIT must-JIT: interpreter fallback is fatal for any program /
       scan filter with a compilable region (Dbtup / AggInterpreter /
       JoinAggInterpreter; deliberate-fallback canaries are exempt)
@@ -40,11 +48,7 @@ Next DBACC 3007
       program whose compilable region did not JIT-compile aborts the node;
       per-row fallbacks never trip it (suite-wide strict arming, paired
       with DBLQH 5120)
-4044: Move a growing disk row of an update to a new disk page (DISK_REORG)
-      even if it fits in its current page
-4045: As 4044, and fail the allocation of the new disk row with 1601
-      (after the in-memory varpart may have grown)
-Next DBTUP 4046 (4060-4064 reserved for the RONDB-1056 JIT above)
+Next DBTUP 4047 (4060-4064 reserved for the RONDB-1056 JIT above)
 5121: CRASH_INSERTION in execJOIN_AGG_SETUP_REQ (DblqhProxy) — node failure testing
 5122: CRASH_INSERTION in execJOIN_AGG_COMPLETE_REQ (Dblqh) — node failure testing
 5123: CRASH_INSERTION in execJOIN_AGG_RELEASE_REQ (DblqhProxy) — node failure testing

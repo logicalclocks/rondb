@@ -654,7 +654,7 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
               } else if (type == NdbReceiver::NDB_AGG_RECEIVER) {
                 NdbQueryImpl *queryImpl = (NdbQueryImpl *)owner;
                 com = queryImpl->execAggTRANSID_AI_frag(
-                    ptr[0].p, ptr[0].sz, aSignal->m_fragmentInfo);
+                    ptr[0].p, ptr[0].sz, aSignal, totalLen);
               } else {
                 com = tRec->execTRANSID_AI(ptr[0].p,
                                            ptr[0].sz,

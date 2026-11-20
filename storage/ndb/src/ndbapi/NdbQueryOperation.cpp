@@ -158,6 +158,12 @@ static bool isDecimalAggMetaType(NdbDictionary::Column::Type type) {
          type == NdbDictionary::Column::Decimalunsigned;
 }
 
+static bool isStringAggMetaType(NdbDictionary::Column::Type type) {
+  return type == NdbDictionary::Column::Char ||
+         type == NdbDictionary::Column::Varchar ||
+         type == NdbDictionary::Column::Longvarchar;
+}
+
 static void appendJoinAggColumnMetaEntry(
     Uint32Buffer &dst,
     const NdbDictionary::Column *col,
@@ -336,7 +342,6 @@ static bool appendJoinAggLoadColumnMetaEntries(
     Uint32 schemaVersion,
     const Vector<const NdbLinkedOperandImpl *> *linkedProjection,
     Uint32 &entryCount) {
-  (void)aggColumns;
   if (program == nullptr || programLen < 8) {
     return true;
   }
@@ -442,10 +447,30 @@ static bool appendJoinAggLoadColumnMetaEntries(
     if (op >= kOpSum && op <= kOpMinDouble) {
       const Uint32 aggSlot = word & 0xFFFF;
       if (aggSlot >= nAggColumns || aggSlot >= MAX_AGG_N_RESULTS ||
-          regId >= kRegTotal || regSources[regId].m_column == nullptr) {
+          regId >= kRegTotal) {
         continue;
       }
       JoinAggLoadMetaSource source = regSources[regId];
+      if (source.m_column == nullptr) {
+        /* The result of a CTE read by a CTE_LOOKUP / CTE_SCAN aggregation
+         * leaf follows the parent projections in the linked buffer, so the
+         * linked projection does not describe it; its type comes with
+         * each row.  A string MIN/MAX over it must still have its slot
+         * described here: a data node that gets the group only by CTE
+         * redistribution has no row to take the collation from.  Use the
+         * column the aggregator recorded for the slot, unless it is a
+         * synthetic column without sizes. */
+        const NdbDictionary::Column *aggColumn =
+            (aggColumns != nullptr) ? aggColumns[aggSlot] : nullptr;
+        if ((op != kOpMin && op != kOpMax) || aggColumn == nullptr ||
+            source.m_source_kind != JOIN_AGG_META_SOURCE_LINKED_COLUMN ||
+            source.m_program_offset == RNIL ||
+            !isStringAggMetaType(aggColumn->getType()) ||
+            aggColumn->getSizeInBytes() == 0) {
+          continue;
+        }
+        source.m_column = aggColumn;
+      }
       if (source.m_source_id == RNIL) {
         source.m_source_id = source.m_column->getAttrId();
       }
@@ -2338,51 +2363,143 @@ bool NdbQueryImpl::execAggTRANSID_AI(const Uint32 *data, Uint32 len) {
   Uint32 *dst = m_aggResultData.alloc(len);
   if (likely(dst != nullptr)) {
     memcpy(dst, data, len * sizeof(Uint32));
-    return noteAggResultReceived();
 #ifdef DEBUG_JOIN_AGG_API
   } else {
     DEB_JOIN_AGG_API("[AGG_API] execAggTRANSID_AI: alloc failed "
                      "len=%u offset=%u\n", len, offset);
 #endif
   }
-  return false;
+  /* A record that could not be stored still counts, so the receive
+   * completes and processAggResults reports the memory error. */
+  return noteAggResultReceived();
 }
 
+/**
+ * A record over MAX_TRANSID_AI_SIZE arrives as a fragmented TRANSID_AI
+ * (Dblqh::sendTransIdAIRow) whose header gives the record's length.
+ * Several data node threads send to the same receivers, so fragments of
+ * their records can interleave, but a sender sends one record's
+ * fragments in order with none of its own signals in between (as
+ * NdbReceiver::execTRANSID_AI relies on).  The first fragment reserves
+ * the whole record in m_aggResultData, and the sender's next fragments
+ * are written where its record left off.
+ */
 bool NdbQueryImpl::execAggTRANSID_AI_frag(const Uint32 *data, Uint32 len,
-                                           Uint32 fragInfo) {
-  if (len == 0) return false;
-  const Uint32 offset = m_aggResultData.getSize();
-  if (fragInfo == 1) {
-    // First fragment: record batch offset
-    m_aggResultOffsets.append(offset);
+                                          const NdbApiSignal *signal,
+                                          Uint32 totalLen) {
+  /* The 4 header words, then a key and values whose byte lengths are
+   * 16-bit fields. */
+  static constexpr Uint32 MaxRecordWords = 4 + ((2 * 0xFFFF) >> 2);
+  static constexpr Uint32 NoSlot = ~Uint32(0);
+  static constexpr Uint32 NotStored = ~Uint32(0);
+  const Uint32 senderRef = signal->theSendersBlockRef;
+  Uint32 slotIdx = NoSlot;
+  Uint32 freeIdx = NoSlot;
+  for (Uint32 i = 0; i < m_aggFragSlots.getSize(); i += 3) {
+    const Uint32 ref = *m_aggFragSlots.addr(i);
+    if (ref == senderRef) {
+      slotIdx = i;
+      break;
+    }
+    if (ref == 0 && freeIdx == NoSlot) {
+      freeIdx = i;
+    }
+  }
+
+  if (signal->isFirstFragment()) {
+    if (unlikely(totalLen == 0 || totalLen > MaxRecordWords)) {
+      g_eventLogger->warning(
+          "Aggregation TRANSID_AI from 0x%x: record of %u words",
+          senderRef, totalLen);
+#ifdef NDB_NO_DROPPED_SIGNAL
+      abort();
+#endif
+      return false;
+    }
+    if (unlikely(slotIdx != NoSlot)) {
+      /* The sender's previous record did not end: it is lost, and this
+       * one takes its slot. */
+      g_eventLogger->warning(
+          "Aggregation TRANSID_AI from 0x%x: a record started before "
+          "the previous one ended", senderRef);
+#ifdef NDB_NO_DROPPED_SIGNAL
+      abort();
+#endif
+    } else if (freeIdx != NoSlot) {
+      slotIdx = freeIdx;
+    } else {
+      slotIdx = m_aggFragSlots.getSize();
+      if (unlikely(m_aggFragSlots.alloc(3) == nullptr)) {
+        g_eventLogger->warning(
+            "Aggregation TRANSID_AI from 0x%x: out of memory", senderRef);
+#ifdef NDB_NO_DROPPED_SIGNAL
+        abort();
+#endif
+        return false;
+      }
+    }
+    const Uint32 offset = m_aggResultData.getSize();
+    Uint32 writePos = NotStored;
+    if (likely(m_aggResultData.alloc(totalLen) != nullptr)) {
+      m_aggResultOffsets.append(offset);
+      writePos = offset;
+    }
+    Uint32 *slot = m_aggFragSlots.addr(slotIdx);
+    slot[0] = senderRef;
+    slot[1] = writePos;
+    slot[2] = totalLen;
+  } else if (unlikely(slotIdx == NoSlot)) {
+    g_eventLogger->warning(
+        "Aggregation TRANSID_AI from 0x%x: a fragment without a first "
+        "fragment", senderRef);
+#ifdef NDB_NO_DROPPED_SIGNAL
+    abort();
+#endif
+    return false;
+  }
+
+  Uint32 *slot = m_aggFragSlots.addr(slotIdx);
+  const bool last = signal->isLastFragment();
+  if (unlikely(len > slot[2] || (last && len != slot[2]))) {
+    g_eventLogger->warning(
+        "Aggregation TRANSID_AI from 0x%x: a fragment of %u words with "
+        "%u words of the record left (last %u)",
+        senderRef, len, slot[2], last ? 1 : 0);
+#ifdef NDB_NO_DROPPED_SIGNAL
+    abort();
+#endif
+    slot[0] = 0;
+    return false;
   }
 #ifdef DEBUG_JOIN_AGG_API
-  DEB_JOIN_AGG_API("[AGG_API] execAggTRANSID_AI_frag: len=%u offset=%u "
-                   "fragInfo=%u numOffsets=%u first_words=0x%x 0x%x "
-                   "0x%x 0x%x\n",
-                   len, offset, fragInfo, m_aggResultOffsets.getSize(),
-                   len > 0 ? data[0] : 0,
-                   len > 1 ? data[1] : 0,
-                   len > 2 ? data[2] : 0,
-                   len > 3 ? data[3] : 0);
+  DEB_JOIN_AGG_API("[AGG_API] execAggTRANSID_AI_frag: len=%u sender=0x%x "
+                   "writePos=0x%x left=%u totalLen=%u first=%u last=%u\n",
+                   len, senderRef, slot[1], slot[2], totalLen,
+                   signal->isFirstFragment() ? 1 : 0, last ? 1 : 0);
   dumpAggApiWords("execAggTRANSID_AI_frag", data, len);
 #endif
-  Uint32 *dst = m_aggResultData.alloc(len);
-  if (likely(dst != nullptr)) {
-    memcpy(dst, data, len * sizeof(Uint32));
-    return fragInfo == 3 ? noteAggResultReceived() : false;
-#ifdef DEBUG_JOIN_AGG_API
-  } else {
-    DEB_JOIN_AGG_API("[AGG_API] execAggTRANSID_AI_frag: alloc failed "
-                     "len=%u offset=%u fragInfo=%u\n",
-                     len, offset, fragInfo);
-#endif
+  if (slot[1] != NotStored) {
+    memcpy(m_aggResultData.addr(slot[1]), data, len * sizeof(Uint32));
+    slot[1] += len;
   }
-  return false;
+  slot[2] -= len;
+  if (!last) {
+    return false;
+  }
+  slot[0] = 0;
+  /* As in execAggTRANSID_AI, a record that could not be stored still
+   * counts. */
+  return noteAggResultReceived();
 }
 
 int NdbQueryImpl::processAggResults() {
   if (!m_hasAggregation || m_aggregator == nullptr) return 0;
+
+  if (unlikely(m_aggResultData.isMemoryExhausted() ||
+               m_aggResultOffsets.isMemoryExhausted())) {
+    setErrorCode(Err_MemoryAlloc);
+    return -1;
+  }
 
   const Uint32 numBatches = m_aggResultOffsets.getSize();
 #ifdef DEBUG_JOIN_AGG_API
@@ -2773,6 +2890,7 @@ NdbQueryImpl::NdbQueryImpl(NdbTransaction &trans,
       m_numAggReceivers(0),
       m_aggResultData(),
       m_aggResultOffsets(),
+      m_aggFragSlots(),
       m_aggExpectedResults(0),
       m_aggReceivedResults(0),
       m_aggFinalConfs(0),
@@ -2865,6 +2983,7 @@ void NdbQueryImpl::postFetchRelease() {
   // after scan completes. It is deleted in close().
   m_aggResultData.releaseExtend();
   m_aggResultOffsets.releaseExtend();
+  m_aggFragSlots.releaseExtend();
   m_aggExpectedResults = 0;
   m_aggReceivedResults = 0;
   m_aggFinalConfs = 0;

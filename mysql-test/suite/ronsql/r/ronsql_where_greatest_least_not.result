@@ -1,0 +1,323 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== ng-1: NOT over GREATEST < ===
+== Query ==
+SELECT id FROM gl WHERE NOT (GREATEST(a, b) < 10);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM gl WHERE NOT (GREATEST(a, b) < 10)|
+id
+3
+4
+6
+
+=== ng-2: NOT over GREATEST > with a constant argument ===
+== Query ==
+SELECT id FROM gl WHERE NOT (GREATEST(a, 5) > 10);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM gl WHERE NOT (GREATEST(a, 5) > 10)|
+id
+3
+5
+
+=== ng-3: NOT over LEAST > ===
+== Query ==
+SELECT id FROM gl WHERE NOT (LEAST(a, b) > 10);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM gl WHERE NOT (LEAST(a, b) > 10)|
+id
+3
+4
+5
+
+=== ng-4: NOT over a comparison with LEAST on the right ===
+== Query ==
+SELECT id FROM gl WHERE NOT (10 > LEAST(a, b));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM gl WHERE NOT (10 > LEAST(a, b))|
+id
+6
+
+=== ng-5: ng-1 as an aggregate ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(id) AS ids FROM gl
+WHERE NOT (GREATEST(a, b) < 10);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(id) AS ids FROM gl
+WHERE NOT (GREATEST(a, b) < 10)|
+n	ids
+3	13
+
+=== ng-6: ng-2 as an aggregate ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(id) AS ids FROM gl
+WHERE NOT (GREATEST(a, 5) > 10);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(id) AS ids FROM gl
+WHERE NOT (GREATEST(a, 5) > 10)|
+n	ids
+2	8
+
+=== ng-7: NOT over a comparison a constant argument makes TRUE ===
+== Query ==
+SELECT COUNT(*) AS n FROM gl WHERE NOT (GREATEST(a, 20) > 10);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n FROM gl WHERE NOT (GREATEST(a, 20) > 10)|
+n
+0
+
+=== ng-8: a comparison a constant argument makes FALSE ===
+== Query ==
+SELECT COUNT(*) AS n FROM gl WHERE GREATEST(a, 20) < 10;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n FROM gl WHERE GREATEST(a, 20) < 10|
+n
+0
+
+=== ng-9: a comparison a constant argument makes FALSE, in an OR ===
+== Query ==
+SELECT id FROM gl WHERE GREATEST(a, 20) <= 10 OR d = 1;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM gl WHERE GREATEST(a, 20) <= 10 OR d = 1|
+id
+4
+5
+7
+
+=== ng-10: GREATEST in an XOR ===
+== Query ==
+SELECT id FROM gl WHERE (GREATEST(a, b) > 10) XOR (d = 1);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM gl WHERE (GREATEST(a, b) > 10) XOR (d = 1)|
+id
+3
+5
+6
+
+=== ng-11: NOT over an XOR with GREATEST ===
+== Query ==
+SELECT id FROM gl WHERE NOT ((GREATEST(a, b) > 10) XOR (d = 1));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM gl WHERE NOT ((GREATEST(a, b) > 10) XOR (d = 1))|
+id
+4
+
+=== ng-12: NOT over an AND with GREATEST ===
+== Query ==
+SELECT id FROM gl WHERE NOT (GREATEST(a, b) > 10 AND d = 0);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM gl WHERE NOT (GREATEST(a, b) > 10 AND d = 0)|
+id
+4
+5
+7
+
+=== ng-13: NOT over an OR with LEAST ===
+== Query ==
+SELECT id FROM gl WHERE NOT (LEAST(a, b) < 10 OR d = 1);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM gl WHERE NOT (LEAST(a, b) < 10 OR d = 1)|
+id
+6
+
+=== ng-14: NOT over GREATEST on the joined table ===
+== Query ==
+SELECT p.grp, COUNT(*) AS n, SUM(c.id) AS ids
+FROM glp AS p JOIN gl AS c ON c.id = p.id
+WHERE NOT (GREATEST(c.a, c.b) < 10)
+GROUP BY p.grp;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.grp, COUNT(*) AS n, SUM(c.id) AS ids
+FROM glp AS p JOIN gl AS c ON c.id = p.id
+WHERE NOT (GREATEST(c.a, c.b) < 10)
+GROUP BY p.grp|
+grp	n	ids
+1	2	7
+2	1	6
+
+=== ng-c1: control, GREATEST > ===
+== Query ==
+SELECT id FROM gl WHERE GREATEST(a, b) > 10;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM gl WHERE GREATEST(a, b) > 10|
+id
+3
+4
+6
+
+=== ng-c2: control, LEAST <= in an AND ===
+== Query ==
+SELECT id FROM gl WHERE LEAST(a, b) <= 5 AND d = 1;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM gl WHERE LEAST(a, b) <= 5 AND d = 1|
+id
+4
+5
+
+=== ng-c3: control, a comparison a constant argument makes TRUE ===
+== Query ==
+SELECT id FROM gl WHERE GREATEST(a, 20) > 10;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM gl WHERE GREATEST(a, 20) > 10|
+id
+3
+4
+5
+6
+8
+
+=== ng-c4: control, NOT NOT over GREATEST < ===
+== Query ==
+SELECT id FROM gl WHERE NOT NOT (GREATEST(a, b) < 10);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM gl WHERE NOT NOT (GREATEST(a, b) < 10)|
+id
+5
+
+=== ng-e1: = under NOT is still refused ===
+Error handling: RPE
+ronsql_cli caught exception: GREATEST/LEAST with = or != in a WHERE clause is not supported; use a range comparison (<, <=, >, >=).

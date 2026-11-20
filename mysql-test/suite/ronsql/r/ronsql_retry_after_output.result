@@ -1,0 +1,44 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== rr-1: control, no error insert ===
+== Query ==
+SELECT id, v FROM rrt;
+
+Number of output lines, including header: 801
+
+== Diff ==
+==========
+
+
+
+== Expected result (summary) ==
+SELECT COUNT(*) AS n, MIN(id) AS lo, MAX(id) AS hi, SUM(v) AS sum_v FROM rrt;
+n	lo	hi	sum_v
+800	1	800	961200
+
+=== rr-2: RDRS, TEXT, the scan's second batch is dropped ===
+HTTP 200
+Number of output lines, including header: 801
+== Diff with mysqld ==
+== The last attempt drained 800 rows, more than one attempt ran (must be 1) ==
+1
+
+=== rr-3: RDRS, JSON with an operationId, the scan's second batch is dropped ===
+HTTP 200
+operationId: rr-3
+rows: 800, distinct ids: 800, sum of v: 961200
+== The last attempt drained 800 rows, more than one attempt ran (must be 1) ==
+1
+
+=== rr-4: RDRS, a result over MaxRespSize, the scan's second batch is dropped ===
+HTTP 413
+[limit] Response exceeds the configured MaxRespSize (Internal.MaxRespSize = 65536 bytes). Narrow the query or add LIMIT, or raise Internal.MaxRespSize in the RDRS configuration.
+== Error class limit (must be 1) ==
+1
+
+=== rr-5: ronsql_cli, the scan's second batch is dropped ===
+ronsql_cli failed
+partial output: the header and the first batch
+Error handling: SRE,te,nu,od->RPE
+ronsql_cli caught exception: Single-table pass-through scan failed.

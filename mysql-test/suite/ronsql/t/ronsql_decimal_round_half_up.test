@@ -1,0 +1,258 @@
+# DECIMAL results computed as doubles: HALF_UP rounding, no negative zero.
+#
+# README findings O-6 and O-5. SUM, MIN and MAX over a DECIMAL with a
+# scale and AVG over an exact type are DECIMAL results in MySQL, but
+# RonSQL computes them as doubles and printed them at their scale with
+# my_fcvt() (AVG) or snprintf("%.*f") (SUM/MIN/MAX and the CTE outputs).
+# Both round the binary value: an exact tie went to even, and a value
+# that rounds to zero kept its sign. mysqld rounds a DECIMAL HALF_UP and
+# never prints a negative zero. The printer now formats these values
+# through double2decimal(), decimal_round(HALF_UP) and decimal2string(),
+# as mysqld prints the double result of a pushed SUM or AVG.
+#
+# rhu_i: groups of 32 rows whose AVG(i) is an exact binary tie at the
+# fifth decimal (old output in brackets): g1 sum 1, 0.03125 -> 0.0313
+# [0.0312]; g2 sum 3, 0.09375 -> 0.0938 (control, even rounds up too);
+# g3 sum 5, 0.15625 -> 0.1563 [0.1562]; g4 sum -1, -0.03125 -> -0.0313
+# [-0.0312]; g5 sum 32000005, 1000000.15625 -> 1000000.1563
+# [1000000.1562]. g6 has 319 rows and sum 10: 0.0313479..., which prints
+# 0.0313 either way and so ties with g1 under ORDER BY only with HALF_UP.
+# g7 (1, 2, 4) is a control, 2.3333. x is i as a DOUBLE.
+#
+# rhu_d: DECIMAL(10,2). g1 holds 0.30, -0.10 and -0.20; their double sum
+# is -2.8e-17 or -5.6e-17 in every order, which printed -0.00 for SUM and
+# -0.000000 for AVG. g2 (1.25, 2.50) is a control. g3 has 32 rows with
+# sum 0.25: AVG 0.0078125 is an exact tie at the seventh decimal,
+# 0.007813 [0.007812].
+#
+#   hu-1   AVG(i) GROUP BY g
+#   hu-2   AVG(i) without GROUP BY
+#   hu-3   AVG(i) of a negative tie without GROUP BY
+#   hu-4   ORDER BY the AVG, then g DESC: g6 before g1 [g1 before g6]
+#   hu-5   ORDER BY the AVG DESC, then g, LIMIT 6: g1 before g6
+#   hu-6   CTE AVG output, pass-through
+#   hu-7   CTE AVG output as a GROUP BY key
+#   hu-8   the same, ORDER BY the key DESC (buffered rows)
+#   hu-9   MIN and MAX of a CTE AVG output
+#   hu-c1  control: AVG over a DOUBLE is a DOUBLE and stays compact
+#   nz-1   SUM, AVG, MIN, MAX over DECIMAL(10,2) GROUP BY g
+#   nz-2   SUM and AVG without GROUP BY
+#   nz-3   ORDER BY the AVG DESC (buffered rows)
+#   nz-4   CTE SUM and AVG outputs, pass-through
+#   nz-5   CTE SUM and AVG outputs as GROUP BY keys
+#   nz-6   MIN and MAX of CTE SUM and AVG outputs
+#
+# Expected results come from mysqld (strict_diff).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE rhu_i (
+  pk INT NOT NULL,
+  g  INT NOT NULL,
+  i  INT NOT NULL,
+  x  DOUBLE NOT NULL,
+  PRIMARY KEY USING HASH (pk)
+) ENGINE=NDB;
+INSERT INTO rhu_i
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 32)
+  SELECT 100 + n, 1, IF(n = 1, 1, 0), IF(n = 1, 1, 0) FROM seq;
+INSERT INTO rhu_i
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 32)
+  SELECT 200 + n, 2, IF(n = 1, 3, 0), IF(n = 1, 3, 0) FROM seq;
+INSERT INTO rhu_i
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 32)
+  SELECT 300 + n, 3, IF(n = 1, 5, 0), IF(n = 1, 5, 0) FROM seq;
+INSERT INTO rhu_i
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 32)
+  SELECT 400 + n, 4, IF(n = 1, -1, 0), IF(n = 1, -1, 0) FROM seq;
+INSERT INTO rhu_i
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 32)
+  SELECT 500 + n, 5, IF(n = 1, 1000005, 1000000), IF(n = 1, 1000005, 1000000)
+  FROM seq;
+INSERT INTO rhu_i
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 319)
+  SELECT 1000 + n, 6, IF(n <= 10, 1, 0), IF(n <= 10, 1, 0) FROM seq;
+INSERT INTO rhu_i VALUES (2001, 7, 1, 1), (2002, 7, 2, 2), (2003, 7, 4, 4);
+CREATE TABLE rhu_d (
+  pk INT NOT NULL,
+  g  INT NOT NULL,
+  d  DECIMAL(10,2) NOT NULL,
+  PRIMARY KEY USING HASH (pk)
+) ENGINE=NDB;
+INSERT INTO rhu_d VALUES
+  (101, 1, 0.30), (102, 1, -0.10), (103, 1, -0.20),
+  (201, 2, 1.25), (202, 2, 2.50);
+INSERT INTO rhu_d
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 32)
+  SELECT 300 + n, 3, IF(n = 1, 0.25, 0.00) FROM seq;
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === hu-1: AVG(i) GROUP BY g, exact ties at the fifth decimal ===
+let $QUERY=
+SELECT g, AVG(i) AS a FROM rhu_i GROUP BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, AVG(i) AS a FROM rhu_i GROUP BY g|
+
+--echo
+--echo === hu-2: AVG(i) without GROUP BY ===
+let $QUERY=
+SELECT AVG(i) AS a FROM rhu_i WHERE g = 1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT AVG(i) AS a FROM rhu_i WHERE g = 1|
+
+--echo
+--echo === hu-3: a negative tie without GROUP BY ===
+let $QUERY=
+SELECT AVG(i) AS a, COUNT(*) AS c FROM rhu_i WHERE g = 4;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT AVG(i) AS a, COUNT(*) AS c FROM rhu_i WHERE g = 4|
+
+--echo
+--echo === hu-4: ORDER BY the AVG, then g DESC ===
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, AVG(i) AS a FROM rhu_i GROUP BY g ORDER BY a, g DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT g, AVG(i) AS a FROM rhu_i GROUP BY g ORDER BY a, g DESC|
+
+--echo
+--echo === hu-5: ORDER BY the AVG DESC, then g, LIMIT 6 ===
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, AVG(i) AS a FROM rhu_i GROUP BY g ORDER BY a DESC, g LIMIT 6;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT g, AVG(i) AS a FROM rhu_i GROUP BY g ORDER BY a DESC, g LIMIT 6|
+
+--echo
+--echo === hu-6: CTE AVG output, pass-through ===
+let $QUERY=
+WITH a AS (SELECT g, AVG(i) AS av FROM rhu_i GROUP BY g) SELECT g, av FROM a;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT g, AVG(i) AS av FROM rhu_i GROUP BY g) SELECT g, av FROM a|
+
+--echo
+--echo === hu-7: CTE AVG output as a GROUP BY key ===
+# g6 is left out: it prints as g1 does, so mysqld groups the two
+# DECIMAL values together while RonSQL groups by the double.
+let $QUERY=
+WITH a AS (SELECT g, AVG(i) AS av FROM rhu_i WHERE g < 6 GROUP BY g) SELECT av, COUNT(*) AS n FROM a GROUP BY av;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT g, AVG(i) AS av FROM rhu_i WHERE g < 6 GROUP BY g) SELECT av, COUNT(*) AS n FROM a GROUP BY av|
+
+--echo
+--echo === hu-8: CTE AVG output as a GROUP BY key, ORDER BY it DESC ===
+--let $skip_sort=yes
+let $QUERY=
+WITH a AS (SELECT g, AVG(i) AS av FROM rhu_i WHERE g < 6 GROUP BY g) SELECT av, COUNT(*) AS n FROM a GROUP BY av ORDER BY av DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH a AS (SELECT g, AVG(i) AS av FROM rhu_i WHERE g < 6 GROUP BY g) SELECT av, COUNT(*) AS n FROM a GROUP BY av ORDER BY av DESC|
+
+--echo
+--echo === hu-9: MIN and MAX of a CTE AVG output ===
+let $QUERY=
+WITH a AS (SELECT g, AVG(i) AS av FROM rhu_i GROUP BY g) SELECT MIN(av) AS mn, MAX(av) AS mx FROM a;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT g, AVG(i) AS av FROM rhu_i GROUP BY g) SELECT MIN(av) AS mn, MAX(av) AS mx FROM a|
+
+--echo
+--echo === hu-c1: control, AVG over a DOUBLE stays compact ===
+let $QUERY=
+SELECT g, AVG(x) AS ax FROM rhu_i WHERE g < 6 GROUP BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, AVG(x) AS ax FROM rhu_i WHERE g < 6 GROUP BY g|
+
+--echo
+--echo === nz-1: SUM, AVG, MIN, MAX over DECIMAL(10,2) GROUP BY g ===
+let $QUERY=
+SELECT g, SUM(d) AS s, AVG(d) AS a, MIN(d) AS mn, MAX(d) AS mx FROM rhu_d GROUP BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, SUM(d) AS s, AVG(d) AS a, MIN(d) AS mn, MAX(d) AS mx FROM rhu_d GROUP BY g|
+
+--echo
+--echo === nz-2: SUM and AVG without GROUP BY ===
+let $QUERY=
+SELECT SUM(d) AS s, AVG(d) AS a FROM rhu_d WHERE g = 1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(d) AS s, AVG(d) AS a FROM rhu_d WHERE g = 1|
+
+--echo
+--echo === nz-3: ORDER BY the AVG DESC ===
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, SUM(d) AS s, AVG(d) AS a FROM rhu_d GROUP BY g ORDER BY a DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT g, SUM(d) AS s, AVG(d) AS a FROM rhu_d GROUP BY g ORDER BY a DESC|
+
+--echo
+--echo === nz-4: CTE SUM and AVG outputs, pass-through ===
+let $QUERY=
+WITH s AS (SELECT g, SUM(d) AS sd, AVG(d) AS ad FROM rhu_d GROUP BY g) SELECT g, sd, ad FROM s;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT g, SUM(d) AS sd, AVG(d) AS ad FROM rhu_d GROUP BY g) SELECT g, sd, ad FROM s|
+
+--echo
+--echo === nz-5: CTE SUM and AVG outputs as GROUP BY keys ===
+let $QUERY=
+WITH s AS (SELECT g, SUM(d) AS sd, AVG(d) AS ad FROM rhu_d GROUP BY g) SELECT sd, ad, COUNT(*) AS n FROM s GROUP BY sd, ad;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT g, SUM(d) AS sd, AVG(d) AS ad FROM rhu_d GROUP BY g) SELECT sd, ad, COUNT(*) AS n FROM s GROUP BY sd, ad|
+
+--echo
+--echo === nz-6: MIN and MAX of CTE SUM and AVG outputs ===
+let $QUERY=
+WITH s AS (SELECT g, SUM(d) AS sd, AVG(d) AS ad FROM rhu_d GROUP BY g) SELECT MIN(sd) AS mn, MAX(sd) AS mx, MIN(ad) AS amn FROM s;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT g, SUM(d) AS sd, AVG(d) AS ad FROM rhu_d GROUP BY g) SELECT MIN(sd) AS mn, MAX(sd) AS mx, MIN(ad) AS amn FROM s|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE rhu_d;
+DROP TABLE rhu_i;
+--enable_warnings
+--enable_query_log

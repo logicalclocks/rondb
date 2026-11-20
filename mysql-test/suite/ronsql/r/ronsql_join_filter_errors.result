@@ -1,0 +1,177 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== jf-1: root table scan, the filter does not fit ===
+Error handling: WHERE filter->RPE
+NDB Permanent error 4294, Application error: Scan filter is too large, discarded
+Error handling: RPE
+ronsql_cli caught exception: Failed to build the WHERE filter of the root scan.
+
+=== jf-2: joined table, the filter does not fit ===
+Error handling: WHERE filter->RPE
+NDB Permanent error 4294, Application error: Scan filter is too large, discarded
+Error handling: RPE
+ronsql_cli caught exception: Failed to build the WHERE filter of a joined table.
+
+=== jf-3: CTE body root scan, the filter does not fit ===
+Error handling: WHERE filter->RPE
+NDB Permanent error 4294, Application error: Scan filter is too large, discarded
+Error handling: RPE
+ronsql_cli caught exception: Failed to build the WHERE filter of the CTE body scan root.
+
+=== jf-4: index-scan root, the residual filter does not fit ===
+Error handling: WHERE filter->RPE
+NDB Permanent error 4294, Application error: Scan filter is too large, discarded
+Error handling: RPE
+ronsql_cli caught exception: Failed to build the WHERE filter of the index-scan root.
+
+=== jf-5: PK index-scan root, the residual filter does not fit ===
+Error handling: WHERE filter->RPE
+NDB Permanent error 4294, Application error: Scan filter is too large, discarded
+Error handling: RPE
+ronsql_cli caught exception: Failed to build the WHERE filter of the root PK index scan.
+
+=== jf-6: PK lookup root, the residual filter does not fit ===
+Error handling: WHERE filter->RPE
+NDB Permanent error 4294, Application error: Scan filter is too large, discarded
+Error handling: RPE
+ronsql_cli caught exception: Failed to build the WHERE filter of the root PK lookup.
+
+=== jf-c1: control, root table scan ===
+== Query ==
+SELECT a.g AS g, COUNT(*) AS n
+FROM jf AS a JOIN jc AS b ON b.id = a.id
+WHERE a.s <> 'b'
+GROUP BY a.g;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.g AS g, COUNT(*) AS n
+FROM jf AS a JOIN jc AS b ON b.id = a.id
+WHERE a.s <> 'b'
+GROUP BY a.g|
+g	n
+1	1
+2	2
+
+=== jf-c2: control, joined table ===
+== Query ==
+SELECT a.g AS g, COUNT(*) AS n
+FROM jc AS b JOIN jf AS a ON a.id = b.id
+WHERE a.s <> 'b'
+GROUP BY a.g;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.g AS g, COUNT(*) AS n
+FROM jc AS b JOIN jf AS a ON a.id = b.id
+WHERE a.s <> 'b'
+GROUP BY a.g|
+g	n
+1	1
+2	2
+
+=== jf-c3: control, CTE body root scan ===
+== Query ==
+WITH c AS (SELECT g AS k, COUNT(*) AS n FROM jf
+WHERE s <> 'b'
+GROUP BY g)
+SELECT k, n FROM c;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT g AS k, COUNT(*) AS n FROM jf
+WHERE s <> 'b'
+GROUP BY g)
+SELECT k, n FROM c|
+k	n
+1	1
+2	2
+
+=== jf-c4: control, index-scan root ===
+== Query ==
+SELECT a.g AS g, COUNT(*) AS n
+FROM jx AS a JOIN jc AS b ON b.id = a.id
+WHERE a.g >= 1
+AND a.s <> 'b'
+GROUP BY a.g;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.g AS g, COUNT(*) AS n
+FROM jx AS a JOIN jc AS b ON b.id = a.id
+WHERE a.g >= 1
+AND a.s <> 'b'
+GROUP BY a.g|
+g	n
+1	1
+2	2
+
+=== jf-c5: control, PK index-scan root ===
+== Query ==
+SELECT a.g AS g, COUNT(*) AS n
+FROM jx AS a JOIN jc AS b ON b.id = a.id
+WHERE a.id = 1
+AND a.s <> 'b'
+GROUP BY a.g;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.g AS g, COUNT(*) AS n
+FROM jx AS a JOIN jc AS b ON b.id = a.id
+WHERE a.id = 1
+AND a.s <> 'b'
+GROUP BY a.g|
+g	n
+1	1
+
+=== jf-c6: control, PK lookup root, the filter removes the row ===
+== Query ==
+SELECT a.id AS id, a.g AS g, b.id AS bid
+FROM jx AS a JOIN jc AS b ON b.id = a.id
+WHERE a.id = 2
+AND a.s <> 'b';
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.id AS id, a.g AS g, b.id AS bid
+FROM jx AS a JOIN jc AS b ON b.id = a.id
+WHERE a.id = 2
+AND a.s <> 'b'|
+id	g	bid

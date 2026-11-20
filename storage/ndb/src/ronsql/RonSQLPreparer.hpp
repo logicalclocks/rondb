@@ -76,8 +76,12 @@ struct RonSQLListBuilder
 
   void append(Node* node)
   {
-    ndbrequire((head == NULL) == (tail == NULL));
-    ndbrequire(node != NULL && node->next == NULL);
+    ronsql_require_bug((head == NULL) == (tail == NULL),
+                       "A parse tree list has a head without a tail or a "
+                       "tail without a head.");
+    ronsql_require_bug(node != NULL && node->next == NULL,
+                       "A parse tree list got a NULL node or a node that "
+                       "is already linked.");
     if (tail == NULL)
       head = node;
     else
@@ -551,6 +555,17 @@ private:
   };
   DynamicArray<SubqueryInfo> m_subquery_infos;
   bool m_has_subqueries = false;
+  // X-4: the nodes that hold a scalar subquery result after
+  // substitution (the subquery's own node, a unary minus folded over
+  // it), and whether substitute_subquery_results() is in the WHERE,
+  // where exact_subquery_comparison() applies, or in HAVING, which
+  // compares in DOUBLE.
+  DynamicArray<const ConditionalExpression*>* m_subquery_values = NULL;
+  bool m_substituting_where = false;
+  // X-3: set by fold_where_after_substitution() when a scalar subquery
+  // result makes the WHERE TRUE for no row.  The plan's keys and bounds
+  // may then hold a NULL, so execution reads no row through them.
+  bool m_where_never_true = false;
   bool m_has_ctes = false;
   // RONDB-1124 M1.3: name of the CTE collapse_collect_cte() folded into the
   // single-table pass-through statement ({NULL, 0} when no collapse ran);
@@ -587,11 +602,18 @@ private:
   // path in execute_join() and skips ResultPrinter::compile() (which
   // requires every SELECT-list column to appear in GROUP BY).
   bool m_is_aggregate_query = true;
-  /* Set once a pass-through header or row has been written to
-   * out_stream.  The stream cannot be rewound, so a failure after that
-   * point must not be retried: a transparent retry repeats the rows
-   * already delivered (RONDB-1120 finding F-6). */
+  /* Set once execute() has written, or is about to write, to out_stream.
+   * The stream cannot be rewound, so a failure after that point must not
+   * be retried unless the caller discards the output: a transparent retry
+   * repeats what was already delivered (RONDB-1120 finding F-6).
+   * X-13: every site that hands out_stream to a printer, or writes to it
+   * itself, sets this first (the streaming drains when they print their
+   * header). */
   bool m_output_started = false;
+  // X-6: true when output went out and the caller keeps it
+  // (RonSQLExecParams::output_discardable is false), so that a retry
+  // would repeat it.
+  bool retry_would_repeat_output() const;
 
   // One QueryScope per CTE in ast_root.cte_list, in declaration order.
   // Pointers because QueryScope holds a DynamicArray — non-trivially-copyable.
@@ -809,13 +831,23 @@ private:
                                          const char* what);
   // Raise the error of one failed operation or pushed query by its NDB
   // classification, as handle_ronsql_exception does for a transaction
-  // error: rate limit (RLE), temporary (RRE, unless rows were already
+  // error: rate limit (RLE), retryable (RRE, unless rows were already
   // streamed) or permanent with its error class and code (RPE).  Only a
-  // temporary error is retried; an internal error is not.  `where`
-  // labels the err-stream line.  Callers route schema errors first.
+  // temporary error or an unavailable cluster (X-8) is retried; an
+  // internal error is not.  `where` labels the err-stream line.  Callers
+  // route schema errors first.
   [[noreturn]] void throw_classified_ndb_error(const NdbError& err,
                                                const char* what,
                                                const char* where);
+  // J-6: raise the error a failed NdbQueryBuilder call left on the
+  // builder (the transaction does not see it): a stale index (4809)
+  // reloads the schema, a too large definition (4812) is a limit error,
+  // out of memory a resource error, anything else internal.
+  [[noreturn]] void throw_query_builder_error(const NdbQueryBuilder* qb,
+                                              const char* what);
+  // J-6: unless `condition`, throw_query_builder_error(qb, msg).
+  void require_qb(const NdbQueryBuilder* qb, bool condition,
+                  const char* msg);
   // WP-F: recognise `col IN (…)` (an OR tree of `col = literal` leaves
   // on one column); see the definition for the contract.
   bool match_in_shape(struct ConditionalExpression* ce, Uint32* col_idx,
@@ -1009,6 +1041,58 @@ private:
    */
   void validate_cte_execution_shapes();
   /**
+   * RONSQL-39 through CTEs (X-14): refuse, as unsupported, a GROUP BY
+   * key of a CTE body or of the main query that is a CTE output whose
+   * type, followed down the CTE chain, is BLOB or TEXT.
+   */
+  void check_cte_groupby_key_types();
+  void check_cte_groupby_key_types(QueryScope& scope,
+                                   const GroupbyColumns* groupby);
+  /**
+   * C-6, O-3, O-10: the stored DATE, DATETIME, TIME, TIMESTAMP or YEAR
+   * column a CTE output stands for, through CTE outputs that are a column
+   * or a MIN / MAX of a column; NULL otherwise.  `packed` is set when a
+   * MIN / MAX was crossed, so that the output holds the packed value in a
+   * Bigunsigned virtual column.
+   */
+  const NdbDictionary::Column* temporal_cte_source(const QueryScope& scope,
+                                                   Uint32 col_idx,
+                                                   bool& packed) const;
+  /**
+   * O-10: refuse, as unsupported, SUM, AVG, arithmetic and a mixed
+   * GREATEST / LEAST over a packed temporal CTE output, which would
+   * compute on the packed integer, and a WHERE GREATEST / LEAST of a TIME
+   * one compared with a string, which MySQL compares as strings.
+   */
+  void check_cte_temporal_outputs();
+  void check_cte_temporal_outputs(const QueryScope& scope,
+                                  const SelectStatement* stmt);
+  void check_cte_temporal_agg_arg(const QueryScope& scope, TokenKind fun,
+                                  const AggregationAPICompiler::Expr* arg)
+      const;
+  bool expr_has_packed_temporal(const QueryScope& scope,
+                                const AggregationAPICompiler::Expr* e) const;
+  bool pair_op_temporal_operands(const QueryScope& scope,
+                                 const AggregationAPICompiler::Expr* e,
+                                 const NdbDictionary::Column*& first) const;
+  void check_cte_temporal_where(const QueryScope& scope,
+                                const struct ConditionalExpression* ce) const;
+  /**
+   * C-6: the packed value of a constant compared with a packed temporal
+   * CTE output of `src`'s type, as mysqld compares it; false when the
+   * constant lies between two values of the type (`packed` is then the
+   * one below).  Refuses the constants it cannot compare exactly.
+   */
+  bool cte_temporal_constant(const NdbDictionary::Column* src,
+                             const struct ConditionalExpression* ce,
+                             Uint64& packed) const;
+  /**
+   * J-6 = C-9: refuse, with a limit error, a join query whose CTE
+   * subtrees and main plan need more than the 32 operations of one
+   * pushed query, before execute_join builds it.
+   */
+  void check_pushed_query_size();
+  /**
    * Resolve the (NdbDictionary::Column::Type, length, charset) tuple
    * for a column reference in `scope`, walking through chained CTE
    * output descriptors.  Mirrors the aggregate widening rules in
@@ -1066,6 +1150,11 @@ private:
   void rewrite_select_subqueries_as_joins();
   void decorrelate_exists();
   void decorrelate_scalar();
+  // The correlation predicate decorrelate_scalar() rewrites: an equality
+  // between a column of the inner table and one of the outer query.
+  bool has_correlation_predicate(const SelectStatement* inner_stmt);
+  // S-2: refuses a correlated scalar subquery used as a condition.
+  void reject_correlated_scalar_conditions(const ConditionalExpression* ce);
   void compile();
   void register_condition_linked_projections(
       QueryScope& scope, const ConditionalExpression* ce);
@@ -1080,6 +1169,10 @@ private:
   // Functions used in execution phase
 public:
   void execute(); // todo make sure we can execute several times, do not mutate. Make this a separate object that takes a preparer as const input (This todo from review 2024-08-22 with MR)
+  // X-4: true when a SELECT output of this prepared statement is a
+  // BINARY or VARBINARY column, which the JSON output that
+  // execute_subqueries() reads carries as base64 text.
+  bool has_binary_output();
 private:
   // Start m_trans, tagged with the rate limit identity if there is one.
   // Every transaction of a query is started here.
@@ -1087,10 +1180,46 @@ private:
   void cleanup_trans();
   void execute_subqueries();
   void substitute_subquery_results();
+  // X-4: writes the constant a subquery result stands for into `out`.
+  void set_subquery_constant(struct ConditionalExpression* out,
+                             const SubqueryResult& value);
+  bool is_subquery_value(const struct ConditionalExpression* ce) const;
+  // X-4, F-10: makes a comparison of an integer or DECIMAL column with a
+  // number a subquery returned compare as MySQL does.
+  void exact_subquery_comparison(struct ConditionalExpression* cmp);
+  // ... every such comparison with a scalar subquery result in ce.
+  void exact_subquery_comparisons(struct ConditionalExpression* ce);
+  // The fractional digits an integer (0) or DECIMAL column holds; false
+  // for a column of any other type.
+  bool exact_numeric_column_scale(Uint32 col_idx, int* scale);
   // polarity: 1 under an even number of NOTs, -1 under an odd number, and
   // 0 where the exact truth value matters (XOR, IS, comparisons).
+  // is_condition: ce is the whole WHERE or an operand of AND, OR, XOR or
+  // NOT, so a scalar subquery there is a condition, not a value (S-2).
   void substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
-                                      int polarity = 1);
+                                      int polarity = 1,
+                                      bool is_condition = false);
+  // S-2: replaces a scalar subquery used as a condition by TRUE, FALSE or
+  // UNKNOWN, in the forms fold_where_after_substitution() folds.
+  void substitute_condition_result(ConditionalExpression* ce,
+                                   const SubqueryResult& result);
+  // X-3: what a WHERE condition is once the constants that scalar
+  // subqueries substituted are folded into it.  A comparison with NULL
+  // is UNKNOWN, and WHERE keeps only the rows where it is TRUE: UNKNOWN
+  // keeps the same rows as FALSE under an even number of NOTs and as
+  // TRUE under an odd number (polarity 1 and -1).  The truth is that of
+  // the whole WHERE, not of the subexpression alone.
+  enum class FoldedTruth { ALWAYS_TRUE, ALWAYS_FALSE, VARIES };
+  // Sets *out to ce, or to a new tree for VARIES when something folded.
+  // Nodes are never changed in place: the plan shares them.
+  FoldedTruth fold_where_constants(struct ConditionalExpression* ce,
+                                   int polarity,
+                                   struct ConditionalExpression** out);
+  // Folds a list of top-level conjuncts; an ALWAYS_TRUE one becomes NULL.
+  void fold_where_conjuncts(DynamicArray<ConditionalExpression*>& conjuncts);
+  // Folds every WHERE structure the plan made at prepare time and sets
+  // m_where_never_true.
+  void fold_where_after_substitution();
   void execute_join();
   // Pass-through row delivery for projection-only main SELECTs.
   // Originally Phase E.3 (single CTE_SCAN root); generalized in
@@ -1137,6 +1266,15 @@ private:
                               Uint32 op_idx,
                               NdbDictionary::Table* virtTab,
                               struct ConditionalExpression* where_ce);
+  // C-6: one CTE_LOOKUP filter atom on a packed temporal CTE output.
+  void emit_cte_temporal_filter_atom(
+      NdbInterpretedCode& code,
+      Uint32 position,
+      const NdbDictionary::Column* src,
+      const struct ConditionalExpression* const_side,
+      TokenKind op,
+      bool swapped,
+      Uint32 fail_label);
   // Part B of join_nest_semantics_plan.md: join-condition LEFT->INNER
   // promotion over the flat AST join list, run in parse() before the
   // non-aggregate gate and before everything that consumes join types
@@ -1185,6 +1323,16 @@ private:
   ResultPrinter::ColumnMetadata* build_result_column_metadata();
   bool column_uses_float_display(QueryScope& scope, Uint32 col_idx);
   void apply_filter_top_level(NdbScanFilter* filter);
+  // X-3: the whole filter, rejecting every row (m_where_never_true).
+  void apply_reject_all_filter(NdbScanFilter* filter);
+  // J-5: the WHERE filter of a join or CTE operation, built into `code`
+  // and finalised, and its attachment to the operation's options; a
+  // failed step throws its NDB error with the message `what`.
+  void build_where_filter(NdbInterpretedCode& code, QueryScope& scope,
+                          struct ConditionalExpression* ce,
+                          const char* what);
+  void set_where_filter(NdbQueryOptions& opts,
+                        const NdbInterpretedCode& code, const char* what);
   void apply_filter(NdbScanFilter* filter, QueryScope& scope,
                     struct ConditionalExpression* ce);
   void apply_filter_cmp(NdbScanFilter* filter, QueryScope& scope,
@@ -1207,12 +1355,44 @@ private:
   // without its length prefix).
   const NdbQueryOperand* query_const_value(NdbQueryBuilder* qb, raw_value rv,
                                            const NdbDictionary::Column* col);
+  // The ignored key of a lookupCte over a scalar CTE (root or cross-join
+  // child), typed and sized for the virtual primary key, its first output.
+  const NdbQueryOperand* scalar_cte_dummy_key(
+      NdbQueryBuilder* qb, const NdbDictionary::Table* virtTab);
   struct ConditionalExpression* simplify_ce(struct ConditionalExpression* ce,
                                             int maxdepth);
+  // F-2: writes -n into out and returns true when n is a T_INT or
+  // T_FLOAT; returns false and leaves out alone otherwise.  A T_FLOAT
+  // substituted from a scalar subquery result has no source text and
+  // gets none.  INT64_MIN fails the statement, as in MySQL.
+  bool negate_numeric_constant(const struct ConditionalExpression* n,
+                               struct ConditionalExpression* out);
+  // F-9, F-11: true when the constant k is not a value of a FLOAT,
+  // DATETIME or TIMESTAMP column of this type and precision; *bound is
+  // then a constant of the type, the largest value below k when
+  // *bound_is_below, else the lowest value (every value is above k).
+  bool inexact_comparison_constant(NdbDictionary::Column::Type type,
+                                   Int32 precision,
+                                   const struct ConditionalExpression* k,
+                                   struct ConditionalExpression** bound,
+                                   bool* bound_is_below);
+  // F-9, F-11: ce with each comparison of such a column with such a
+  // constant replaced by comparisons with constants of the column's type
+  // that hold in the same rows (see the definition).
+  struct ConditionalExpression* exact_constant_comparisons(
+      QueryScope& scope, struct ConditionalExpression* ce);
+  struct ConditionalExpression* exact_constant_comparison(
+      QueryScope& scope, struct ConditionalExpression* ce);
+  // F-5: NOT ce with the NOT moved one level down, for a ce that has a
+  // GREATEST / LEAST comparison below NOT, AND, OR and XOR (see the
+  // definition).  simplify_ce simplifies the result.
+  struct ConditionalExpression* negate_minmax_condition(
+      struct ConditionalExpression* ce);
   // D11: lower a `GREATEST(...) <cmp> const` / `LEAST(...) <cmp> const`
   // comparison (either operand may be the min/max node) into a boolean
   // OR/AND of per-argument column-vs-constant comparisons (with IS NOT NULL
-  // guards on the OR direction).  Called from simplify_ce.
+  // guards on the OR direction).  Called from simplify_ce, only where no
+  // NOT is above the comparison (F-5).
   struct ConditionalExpression* rewrite_minmax_comparison(
       TokenKind cmp_op,
       struct ConditionalExpression* left,
@@ -1223,6 +1403,11 @@ private:
                               NdbAggregator* aggregator,
                               NdbDictionary::Table* const* cteVirtualTables
                                   = NULL);
+  // The slot of the hidden sentinel COUNT of a cross-table filter: the
+  // one after every aggregate slot of the compiled program, AVG of a
+  // CTE body included (D-4).
+  static Uint32 cross_filter_sentinel_slot(
+      const AggregationAPICompiler& agg);
   // F16: a failed Sum / Avg emit; names an unsupported SUM / AVG over a
   // string or temporal column (see the definition).  Always throws.
   [[noreturn]] void throw_sum_avg_emit_error(NdbAggregator* aggregator,
@@ -1312,6 +1497,10 @@ private:
   void print_join_plan_ops(QueryScope& scope, const char* line_prefix);
   void print(struct ConditionalExpression* ce,
              LexString prefix);
+  // E-1: the arguments of GREATEST / LEAST, and a subquery by its table.
+  void print_arg_list(struct ConditionalExpression* list,
+                      LexString prefix, bool last);
+  void print_subquery_source(const SelectStatement* stmt);
 
 public:
   ~RonSQLPreparer();

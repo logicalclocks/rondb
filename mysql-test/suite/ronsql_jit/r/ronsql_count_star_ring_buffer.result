@@ -1,0 +1,108 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== rb-1: COUNT(*) of a ring-buffer table ===
+== Query ==
+SELECT COUNT(*) AS c FROM rbc;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT COUNT(*) AS c FROM rbc|
+c
+9
+
+=== rb-2: COUNT(1) ===
+== Query ==
+SELECT COUNT(1) AS c FROM rbc;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(1) AS c FROM rbc|
+c
+9
+
+=== rb-3: two COUNTs in one query ===
+== Query ==
+SELECT COUNT(*) AS a, COUNT(1) AS b FROM rbc;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS a, COUNT(1) AS b FROM rbc|
+a	b
+9	9
+
+=== rb-4: COUNT(*) of the ring-buffer table as a scalar subquery ===
+== Query ==
+SELECT COUNT(*) AS c FROM rbp WHERE id <= (SELECT COUNT(*) FROM rbc);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS c FROM rbp WHERE id <= (SELECT COUNT(*) FROM rbc)|
+c
+9
+
+=== rb-c1: control, COUNT(*) GROUP BY id scans ===
+== Query ==
+SELECT id, COUNT(*) AS c FROM rbc GROUP BY id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id, COUNT(*) AS c FROM rbc GROUP BY id|
+id	c
+1	3
+2	3
+3	1
+4	2
+
+=== rb-c2: control, COUNT(*) of a plain table uses the fragment stats ===
+== Query ==
+SELECT COUNT(*) AS c FROM rbp;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+SELECT COUNT(*) AS c FROM rbp|
+c
+12
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_count_star_ring_buffer_jit_fallback_delta;
+ronsql_count_star_ring_buffer_jit_fallback_delta
+0

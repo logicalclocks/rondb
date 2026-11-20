@@ -296,13 +296,19 @@ extern "C" int ndb_mgm_set_bindaddress(NdbMgmHandle handle, const char *arg) {
     char servbuf[NI_MAXSERV];
     if (Ndb_split_string_address_port(arg, hostbuf, sizeof(hostbuf), servbuf,
                                       sizeof(servbuf)) == 0) {
-      char *endp = nullptr;
-      errno = 0;
-      long val = strtol(servbuf, &endp, 10);
-      if (*endp != '\0' || errno != 0 || val > UINT16_MAX || val < 0) {
-        // invalid address
-        SET_ERROR(handle, NDB_MGM_ILLEGAL_BIND_ADDRESS, "Illegal bind address");
-        DBUG_RETURN(-1);
+      long val = 0;
+      // No port given: port 0.  Only a port is parsed, since strtol of an
+      // empty string sets errno to EINVAL on macOS (no conversion).
+      if (servbuf[0] != '\0') {
+        char *endp = nullptr;
+        errno = 0;
+        val = strtol(servbuf, &endp, 10);
+        if (*endp != '\0' || errno != 0 || val > UINT16_MAX || val < 0) {
+          // invalid address
+          SET_ERROR(handle, NDB_MGM_ILLEGAL_BIND_ADDRESS,
+                    "Illegal bind address");
+          DBUG_RETURN(-1);
+        }
       }
 
       handle->m_bindaddress = strdup(hostbuf);

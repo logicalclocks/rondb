@@ -1,0 +1,114 @@
+# Output names in the JSON of pass-through rows.
+#
+# README finding O-2: print_passthrough_row wrote each output name (an
+# alias, or the column name the query spelled) between quotes as it
+# was, so a quoted identifier with a quote, e.g. `x"y`, made the JSON
+# invalid, one with a backslash, e.g. `a\b`, was read back as another
+# name (\b is a backspace in JSON), and under JSON_ASCII a non-ASCII
+# name was not \u-escaped. Aggregate rows and the COUNT(*) shortcut
+# already escaped their names. The pass-through printer now escapes
+# them the same way.
+#
+#   oe-1  a plain alias (control)
+#   oe-2  a quote
+#   oe-3  a backslash
+#   oe-4  a quote and a backslash, several rows, ORDER BY
+#   oe-5  a tab
+#   oe-6  aggregate rows with the same aliases (control)
+#   oe-7  the COUNT(*) shortcut (control)
+#   oe-8  a non-ASCII alias under JSON (control)
+#   oe-9  the same under JSON_ASCII
+#
+# Each query runs on ronsql_cli and on RDRS, and each body goes through
+# perl's JSON::PP, which fails the --exec on invalid JSON and prints the
+# canonical re-encoding.
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE jalias (
+  id INT NOT NULL,
+  grp INT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+INSERT INTO jalias VALUES (1, 1, 10), (2, 1, 20), (3, 2, 30);
+--enable_warnings
+--enable_query_log
+
+--let $JSON_CANON=perl -MJSON::PP -e 'print JSON::PP->new->utf8->canonical->encode(JSON::PP->new->utf8->decode(join q(), <STDIN>)), qq(\n)'
+--let $JSON_FORMAT=JSON
+--let $QUERY_FILE=$MYSQL_TMP_DIR/ronsql-json-alias.sql
+
+--echo
+--echo === oe-1: a plain alias (control) ===
+--write_file $QUERY_FILE
+SELECT id, v AS plain FROM jalias WHERE id = 1;
+EOF
+--source suite/ronsql/include/ronsql_json_check_file.inc
+
+--echo
+--echo === oe-2: a quote ===
+--write_file $QUERY_FILE
+SELECT id, v AS `x"y` FROM jalias WHERE id = 1;
+EOF
+--source suite/ronsql/include/ronsql_json_check_file.inc
+
+--echo
+--echo === oe-3: a backslash ===
+--write_file $QUERY_FILE
+SELECT id, v AS `a\b` FROM jalias WHERE id = 1;
+EOF
+--source suite/ronsql/include/ronsql_json_check_file.inc
+
+--echo
+--echo === oe-4: a quote and a backslash, several rows, ORDER BY ===
+--write_file $QUERY_FILE
+SELECT id, v AS `q"\z`, grp AS `\"` FROM jalias ORDER BY id;
+EOF
+--source suite/ronsql/include/ronsql_json_check_file.inc
+
+--echo
+--echo === oe-5: a tab ===
+--exec perl -e 'print qq(SELECT id, v AS `t\tb` FROM jalias WHERE id = 1;\n)' > $QUERY_FILE
+--source suite/ronsql/include/ronsql_json_check_file.inc
+
+--echo
+--echo === oe-6: aggregate rows with the same aliases (control) ===
+--write_file $QUERY_FILE
+SELECT grp, SUM(v) AS `s"um`, COUNT(*) AS `a\b`, MAX(v) AS `q"\z` FROM jalias GROUP BY grp ORDER BY grp;
+EOF
+--source suite/ronsql/include/ronsql_json_check_file.inc
+
+--echo
+--echo === oe-7: the COUNT(*) shortcut (control) ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS `n"\` FROM jalias;
+EOF
+--source suite/ronsql/include/ronsql_json_check_file.inc
+
+--echo
+--echo === oe-8: a non-ASCII alias under JSON (control) ===
+--write_file $QUERY_FILE
+SELECT id, v AS `café` FROM jalias WHERE id = 1;
+EOF
+--source suite/ronsql/include/ronsql_json_check_file.inc
+
+--echo
+--echo === oe-9: the same under JSON_ASCII ===
+--let $JSON_FORMAT=JSON_ASCII
+--write_file $QUERY_FILE
+SELECT id, v AS `café` FROM jalias WHERE id = 1;
+EOF
+--source suite/ronsql/include/ronsql_json_check_file.inc
+
+--disable_query_log
+DROP TABLE jalias;
+--enable_query_log

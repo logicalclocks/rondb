@@ -1,0 +1,139 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== ck-1: VARCHAR key through two CTEs, ORDER BY the key ===
+== Query ==
+WITH a AS (SELECT s, COUNT(*) AS n FROM ck_t GROUP BY s),
+b AS (SELECT s, SUM(n) AS n2 FROM a GROUP BY s)
+SELECT s, SUM(n2) FROM b GROUP BY s ORDER BY s;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT s, COUNT(*) AS n FROM ck_t GROUP BY s),
+b AS (SELECT s, SUM(n) AS n2 FROM a GROUP BY s)
+SELECT s, SUM(n2) FROM b GROUP BY s ORDER BY s|
+s	SUM(n2)
+apple	2
+banana	1
+fig	1
+pear	2
+
+=== ck-2: VARCHAR key through two CTEs, no ORDER BY ===
+== Query ==
+WITH a AS (SELECT s, COUNT(*) AS n FROM ck_t GROUP BY s),
+b AS (SELECT s, SUM(n) AS n2 FROM a GROUP BY s)
+SELECT s, SUM(n2) FROM b GROUP BY s;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT s, COUNT(*) AS n FROM ck_t GROUP BY s),
+b AS (SELECT s, SUM(n) AS n2 FROM a GROUP BY s)
+SELECT s, SUM(n2) FROM b GROUP BY s|
+s	SUM(n2)
+apple	2
+banana	1
+fig	1
+pear	2
+
+=== ck-3: VARCHAR key through three CTEs, ORDER BY the key DESC ===
+== Query ==
+WITH a AS (SELECT s, SUM(v) AS t FROM ck_t GROUP BY s),
+b AS (SELECT s, SUM(t) AS t2 FROM a GROUP BY s),
+c AS (SELECT s, SUM(t2) AS t3 FROM b GROUP BY s)
+SELECT s, SUM(t3) FROM c GROUP BY s ORDER BY s DESC;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT s, SUM(v) AS t FROM ck_t GROUP BY s),
+b AS (SELECT s, SUM(t) AS t2 FROM a GROUP BY s),
+c AS (SELECT s, SUM(t2) AS t3 FROM b GROUP BY s)
+SELECT s, SUM(t3) FROM c GROUP BY s ORDER BY s DESC|
+s	SUM(t3)
+pear	6
+fig	3
+banana	6
+apple	6
+
+=== ck-4: DECIMAL(10,0) key through two CTEs ===
+== Query ==
+WITH a AS (SELECT k, COUNT(*) AS n FROM ck_t GROUP BY k),
+b AS (SELECT k, SUM(n) AS n2 FROM a GROUP BY k)
+SELECT k, SUM(n2) FROM b GROUP BY k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT k, COUNT(*) AS n FROM ck_t GROUP BY k),
+b AS (SELECT k, SUM(n) AS n2 FROM a GROUP BY k)
+SELECT k, SUM(n2) FROM b GROUP BY k|
+k	SUM(n2)
+12345	2
+7	2
+99	2
+
+=== ck-5: DECIMAL(10,0) key through two CTEs, ORDER BY the key DESC ===
+== Query ==
+WITH a AS (SELECT k, COUNT(*) AS n FROM ck_t GROUP BY k),
+b AS (SELECT k, SUM(n) AS n2 FROM a GROUP BY k)
+SELECT k, SUM(n2) FROM b GROUP BY k ORDER BY k DESC;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT k, COUNT(*) AS n FROM ck_t GROUP BY k),
+b AS (SELECT k, SUM(n) AS n2 FROM a GROUP BY k)
+SELECT k, SUM(n2) FROM b GROUP BY k ORDER BY k DESC|
+k	SUM(n2)
+12345	2
+99	2
+7	2
+
+=== ck-6: DECIMAL(10,2) key through two CTEs (control: scale > 0 kept before) ===
+== Query ==
+WITH a AS (SELECT k2, COUNT(*) AS n FROM ck_t GROUP BY k2),
+b AS (SELECT k2, SUM(n) AS n2 FROM a GROUP BY k2)
+SELECT k2, SUM(n2) FROM b GROUP BY k2;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT k2, COUNT(*) AS n FROM ck_t GROUP BY k2),
+b AS (SELECT k2, SUM(n) AS n2 FROM a GROUP BY k2)
+SELECT k2, SUM(n2) FROM b GROUP BY k2|
+k2	SUM(n2)
+10.50	2
+2.25	2
+7.75	2

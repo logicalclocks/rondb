@@ -5013,31 +5013,39 @@ long_segment_position_test()
  * area too small for it, and above a whole segment's free area (but up
  * to 4 MB) always.
  *
- * Allocate 600 kB from a fresh segment, which leaves a free area of about
+ * Allocate 600 kB from an empty segment, which leaves a free area of about
  * 1.4 MB in the last list.  A 1.6 MB allocation does not fit in it and
  * has to come from a second segment.  Then the largest allocation there
  * is takes a segment of its own, and anything larger returns nullptr.
+ *
+ * The base keeps one emptied segment (MAX_FREE_LONG_AREAS), and whether
+ * an earlier test left one there depends on the tests before this one
+ * (long_segment_position_test does).  Priming the cache first makes the
+ * counts exact: the 600 kB allocation takes the cached segment, the next
+ * two fetch one each, and freeing all three keeps one cached and returns
+ * two.
  */
 static void
 long_large_alloc_test()
 {
   printf("Long malloc large allocation test\n");
   const size_t max_size = 4 * size_t(MAX_MEMORY_ALLOC_SIZE_IN_WORDS);
+  lc_ndbd_pool_prime_segment_cache(0, 0);
   int start_mallocs = num_mallocs.load();
 
   void *small = lc_ndbd_pool_malloc(600 * 1024, 0, 0, 0);
   require(small != nullptr);
-  require(num_mallocs.load() == start_mallocs + 1);
+  require(num_mallocs.load() == start_mallocs);
   void *large = lc_ndbd_pool_malloc(1600 * 1024, 0, 0, 1);
   require(large != nullptr);
-  require(num_mallocs.load() == start_mallocs + 2);
+  require(num_mallocs.load() == start_mallocs + 1);
   void *largest = lc_ndbd_pool_malloc(max_size, 0, 0, 1);
   require(largest != nullptr);
-  require(num_mallocs.load() == start_mallocs + 3);
+  require(num_mallocs.load() == start_mallocs + 2);
 
   require(lc_ndbd_pool_malloc(max_size + 16, 0, 0, 0) == nullptr);
   require(lc_ndbd_pool_malloc(4 * 1024 * 1024, 0, 0, 0) == nullptr);
-  require(num_mallocs.load() == start_mallocs + 3);
+  require(num_mallocs.load() == start_mallocs + 2);
 
   lc_ndbd_pool_free(largest);
   lc_ndbd_pool_free(large);

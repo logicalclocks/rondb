@@ -1,0 +1,282 @@
+# The size of a pushed join with CTEs, and the errors of NdbQueryBuilder.
+#
+# README finding J-6 = C-9: execute_join builds the CTE subtrees and the
+# main query as one NdbQueryDef. NdbQueryBuilder numbers its operations
+# and refuses the 33rd (QRY_DEFINITION_TOO_LARGE, NDB_SPJ_MAX_TREE_NODES):
+# each CTE needs its subtree operation and the operations of its body,
+# the main query one per table or CTE reference, and a unique-index
+# lookup two. QueryPlanner counted the main plan alone, so a query over
+# the limit failed while being built. The builder's error stayed on the
+# builder: the exception handler read the transaction's error, which is
+# none, and the query failed as an internal error (HTTP 500) without a
+# code, with the message of the operation that crossed the limit ("Failed
+# to create child operation.", or "Failed to create CTE body scan root."
+# after an ignored beginCteSubtree failure). The operations are now
+# counted at prepare time, and a query over the limit is a limit error
+# (HTTP 413) that names the count. A failing builder call reports the
+# builder's error and code.
+#
+# bf (id: g, v): 1: 1, 10   2: 1, 20   3: 2, 5   4: 3, 7
+# bd (g: w):     1: 10   2: 20   3: 5   4: 7    (w unique, hash only)
+# Every CTE groups bf by g: g 1 has SUM(v) 30, COUNT 2, MIN 10, MAX 20;
+# g 2 has 5, 1, 5, 5; g 3 has 7, 1, 7, 7.
+#
+#   jbe-1  control at the limit: 10 CTEs (2 operations each), the bf
+#          root, a bd primary-key lookup and 10 CTE lookups: 32
+#          operations, compared with mysqld
+#   jbe-2  jbe-1 with one more bd primary-key lookup: 33, a limit error
+#          (before: "Failed to create child operation.", internal)
+#   jbe-3  10 CTEs, the bf root, a bd unique-index lookup (2) and 10 CTE
+#          lookups: 33, a limit error (32 if the unique-index lookup
+#          counted 1)
+#   jbe-4  17 CTEs: their subtrees alone need 34 operations, 52 with the
+#          main query (before: the 17th beginCteSubtree failed, was not
+#          checked, and the query failed with "Failed to create CTE body
+#          scan root.", internal)
+# The limit errors are checked through ronsql_cli (message) and through
+# RDRS (class [limit]).
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE bf (
+  id INT NOT NULL,
+  g  INT NOT NULL,
+  v  INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE bd (
+  g INT NOT NULL,
+  w INT NOT NULL,
+  PRIMARY KEY USING HASH (g),
+  UNIQUE KEY uk_bd_w (w) USING HASH
+) ENGINE=NDB;
+INSERT INTO bf VALUES (1, 1, 10), (2, 1, 20), (3, 2, 5), (4, 3, 7);
+INSERT INTO bd VALUES (1, 10), (2, 20), (3, 5), (4, 7);
+# The 12 tables of jbe-1 all join on one column, so with the default
+# optimizer_search_depth (62) mysqld tries nearly every join order: it
+# spent 571 s planning jbe-1 (40 rows examined), and the test runs it
+# twice on mysqld.  Limit the search for those runs; GLOBAL as well,
+# since ronsql_compare.inc runs the mysql client in a new session.
+SET @save_optimizer_search_depth = @@global.optimizer_search_depth;
+SET GLOBAL optimizer_search_depth = 4;
+SET SESSION optimizer_search_depth = 4;
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === jbe-1: control, 32 operations: the largest pushed join ===
+let $QUERY=
+WITH c1 AS (SELECT g AS k1, SUM(v) AS m1 FROM bf GROUP BY g),
+c2 AS (SELECT g AS k2, COUNT(*) AS m2 FROM bf GROUP BY g),
+c3 AS (SELECT g AS k3, MIN(v) AS m3 FROM bf GROUP BY g),
+c4 AS (SELECT g AS k4, MAX(v) AS m4 FROM bf GROUP BY g),
+c5 AS (SELECT g AS k5, SUM(v) AS m5 FROM bf GROUP BY g),
+c6 AS (SELECT g AS k6, COUNT(*) AS m6 FROM bf GROUP BY g),
+c7 AS (SELECT g AS k7, MIN(v) AS m7 FROM bf GROUP BY g),
+c8 AS (SELECT g AS k8, MAX(v) AS m8 FROM bf GROUP BY g),
+c9 AS (SELECT g AS k9, SUM(v) AS m9 FROM bf GROUP BY g),
+c10 AS (SELECT g AS k10, COUNT(v) AS m10 FROM bf GROUP BY g)
+SELECT COUNT(*) AS n, SUM(d.w) AS w, SUM(c1.m1) AS a1, SUM(c2.m2) AS a2,
+SUM(c3.m3) AS a3, SUM(c4.m4) AS a4, SUM(c5.m5) AS a5, SUM(c6.m6) AS a6,
+SUM(c7.m7) AS a7, SUM(c8.m8) AS a8, SUM(c9.m9) AS a9, SUM(c10.m10) AS a10
+FROM bf AS f
+JOIN bd AS d ON d.g = f.g
+JOIN c1 ON c1.k1 = d.g
+JOIN c2 ON c2.k2 = d.g
+JOIN c3 ON c3.k3 = d.g
+JOIN c4 ON c4.k4 = d.g
+JOIN c5 ON c5.k5 = d.g
+JOIN c6 ON c6.k6 = d.g
+JOIN c7 ON c7.k7 = d.g
+JOIN c8 ON c8.k8 = d.g
+JOIN c9 ON c9.k9 = d.g
+JOIN c10 ON c10.k10 = d.g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c1 AS (SELECT g AS k1, SUM(v) AS m1 FROM bf GROUP BY g),
+c2 AS (SELECT g AS k2, COUNT(*) AS m2 FROM bf GROUP BY g),
+c3 AS (SELECT g AS k3, MIN(v) AS m3 FROM bf GROUP BY g),
+c4 AS (SELECT g AS k4, MAX(v) AS m4 FROM bf GROUP BY g),
+c5 AS (SELECT g AS k5, SUM(v) AS m5 FROM bf GROUP BY g),
+c6 AS (SELECT g AS k6, COUNT(*) AS m6 FROM bf GROUP BY g),
+c7 AS (SELECT g AS k7, MIN(v) AS m7 FROM bf GROUP BY g),
+c8 AS (SELECT g AS k8, MAX(v) AS m8 FROM bf GROUP BY g),
+c9 AS (SELECT g AS k9, SUM(v) AS m9 FROM bf GROUP BY g),
+c10 AS (SELECT g AS k10, COUNT(v) AS m10 FROM bf GROUP BY g)
+SELECT COUNT(*) AS n, SUM(d.w) AS w, SUM(c1.m1) AS a1, SUM(c2.m2) AS a2,
+SUM(c3.m3) AS a3, SUM(c4.m4) AS a4, SUM(c5.m5) AS a5, SUM(c6.m6) AS a6,
+SUM(c7.m7) AS a7, SUM(c8.m8) AS a8, SUM(c9.m9) AS a9, SUM(c10.m10) AS a10
+FROM bf AS f
+JOIN bd AS d ON d.g = f.g
+JOIN c1 ON c1.k1 = d.g
+JOIN c2 ON c2.k2 = d.g
+JOIN c3 ON c3.k3 = d.g
+JOIN c4 ON c4.k4 = d.g
+JOIN c5 ON c5.k5 = d.g
+JOIN c6 ON c6.k6 = d.g
+JOIN c7 ON c7.k7 = d.g
+JOIN c8 ON c8.k8 = d.g
+JOIN c9 ON c9.k9 = d.g
+JOIN c10 ON c10.k10 = d.g|
+
+--echo
+--echo === jbe-2: one more primary-key lookup, 33 operations: a limit error ===
+let $QUERY=
+WITH c1 AS (SELECT g AS k1, SUM(v) AS m1 FROM bf GROUP BY g),
+c2 AS (SELECT g AS k2, COUNT(*) AS m2 FROM bf GROUP BY g),
+c3 AS (SELECT g AS k3, MIN(v) AS m3 FROM bf GROUP BY g),
+c4 AS (SELECT g AS k4, MAX(v) AS m4 FROM bf GROUP BY g),
+c5 AS (SELECT g AS k5, SUM(v) AS m5 FROM bf GROUP BY g),
+c6 AS (SELECT g AS k6, COUNT(*) AS m6 FROM bf GROUP BY g),
+c7 AS (SELECT g AS k7, MIN(v) AS m7 FROM bf GROUP BY g),
+c8 AS (SELECT g AS k8, MAX(v) AS m8 FROM bf GROUP BY g),
+c9 AS (SELECT g AS k9, SUM(v) AS m9 FROM bf GROUP BY g),
+c10 AS (SELECT g AS k10, COUNT(v) AS m10 FROM bf GROUP BY g)
+SELECT COUNT(*) AS n, SUM(d.w) AS w, SUM(c1.m1) AS a1, SUM(c2.m2) AS a2,
+SUM(c3.m3) AS a3, SUM(c4.m4) AS a4, SUM(c5.m5) AS a5, SUM(c6.m6) AS a6,
+SUM(c7.m7) AS a7, SUM(c8.m8) AS a8, SUM(c9.m9) AS a9, SUM(c10.m10) AS a10
+FROM bf AS f
+JOIN bd AS d ON d.g = f.g
+JOIN bd AS e ON e.g = d.g
+JOIN c1 ON c1.k1 = d.g
+JOIN c2 ON c2.k2 = d.g
+JOIN c3 ON c3.k3 = d.g
+JOIN c4 ON c4.k4 = d.g
+JOIN c5 ON c5.k5 = d.g
+JOIN c6 ON c6.k6 = d.g
+JOIN c7 ON c7.k7 = d.g
+JOIN c8 ON c8.k8 = d.g
+JOIN c9 ON c9.k9 = d.g
+JOIN c10 ON c10.k10 = d.g;|
+--echo == Query ==
+--echo $QUERY
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e '$QUERY' 2>&1
+--exec printf '%s' '$QUERY' > $MYSQL_TMP_DIR/jbe-query.sql
+--exec printf '{"query":"' > $MYSQL_TMP_DIR/jbe-body-1
+--exec perl -pe 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g;' $MYSQL_TMP_DIR/jbe-query.sql > $MYSQL_TMP_DIR/jbe-body-2
+--exec printf '","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/jbe-body-3
+--exec cat $MYSQL_TMP_DIR/jbe-body-1 $MYSQL_TMP_DIR/jbe-body-2 $MYSQL_TMP_DIR/jbe-body-3 > $MYSQL_TMP_DIR/jbe-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/jbe-body > $MYSQL_TMP_DIR/jbe-rdrs.out
+--exec grep -oF '[limit] Caught exception: Pushed join too large: the query and its CTEs need 33 operations, more than the NDB limit of 32 (a CTE counts 1 plus the operations of its body; a unique-index lookup counts 2).' $MYSQL_TMP_DIR/jbe-rdrs.out || echo "UNEXPECTED: expected a limit error for 33 operations"
+--remove_file $MYSQL_TMP_DIR/jbe-query.sql
+--remove_file $MYSQL_TMP_DIR/jbe-body-1
+--remove_file $MYSQL_TMP_DIR/jbe-body-2
+--remove_file $MYSQL_TMP_DIR/jbe-body-3
+--remove_file $MYSQL_TMP_DIR/jbe-body
+--remove_file $MYSQL_TMP_DIR/jbe-rdrs.out
+
+--echo
+--echo === jbe-3: a unique-index lookup counts 2, 33 operations: a limit error ===
+let $QUERY=
+WITH c1 AS (SELECT g AS k1, SUM(v) AS m1 FROM bf GROUP BY g),
+c2 AS (SELECT g AS k2, COUNT(*) AS m2 FROM bf GROUP BY g),
+c3 AS (SELECT g AS k3, MIN(v) AS m3 FROM bf GROUP BY g),
+c4 AS (SELECT g AS k4, MAX(v) AS m4 FROM bf GROUP BY g),
+c5 AS (SELECT g AS k5, SUM(v) AS m5 FROM bf GROUP BY g),
+c6 AS (SELECT g AS k6, COUNT(*) AS m6 FROM bf GROUP BY g),
+c7 AS (SELECT g AS k7, MIN(v) AS m7 FROM bf GROUP BY g),
+c8 AS (SELECT g AS k8, MAX(v) AS m8 FROM bf GROUP BY g),
+c9 AS (SELECT g AS k9, SUM(v) AS m9 FROM bf GROUP BY g),
+c10 AS (SELECT g AS k10, COUNT(v) AS m10 FROM bf GROUP BY g)
+SELECT COUNT(*) AS n
+FROM bf AS f
+JOIN bd AS u ON u.w = f.v
+JOIN c1 ON c1.k1 = f.g
+JOIN c2 ON c2.k2 = f.g
+JOIN c3 ON c3.k3 = f.g
+JOIN c4 ON c4.k4 = f.g
+JOIN c5 ON c5.k5 = f.g
+JOIN c6 ON c6.k6 = f.g
+JOIN c7 ON c7.k7 = f.g
+JOIN c8 ON c8.k8 = f.g
+JOIN c9 ON c9.k9 = f.g
+JOIN c10 ON c10.k10 = f.g;|
+--echo == Query ==
+--echo $QUERY
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e '$QUERY' 2>&1
+
+--echo
+--echo === jbe-4: 17 CTEs, 52 operations: a limit error ===
+let $QUERY=
+WITH c1 AS (SELECT g AS k1, SUM(v) AS m1 FROM bf GROUP BY g),
+c2 AS (SELECT g AS k2, SUM(v) AS m2 FROM bf GROUP BY g),
+c3 AS (SELECT g AS k3, SUM(v) AS m3 FROM bf GROUP BY g),
+c4 AS (SELECT g AS k4, SUM(v) AS m4 FROM bf GROUP BY g),
+c5 AS (SELECT g AS k5, SUM(v) AS m5 FROM bf GROUP BY g),
+c6 AS (SELECT g AS k6, SUM(v) AS m6 FROM bf GROUP BY g),
+c7 AS (SELECT g AS k7, SUM(v) AS m7 FROM bf GROUP BY g),
+c8 AS (SELECT g AS k8, SUM(v) AS m8 FROM bf GROUP BY g),
+c9 AS (SELECT g AS k9, SUM(v) AS m9 FROM bf GROUP BY g),
+c10 AS (SELECT g AS k10, SUM(v) AS m10 FROM bf GROUP BY g),
+c11 AS (SELECT g AS k11, SUM(v) AS m11 FROM bf GROUP BY g),
+c12 AS (SELECT g AS k12, SUM(v) AS m12 FROM bf GROUP BY g),
+c13 AS (SELECT g AS k13, SUM(v) AS m13 FROM bf GROUP BY g),
+c14 AS (SELECT g AS k14, SUM(v) AS m14 FROM bf GROUP BY g),
+c15 AS (SELECT g AS k15, SUM(v) AS m15 FROM bf GROUP BY g),
+c16 AS (SELECT g AS k16, SUM(v) AS m16 FROM bf GROUP BY g),
+c17 AS (SELECT g AS k17, SUM(v) AS m17 FROM bf GROUP BY g)
+SELECT COUNT(*) AS n
+FROM bf AS f
+JOIN c1 ON c1.k1 = f.g
+JOIN c2 ON c2.k2 = f.g
+JOIN c3 ON c3.k3 = f.g
+JOIN c4 ON c4.k4 = f.g
+JOIN c5 ON c5.k5 = f.g
+JOIN c6 ON c6.k6 = f.g
+JOIN c7 ON c7.k7 = f.g
+JOIN c8 ON c8.k8 = f.g
+JOIN c9 ON c9.k9 = f.g
+JOIN c10 ON c10.k10 = f.g
+JOIN c11 ON c11.k11 = f.g
+JOIN c12 ON c12.k12 = f.g
+JOIN c13 ON c13.k13 = f.g
+JOIN c14 ON c14.k14 = f.g
+JOIN c15 ON c15.k15 = f.g
+JOIN c16 ON c16.k16 = f.g
+JOIN c17 ON c17.k17 = f.g;|
+--echo == Query ==
+--echo $QUERY
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e '$QUERY' 2>&1
+--exec printf '%s' '$QUERY' > $MYSQL_TMP_DIR/jbe-query.sql
+--exec printf '{"query":"' > $MYSQL_TMP_DIR/jbe-body-1
+--exec perl -pe 's/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g;' $MYSQL_TMP_DIR/jbe-query.sql > $MYSQL_TMP_DIR/jbe-body-2
+--exec printf '","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/jbe-body-3
+--exec cat $MYSQL_TMP_DIR/jbe-body-1 $MYSQL_TMP_DIR/jbe-body-2 $MYSQL_TMP_DIR/jbe-body-3 > $MYSQL_TMP_DIR/jbe-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/jbe-body > $MYSQL_TMP_DIR/jbe-rdrs.out
+--exec grep -oF '[limit] Caught exception: Pushed join too large: the query and its CTEs need 52 operations, more than the NDB limit of 32 (a CTE counts 1 plus the operations of its body; a unique-index lookup counts 2).' $MYSQL_TMP_DIR/jbe-rdrs.out || echo "UNEXPECTED: expected a limit error for 52 operations"
+--remove_file $MYSQL_TMP_DIR/jbe-query.sql
+--remove_file $MYSQL_TMP_DIR/jbe-body-1
+--remove_file $MYSQL_TMP_DIR/jbe-body-2
+--remove_file $MYSQL_TMP_DIR/jbe-body-3
+--remove_file $MYSQL_TMP_DIR/jbe-body
+--remove_file $MYSQL_TMP_DIR/jbe-rdrs.out
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE bd;
+DROP TABLE bf;
+SET GLOBAL optimizer_search_depth = @save_optimizer_search_depth;
+SET SESSION optimizer_search_depth = DEFAULT;
+--enable_warnings
+--enable_query_log

@@ -270,6 +270,9 @@ static bool mysql_router_ronsql_handler(
   CappedOStream out_stream(globalConfigs.internal.maxRespSize);
   std::ostringstream err_stream;
   params.out_stream = &out_stream;
+  // X-7: the result is returned only on success, so ronsql_op may rewind
+  // it to retry the statement after it wrote output.
+  params.rewindable_out_stream = &out_stream;
   params.err_stream = &err_stream;
 
   bool do_explain = false;

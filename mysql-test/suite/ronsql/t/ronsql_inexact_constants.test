@@ -1,0 +1,531 @@
+# Comparisons of FLOAT, DATETIME and TIMESTAMP columns with constants
+# that the column's type cannot hold.
+#
+# README findings F-9 and F-11.  MySQL compares a FLOAT column with a
+# numeric literal as a DOUBLE, and a DATETIME or TIMESTAMP column with a
+# temporal literal at the literal's precision.  RonSQL's scan filters,
+# index bounds and keys rounded the literal to the nearest FLOAT, and
+# truncated a temporal literal to the column's fractional digits, so
+# f = 0.1 held for the FLOAT 0.1 (0.100000001...), f >= 16777217 for
+# 16777216, and dt = '... 10:00:00.5' for a DATETIME 10:00:00.  A CASE
+# condition compared the FLOAT as a DOUBLE, so WHERE and CASE disagreed.
+# Such a comparison now becomes one with the largest value of the type
+# below the constant (b): < and <= are <= b, > and >= are > b, = is
+# (< b AND > b) and != is (<= b OR > b).  On a CTE output, and in a CASE
+# condition, = and != are refused.
+#
+# fc: f FLOAT NULL (filter path), g FLOAT NOT NULL (indexed, bound path).
+#   f: 1 0.1, 2 0.2, 3 16777216, 4 16777218, 5 -0.5, 6 0, 7 NULL, 8 -0.1
+#   g: as f, but 7 is 3.5
+# tc: dt DATETIME NULL (filter path), dtx DATETIME NOT NULL (indexed),
+#     ts3 TIMESTAMP(3) NULL.
+#   dt:  1 10:00:00, 2 10:00:01, 3 09:59:59, 4 NULL, 5 10:00:02
+#   dtx: as dt, but 4 is 09:00:00
+#   ts3: 1 10:00:00.000, 2 10:00:00.500, 3 10:00:00.499, 4 NULL,
+#        5 10:00:01.000
+#
+#   fc-1..12  FLOAT filter: =, !=, >, <=, >= and < of 16777217, = of
+#             16777217, >= a negative literal, IN, NOT, the literal on the
+#             left, a literal below every FLOAT
+#   fc-13..16 FLOAT index bounds
+#   fc-17     FLOAT, pass-through scan
+#   fc-18     FLOAT, a join (root bound and child filter)
+#   fc-19     FLOAT CTE output
+#   fc-e1     = on a FLOAT CTE output: refused
+#   tc-1..10  DATETIME filter: all six operators, DATE_ADD, NOT, IN, the
+#             literal on the left
+#   tc-11..13 DATETIME index bounds
+#   tc-14..17 TIMESTAMP(3) with a literal of 4 fractional digits, and a
+#             control with 3
+#   tc-18     DATETIME, pass-through scan
+#   tc-19     DATETIME in a CASE condition
+#   tc-20     DATETIME CTE output
+#   tc-21     a CTE body WHERE
+#   tc-e1     = in a CASE condition: refused
+#   tc-e2     = on a DATETIME CTE output: refused
+#
+# Expected results come from mysqld (strict_diff).  mysqld runs with
+# engine_condition_pushdown off: ha_ndbcluster stores the constant of a
+# pushed condition in the column's type (Item::save_in_field, which
+# rounds and accepts a truncation note), so with the pushdown mysqld
+# over NDB gives the rounded comparison, not MySQL's.  mysqld's ref access
+# rounds a DATETIME key the same way, so tc-11 compares with mysqld only
+# with IGNORE INDEX (see there).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+SET @ic_global_switch = @@GLOBAL.optimizer_switch;
+SET @ic_session_switch = @@SESSION.optimizer_switch;
+SET GLOBAL optimizer_switch = 'engine_condition_pushdown=off';
+SET SESSION optimizer_switch = 'engine_condition_pushdown=off';
+# RonSQL reads TIMESTAMP as UTC (see ronsql_compare.inc).
+SET time_zone = '+00:00';
+--disable_warnings
+CREATE TABLE fc (
+  id INT NOT NULL,
+  f  FLOAT NULL,
+  g  FLOAT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_fc_g (g)
+) ENGINE=NDB;
+INSERT INTO fc VALUES
+  (1, 0.1, 0.1), (2, 0.2, 0.2), (3, 16777216, 16777216),
+  (4, 16777218, 16777218), (5, -0.5, -0.5), (6, 0, 0),
+  (7, NULL, 3.5), (8, -0.1, -0.1);
+CREATE TABLE tc (
+  id  INT NOT NULL,
+  dt  DATETIME NULL,
+  dtx DATETIME NOT NULL,
+  ts3 TIMESTAMP(3) NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_tc_dtx (dtx)
+) ENGINE=NDB;
+INSERT INTO tc VALUES
+  (1, '2025-01-01 10:00:00', '2025-01-01 10:00:00', '2025-01-01 10:00:00.000'),
+  (2, '2025-01-01 10:00:01', '2025-01-01 10:00:01', '2025-01-01 10:00:00.500'),
+  (3, '2025-01-01 09:59:59', '2025-01-01 09:59:59', '2025-01-01 10:00:00.499'),
+  (4, NULL, '2025-01-01 09:00:00', NULL),
+  (5, '2025-01-01 10:00:02', '2025-01-01 10:00:02', '2025-01-01 10:00:01.000');
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === fc-1: f = 0.1 (the FLOAT 0.1 is not 0.1) ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f = 0.1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f = 0.1|
+
+--echo
+--echo === fc-2: f != 0.1 ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f != 0.1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f != 0.1|
+
+--echo
+--echo === fc-3: f > 0.1 holds for the FLOAT 0.1 ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f > 0.1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f > 0.1|
+
+--echo
+--echo === fc-4: f <= 0.1 does not ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f <= 0.1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f <= 0.1|
+
+--echo
+--echo === fc-5: f >= 16777217, an integer between two FLOAT values ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f >= 16777217;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f >= 16777217|
+
+--echo
+--echo === fc-6: f < 16777217 ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f < 16777217;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f < 16777217|
+
+--echo
+--echo === fc-7: f = 16777217 ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f = 16777217;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f = 16777217|
+
+--echo
+--echo === fc-8: f >= -0.1 does not hold for the FLOAT -0.1 ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f >= -0.1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f >= -0.1|
+
+--echo
+--echo === fc-9: f IN (0.1, 0.2, 0) ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f IN (0.1, 0.2, 0);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f IN (0.1, 0.2, 0)|
+
+--echo
+--echo === fc-10: NOT (f = 0.1) keeps every non-NULL row ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE NOT (f = 0.1);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE NOT (f = 0.1)|
+
+--echo
+--echo === fc-11: 0.1 < f, the literal on the left ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE 0.1 < f;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE 0.1 < f|
+
+--echo
+--echo === fc-12: f > -1e39, below every FLOAT ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f > -1000000000000000000000000000000000000000.0;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE f > -1000000000000000000000000000000000000000.0|
+
+--echo
+--echo === fc-13: index bound, g = 0.1 ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE g = 0.1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE g = 0.1|
+
+--echo
+--echo === fc-14: index bound, g > 0.1 ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE g > 0.1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE g > 0.1|
+
+--echo
+--echo === fc-15: index bound, g >= 16777217 ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE g >= 16777217;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE g >= 16777217|
+
+--echo
+--echo === fc-16: index bound, g <= 0.2 excludes the FLOAT 0.2 ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE g <= 0.2;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM fc WHERE g <= 0.2|
+
+--echo
+--echo === fc-17: pass-through scan, f > 0.1 ===
+let $QUERY=
+SELECT id FROM fc WHERE f > 0.1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM fc WHERE f > 0.1|
+
+--echo
+--echo === fc-18: join, a bound on the root and a filter on the child ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(a.id) AS s FROM fc AS a JOIN fc AS b ON b.id = a.id WHERE a.g <= 0.2 AND b.f > 0.1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(a.id) AS s FROM fc AS a JOIN fc AS b ON b.id = a.id WHERE a.g <= 0.2 AND b.f > 0.1|
+
+--echo
+--echo === fc-19: a FLOAT CTE output, c.g > 0.1 ===
+let $QUERY=
+WITH c AS (SELECT g, COUNT(*) AS n FROM fc GROUP BY g) SELECT COUNT(*) AS k, SUM(n) AS m FROM c WHERE c.g > 0.1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT g, COUNT(*) AS n FROM fc GROUP BY g) SELECT COUNT(*) AS k, SUM(n) AS m FROM c WHERE c.g > 0.1|
+
+--echo
+--echo === tc-1: dt = '... 10:00:00.5' on a DATETIME(0) ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/ronsql_ic.sql
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dt = '2025-01-01 10:00:00.5';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dt = '2025-01-01 10:00:00.5'|
+
+--echo
+--echo === tc-2: dt != '... 10:00:00.5' ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dt != '2025-01-01 10:00:00.5';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dt != '2025-01-01 10:00:00.5'|
+
+--echo
+--echo === tc-3: dt < '... 10:00:00.5' holds for 10:00:00 ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dt < '2025-01-01 10:00:00.5';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dt < '2025-01-01 10:00:00.5'|
+
+--echo
+--echo === tc-4: dt <= '... 10:00:00.5' ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dt <= '2025-01-01 10:00:00.5';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dt <= '2025-01-01 10:00:00.5'|
+
+--echo
+--echo === tc-5: dt > '... 10:00:00.5' ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dt > '2025-01-01 10:00:00.5';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dt > '2025-01-01 10:00:00.5'|
+
+--echo
+--echo === tc-6: dt >= '... 10:00:00.5' does not hold for 10:00:00 ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dt >= '2025-01-01 10:00:00.5';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dt >= '2025-01-01 10:00:00.5'|
+
+--echo
+--echo === tc-7: dt >= DATE_ADD(..., INTERVAL 500000 MICROSECOND) ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dt >= DATE_ADD('2025-01-01 10:00:00', INTERVAL 500000 MICROSECOND);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dt >= DATE_ADD('2025-01-01 10:00:00', INTERVAL 500000 MICROSECOND)|
+
+--echo
+--echo === tc-8: NOT (dt = '... 10:00:00.5') keeps every non-NULL row ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE NOT (dt = '2025-01-01 10:00:00.5');
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE NOT (dt = '2025-01-01 10:00:00.5')|
+
+--echo
+--echo === tc-9: dt IN ('... 10:00:00.5', '... 10:00:01') ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dt IN ('2025-01-01 10:00:00.5', '2025-01-01 10:00:01');
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dt IN ('2025-01-01 10:00:00.5', '2025-01-01 10:00:01')|
+
+--echo
+--echo === tc-10: '... 10:00:00.5' > dt, the literal on the left ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE '2025-01-01 10:00:00.5' > dt;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE '2025-01-01 10:00:00.5' > dt|
+
+--echo
+--echo === tc-11: index bound, dtx = '... 10:00:00.5' ===
+# Not compared with mysqld as it is: mysqld's ref access on ix_tc_dtx
+# stores the literal in the key, rounded to 10:00:01 without a note, so
+# ref_lookup_subsumes_comparison drops the comparison and mysqld returns
+# row 2 (a mysqld bug; without the index it returns no row, as in tc-1).
+# RonSQL runs it alone, on the index bound; the same query with IGNORE
+# INDEX is then compared with mysqld.
+--echo == RonSQL alone, index bound ==
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dtx = '2025-01-01 10:00:00.5';
+EOF
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test < '$QUERY_FILE'
+--remove_file $QUERY_FILE
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc IGNORE INDEX (ix_tc_dtx) WHERE dtx = '2025-01-01 10:00:00.5';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc IGNORE INDEX (ix_tc_dtx) WHERE dtx = '2025-01-01 10:00:00.5'|
+
+--echo
+--echo === tc-12: index bound, dtx >= '... 10:00:00.5' ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dtx >= '2025-01-01 10:00:00.5';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dtx >= '2025-01-01 10:00:00.5'|
+
+--echo
+--echo === tc-13: index bound, dtx < '... 10:00:00.5' ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dtx < '2025-01-01 10:00:00.5';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dtx < '2025-01-01 10:00:00.5'|
+
+--echo
+--echo === tc-14: ts3 = '... 10:00:00.4995' on a TIMESTAMP(3) ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE ts3 = '2025-01-01 10:00:00.4995';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE ts3 = '2025-01-01 10:00:00.4995'|
+
+--echo
+--echo === tc-15: ts3 >= '... 10:00:00.4995' does not hold for .499 ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE ts3 >= '2025-01-01 10:00:00.4995';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE ts3 >= '2025-01-01 10:00:00.4995'|
+
+--echo
+--echo === tc-16: ts3 < '... 10:00:00.4995' holds for .499 ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE ts3 < '2025-01-01 10:00:00.4995';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE ts3 < '2025-01-01 10:00:00.4995'|
+
+--echo
+--echo === tc-17: control, ts3 >= '... 10:00:00.499' (3 digits) ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE ts3 >= '2025-01-01 10:00:00.499';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE ts3 >= '2025-01-01 10:00:00.499'|
+
+--echo
+--echo === tc-18: pass-through scan, dt < '... 10:00:00.5' ===
+--write_file $QUERY_FILE
+SELECT id FROM tc WHERE dt < '2025-01-01 10:00:00.5';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM tc WHERE dt < '2025-01-01 10:00:00.5'|
+
+--echo
+--echo === tc-19: CASE conditions dt < and dt >= '... 10:00:00.5' ===
+--write_file $QUERY_FILE
+SELECT SUM(CASE WHEN dt < '2025-01-01 10:00:00.5' THEN 1 ELSE 0 END) AS a, SUM(CASE WHEN dt >= '2025-01-01 10:00:00.5' THEN 1 ELSE 0 END) AS b FROM tc;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(CASE WHEN dt < '2025-01-01 10:00:00.5' THEN 1 ELSE 0 END) AS a, SUM(CASE WHEN dt >= '2025-01-01 10:00:00.5' THEN 1 ELSE 0 END) AS b FROM tc|
+
+--echo
+--echo === tc-20: a DATETIME CTE output, c.dtx >= '... 10:00:00.5' ===
+--write_file $QUERY_FILE
+WITH c AS (SELECT dtx, COUNT(*) AS n FROM tc GROUP BY dtx) SELECT COUNT(*) AS k, SUM(n) AS m FROM c WHERE c.dtx >= '2025-01-01 10:00:00.5';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT dtx, COUNT(*) AS n FROM tc GROUP BY dtx) SELECT COUNT(*) AS k, SUM(n) AS m FROM c WHERE c.dtx >= '2025-01-01 10:00:00.5'|
+
+--echo
+--echo === tc-21: a CTE body WHERE, dt >= '... 10:00:00.5' ===
+--write_file $QUERY_FILE
+WITH c AS (SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dt >= '2025-01-01 10:00:00.5') SELECT n, s FROM c;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT COUNT(*) AS n, SUM(id) AS s FROM tc WHERE dt >= '2025-01-01 10:00:00.5') SELECT n, s FROM c|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--echo
+--echo === fc-e1: = on a FLOAT CTE output is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c AS (SELECT g, COUNT(*) AS n FROM fc GROUP BY g) SELECT COUNT(*) AS k FROM c WHERE c.g = 0.1;' 2>&1
+
+--echo
+--echo === tc-e1: = in a CASE condition is refused ===
+--write_file $QUERY_FILE
+SELECT SUM(CASE WHEN dt = '2025-01-01 10:00:00.5' THEN 1 ELSE 0 END) AS a FROM tc;
+EOF
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test < '$QUERY_FILE' 2>&1
+--remove_file $QUERY_FILE
+
+--echo
+--echo === tc-e2: = on a DATETIME CTE output is refused ===
+--write_file $QUERY_FILE
+WITH c AS (SELECT dtx, COUNT(*) AS n FROM tc GROUP BY dtx) SELECT COUNT(*) AS k FROM c WHERE c.dtx = '2025-01-01 10:00:00.5';
+EOF
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test < '$QUERY_FILE' 2>&1
+--remove_file $QUERY_FILE
+
+--disable_query_log
+--disable_warnings
+DROP TABLE tc;
+DROP TABLE fc;
+SET GLOBAL optimizer_switch = @ic_global_switch;
+SET SESSION optimizer_switch = @ic_session_switch;
+--enable_warnings
+--enable_query_log

@@ -1,0 +1,8 @@
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# P-25: join aggregation leaf 1 with an aggregate slot out of range
+Running command
+Result of command: 0
+Test program success!

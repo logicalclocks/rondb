@@ -156,6 +156,8 @@ private:
         int precision;
         int scale;
         bool float_display;
+        TemporalDisplay temporal; // O-3: a packed CTE MIN/MAX temporal key
+        int temporal_fsp;
       } print_group_by_column;
       struct
       {
@@ -253,6 +255,9 @@ private:
                             std::basic_ostream<char>* out_stream);
   void print_float_or_double(std::ostream& out, double value,
                               bool float_display = false);
+  // A DECIMAL result carried as a double, at its scale, the way mysqld
+  // prints a DECIMAL: rounded HALF_UP, no negative zero (O-5, O-6).
+  void print_fixed_scale(std::ostream& out, double value, int scale);
   void print_avg_result(std::ostream& out,
                         NdbAggregator::Result sum,
                         NdbAggregator::Result count,
@@ -267,6 +272,9 @@ private:
                               int temporal_fsp);
   bool aggregate_uses_float_display(const Outputs* out) const;
   CHARSET_INFO* aggregate_arg_charset(const Outputs* out) const;
+  // The charset of a column Load's metadata; NULL for any other Expr or
+  // a column without metadata.
+  CHARSET_INFO* load_arg_charset(const AggregationAPICompiler_Expr* e) const;
   int aggregate_arg_scale(const Outputs* out) const;
   int aggregate_arg_precision(const Outputs* out) const;
   // Returns the temporal decode for a MIN/MAX aggregate's source column
@@ -274,6 +282,16 @@ private:
   // precision for DATETIME2 / TIME2.
   TemporalDisplay aggregate_arg_temporal(const Outputs* out,
                                          int& fsp) const;
+  // O-10 = D-7: the temporal decode of a MIN / MAX argument that is a
+  // column or a GREATEST / LEAST of columns, the decode every operand
+  // column has (NONE when they differ or an operand is not a column).
+  TemporalDisplay expr_temporal(const AggregationAPICompiler_Expr* e,
+                                int& fsp) const;
+  // O-10 = D-7: whether such an argument is a FLOAT in MySQL: every
+  // operand column has the FLOAT display (an integer constant beside them
+  // keeps the FLOAT type).  Sets any_column when a column was found.
+  void expr_float_display(const AggregationAPICompiler_Expr* e,
+                          bool& any_column, bool& all_float) const;
   // SQL three-valued logic for HAVING; a group is kept only when TRUE.
   enum HavingTruth { HAVING_FALSE, HAVING_TRUE, HAVING_UNKNOWN };
   HavingTruth evaluate_having(const ConditionalExpression* expr);

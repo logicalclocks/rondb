@@ -1,0 +1,30 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== sr-1: control, no error insert ===
+== Query ==
+SELECT COUNT(*) AS n FROM sr_out WHERE a IN (SELECT b FROM sr_in);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n FROM sr_out WHERE a IN (SELECT b FROM sr_in)|
+n
+7
+
+=== sr-2: RDRS, the inner scan's second batch is dropped ===
+HTTP 200
+n
+7
+== More than one attempt (must be 1) ==
+1
+
+=== sr-3: ronsql_cli, the inner scan's second batch is dropped ===
+n
+7
+retried

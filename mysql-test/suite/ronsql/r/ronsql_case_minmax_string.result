@@ -1,0 +1,138 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== cm-1: VARCHAR arms, GROUP BY ===
+== Query ==
+SELECT g,
+MIN(CASE WHEN k > 5 THEN a ELSE b END) AS mn,
+MAX(CASE WHEN k > 5 THEN a ELSE b END) AS mx
+FROM cms GROUP BY g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g,
+MIN(CASE WHEN k > 5 THEN a ELSE b END) AS mn,
+MAX(CASE WHEN k > 5 THEN a ELSE b END) AS mx
+FROM cms GROUP BY g|
+g	mn	mx
+1	apple	Zoo
+2	Lime	Mango
+3	grape	Olive
+
+=== cm-2: CHAR arms, GROUP BY ===
+== Query ==
+SELECT g,
+MIN(CASE WHEN k > 5 THEN c1 ELSE c2 END) AS mn,
+MAX(CASE WHEN k > 5 THEN c1 ELSE c2 END) AS mx
+FROM cms GROUP BY g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g,
+MIN(CASE WHEN k > 5 THEN c1 ELSE c2 END) AS mn,
+MAX(CASE WHEN k > 5 THEN c1 ELSE c2 END) AS mx
+FROM cms GROUP BY g|
+g	mn	mx
+1	aa	Kk
+2	ll	Mm
+3	gg	Oo
+
+=== cm-3: VARCHAR arms, no GROUP BY ===
+== Query ==
+SELECT MIN(CASE WHEN k > 5 THEN a ELSE b END) AS mn,
+MAX(CASE WHEN k > 5 THEN a ELSE b END) AS mx
+FROM cms;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT MIN(CASE WHEN k > 5 THEN a ELSE b END) AS mn,
+MAX(CASE WHEN k > 5 THEN a ELSE b END) AS mx
+FROM cms|
+mn	mx
+apple	Zoo
+
+=== cm-4: ORDER BY the MIN of VARCHAR arms ===
+== Query ==
+SELECT g, MIN(CASE WHEN k > 5 THEN a ELSE b END) AS mn
+FROM cms GROUP BY g ORDER BY mn;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MIN(CASE WHEN k > 5 THEN a ELSE b END) AS mn
+FROM cms GROUP BY g ORDER BY mn|
+g	mn
+1	apple
+3	grape
+2	Lime
+
+=== cm-5: VARCHAR arms over a join ===
+== Query ==
+SELECT x.g,
+MIN(CASE WHEN t.k > 5 THEN t.a ELSE t.b END) AS mn,
+MAX(CASE WHEN t.k > 5 THEN t.a ELSE t.b END) AS mx
+FROM cms_drv AS x
+JOIN cms AS t ON t.g = x.g AND t.id = x.id
+GROUP BY x.g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT x.g,
+MIN(CASE WHEN t.k > 5 THEN t.a ELSE t.b END) AS mn,
+MAX(CASE WHEN t.k > 5 THEN t.a ELSE t.b END) AS mx
+FROM cms_drv AS x
+JOIN cms AS t ON t.g = x.g AND t.id = x.id
+GROUP BY x.g|
+g	mn	mx
+1	apple	Zoo
+2	Lime	Mango
+3	grape	Olive
+
+=== cm-6: ORDER BY the MAX of CHAR arms of different lengths ===
+== Query ==
+SELECT g, MAX(CASE WHEN k > 5 THEN c1 ELSE c2 END) AS mx
+FROM cms GROUP BY g ORDER BY mx;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MAX(CASE WHEN k > 5 THEN c1 ELSE c2 END) AS mx
+FROM cms GROUP BY g ORDER BY mx|
+g	mx
+1	Kk
+2	Mm
+3	Oo

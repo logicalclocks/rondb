@@ -1,0 +1,365 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== cg-1: pass-through over the CTE, ORDER BY the key ===
+== Query ==
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT k, n, s FROM cg ORDER BY k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT k, n, s FROM cg ORDER BY k|
+k	n	s
+1	1	200
+2	1	300
+3	1	500
+
+=== cg-2: COUNT(*) over the CTE ===
+== Query ==
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT COUNT(*) AS g FROM cg;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT COUNT(*) AS g FROM cg|
+g
+3
+
+=== cg-3: MIN, SUM and COUNT over the CTE outputs ===
+== Query ==
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT MIN(n) AS mn, SUM(n) AS sn, COUNT(s) AS cs, SUM(s) AS ss FROM cg;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT MIN(n) AS mn, SUM(n) AS sn, COUNT(s) AS cs, SUM(s) AS ss FROM cg|
+mn	sn	cs	ss
+1	3	3	1000
+
+=== cg-4: GROUP BY over the CTE COUNT output ===
+== Query ==
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT n, COUNT(*) AS g FROM cg GROUP BY n;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT n, COUNT(*) AS g FROM cg GROUP BY n|
+n	g
+1	3
+
+=== cg-5: real table JOIN the CTE, grouped by a real-table column ===
+== Query ==
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT r.region, COUNT(*) AS g, SUM(cg.s) AS ss
+FROM cgr AS r JOIN cg ON cg.k = r.id
+GROUP BY r.region;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT r.region, COUNT(*) AS g, SUM(cg.s) AS ss
+FROM cgr AS r JOIN cg ON cg.k = r.id
+GROUP BY r.region|
+region	g	ss
+1	2	500
+2	1	500
+
+=== cg-6: real table LEFT JOIN the CTE, pass-through ===
+== Query ==
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT r.id, cg.n
+FROM cgr AS r LEFT JOIN cg ON cg.k = r.id
+ORDER BY r.id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cg AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT r.id, cg.n
+FROM cgr AS r LEFT JOIN cg ON cg.k = r.id
+ORDER BY r.id|
+id	n
+1	1
+2	1
+3	1
+4	NULL
+
+=== ca-1: AVG as the only aggregate of the body ===
+== Query ==
+WITH ca AS (
+SELECT o.id AS k, AVG(l.price) AS av
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT k, av FROM ca ORDER BY k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH ca AS (
+SELECT o.id AS k, AVG(l.price) AS av
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT k, av FROM ca ORDER BY k|
+k	av
+1	200.0000
+2	300.0000
+3	500.0000
+
+=== ca-2: COUNT(*) then AVG in the body, AVG last ===
+== Query ==
+WITH ca AS (
+SELECT o.id AS k, COUNT(*) AS n, AVG(l.price) AS av
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT COUNT(*) AS g, SUM(n) AS sn FROM ca;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH ca AS (
+SELECT o.id AS k, COUNT(*) AS n, AVG(l.price) AS av
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id)
+SELECT COUNT(*) AS g, SUM(n) AS sn FROM ca|
+g	sn
+3	3
+
+=== ca-3: AVG without GROUP BY, no row passes ===
+== Query ==
+WITH ca AS (
+SELECT AVG(l.price) AS av
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000)
+SELECT av FROM ca;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH ca AS (
+SELECT AVG(l.price) AS av
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000)
+SELECT av FROM ca|
+av
+NULL
+
+=== cs-1: without GROUP BY, no row passes: the one row stays ===
+== Query ==
+WITH cs AS (
+SELECT COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000)
+SELECT n, s FROM cs;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cs AS (
+SELECT COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000)
+SELECT n, s FROM cs|
+n	s
+0	NULL
+
+=== cl-1: body ORDER BY n, k LIMIT 2, the drop runs first ===
+== Query ==
+WITH cl AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id
+ORDER BY n, k
+LIMIT 2)
+SELECT k, n, s FROM cl ORDER BY k;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cl AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 0
+GROUP BY o.id
+ORDER BY n, k
+LIMIT 2)
+SELECT k, n, s FROM cl ORDER BY k|
+k	n	s
+1	1	200
+2	1	300
+
+=== cc-1: control, every order has a passing line ===
+== Query ==
+WITH cc AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty + 10 > o.lim
+GROUP BY o.id)
+SELECT k, n, s FROM cc ORDER BY k;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cc AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty + 10 > o.lim
+GROUP BY o.id)
+SELECT k, n, s FROM cc ORDER BY k|
+k	n	s
+1	2	300
+2	1	300
+3	1	500
+4	1	600
+
+=== cc-2: control, COUNT(*) and SUM over the same body ===
+== Query ==
+WITH cc AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty + 10 > o.lim
+GROUP BY o.id)
+SELECT COUNT(*) AS g, SUM(n) AS sn, SUM(s) AS ss FROM cc;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cc AS (
+SELECT o.id AS k, COUNT(*) AS n, SUM(l.price) AS s
+FROM cgo AS o JOIN cgl AS l ON l.oid = o.id
+WHERE l.qty + 10 > o.lim
+GROUP BY o.id)
+SELECT COUNT(*) AS g, SUM(n) AS sn, SUM(s) AS ss FROM cc|
+g	sn	ss
+4	5	1700
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_cte_cross_filter_groups_jit_fallback_delta;
+ronsql_cte_cross_filter_groups_jit_fallback_delta
+0

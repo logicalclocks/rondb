@@ -1,0 +1,163 @@
+# EXPLAIN of WHERE conditions the condition printer had no case for.
+#
+# README finding E-1: EXPLAIN prints the WHERE of the parse tree, and
+# RonSQLPreparer::print(ConditionalExpression*) ended in abort() for an
+# operator it had no case for: LIKE, GREATEST and LEAST, a scalar
+# subquery, an IN subquery, a correlated EXISTS (an IN subquery after
+# decorrelation), a correlated scalar comparison and, without a
+# connection, EXISTS. EXPLAIN of such a query stopped ronsql_cli, and
+# through the /ronsql endpoint it stopped RDRS. Each is now printed; an
+# operator still without a case fails the statement, not the process.
+#
+# The cases run EXPLAIN FORCE through ronsql_cli with a connection, so
+# the whole prepare runs as in RDRS (e1-9 has no connection, e1-10 runs
+# through RDRS). The output goes to a file, so a crash fails the --exec;
+# the test prints only the WHERE of the parse tree.
+
+--source include/have_ndb.inc
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE e1_o (
+  o_id INT NOT NULL,
+  o_custkey INT NOT NULL,
+  o_total INT NOT NULL,
+  o_name VARCHAR(20) NOT NULL,
+  PRIMARY KEY (o_id)
+) ENGINE=NDB DEFAULT CHARSET=latin1;
+CREATE TABLE e1_l (
+  l_id INT NOT NULL,
+  l_orderkey INT NOT NULL,
+  l_quantity INT NOT NULL,
+  l_price INT NOT NULL,
+  PRIMARY KEY (l_id)
+) ENGINE=NDB;
+INSERT INTO e1_o VALUES
+  (1, 100, 500, 'alpha'), (2, 100, 300, 'beta'), (3, 200, 700, 'gamma');
+INSERT INTO e1_l VALUES
+  (1, 1, 10, 100), (2, 1, 30, 200), (3, 2, 5, 200), (4, 3, 25, 550);
+--enable_warnings
+--enable_query_log
+
+--let $QUERY_FILE=$MYSQL_TMP_DIR/ronsql-e1.sql
+--let $EXPLAIN_OUT=$MYSQL_TMP_DIR/ronsql-e1.out
+--let $EXPLAIN=$RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --output-format TEXT --explain-mode=FORCE --execute-file $QUERY_FILE
+# The WHERE line of the parse tree and the indented lines of its tree.
+--let $WHERE_TREE=sed -n '/^WHERE/,/^[^ ]/{/^WHERE/p;/^  /p;}' $EXPLAIN_OUT
+
+--echo
+--echo === e1-1: LIKE ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) FROM e1_o WHERE o_name LIKE 'a%';
+EOF
+--exec $EXPLAIN > $EXPLAIN_OUT 2>&1
+--exec $WHERE_TREE
+--remove_file $QUERY_FILE
+
+--echo
+--echo === e1-2: GREATEST of three columns, in the order written ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) FROM e1_o WHERE GREATEST(o_total, o_custkey, o_id) > 400;
+EOF
+--exec $EXPLAIN > $EXPLAIN_OUT 2>&1
+--exec $WHERE_TREE
+--remove_file $QUERY_FILE
+
+--echo
+--echo === e1-3: LIKE and LEAST under NOT ===
+--write_file $QUERY_FILE
+SELECT COUNT(*) FROM e1_o
+WHERE o_name LIKE '%a' AND NOT (LEAST(o_total, o_custkey) < 150);
+EOF
+--exec $EXPLAIN > $EXPLAIN_OUT 2>&1
+--exec $WHERE_TREE
+--remove_file $QUERY_FILE
+
+--echo
+--echo === e1-4: scalar subquery ===
+--write_file $QUERY_FILE
+SELECT o_custkey, SUM(o_total) FROM e1_o
+WHERE o_total > (SELECT MAX(l_price) FROM e1_l)
+GROUP BY o_custkey;
+EOF
+--exec $EXPLAIN > $EXPLAIN_OUT 2>&1
+--exec $WHERE_TREE
+--remove_file $QUERY_FILE
+
+--echo
+--echo === e1-5: IN subquery ===
+--write_file $QUERY_FILE
+SELECT o_custkey, COUNT(*) FROM e1_o
+WHERE o_id IN (SELECT l_orderkey FROM e1_l WHERE l_quantity > 20)
+GROUP BY o_custkey;
+EOF
+--exec $EXPLAIN > $EXPLAIN_OUT 2>&1
+--exec $WHERE_TREE
+--remove_file $QUERY_FILE
+
+--echo
+--echo === e1-6: correlated EXISTS, decorrelated into an IN subquery ===
+--write_file $QUERY_FILE
+SELECT o_custkey, COUNT(*) FROM e1_o
+WHERE EXISTS (SELECT l_id FROM e1_l WHERE l_orderkey = o_id)
+GROUP BY o_custkey;
+EOF
+--exec $EXPLAIN > $EXPLAIN_OUT 2>&1
+--exec $WHERE_TREE
+--remove_file $QUERY_FILE
+
+--echo
+--echo === e1-7: correlated NOT EXISTS ===
+--write_file $QUERY_FILE
+SELECT o_custkey, COUNT(*) FROM e1_o
+WHERE NOT EXISTS (SELECT l_id FROM e1_l
+                  WHERE l_orderkey = o_id AND l_quantity > 20)
+GROUP BY o_custkey;
+EOF
+--exec $EXPLAIN > $EXPLAIN_OUT 2>&1
+--exec $WHERE_TREE
+--remove_file $QUERY_FILE
+
+--echo
+--echo === e1-8: correlated scalar comparison ===
+--write_file $QUERY_FILE
+SELECT o_id, SUM(o_total) FROM e1_o
+WHERE o_total > (SELECT SUM(l_price) FROM e1_l WHERE l_orderkey = o_id)
+GROUP BY o_id;
+EOF
+--exec $EXPLAIN > $EXPLAIN_OUT 2>&1
+--exec $WHERE_TREE
+--remove_file $QUERY_FILE
+
+--echo
+--echo === e1-9: EXISTS without a connection (no decorrelation) ===
+--write_file $QUERY_FILE
+SELECT o_custkey, COUNT(*) FROM e1_o
+WHERE EXISTS (SELECT l_id FROM e1_l WHERE l_orderkey = o_id)
+GROUP BY o_custkey;
+EOF
+--exec $RONSQL_CLI_EXE --output-format TEXT --explain-mode=FORCE --execute-file $QUERY_FILE > $EXPLAIN_OUT 2>&1
+--exec $WHERE_TREE
+--remove_file $QUERY_FILE
+
+--echo
+--echo === e1-10: LIKE through RDRS ===
+--write_file $QUERY_FILE
+{"query":"SELECT COUNT(*) FROM e1_o WHERE o_name LIKE 'a%';","database":"test","outputFormat":"TEXT","explainMode":"FORCE"}
+EOF
+--exec curl --no-progress-meter --fail-with-body -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$QUERY_FILE > $EXPLAIN_OUT 2>&1
+--exec $WHERE_TREE
+--remove_file $QUERY_FILE
+
+--remove_file $EXPLAIN_OUT
+--let $QUERY_FILE=
+--let $EXPLAIN_OUT=
+--let $EXPLAIN=
+--let $WHERE_TREE=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE e1_l;
+DROP TABLE e1_o;
+--enable_warnings
+--enable_query_log

@@ -465,11 +465,35 @@ PushdownInterpreterFactory::DetectType(const Uint32* prog, Uint32 prog_len) {
   return PushdownType::AGGREGATION;
 }
 
+/*
+ * Init and OptimizeProgram a new aggregation interpreter.  On failure
+ * *out_of_memory tells why: Init fails without its buffer block when
+ * query memory is short and with it, or with program_rejected() set,
+ * when it rejects the program, and a
+ * program of a newer version leaves Init successful but the interpreter
+ * not inited, which OptimizeProgram rejects.  fail_init fails Init as
+ * when query memory is short.  The caller destroys the interpreter on
+ * failure; nothing was processed, so the destructor only frees what Init
+ * allocated (see ~AggInterpreterBase, case (c)).
+ */
+static bool initAggInterpreter(AggInterpreter* agg, const Uint32* prog,
+                               bool fail_init, bool* out_of_memory) {
+  const bool init_ok = !fail_init && agg->Init(prog);
+  if (init_ok && agg->OptimizeProgram()) {
+    return true;
+  }
+  *out_of_memory =
+      !init_ok && !agg->has_buf_block() && !agg->program_rejected();
+  return false;
+}
+
 PushdownCreateResult
 PushdownInterpreterFactory::Create(const Uint32* prog, Uint32 prog_len,
                                    Int64 table_id, Int64 frag_id,
-                                   Uint32 thread_id) {
+                                   Uint32 thread_id, bool fail_init,
+                                   bool* out_of_memory) {
   PushdownCreateResult result = {nullptr, nullptr};
+  *out_of_memory = false;
   PushdownType type = DetectType(prog, prog_len);
 
   /* An aggregation interpreter keeps its buffers in m_buf_block and its
@@ -483,14 +507,18 @@ PushdownInterpreterFactory::Create(const Uint32* prog, Uint32 prog_len,
                                       thread_id, false);
   if (obj_ptr == nullptr) {
     g_eventLogger->error("Alloc mem for pushdown interpreter failed");
+    *out_of_memory = true;
     return result;
   }
 
   if (type == PushdownType::AGGREGATION) {
-    result.agg = new(obj_ptr) AggInterpreter(prog_len, table_id, frag_id,
-                                             thread_id);
-    require(result.agg->Init(prog));
-    require(result.agg->OptimizeProgram());
+    AggInterpreter* agg = new(obj_ptr) AggInterpreter(prog_len, table_id,
+                                                      frag_id, thread_id);
+    if (!initAggInterpreter(agg, prog, fail_init, out_of_memory)) {
+      PushdownInterpreter::Destruct(agg);
+      return result;
+    }
+    result.agg = agg;
     /* Phase 8 Slice 3c: JIT-compile the per-row aggregation. The
      * GROUP BY gate lift (Phase 8 #5) compiles grouped programs too —
      * the compiled region starts at agg_prog_start_pos, past the
@@ -517,9 +545,16 @@ PushdownInterpreterFactory::Create(const Uint32* prog, Uint32 prog_len,
       }
     }
   } else {
-    result.vs = new(obj_ptr) VecSearchInterpreter(prog_len, table_id, frag_id,
-                                                  thread_id);
-    require(result.vs->Init(prog));
+    VecSearchInterpreter* vs = new(obj_ptr) VecSearchInterpreter(
+        prog_len, table_id, frag_id, thread_id);
+    /* VecSearchInterpreter::Init fails only when it cannot allocate; the
+     * destructor frees what it did allocate. */
+    if (fail_init || !vs->Init(prog)) {
+      *out_of_memory = true;
+      PushdownInterpreter::Destruct(vs);
+      return result;
+    }
+    result.vs = vs;
   }
 
   return result;
@@ -529,7 +564,7 @@ AggInterpreter*
 PushdownInterpreterFactory::CreateAggForRead(const Uint32* prog,
                                              Uint32 prog_len,
                                              Int64 table_id, Int64 frag_id,
-                                             Uint32 thread_id,
+                                             Uint32 thread_id, bool fail_init,
                                              bool* out_of_memory) {
   *out_of_memory = false;
   if (prog == nullptr || prog_len < 8 ||
@@ -545,10 +580,7 @@ PushdownInterpreterFactory::CreateAggForRead(const Uint32* prog,
   }
   AggInterpreter* agg = new(obj_ptr) AggInterpreter(prog_len, table_id,
                                                     frag_id, thread_id);
-  if (!agg->Init(prog) || !agg->OptimizeProgram()) {
-    *out_of_memory = !agg->has_buf_block();
-    /* Nothing was processed: the destructor only frees what Init
-     * allocated (see ~AggInterpreterBase, case (c)). */
+  if (!initAggInterpreter(agg, prog, fail_init, out_of_memory)) {
     PushdownInterpreter::Destruct(agg);
     return nullptr;
   }

@@ -1,0 +1,187 @@
+# An aggregate without GROUP BY over a join with a cross-table filter.
+#
+# README finding F-6: a WHERE condition that compares columns of two
+# tables (a.x > b.y + 1000) is a filter in the join aggregation program,
+# and a hidden sentinel COUNT counts the rows that pass it. The printer
+# dropped every row whose sentinel is 0, to hide the GROUP BY groups the
+# kernel creates for rows the filter then rejects. Without GROUP BY the
+# aggregator always returns its one row, and when no row passed the
+# filter its sentinel is 0, so RonSQL returned no row where MySQL returns
+# COUNT 0 and NULL for the other aggregates. The sentinel now suppresses
+# GROUP BY groups only.
+#
+# xo has 4 rows, xl 6; l.qty > o.lim holds for 3 of the 6 joined rows
+# (prices 200, 300 and 500, one each for orders 1, 2 and 3), and
+# l.qty > o.lim + 1000 for none.
+#
+#   cf-1  COUNT(*), SUM: no row passes (no row before the fix)
+#   cf-2  COUNT(col), MIN, MAX, AVG: no row passes (no row before)
+#   cf-3  no row reaches the filter: the root key is absent (no row
+#         before)
+#   cf-4  HAVING COUNT(*) = 0 over the empty filtered set (no row
+#         before)
+#   cf-5  control: HAVING COUNT(*) > 0 still drops that row
+#   cf-6  control: some rows pass
+#   cf-7  control: GROUP BY drops the group whose rows all fail (order 4)
+#   cf-8  control: GROUP BY with no row passing returns no row
+#
+# Expected results come from mysqld (strict_diff).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE xo (
+  id  INT NOT NULL,
+  lim INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE xl (
+  id    INT NOT NULL,
+  oid   INT NOT NULL,
+  qty   INT NOT NULL,
+  price INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_xl_oid (oid)
+) ENGINE=NDB;
+INSERT INTO xo VALUES (1, 10), (2, 20), (3, 30), (4, 50);
+INSERT INTO xl VALUES
+  (1, 1, 5, 100), (2, 1, 15, 200), (3, 2, 25, 300),
+  (4, 2, 10, 400), (5, 3, 40, 500), (6, 4, 45, 600);
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === cf-1: COUNT(*) and SUM, no row passes the filter ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(l.price) AS s
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(l.price) AS s
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000|
+
+--echo
+--echo === cf-2: COUNT(col), MIN, MAX and AVG, no row passes the filter ===
+let $QUERY=
+SELECT COUNT(l.price) AS n, MIN(l.qty) AS mn, MAX(l.qty) AS mx,
+       AVG(l.price) AS av
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(l.price) AS n, MIN(l.qty) AS mn, MAX(l.qty) AS mx,
+       AVG(l.price) AS av
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000|
+
+--echo
+--echo === cf-3: no row reaches the filter (absent root key) ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(l.price) AS s
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE o.id = 99 AND l.qty > o.lim;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(l.price) AS s
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE o.id = 99 AND l.qty > o.lim|
+
+--echo
+--echo === cf-4: HAVING COUNT(*) = 0 over the empty filtered set ===
+let $QUERY=
+SELECT COUNT(*) AS n
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000
+HAVING COUNT(*) = 0;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000
+HAVING COUNT(*) = 0|
+
+--echo
+--echo === cf-5: control, HAVING COUNT(*) > 0 drops the row ===
+let $QUERY=
+SELECT COUNT(*) AS n
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000
+HAVING COUNT(*) > 0;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000
+HAVING COUNT(*) > 0|
+
+--echo
+--echo === cf-6: control, some rows pass the filter ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(l.price) AS s
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(l.price) AS s
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim|
+
+--echo
+--echo === cf-7: control, GROUP BY drops the group whose rows all fail ===
+let $QUERY=
+SELECT o.id AS id, COUNT(*) AS n, SUM(l.price) AS s
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim
+GROUP BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS id, COUNT(*) AS n, SUM(l.price) AS s
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim
+GROUP BY o.id|
+
+--echo
+--echo === cf-8: control, GROUP BY with no row passing returns no row ===
+let $QUERY=
+SELECT o.id AS id, COUNT(*) AS n
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000
+GROUP BY o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.id AS id, COUNT(*) AS n
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000
+GROUP BY o.id|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE xl;
+DROP TABLE xo;
+--enable_warnings
+--enable_query_log

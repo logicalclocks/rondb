@@ -1,0 +1,291 @@
+# A WHERE filter of a join or CTE operation that cannot be built.
+#
+# README finding J-5 (= C-8 = D-9 = F-20): the join and CTE builders
+# ignored the results of the last NdbScanFilter::end(),
+# NdbInterpretedCode::finalise() and NdbQueryOptions::setInterpretedCode()
+# of the WHERE filter of an operation. The single-table filters check them.
+# NdbInterpretedCode grows its buffer up to NDB_MAX_SCANFILTER_SIZE_IN_WORDS
+# (15359 words). Each comparison of a WHERE is checked (apply_filter), but
+# the last end() adds four more words: EXIT_OK, the label of the AND group
+# (2 words) and EXIT_REFUSE. A WHERE whose comparisons take 15356 to 15359
+# words fits, and its last end() does not (4294, FilterTooLarge). The
+# program was then left unfinalised, setInterpretedCode refused it, and the
+# operation ran without its filter: the join returned the rows the WHERE
+# removes. RonSQL now checks each step (build_where_filter,
+# set_where_filter) and fails the query with the NDB error.
+#
+# The WHERE of every jf-N case is 9 comparisons <> on a
+# VARCHAR(8000) CHARACTER SET latin1 column s (2 length bytes). A
+# comparison with a literal of n characters takes 2 words plus
+# ceil((n + 2) / 4) words for the value:
+#   s <> 'b'                     1 x    3 words
+#   s <> 7998 times 'e' .. 'k'   7 x 2002 words
+#   s <> 5350 times 'l'          1 x 1340 words
+# 15357 words in all, so the last end() fails when it adds the label.
+# No row has one of the long values, so the WHERE is s <> 'b' (the
+# jf-cN controls).
+#
+# Rows of jf and jx (id, g, s): (1, 1, 'a') (2, 1, 'b') (3, 2, 'c')
+# (4, 2, 'd'); jc has ids 1 to 4. jf has a hash primary key only, jx an
+# ordered primary key and an index on g.
+#
+# Case   operation that gets the filter           before the fix
+#   jf-1   root table scan                          g 1: 2, g 2: 2
+#   jf-2   joined table (lookup child)              g 1: 2, g 2: 2
+#   jf-3   CTE body root scan                       k 1: 2, k 2: 2
+#   jf-4   index-scan root (g >= 1), residual       g 1: 2, g 2: 2
+#   jf-5   PK index-scan root (aggregate, id = 2),  error (a)
+#          residual
+#   jf-6   PK lookup root (pass-through, id = 2),   error (a)
+#          residual
+# (a) "Failed to set interpreted code on root PK index scan.": this site
+#     checked setInterpretedCode, which refused the unfinalised program
+#     (4519), and the error was classified from the transaction. jf-6
+#     fell through to the PK index scan because the unfinalised program
+#     counts more than 64 words.
+# Each now fails with NDB error 4294 and a message that names the
+# operation. The controls jf-c1 .. jf-c6 run the same shapes with
+# WHERE s <> 'b' and compare with mysqld: g 1: 1, g 2: 2 (jf-c5: g 1: 1
+# for id 1; jf-c6: no row for id 2, whose s is 'b').
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE jf (
+  id INT NOT NULL,
+  g  INT NOT NULL,
+  s  VARCHAR(8000) CHARACTER SET latin1 NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE jx (
+  id INT NOT NULL,
+  g  INT NOT NULL,
+  s  VARCHAR(8000) CHARACTER SET latin1 NOT NULL,
+  PRIMARY KEY (id),
+  INDEX ix_g (g)
+) ENGINE=NDB;
+CREATE TABLE jc (
+  id INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+INSERT INTO jf VALUES (1, 1, 'a'), (2, 1, 'b'), (3, 2, 'c'), (4, 2, 'd');
+INSERT INTO jx VALUES (1, 1, 'a'), (2, 1, 'b'), (3, 2, 'c'), (4, 2, 'd');
+INSERT INTO jc VALUES (1), (2), (3), (4);
+--enable_warnings
+--enable_query_log
+
+--let RONSQL_J5_DIR=$MYSQL_TMP_DIR
+--perl
+use strict;
+use warnings;
+use File::Spec;
+
+# The 9 comparisons of the header, 15357 program words.
+sub big_where {
+  my ($col) = @_;
+  my @terms = ("$col <> 'b'");
+  for my $c ('e' .. 'k') {
+    push @terms, "$col <> '" . ($c x 7998) . "'";
+  }
+  push @terms, "$col <> '" . ('l' x 5350) . "'";
+  return join("\nAND ", @terms);
+}
+
+my @cases = (
+  ['root-scan',
+   "SELECT a.g AS g, COUNT(*) AS n\n" .
+   "FROM jf AS a JOIN jc AS b ON b.id = a.id\n" .
+   "WHERE " . big_where('a.s') . "\nGROUP BY a.g;\n"],
+  ['child',
+   "SELECT a.g AS g, COUNT(*) AS n\n" .
+   "FROM jc AS b JOIN jf AS a ON a.id = b.id\n" .
+   "WHERE " . big_where('a.s') . "\nGROUP BY a.g;\n"],
+  ['cte-body',
+   "WITH c AS (SELECT g AS k, COUNT(*) AS n FROM jf\n" .
+   "WHERE " . big_where('s') . "\nGROUP BY g)\n" .
+   "SELECT k, n FROM c;\n"],
+  ['index-scan',
+   "SELECT a.g AS g, COUNT(*) AS n\n" .
+   "FROM jx AS a JOIN jc AS b ON b.id = a.id\n" .
+   "WHERE a.g >= 1\nAND " . big_where('a.s') . "\nGROUP BY a.g;\n"],
+  ['pk-index-scan',
+   "SELECT a.g AS g, COUNT(*) AS n\n" .
+   "FROM jx AS a JOIN jc AS b ON b.id = a.id\n" .
+   "WHERE a.id = 2\nAND " . big_where('a.s') . "\nGROUP BY a.g;\n"],
+  ['pk-lookup',
+   "SELECT a.id AS id, a.g AS g, b.id AS bid\n" .
+   "FROM jx AS a JOIN jc AS b ON b.id = a.id\n" .
+   "WHERE a.id = 2\nAND " . big_where('a.s') . ";\n"]
+);
+for my $case (@cases) {
+  my ($name, $query) = @$case;
+  my $path = File::Spec->catfile($ENV{RONSQL_J5_DIR},
+                                 "ronsql-j5-$name.sql");
+  open my $out, '>', $path or die "Cannot write $path: $!\n";
+  print {$out} $query or die "Cannot write $path: $!\n";
+  close $out or die "Cannot close $path: $!\n";
+}
+EOF
+--let RONSQL_J5_DIR=
+
+--echo
+--echo === jf-1: root table scan, the filter does not fit ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file '$MYSQL_TMP_DIR/ronsql-j5-root-scan.sql' 2>&1
+--remove_file $MYSQL_TMP_DIR/ronsql-j5-root-scan.sql
+
+--echo
+--echo === jf-2: joined table, the filter does not fit ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file '$MYSQL_TMP_DIR/ronsql-j5-child.sql' 2>&1
+--remove_file $MYSQL_TMP_DIR/ronsql-j5-child.sql
+
+--echo
+--echo === jf-3: CTE body root scan, the filter does not fit ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file '$MYSQL_TMP_DIR/ronsql-j5-cte-body.sql' 2>&1
+--remove_file $MYSQL_TMP_DIR/ronsql-j5-cte-body.sql
+
+--echo
+--echo === jf-4: index-scan root, the residual filter does not fit ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file '$MYSQL_TMP_DIR/ronsql-j5-index-scan.sql' 2>&1
+--remove_file $MYSQL_TMP_DIR/ronsql-j5-index-scan.sql
+
+--echo
+--echo === jf-5: PK index-scan root, the residual filter does not fit ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file '$MYSQL_TMP_DIR/ronsql-j5-pk-index-scan.sql' 2>&1
+--remove_file $MYSQL_TMP_DIR/ronsql-j5-pk-index-scan.sql
+
+--echo
+--echo === jf-6: PK lookup root, the residual filter does not fit ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file '$MYSQL_TMP_DIR/ronsql-j5-pk-lookup.sql' 2>&1
+--remove_file $MYSQL_TMP_DIR/ronsql-j5-pk-lookup.sql
+
+# The controls contain a string literal, which the shell quoting of
+# $QUERY in ronsql_compare.inc would break, so they go through a file.
+DELIMITER |;
+
+--echo
+--echo === jf-c1: control, root table scan ===
+--let $QUERY_FILE=$MYSQL_TMP_DIR/ronsql-j5-query.sql
+--write_file $QUERY_FILE
+SELECT a.g AS g, COUNT(*) AS n
+FROM jf AS a JOIN jc AS b ON b.id = a.id
+WHERE a.s <> 'b'
+GROUP BY a.g;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.g AS g, COUNT(*) AS n
+FROM jf AS a JOIN jc AS b ON b.id = a.id
+WHERE a.s <> 'b'
+GROUP BY a.g|
+
+--echo
+--echo === jf-c2: control, joined table ===
+--write_file $QUERY_FILE
+SELECT a.g AS g, COUNT(*) AS n
+FROM jc AS b JOIN jf AS a ON a.id = b.id
+WHERE a.s <> 'b'
+GROUP BY a.g;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.g AS g, COUNT(*) AS n
+FROM jc AS b JOIN jf AS a ON a.id = b.id
+WHERE a.s <> 'b'
+GROUP BY a.g|
+
+--echo
+--echo === jf-c3: control, CTE body root scan ===
+--write_file $QUERY_FILE
+WITH c AS (SELECT g AS k, COUNT(*) AS n FROM jf
+WHERE s <> 'b'
+GROUP BY g)
+SELECT k, n FROM c;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT g AS k, COUNT(*) AS n FROM jf
+WHERE s <> 'b'
+GROUP BY g)
+SELECT k, n FROM c|
+
+--echo
+--echo === jf-c4: control, index-scan root ===
+--write_file $QUERY_FILE
+SELECT a.g AS g, COUNT(*) AS n
+FROM jx AS a JOIN jc AS b ON b.id = a.id
+WHERE a.g >= 1
+AND a.s <> 'b'
+GROUP BY a.g;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.g AS g, COUNT(*) AS n
+FROM jx AS a JOIN jc AS b ON b.id = a.id
+WHERE a.g >= 1
+AND a.s <> 'b'
+GROUP BY a.g|
+
+--echo
+--echo === jf-c5: control, PK index-scan root ===
+--write_file $QUERY_FILE
+SELECT a.g AS g, COUNT(*) AS n
+FROM jx AS a JOIN jc AS b ON b.id = a.id
+WHERE a.id = 1
+AND a.s <> 'b'
+GROUP BY a.g;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.g AS g, COUNT(*) AS n
+FROM jx AS a JOIN jc AS b ON b.id = a.id
+WHERE a.id = 1
+AND a.s <> 'b'
+GROUP BY a.g|
+
+--echo
+--echo === jf-c6: control, PK lookup root, the filter removes the row ===
+--write_file $QUERY_FILE
+SELECT a.id AS id, a.g AS g, b.id AS bid
+FROM jx AS a JOIN jc AS b ON b.id = a.id
+WHERE a.id = 2
+AND a.s <> 'b';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.id AS id, a.g AS g, b.id AS bid
+FROM jx AS a JOIN jc AS b ON b.id = a.id
+WHERE a.id = 2
+AND a.s <> 'b'|
+
+DELIMITER ;|
+
+--let $QUERY_FILE=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE jc;
+DROP TABLE jx;
+DROP TABLE jf;
+--enable_warnings
+--enable_query_log

@@ -1,0 +1,191 @@
+# RONSQL-39 through CTEs (X-14): a BLOB or TEXT GROUP BY key passed up
+# through CTEs is refused at prepare time with the error that a stored
+# BLOB or TEXT GROUP BY column gets (ronsql_groupby_blob): "GROUP BY on a
+# BLOB or TEXT column is not supported." (class unsupported, HTTP 400 in
+# RDRS).
+#
+# Before, a key that is a CTE output reached no GROUP BY check:
+# - one CTE up, the statement failed at execute time when the CTE's
+#   virtual table was built: "CTE output column `txt` has a column type
+#   that CTEs do not support." (C-3);
+# - two CTEs up, the key of the main query has no plumbed dictionary
+#   column, so the result printer took the inline and part sizes of the
+#   TEXT column (256, 2000) for a DECIMAL precision and scale: the process
+#   aborted until X-14 sweep 1, then "A GROUP BY output has a precision
+#   above 65. Please report a bug." (class internal, HTTP 500).  This test
+#   was ronsql_internal_errors (ie-1 is gbc-3, ie-2 is gbc-9); no
+#   statement reaches an internal error any more.
+# RonSQLPreparer::check_cte_groupby_key_types() checks the GROUP BY of
+# each CTE body and of the main query, following a CTE output down the
+# chain (resolve_chained_column_type).  No ronsql_jit mirror: the error
+# comes at prepare time, before any program runs.
+#
+#   gbc-1  TEXT key one CTE up, GROUP BY of the main query
+#   gbc-2  BLOB key one CTE up, GROUP BY of the main query
+#   gbc-3  TEXT key two CTEs up, GROUP BY of the main query (b's GROUP BY
+#          on the key, one CTE up, is refused first)
+#   gbc-4  BLOB key two CTEs up, GROUP BY of the main query
+#   gbc-5  TEXT key one CTE up, GROUP BY of a CTE body, main query
+#          without GROUP BY
+#   gbc-6  BLOB key one CTE up, GROUP BY of a CTE body
+#   gbc-7  TEXT key two CTEs up, GROUP BY of a CTE body (b's GROUP BY,
+#          one CTE up, is refused first)
+#   gbc-8  BLOB key two CTEs up, GROUP BY of a CTE body
+#   gbc-9  gbc-3 through RDRS: HTTP 400 with error class unsupported, and
+#          RDRS answers the next request with HTTP 200
+#   gbc-10 unchanged: a TEXT column that a CTE passes on to the main query
+#          with no GROUP BY on it is not checked; it keeps the execute-time
+#          error of its virtual column (RonSQL prints no TEXT or BLOB
+#          value, so such a pass-through has no result to compare)
+#   gbc-c1..gbc-c4  controls compared with mysqld (strict_diff), over the
+#          same table: a VARCHAR key one and two CTEs up, an INT key
+#          three CTEs up, and a pass-through of a grouped CTE
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE gbc_t (
+  id  INT NOT NULL,
+  k   INT NOT NULL,
+  vc  VARCHAR(20) NOT NULL,
+  txt TEXT,
+  bl  BLOB,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+INSERT INTO gbc_t VALUES
+  (1, 1, 'pear',   'apple',  0x01),
+  (2, 2, 'apple',  'banana', 0x02),
+  (3, 1, 'fig',    'apple',  0x01),
+  (4, 3, 'apple',  'cherry', 0x03),
+  (5, 2, 'pear',   'banana', 0x02),
+  (6, 1, 'banana', 'apple',  0x01);
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === gbc-1: TEXT key one CTE up, GROUP BY of the main query ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT txt, COUNT(*) AS n FROM gbc_t GROUP BY txt) SELECT txt, SUM(n) AS s FROM a GROUP BY txt;' 2>&1
+
+--echo
+--echo === gbc-2: BLOB key one CTE up, GROUP BY of the main query ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT bl, COUNT(*) AS n FROM gbc_t GROUP BY bl) SELECT bl, SUM(n) AS s FROM a GROUP BY bl;' 2>&1
+
+--echo
+--echo === gbc-3: TEXT key two CTEs up, GROUP BY of the main query ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT txt, COUNT(*) AS n FROM gbc_t GROUP BY txt), b AS (SELECT txt, SUM(n) AS n2 FROM a GROUP BY txt) SELECT txt, SUM(n2) AS s FROM b GROUP BY txt;' 2>&1
+
+--echo
+--echo === gbc-4: BLOB key two CTEs up, GROUP BY of the main query ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT bl, COUNT(*) AS n FROM gbc_t GROUP BY bl), b AS (SELECT bl, SUM(n) AS n2 FROM a GROUP BY bl) SELECT bl, SUM(n2) AS s FROM b GROUP BY bl;' 2>&1
+
+--echo
+--echo === gbc-5: TEXT key one CTE up, GROUP BY of a CTE body ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT txt, COUNT(*) AS n FROM gbc_t GROUP BY txt), b AS (SELECT txt, SUM(n) AS n2 FROM a GROUP BY txt) SELECT n2 FROM b;' 2>&1
+
+--echo
+--echo === gbc-6: BLOB key one CTE up, GROUP BY of a CTE body ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT bl, COUNT(*) AS n FROM gbc_t GROUP BY bl), b AS (SELECT bl, SUM(n) AS n2 FROM a GROUP BY bl) SELECT n2 FROM b;' 2>&1
+
+--echo
+--echo === gbc-7: TEXT key two CTEs up, GROUP BY of a CTE body ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT txt, COUNT(*) AS n FROM gbc_t GROUP BY txt), b AS (SELECT txt, SUM(n) AS n2 FROM a GROUP BY txt), c AS (SELECT txt, SUM(n2) AS n3 FROM b GROUP BY txt) SELECT n3 FROM c;' 2>&1
+
+--echo
+--echo === gbc-8: BLOB key two CTEs up, GROUP BY of a CTE body ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT bl, COUNT(*) AS n FROM gbc_t GROUP BY bl), b AS (SELECT bl, SUM(n) AS n2 FROM a GROUP BY bl), c AS (SELECT bl, SUM(n2) AS n3 FROM b GROUP BY bl) SELECT n3 FROM c;' 2>&1
+
+--echo
+--echo === gbc-9: gbc-3 through RDRS ===
+--exec printf '{"query":"WITH a AS (SELECT txt, COUNT(*) AS n FROM gbc_t GROUP BY txt), b AS (SELECT txt, SUM(n) AS n2 FROM a GROUP BY txt) SELECT txt, SUM(n2) AS s FROM b GROUP BY txt;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/gbc-body
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/gbc-hdrs -o /dev/null -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/gbc-body
+--exec grep -i '^x-ronsql-error-class:' $MYSQL_TMP_DIR/gbc-hdrs | tr -d '\r' | tr '[:upper:]' '[:lower:]'
+--echo == RDRS still answers ==
+--exec printf '{"query":"SELECT COUNT(*) AS n FROM gbc_t;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/gbc-body
+--exec curl -s -w 'HTTP %{http_code}\n' -o /dev/null -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/gbc-body
+--remove_file $MYSQL_TMP_DIR/gbc-body
+--remove_file $MYSQL_TMP_DIR/gbc-hdrs
+
+--echo
+--echo === gbc-10: TEXT column passed on by a CTE without GROUP BY on it (unchanged) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT txt, COUNT(*) AS n FROM gbc_t GROUP BY txt) SELECT txt, n FROM a;' 2>&1
+
+DELIMITER |;
+
+--echo
+--echo === gbc-c1: control, VARCHAR key one CTE up ===
+let $QUERY=
+WITH a AS (SELECT vc, COUNT(*) AS n FROM gbc_t GROUP BY vc)
+SELECT vc, SUM(n) AS s FROM a GROUP BY vc;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT vc, COUNT(*) AS n FROM gbc_t GROUP BY vc)
+SELECT vc, SUM(n) AS s FROM a GROUP BY vc|
+
+--echo
+--echo === gbc-c2: control, VARCHAR key two CTEs up ===
+let $QUERY=
+WITH a AS (SELECT vc, COUNT(*) AS n FROM gbc_t GROUP BY vc),
+b AS (SELECT vc, SUM(n) AS n2 FROM a GROUP BY vc)
+SELECT vc, SUM(n2) AS s FROM b GROUP BY vc;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT vc, COUNT(*) AS n FROM gbc_t GROUP BY vc),
+b AS (SELECT vc, SUM(n) AS n2 FROM a GROUP BY vc)
+SELECT vc, SUM(n2) AS s FROM b GROUP BY vc|
+
+--echo
+--echo === gbc-c3: control, INT key three CTEs up ===
+let $QUERY=
+WITH a AS (SELECT k, COUNT(*) AS n FROM gbc_t GROUP BY k),
+b AS (SELECT k, SUM(n) AS n2 FROM a GROUP BY k),
+c AS (SELECT k, SUM(n2) AS n3 FROM b GROUP BY k)
+SELECT k, SUM(n3) AS s FROM c GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT k, COUNT(*) AS n FROM gbc_t GROUP BY k),
+b AS (SELECT k, SUM(n) AS n2 FROM a GROUP BY k),
+c AS (SELECT k, SUM(n2) AS n3 FROM b GROUP BY k)
+SELECT k, SUM(n3) AS s FROM c GROUP BY k|
+
+--echo
+--echo === gbc-c4: control, pass-through of a grouped CTE ===
+let $QUERY=
+WITH a AS (SELECT k, COUNT(*) AS n FROM gbc_t GROUP BY k)
+SELECT k, n FROM a;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT k, COUNT(*) AS n FROM gbc_t GROUP BY k)
+SELECT k, n FROM a|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--echo
+--echo === Cleanup ===
+
+--disable_query_log
+DROP TABLE gbc_t;
+--enable_query_log

@@ -1,0 +1,168 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== jbe-1: control, 32 operations: the largest pushed join ===
+== Query ==
+WITH c1 AS (SELECT g AS k1, SUM(v) AS m1 FROM bf GROUP BY g),
+c2 AS (SELECT g AS k2, COUNT(*) AS m2 FROM bf GROUP BY g),
+c3 AS (SELECT g AS k3, MIN(v) AS m3 FROM bf GROUP BY g),
+c4 AS (SELECT g AS k4, MAX(v) AS m4 FROM bf GROUP BY g),
+c5 AS (SELECT g AS k5, SUM(v) AS m5 FROM bf GROUP BY g),
+c6 AS (SELECT g AS k6, COUNT(*) AS m6 FROM bf GROUP BY g),
+c7 AS (SELECT g AS k7, MIN(v) AS m7 FROM bf GROUP BY g),
+c8 AS (SELECT g AS k8, MAX(v) AS m8 FROM bf GROUP BY g),
+c9 AS (SELECT g AS k9, SUM(v) AS m9 FROM bf GROUP BY g),
+c10 AS (SELECT g AS k10, COUNT(v) AS m10 FROM bf GROUP BY g)
+SELECT COUNT(*) AS n, SUM(d.w) AS w, SUM(c1.m1) AS a1, SUM(c2.m2) AS a2,
+SUM(c3.m3) AS a3, SUM(c4.m4) AS a4, SUM(c5.m5) AS a5, SUM(c6.m6) AS a6,
+SUM(c7.m7) AS a7, SUM(c8.m8) AS a8, SUM(c9.m9) AS a9, SUM(c10.m10) AS a10
+FROM bf AS f
+JOIN bd AS d ON d.g = f.g
+JOIN c1 ON c1.k1 = d.g
+JOIN c2 ON c2.k2 = d.g
+JOIN c3 ON c3.k3 = d.g
+JOIN c4 ON c4.k4 = d.g
+JOIN c5 ON c5.k5 = d.g
+JOIN c6 ON c6.k6 = d.g
+JOIN c7 ON c7.k7 = d.g
+JOIN c8 ON c8.k8 = d.g
+JOIN c9 ON c9.k9 = d.g
+JOIN c10 ON c10.k10 = d.g;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c1 AS (SELECT g AS k1, SUM(v) AS m1 FROM bf GROUP BY g),
+c2 AS (SELECT g AS k2, COUNT(*) AS m2 FROM bf GROUP BY g),
+c3 AS (SELECT g AS k3, MIN(v) AS m3 FROM bf GROUP BY g),
+c4 AS (SELECT g AS k4, MAX(v) AS m4 FROM bf GROUP BY g),
+c5 AS (SELECT g AS k5, SUM(v) AS m5 FROM bf GROUP BY g),
+c6 AS (SELECT g AS k6, COUNT(*) AS m6 FROM bf GROUP BY g),
+c7 AS (SELECT g AS k7, MIN(v) AS m7 FROM bf GROUP BY g),
+c8 AS (SELECT g AS k8, MAX(v) AS m8 FROM bf GROUP BY g),
+c9 AS (SELECT g AS k9, SUM(v) AS m9 FROM bf GROUP BY g),
+c10 AS (SELECT g AS k10, COUNT(v) AS m10 FROM bf GROUP BY g)
+SELECT COUNT(*) AS n, SUM(d.w) AS w, SUM(c1.m1) AS a1, SUM(c2.m2) AS a2,
+SUM(c3.m3) AS a3, SUM(c4.m4) AS a4, SUM(c5.m5) AS a5, SUM(c6.m6) AS a6,
+SUM(c7.m7) AS a7, SUM(c8.m8) AS a8, SUM(c9.m9) AS a9, SUM(c10.m10) AS a10
+FROM bf AS f
+JOIN bd AS d ON d.g = f.g
+JOIN c1 ON c1.k1 = d.g
+JOIN c2 ON c2.k2 = d.g
+JOIN c3 ON c3.k3 = d.g
+JOIN c4 ON c4.k4 = d.g
+JOIN c5 ON c5.k5 = d.g
+JOIN c6 ON c6.k6 = d.g
+JOIN c7 ON c7.k7 = d.g
+JOIN c8 ON c8.k8 = d.g
+JOIN c9 ON c9.k9 = d.g
+JOIN c10 ON c10.k10 = d.g|
+n	w	a1	a2	a3	a4	a5	a6	a7	a8	a9	a10
+4	45	72	6	32	52	72	6	32	52	72	6
+
+=== jbe-2: one more primary-key lookup, 33 operations: a limit error ===
+== Query ==
+WITH c1 AS (SELECT g AS k1, SUM(v) AS m1 FROM bf GROUP BY g),
+c2 AS (SELECT g AS k2, COUNT(*) AS m2 FROM bf GROUP BY g),
+c3 AS (SELECT g AS k3, MIN(v) AS m3 FROM bf GROUP BY g),
+c4 AS (SELECT g AS k4, MAX(v) AS m4 FROM bf GROUP BY g),
+c5 AS (SELECT g AS k5, SUM(v) AS m5 FROM bf GROUP BY g),
+c6 AS (SELECT g AS k6, COUNT(*) AS m6 FROM bf GROUP BY g),
+c7 AS (SELECT g AS k7, MIN(v) AS m7 FROM bf GROUP BY g),
+c8 AS (SELECT g AS k8, MAX(v) AS m8 FROM bf GROUP BY g),
+c9 AS (SELECT g AS k9, SUM(v) AS m9 FROM bf GROUP BY g),
+c10 AS (SELECT g AS k10, COUNT(v) AS m10 FROM bf GROUP BY g)
+SELECT COUNT(*) AS n, SUM(d.w) AS w, SUM(c1.m1) AS a1, SUM(c2.m2) AS a2,
+SUM(c3.m3) AS a3, SUM(c4.m4) AS a4, SUM(c5.m5) AS a5, SUM(c6.m6) AS a6,
+SUM(c7.m7) AS a7, SUM(c8.m8) AS a8, SUM(c9.m9) AS a9, SUM(c10.m10) AS a10
+FROM bf AS f
+JOIN bd AS d ON d.g = f.g
+JOIN bd AS e ON e.g = d.g
+JOIN c1 ON c1.k1 = d.g
+JOIN c2 ON c2.k2 = d.g
+JOIN c3 ON c3.k3 = d.g
+JOIN c4 ON c4.k4 = d.g
+JOIN c5 ON c5.k5 = d.g
+JOIN c6 ON c6.k6 = d.g
+JOIN c7 ON c7.k7 = d.g
+JOIN c8 ON c8.k8 = d.g
+JOIN c9 ON c9.k9 = d.g
+JOIN c10 ON c10.k10 = d.g;
+Error handling: RPE
+ronsql_cli caught exception: Pushed join too large: the query and its CTEs need 33 operations, more than the NDB limit of 32 (a CTE counts 1 plus the operations of its body; a unique-index lookup counts 2).
+[limit] Caught exception: Pushed join too large: the query and its CTEs need 33 operations, more than the NDB limit of 32 (a CTE counts 1 plus the operations of its body; a unique-index lookup counts 2).
+
+=== jbe-3: a unique-index lookup counts 2, 33 operations: a limit error ===
+== Query ==
+WITH c1 AS (SELECT g AS k1, SUM(v) AS m1 FROM bf GROUP BY g),
+c2 AS (SELECT g AS k2, COUNT(*) AS m2 FROM bf GROUP BY g),
+c3 AS (SELECT g AS k3, MIN(v) AS m3 FROM bf GROUP BY g),
+c4 AS (SELECT g AS k4, MAX(v) AS m4 FROM bf GROUP BY g),
+c5 AS (SELECT g AS k5, SUM(v) AS m5 FROM bf GROUP BY g),
+c6 AS (SELECT g AS k6, COUNT(*) AS m6 FROM bf GROUP BY g),
+c7 AS (SELECT g AS k7, MIN(v) AS m7 FROM bf GROUP BY g),
+c8 AS (SELECT g AS k8, MAX(v) AS m8 FROM bf GROUP BY g),
+c9 AS (SELECT g AS k9, SUM(v) AS m9 FROM bf GROUP BY g),
+c10 AS (SELECT g AS k10, COUNT(v) AS m10 FROM bf GROUP BY g)
+SELECT COUNT(*) AS n
+FROM bf AS f
+JOIN bd AS u ON u.w = f.v
+JOIN c1 ON c1.k1 = f.g
+JOIN c2 ON c2.k2 = f.g
+JOIN c3 ON c3.k3 = f.g
+JOIN c4 ON c4.k4 = f.g
+JOIN c5 ON c5.k5 = f.g
+JOIN c6 ON c6.k6 = f.g
+JOIN c7 ON c7.k7 = f.g
+JOIN c8 ON c8.k8 = f.g
+JOIN c9 ON c9.k9 = f.g
+JOIN c10 ON c10.k10 = f.g;
+Error handling: RPE
+ronsql_cli caught exception: Pushed join too large: the query and its CTEs need 33 operations, more than the NDB limit of 32 (a CTE counts 1 plus the operations of its body; a unique-index lookup counts 2).
+
+=== jbe-4: 17 CTEs, 52 operations: a limit error ===
+== Query ==
+WITH c1 AS (SELECT g AS k1, SUM(v) AS m1 FROM bf GROUP BY g),
+c2 AS (SELECT g AS k2, SUM(v) AS m2 FROM bf GROUP BY g),
+c3 AS (SELECT g AS k3, SUM(v) AS m3 FROM bf GROUP BY g),
+c4 AS (SELECT g AS k4, SUM(v) AS m4 FROM bf GROUP BY g),
+c5 AS (SELECT g AS k5, SUM(v) AS m5 FROM bf GROUP BY g),
+c6 AS (SELECT g AS k6, SUM(v) AS m6 FROM bf GROUP BY g),
+c7 AS (SELECT g AS k7, SUM(v) AS m7 FROM bf GROUP BY g),
+c8 AS (SELECT g AS k8, SUM(v) AS m8 FROM bf GROUP BY g),
+c9 AS (SELECT g AS k9, SUM(v) AS m9 FROM bf GROUP BY g),
+c10 AS (SELECT g AS k10, SUM(v) AS m10 FROM bf GROUP BY g),
+c11 AS (SELECT g AS k11, SUM(v) AS m11 FROM bf GROUP BY g),
+c12 AS (SELECT g AS k12, SUM(v) AS m12 FROM bf GROUP BY g),
+c13 AS (SELECT g AS k13, SUM(v) AS m13 FROM bf GROUP BY g),
+c14 AS (SELECT g AS k14, SUM(v) AS m14 FROM bf GROUP BY g),
+c15 AS (SELECT g AS k15, SUM(v) AS m15 FROM bf GROUP BY g),
+c16 AS (SELECT g AS k16, SUM(v) AS m16 FROM bf GROUP BY g),
+c17 AS (SELECT g AS k17, SUM(v) AS m17 FROM bf GROUP BY g)
+SELECT COUNT(*) AS n
+FROM bf AS f
+JOIN c1 ON c1.k1 = f.g
+JOIN c2 ON c2.k2 = f.g
+JOIN c3 ON c3.k3 = f.g
+JOIN c4 ON c4.k4 = f.g
+JOIN c5 ON c5.k5 = f.g
+JOIN c6 ON c6.k6 = f.g
+JOIN c7 ON c7.k7 = f.g
+JOIN c8 ON c8.k8 = f.g
+JOIN c9 ON c9.k9 = f.g
+JOIN c10 ON c10.k10 = f.g
+JOIN c11 ON c11.k11 = f.g
+JOIN c12 ON c12.k12 = f.g
+JOIN c13 ON c13.k13 = f.g
+JOIN c14 ON c14.k14 = f.g
+JOIN c15 ON c15.k15 = f.g
+JOIN c16 ON c16.k16 = f.g
+JOIN c17 ON c17.k17 = f.g;
+Error handling: RPE
+ronsql_cli caught exception: Pushed join too large: the query and its CTEs need 52 operations, more than the NDB limit of 32 (a CTE counts 1 plus the operations of its body; a unique-index lookup counts 2).
+[limit] Caught exception: Pushed join too large: the query and its CTEs need 52 operations, more than the NDB limit of 32 (a CTE counts 1 plus the operations of its body; a unique-index lookup counts 2).

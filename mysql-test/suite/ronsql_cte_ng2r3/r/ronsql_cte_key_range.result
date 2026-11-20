@@ -1,0 +1,369 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== kr-1: INT key, in range, hit ===
+== Query ==
+WITH g AS (SELECT ii AS k, COUNT(*) AS n
+FROM krange GROUP BY ii)
+SELECT k, n FROM g WHERE k = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT ii AS k, COUNT(*) AS n
+FROM krange GROUP BY ii)
+SELECT k, n FROM g WHERE k = 1|
+k	n
+1	2
+
+=== kr-2: INT key, in range, miss ===
+== Query ==
+WITH g AS (SELECT ii AS k, COUNT(*) AS n
+FROM krange GROUP BY ii)
+SELECT k, n FROM g WHERE k = 2;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT ii AS k, COUNT(*) AS n
+FROM krange GROUP BY ii)
+SELECT k, n FROM g WHERE k = 2|
+k	n
+
+=== kr-3: INT key, in range, aggregate main, hit ===
+== Query ==
+WITH g AS (SELECT ii AS k, COUNT(*) AS n
+FROM krange GROUP BY ii)
+SELECT COUNT(*) AS c, SUM(n) AS s FROM g WHERE k = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT ii AS k, COUNT(*) AS n
+FROM krange GROUP BY ii)
+SELECT COUNT(*) AS c, SUM(n) AS s FROM g WHERE k = 1|
+c	s
+1	2
+
+=== kr-4: INT key, in range, aggregate main, miss ===
+== Query ==
+WITH g AS (SELECT ii AS k, COUNT(*) AS n
+FROM krange GROUP BY ii)
+SELECT COUNT(*) AS c, SUM(n) AS s FROM g WHERE k = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT ii AS k, COUNT(*) AS n
+FROM krange GROUP BY ii)
+SELECT COUNT(*) AS c, SUM(n) AS s FROM g WHERE k = 2|
+c	s
+0	NULL
+
+=== kr-5: TINYINT / TINYINT UNSIGNED key, maximum ===
+== Query ==
+WITH g AS (SELECT ti AS sk, tu AS uk, COUNT(*) AS n
+FROM krange GROUP BY ti, tu)
+SELECT sk, uk, n FROM g WHERE sk = 127 AND uk = 255;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT ti AS sk, tu AS uk, COUNT(*) AS n
+FROM krange GROUP BY ti, tu)
+SELECT sk, uk, n FROM g WHERE sk = 127 AND uk = 255|
+sk	uk	n
+127	255	2
+
+=== kr-6: TINYINT / TINYINT UNSIGNED key, minimum ===
+== Query ==
+WITH g AS (SELECT ti AS sk, tu AS uk, COUNT(*) AS n
+FROM krange GROUP BY ti, tu)
+SELECT sk, uk, n FROM g WHERE sk = -128 AND uk = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT ti AS sk, tu AS uk, COUNT(*) AS n
+FROM krange GROUP BY ti, tu)
+SELECT sk, uk, n FROM g WHERE sk = -128 AND uk = 0|
+sk	uk	n
+-128	0	1
+
+=== kr-7: SMALLINT / SMALLINT UNSIGNED key, maximum ===
+== Query ==
+WITH g AS (SELECT si AS sk, su AS uk, COUNT(*) AS n
+FROM krange GROUP BY si, su)
+SELECT sk, uk, n FROM g WHERE sk = 32767 AND uk = 65535;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT si AS sk, su AS uk, COUNT(*) AS n
+FROM krange GROUP BY si, su)
+SELECT sk, uk, n FROM g WHERE sk = 32767 AND uk = 65535|
+sk	uk	n
+32767	65535	2
+
+=== kr-8: SMALLINT / SMALLINT UNSIGNED key, minimum ===
+== Query ==
+WITH g AS (SELECT si AS sk, su AS uk, COUNT(*) AS n
+FROM krange GROUP BY si, su)
+SELECT sk, uk, n FROM g WHERE sk = -32768 AND uk = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT si AS sk, su AS uk, COUNT(*) AS n
+FROM krange GROUP BY si, su)
+SELECT sk, uk, n FROM g WHERE sk = -32768 AND uk = 0|
+sk	uk	n
+-32768	0	1
+
+=== kr-9: MEDIUMINT / MEDIUMINT UNSIGNED key, maximum ===
+== Query ==
+WITH g AS (SELECT mi AS sk, mu AS uk, COUNT(*) AS n
+FROM krange GROUP BY mi, mu)
+SELECT sk, uk, n FROM g WHERE sk = 8388607 AND uk = 16777215;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT mi AS sk, mu AS uk, COUNT(*) AS n
+FROM krange GROUP BY mi, mu)
+SELECT sk, uk, n FROM g WHERE sk = 8388607 AND uk = 16777215|
+sk	uk	n
+8388607	16777215	2
+
+=== kr-10: MEDIUMINT / MEDIUMINT UNSIGNED key, minimum ===
+== Query ==
+WITH g AS (SELECT mi AS sk, mu AS uk, COUNT(*) AS n
+FROM krange GROUP BY mi, mu)
+SELECT sk, uk, n FROM g WHERE sk = -8388608 AND uk = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT mi AS sk, mu AS uk, COUNT(*) AS n
+FROM krange GROUP BY mi, mu)
+SELECT sk, uk, n FROM g WHERE sk = -8388608 AND uk = 0|
+sk	uk	n
+-8388608	0	1
+
+=== kr-11: INT / INT UNSIGNED key, maximum ===
+== Query ==
+WITH g AS (SELECT ii AS sk, iu AS uk, COUNT(*) AS n
+FROM krange GROUP BY ii, iu)
+SELECT sk, uk, n FROM g WHERE sk = 2147483647 AND uk = 4294967295;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT ii AS sk, iu AS uk, COUNT(*) AS n
+FROM krange GROUP BY ii, iu)
+SELECT sk, uk, n FROM g WHERE sk = 2147483647 AND uk = 4294967295|
+sk	uk	n
+2147483647	4294967295	2
+
+=== kr-12: INT / INT UNSIGNED key, minimum ===
+== Query ==
+WITH g AS (SELECT ii AS sk, iu AS uk, COUNT(*) AS n
+FROM krange GROUP BY ii, iu)
+SELECT sk, uk, n FROM g WHERE sk = -2147483648 AND uk = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT ii AS sk, iu AS uk, COUNT(*) AS n
+FROM krange GROUP BY ii, iu)
+SELECT sk, uk, n FROM g WHERE sk = -2147483648 AND uk = 0|
+sk	uk	n
+-2147483648	0	1
+
+=== kr-13: BIGINT / BIGINT UNSIGNED key, largest literal ===
+== Query ==
+WITH g AS (SELECT bi AS sk, bu AS uk, COUNT(*) AS n
+FROM krange GROUP BY bi, bu)
+SELECT sk, uk, n FROM g
+WHERE sk = 9223372036854775807 AND uk = 9223372036854775807;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT bi AS sk, bu AS uk, COUNT(*) AS n
+FROM krange GROUP BY bi, bu)
+SELECT sk, uk, n FROM g
+WHERE sk = 9223372036854775807 AND uk = 9223372036854775807|
+sk	uk	n
+9223372036854775807	9223372036854775807	1
+
+=== kr-14: BIGINT / BIGINT UNSIGNED key, smallest literal ===
+== Query ==
+WITH g AS (SELECT bi AS sk, bu AS uk, COUNT(*) AS n
+FROM krange GROUP BY bi, bu)
+SELECT sk, uk, n FROM g
+WHERE sk = -9223372036854775807 AND uk = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH g AS (SELECT bi AS sk, bu AS uk, COUNT(*) AS n
+FROM krange GROUP BY bi, bu)
+SELECT sk, uk, n FROM g
+WHERE sk = -9223372036854775807 AND uk = 0|
+sk	uk	n
+-9223372036854775807	0	1
+
+=== kr-P1 (rejection): TINYINT key = 128 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P2 (rejection): TINYINT key = -129 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P3 (rejection): TINYINT UNSIGNED key = 256 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P4 (rejection): TINYINT UNSIGNED key = -1 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P5 (rejection): SMALLINT key = 32768 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P6 (rejection): SMALLINT key = -32769 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P7 (rejection): SMALLINT UNSIGNED key = 65536 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P8 (rejection): SMALLINT UNSIGNED key = -1 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P9 (rejection): MEDIUMINT key = 8388608 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P10 (rejection): MEDIUMINT key = -8388609 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P11 (rejection): MEDIUMINT UNSIGNED key = 16777216 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P12 (rejection): MEDIUMINT UNSIGNED key = -1 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P13 (rejection): INT key = 2147483648 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P14 (rejection): INT key = -2147483649 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P15 (rejection): INT key = 4294967297 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P16 (rejection): INT UNSIGNED key = 4294967296 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P17 (rejection): INT UNSIGNED key = -1 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P18 (rejection): BIGINT UNSIGNED key = -1 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P19 (rejection): aggregate main, INT key = 4294967297 ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P20 (rejection): two-column key, second literal out of range ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
+
+=== kr-P21 (rejection): two-column key, first literal out of range ===
+Error handling: RPE
+ronsql_cli caught exception: Integer type column compared to an integer literal out of range.

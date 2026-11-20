@@ -1,0 +1,126 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== ca-1: AVG(CASE) with a constant ELSE, GROUP BY ===
+== Query ==
+SELECT g, AVG(CASE WHEN a > 50 THEN a ELSE 0 END)
+FROM ca_t GROUP BY g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, AVG(CASE WHEN a > 50 THEN a ELSE 0 END)
+FROM ca_t GROUP BY g|
+g	AVG(CASE WHEN a > 50 THEN a ELSE 0 END)
+1	43.3333
+2	0.0000
+3	55.0000
+
+=== ca-2: AVG(CASE) with a nullable column in ELSE, GROUP BY ===
+== Query ==
+SELECT g, AVG(CASE WHEN a > 50 THEN a ELSE b END)
+FROM ca_t GROUP BY g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, AVG(CASE WHEN a > 50 THEN a ELSE b END)
+FROM ca_t GROUP BY g|
+g	AVG(CASE WHEN a > 50 THEN a ELSE b END)
+1	65.0000
+2	3.0000
+3	55.0000
+
+=== ca-3: AVG(CASE) without GROUP BY ===
+== Query ==
+SELECT AVG(CASE WHEN a > 50 THEN a ELSE b END)
+FROM ca_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT AVG(CASE WHEN a > 50 THEN a ELSE b END)
+FROM ca_t|
+AVG(CASE WHEN a > 50 THEN a ELSE b END)
+47.0000
+
+=== ca-4: SUM and COUNT of the same CASE ===
+== Query ==
+SELECT g, SUM(CASE WHEN a > 50 THEN a ELSE b END),
+COUNT(CASE WHEN a > 50 THEN a ELSE b END)
+FROM ca_t GROUP BY g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, SUM(CASE WHEN a > 50 THEN a ELSE b END),
+COUNT(CASE WHEN a > 50 THEN a ELSE b END)
+FROM ca_t GROUP BY g|
+g	SUM(CASE WHEN a > 50 THEN a ELSE b END)	COUNT(CASE WHEN a > 50 THEN a ELSE b END)
+1	130	2
+2	3	1
+3	55	1
+
+=== ca-5: AVG and SUM of the same CASE ===
+== Query ==
+SELECT g, AVG(CASE WHEN a > 50 THEN a ELSE b END),
+SUM(CASE WHEN a > 50 THEN a ELSE b END)
+FROM ca_t GROUP BY g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, AVG(CASE WHEN a > 50 THEN a ELSE b END),
+SUM(CASE WHEN a > 50 THEN a ELSE b END)
+FROM ca_t GROUP BY g|
+g	AVG(CASE WHEN a > 50 THEN a ELSE b END)	SUM(CASE WHEN a > 50 THEN a ELSE b END)
+1	65.0000	130
+2	3.0000	3
+3	55.0000	55
+
+=== ca-6: AVG(CASE) in a join aggregate ===
+== Query ==
+SELECT p.lbl, AVG(CASE WHEN t.a > 50 THEN t.a ELSE t.b END)
+FROM ca_p AS p JOIN ca_t AS t ON t.g = p.g
+GROUP BY p.lbl;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.lbl, AVG(CASE WHEN t.a > 50 THEN t.a ELSE t.b END)
+FROM ca_p AS p JOIN ca_t AS t ON t.g = p.g
+GROUP BY p.lbl|
+lbl	AVG(CASE WHEN t.a > 50 THEN t.a ELSE t.b END)
+one	65.0000
+three	55.0000
+two	3.0000

@@ -1,0 +1,139 @@
+# SELECT-list subquery aggregates over a DECIMAL column with a
+# cross-table filter (a WHERE term that compares the subquery's table
+# with the outer one, such as l.qty > o.min_qty).
+#
+# D-1 (storage/ndb/claude_files/ronsql_executor/review_duplication.md):
+# the filter runs in an embedded program that, when it fails, skips the
+# aggregate update: the column load and the aggregate. The skip was
+# always 2 words, but LoadColumn emits a DECIMAL load as two words (the
+# load and its precision / scale word), so a failed filter landed on the
+# aggregate, which then used the register's previous value: rows the
+# filter rejects were counted, and an order whose rows all fail got a
+# value instead of NULL. The CASE arms had the same mistake, fixed in
+# c57d796fafa (ronsql_case_arm_types).
+#
+# The filters compare INT columns only; a DECIMAL column in the filter
+# itself is F-8. Expected results come from mysqld (strict_diff).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE sd_o (
+  id      INT NOT NULL,
+  min_qty INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE sd_l (
+  id       INT NOT NULL,
+  order_id INT NOT NULL,
+  qty      INT NOT NULL,
+  price    DECIMAL(10,2) NOT NULL,
+  uprice   DECIMAL(12,3) UNSIGNED,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_sd_l_order (order_id)
+) ENGINE=NDB;
+
+# Order 1: two of four rows pass qty > 4. Order 2: one of two.
+# Order 3: no row passes (min_qty 100), so the filtered aggregates are
+# NULL and the filtered COUNT is 0. Order 4: every row passes, one
+# uprice is NULL. Order 5: no rows.
+INSERT INTO sd_o VALUES (1, 4), (2, 4), (3, 100), (4, 0), (5, 4);
+INSERT INTO sd_l VALUES
+  (1, 1, 1, 10.25, 1.125), (2, 1, 5, 20.50, 2.250),
+  (3, 1, 9, 30.75, 3.375), (4, 1, 2, 40.00, 4.000),
+  (5, 2, 3,  1.01, 0.001), (6, 2, 8,  2.02, 0.002),
+  (7, 3, 6,  5.55, 5.555), (8, 3, 7,  6.66, 6.666),
+  (9, 4, 1,  7.77, NULL),  (10, 4, 2, 8.88, 8.888);
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === sd-1: SUM of a DECIMAL column with a cross-table filter ===
+let $QUERY=
+SELECT o.id,
+  (SELECT SUM(l.price) FROM sd_l AS l
+   WHERE l.order_id = o.id AND l.qty > o.min_qty) AS s
+FROM sd_o AS o;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.id,
+  (SELECT SUM(l.price) FROM sd_l AS l
+   WHERE l.order_id = o.id AND l.qty > o.min_qty) AS s
+FROM sd_o AS o|
+
+--echo
+--echo === sd-2: MIN and MAX of a DECIMAL column, two filters in one leaf ===
+let $QUERY=
+SELECT o.id,
+  (SELECT MIN(l.price) FROM sd_l AS l
+   WHERE l.order_id = o.id AND l.qty > o.min_qty) AS lo,
+  (SELECT MAX(l2.price) FROM sd_l AS l2
+   WHERE l2.order_id = o.id AND l2.qty <= o.min_qty) AS hi
+FROM sd_o AS o;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.id,
+  (SELECT MIN(l.price) FROM sd_l AS l
+   WHERE l.order_id = o.id AND l.qty > o.min_qty) AS lo,
+  (SELECT MAX(l2.price) FROM sd_l AS l2
+   WHERE l2.order_id = o.id AND l2.qty <= o.min_qty) AS hi
+FROM sd_o AS o|
+
+--echo
+--echo === sd-3: COUNT of a nullable DECIMAL UNSIGNED column with a filter ===
+let $QUERY=
+SELECT o.id,
+  (SELECT COUNT(l.uprice) FROM sd_l AS l
+   WHERE l.order_id = o.id AND l.qty < o.min_qty) AS n
+FROM sd_o AS o;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.id,
+  (SELECT COUNT(l.uprice) FROM sd_l AS l
+   WHERE l.order_id = o.id AND l.qty < o.min_qty) AS n
+FROM sd_o AS o|
+
+--echo
+--echo === sd-4: filtered DECIMAL UNSIGNED SUM beside unfiltered aggregates ===
+let $QUERY=
+SELECT o.id,
+  (SELECT SUM(l.uprice) FROM sd_l AS l
+   WHERE l.order_id = o.id AND l.qty > o.min_qty) AS s,
+  (SELECT COUNT(*) FROM sd_l AS l2 WHERE l2.order_id = o.id) AS n_all,
+  (SELECT SUM(l3.price) FROM sd_l AS l3 WHERE l3.order_id = o.id) AS s_all
+FROM sd_o AS o;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.id,
+  (SELECT SUM(l.uprice) FROM sd_l AS l
+   WHERE l.order_id = o.id AND l.qty > o.min_qty) AS s,
+  (SELECT COUNT(*) FROM sd_l AS l2 WHERE l2.order_id = o.id) AS n_all,
+  (SELECT SUM(l3.price) FROM sd_l AS l3 WHERE l3.order_id = o.id) AS s_all
+FROM sd_o AS o|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE sd_l;
+DROP TABLE sd_o;
+--enable_warnings
+--enable_query_log
