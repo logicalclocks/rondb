@@ -1,0 +1,34 @@
+CREATE DATABASE qtdb;
+CREATE TABLE qtdb.t1 (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO qtdb.t1 VALUES
+(1,0),(2,0),(3,0),(4,0),(5,0),(6,0),(7,0),(8,0),(9,0),(10,0);
+CREATE USER 'key_user'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'scan_user'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'ctrl_user'@'%' IDENTIFIED BY 'pw';
+GRANT ALL PRIVILEGES ON qtdb.* TO 'key_user'@'%';
+GRANT ALL PRIVILEGES ON qtdb.* TO 'scan_user'@'%';
+GRANT ALL PRIVILEGES ON qtdb.* TO 'ctrl_user'@'%';
+#
+# 1. PK reads forced into query threads charge the USER (LQHKEYREQ).
+#
+key_user: throttled as expected
+#
+# 2. Scans forced into query threads charge the USER (SCAN_FRAGREQ).
+#
+scan_user: throttled as expected
+#
+# 3. Dropping the USER mid-traffic turns the account unmetered; the
+#    stale id a query thread still receives resolves to nothing and
+#    must be charged nowhere (fail generous, no crash).
+#
+key_user: unmetered after USER DROP as expected
+#
+# 4. Control: with the error insert cleared the LDM path still
+#    throttles, so the resolve rework did not regress LDM reads.
+#
+ctrl_user: throttled on the LDM path as expected
+DROP USER 'key_user'@'%';
+DROP USER 'scan_user'@'%';
+DROP USER 'ctrl_user'@'%';
+DROP DATABASE qtdb;
+USER rate limiting in query threads completed

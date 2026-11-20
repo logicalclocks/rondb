@@ -2909,6 +2909,10 @@ class Dblqh : public SimulatedBlock {
     {
     }
     Uint64 fragmentptr;
+    /* The raw user id of a user-tagged operation, RNIL64 when untagged
+     * (a raw Uint32 id can never equal RNIL64). Resolved at charge time
+     * in update_rate_usage; a pool index cached at setup could outlive a
+     * concurrent USER DROP. */
     Uint64 m_user_ptr_i;
     Dbacc::Operationrec *accConnectPtrP;
     Dbtup::Operationrec *tupConnectPtrP;
@@ -5479,7 +5483,7 @@ private:
                                Int32 num_32k_pages,
                                Uint32 line,
                                Uint32 pageId);
-  void update_rate_usage(Uint32 tableId, Uint64 databasePtrI, Uint32 added_rate);
+  void update_rate_usage(Uint32 tableId, Uint64 userId, Uint32 added_rate);
   void send_database_quota_rep(DatabaseRecordPtr dbPtr, NDB_TICKS);
   Uint32 get_delay(Uint32 tableId);
   void change_report_limits(DatabaseRecord *dbPtrP,

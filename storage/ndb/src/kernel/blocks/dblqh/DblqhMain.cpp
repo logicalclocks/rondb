@@ -6051,7 +6051,15 @@ void Dblqh::execSEND_PACKED(Signal *signal) {
   }  // for
   cpackedListIndex = 0;
 
-  /* Send buffered DATABASE_QUOTA_REP signals */
+  /* Send buffered DATABASE_QUOTA_REP signals. With query workers
+   * configured, query threads append user-rate reports to this buffer
+   * under the database hash mutex (update_rate_usage), so the drain holds
+   * it too: an append landing between the count read and the reset below
+   * would otherwise be wiped unsent. */
+  const bool lock_drain = globalData.ndbMtQueryWorkers > 0;
+  if (lock_drain) {
+    lock_database_hash();
+  }
   Uint32 num_tc_threads = globalData.ndbMtTcWorkers;
   Uint32 num_send_database_quota_rep = m_num_send_database_quota_rep;
 #ifdef DEBUG_RATE_SEND
@@ -6079,6 +6087,9 @@ void Dblqh::execSEND_PACKED(Signal *signal) {
                DatabaseQuotaRep::SignalLength, JBB);
   }
   m_num_send_database_quota_rep = 0;
+  if (lock_drain) {
+    unlock_database_hash();
+  }
   return;
 }  // Dblqh::execSEND_PACKED()
 
@@ -9197,20 +9208,20 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     jamDebug();
     /**
      * The user id word is always present when the flag is set, so var_index
-     * must advance regardless of whether this block has the database record
-     * in its local hash. Query threads (DBQLQH) in particular may not hold
-     * the record; only the accounting via m_user_ptr_i is then skipped. If
-     * var_index were advanced only on a hit, the fixed-length check below
-     * would fail on those blocks and abort the node.
+     * must advance regardless of what the id resolves to. If it were
+     * advanced conditionally, the fixed-length check below would fail and
+     * abort the node.
+     *
+     * The raw id is stashed and resolved at charge time in the owning LDM
+     * instance's hash, under its mutex when query threads are configured:
+     * query threads (DBQLQH) hold no user records (CREATE_DB_REQ is routed
+     * to the LDM workers only), and a pool index cached here could outlive
+     * a concurrent USER DROP and charge a released or reused record. A raw
+     * Uint32 id can never equal RNIL64, so the stash cannot be mistaken
+     * for "no user".
      */
-    DatabaseRecordPtr dbPtr;
-    Uint32 user_id = lqhKeyReq->variableData[0];
-    DatabaseRecord key(*this, user_id);
+    regTcPtr->m_user_ptr_i = lqhKeyReq->variableData[0];
     var_index++;
-    if (m_databaseRecordHash.find(dbPtr, key)) {
-      jam();
-      regTcPtr->m_user_ptr_i = dbPtr.i;
-    }
   }
   sig3 = lqhKeyReq->variableData[var_index];
   sig4 = lqhKeyReq->variableData[var_index + 1];
@@ -13054,11 +13065,9 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
   lqhKeyReq->tcBlockref = sig4;
   Uint32 var_index = 0;
   if (regTcPtr->m_user_ptr_i != RNIL64) {
-    DatabaseRecordPtr dbPtr;
-    dbPtr.i = regTcPtr->m_user_ptr_i;
     jam();
-    ndbrequire(m_databaseRecordPool.getPtr(dbPtr));
-    lqhKeyReq->variableData[0] = dbPtr.p->m_database_id;
+    // The stash holds the raw user id, forwarded to the next replica as is.
+    lqhKeyReq->variableData[0] = Uint32(regTcPtr->m_user_ptr_i);
     LqhKeyReq::setUserIdFlag(Treqinfo, 1);
     var_index++;
   }
@@ -20430,19 +20439,17 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
     jamDebug();
     /**
      * The user id word is always present when the flag is set, so
-     * extra_len_index must advance regardless of whether this block holds
-     * the database record locally (query threads may not). Advancing it
-     * only on a hit would desync the variableData offsets / length on
-     * those blocks. See execLQHKEYREQ for the key-op equivalent.
+     * extra_len_index must advance regardless of what the id resolves to.
+     * Advancing it conditionally would desync the variableData offsets /
+     * length. See execLQHKEYREQ for the key-op equivalent.
+     *
+     * As there, the raw id is stashed and resolved at charge time in the
+     * owning LDM instance's hash: a scan charges across many batches and
+     * real-time breaks, so a pool index resolved here could outlive a
+     * concurrent USER DROP.
      */
-    DatabaseRecordPtr dbPtr;
-    Uint32 user_id = scanFragReq->variableData[0];
-    DatabaseRecord key(*this, user_id);
+    regTcPtr->m_user_ptr_i = scanFragReq->variableData[0];
     extra_len_index++;
-    if (m_databaseRecordHash.find(dbPtr, key)) {
-      jam();
-      regTcPtr->m_user_ptr_i = dbPtr.i;
-    }
   }
   if (ScanFragReq::getCorrFactorFlag(reqinfo)) {
     extra_len_index += 2;
@@ -40542,27 +40549,42 @@ Dblqh::update_rate_usage(Uint32 tableId,
                          Uint64 userId,
                          Uint32 added_rate_ns) {
   if (!m_restart_completed) return;
-  if (unlikely(m_is_query_block)) {
+  /**
+   * This always runs on the instance owning the fragment (query threads
+   * call it through m_ldm_instance_used), but with query workers
+   * configured several threads charge this instance's records
+   * concurrently with each other, with the owning LDM thread's charges
+   * and with its CREATE/DROP mutations of the hash and pool. Every charge
+   * then takes the instance's database hash mutex, the convention the
+   * transaction hash follows. The user is resolved by its raw id here,
+   * under the same mutex, instead of trusting a pool index cached at
+   * operation setup: a cached index could outlive a concurrent USER DROP
+   * and charge a released or reused record (the pool's magic check makes
+   * that a node failure).
+   */
+  const bool need_lock = globalData.ndbMtQueryWorkers > 0;
+  if (need_lock) {
     lock_database_hash();
   }
   DatabaseRecordPtr dbPtr;
+  bool found = false;
   if (userId != RNIL64) {
-    dbPtr.i = userId;
-  } else {
+    DatabaseRecord key(*this, Uint32(userId));
+    found = m_databaseRecordHash.find(dbPtr, key);
+  }
+  if (!found) {
+    /* Untagged, or the tagged USER is gone (runs unmetered as a user):
+     * the table's database record carries any database-level quota. */
     TablerecPtr tabPtr;
     tabPtr.i = tableId;
     ptrCheckGuard(tabPtr, ctabrecFileSize, tablerec);
     if (tabPtr.p->databaseRecord != RNIL64) {
       dbPtr.i = tabPtr.p->databaseRecord;
-    } else {
-      if (unlikely(m_is_query_block)) {
-        unlock_database_hash();
-      }
-      return;
+      found = m_databaseRecordPool.getPtr(dbPtr);
     }
   }
-  if (unlikely(!m_databaseRecordPool.getPtr(dbPtr))) {
-    if (unlikely(m_is_query_block)) {
+  if (unlikely(!found)) {
+    if (need_lock) {
       unlock_database_hash();
     }
     return;
@@ -40588,7 +40610,7 @@ Dblqh::update_rate_usage(Uint32 tableId,
     jam();
     send_database_quota_rep(dbPtr, now);
   }
-  if (unlikely(m_is_query_block)) {
+  if (need_lock) {
     unlock_database_hash();
   }
 }
@@ -40635,14 +40657,15 @@ Dblqh::send_database_quota_rep(DatabaseRecordPtr dbPtr,
     abs_diff_disk_space = before_disk_value_sent - after_disk_value;
   }
 
-  Uint64 rate_usage = dbPtr.p->m_rate_usage;
+  /* Drain the counter atomically: a plain read followed by a store of 0
+   * would lose the charges another thread adds in between. */
+  Uint64 rate_usage = dbPtr.p->m_rate_usage.exchange(0);
   rate_usage /= 1000; // Convert ns to us
   Uint32 rate_usage_u32 = Uint32(rate_usage);
   dbPtr.p->m_last_rep_disk_space_page32k =
     dbPtr.p->m_disk_space_page32k;
   dbPtr.p->m_last_rep_in_memory_page8k =
     dbPtr.p->m_in_memory_page8k;
-  dbPtr.p->m_rate_usage = 0;
 
   {
     DEB_RATE(("(%u)(%u) db: %u, Added rate_usage: %llu us",
