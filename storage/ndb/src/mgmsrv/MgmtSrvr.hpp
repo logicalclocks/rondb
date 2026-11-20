@@ -629,9 +629,10 @@ private:
     bool exact_match;
   };
   int alloc_node_id_req(NodeId free_node_id, ndb_mgm_node_type type,
-                        Uint32 timeout_ms);
+                        Uint32 timeout_ms, bool wait_if_not_ready = true);
   int try_alloc(NodeId id, ndb_mgm_node_type type, Uint32 timeout_ms,
-                int &error_code, BaseString &error_string);
+                int &error_code, BaseString &error_string,
+                bool *failure_handling_not_completed = nullptr);
   int try_alloc_from_list(NodeId &nodeid, ndb_mgm_node_type type,
                           Uint32 timeout_ms,
                           const Vector<PossibleNode> &nodes_info,

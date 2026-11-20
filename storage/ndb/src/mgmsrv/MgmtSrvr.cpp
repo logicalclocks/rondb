@@ -4356,7 +4356,8 @@ void MgmtSrvr::release_failed_nodeid_reservation(NodeId nodeid) {
 
 int MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
                                 enum ndb_mgm_node_type type,
-                                Uint32 timeout_ms) {
+                                Uint32 timeout_ms,
+                                bool wait_if_not_ready) {
   bool first_attempt = true;
   SignalSender ss(theFacade);
   ss.lock();  // lock will be released on exit
@@ -4523,6 +4524,16 @@ int MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
           consecutive_busy++;
         else
           consecutive_busy = 0;
+        if (ref->errorCode == AllocNodeIdRef::NodeFailureHandlingNotCompleted &&
+            !wait_if_not_ready) {
+          /* The caller tries another free node id first, see
+           * try_alloc_from_list(). */
+          g_eventLogger->info(
+              "Alloc node id %u rejected due to Node id not yet ready for use "
+              "(%u), trying another free node id",
+              free_node_id, ref->errorCode);
+          return NODEID_FAILURE_HANDLING_NOT_COMPLETED;
+        }
         if (ref->errorCode == AllocNodeIdRef::NotMaster ||
             ref->errorCode == AllocNodeIdRef::Busy ||
             ref->errorCode == AllocNodeIdRef::NodeFailureHandlingNotCompleted) {
@@ -4813,12 +4824,19 @@ void MgmtSrvr::match_client_addr_to_config_nodes(
 }
 
 int MgmtSrvr::try_alloc(NodeId id, ndb_mgm_node_type type, Uint32 timeout_ms,
-                        int &error_code, BaseString &error_string) {
+                        int &error_code, BaseString &error_string,
+                        bool *failure_handling_not_completed) {
   assert(type == NDB_MGM_NODE_TYPE_NDB || type == NDB_MGM_NODE_TYPE_API);
 
   const NDB_TICKS start = NdbTick_getCurrentTicks();
   while (true) {
-    int res = alloc_node_id_req(id, type, timeout_ms);
+    int res = alloc_node_id_req(id, type, timeout_ms,
+                                failure_handling_not_completed == nullptr);
+    if (res == NODEID_FAILURE_HANDLING_NOT_COMPLETED) {
+      /* Not available now; the caller may try another node id. */
+      *failure_handling_not_completed = true;
+      return 0;
+    }
     if (res == 0) {
       /* Node id allocation succeeded */
       g_eventLogger->debug("Allocated nodeid %u in cluster", id);
@@ -4975,78 +4993,107 @@ MgmtSrvr::try_alloc_from_list(NodeId& nodeid,
   const unsigned exact_offset = alloc_scan_offset(type, num_exact);
   const unsigned wildcard_offset = alloc_scan_offset(type, num_wildcard);
 
-  for (unsigned i = 0; i < num_nodes; i++)
+  /*
+    An API node id whose failure handling the data nodes have not
+    completed (a client that just disconnected) is refused for a few
+    seconds.  Rather than wait for it while another candidate is free, an
+    API request skips such ids in a first pass and waits on them, in
+    candidate order, only in a second pass when no other id could be
+    allocated.  Data node ids keep the single, waiting pass.
+  */
+  const bool skip_not_ready = (type == NDB_MGM_NODE_TYPE_API);
+  NodeBitmask not_ready;
+  for (unsigned pass = 0; pass < 2; pass++)
   {
-    unsigned idx;
-    if (i < num_exact) {
-      /* num_exact > 0 in this branch, modulo is safe */
-      idx = (i + exact_offset) % num_exact;
-    } else {
-      /* num_wildcard > 0 in this branch, modulo is safe */
-      idx = num_exact + ((i - num_exact + wildcard_offset) % num_wildcard);
-    }
-    const unsigned id= nodes[idx].id;
-    if (theFacade->ext_isConnected(id))
+    if (pass == 1 && (!skip_not_ready || not_ready.isclear()))
     {
-      // Node is already reserved(connected via transporter)
-      continue;
+      break;
     }
-    if (!active_nodes.get(id))
+    const bool wait_pass = (pass == 1 || !skip_not_ready);
+    for (unsigned i = 0; i < num_nodes; i++)
     {
-      /* Node is deactivated, so not to be choosen as a free node id */
-      continue;
-    }
-
-    NdbMutex_Lock(m_reserved_nodes_mutex);
-    if (m_reserved_nodes.get(id)) {
-      // Node is already reserved(locally in this node)
-      NdbMutex_Unlock(m_reserved_nodes_mutex);
-      continue;
-    }
-
-    /*
-      Reserve the nodeid locally while checking if it can
-      be allocated in the data nodes. The check can use up the whole
-      timeout when the data nodes give no answer, see
-      alloc_node_id_req(), so the reservation does not time out
-      until the check is done, and a node failure does not release
-      it, see release_failed_nodeid_reservation().
-    */
-    m_reserved_nodes.set(id, NodeIdReservations::NoTimeout);
-
-    NdbMutex_Unlock(m_reserved_nodes_mutex);
-    int res = try_alloc(id, type, timeout_ms, error_code, error_string);
-    if (res > 0) {
-      // Nodeid allocation succeeded
-      nodeid = id;
-
-      if (type == NDB_MGM_NODE_TYPE_API) {
-        /*
-          Release the local reservation(which was set to avoid that
-          more than one thread asked for same nodeid) since it's
-          now reserved in data node
-        */
-        release_local_nodeid_reservation(id);
+      unsigned idx;
+      if (i < num_exact) {
+        /* num_exact > 0 in this branch, modulo is safe */
+        idx = (i + exact_offset) % num_exact;
       } else {
-        /*
-          Keep the local reservation until the data node connects,
-          with the timeout from now. A reservation that timed out
-          already would let another request allocate the nodeid once
-          more before the data node connects.
-        */
-        Guard g(m_reserved_nodes_mutex);
-        m_reserved_nodes.restart(id, timeout_ms);
+        /* num_wildcard > 0 in this branch, modulo is safe */
+        idx = num_exact + ((i - num_exact + wildcard_offset) % num_wildcard);
+      }
+      const unsigned id= nodes[idx].id;
+      if (pass == 1 && !not_ready.get(id))
+      {
+        continue;
+      }
+      if (theFacade->ext_isConnected(id))
+      {
+        // Node is already reserved(connected via transporter)
+        continue;
+      }
+      if (!active_nodes.get(id))
+      {
+        /* Node is deactivated, so not to be choosen as a free node id */
+        continue;
       }
 
-      return 0; /* Nodeid allocated */
-    }
+      NdbMutex_Lock(m_reserved_nodes_mutex);
+      if (m_reserved_nodes.get(id)) {
+        // Node is already reserved(locally in this node)
+        NdbMutex_Unlock(m_reserved_nodes_mutex);
+        continue;
+      }
 
-    /* Release the local reservation */
-    release_local_nodeid_reservation(id);
+      /*
+        Reserve the nodeid locally while checking if it can
+        be allocated in the data nodes. The check can use up the whole
+        timeout when the data nodes give no answer, see
+        alloc_node_id_req(), so the reservation does not time out
+        until the check is done, and a node failure does not release
+        it, see release_failed_nodeid_reservation().
+      */
+      m_reserved_nodes.set(id, NodeIdReservations::NoTimeout);
 
-    if (res < 0) {
-      // Don't try any more nodes from the list
-      return -2; /* No contact with cluster */
+      NdbMutex_Unlock(m_reserved_nodes_mutex);
+      bool failure_handling_not_completed = false;
+      int res = try_alloc(id, type, timeout_ms, error_code, error_string,
+                          wait_pass ? nullptr : &failure_handling_not_completed);
+      if (res > 0) {
+        // Nodeid allocation succeeded
+        nodeid = id;
+
+        if (type == NDB_MGM_NODE_TYPE_API) {
+          /*
+            Release the local reservation(which was set to avoid that
+            more than one thread asked for same nodeid) since it's
+            now reserved in data node
+          */
+          release_local_nodeid_reservation(id);
+        } else {
+          /*
+            Keep the local reservation until the data node connects,
+            with the timeout from now. A reservation that timed out
+            already would let another request allocate the nodeid once
+            more before the data node connects.
+          */
+          Guard g(m_reserved_nodes_mutex);
+          m_reserved_nodes.restart(id, timeout_ms);
+        }
+
+        return 0; /* Nodeid allocated */
+      }
+
+      /* Release the local reservation */
+      release_local_nodeid_reservation(id);
+
+      if (failure_handling_not_completed) {
+        // Try the other candidates first, wait on this one in pass 1
+        not_ready.set(id);
+        continue;
+      }
+      if (res < 0) {
+        // Don't try any more nodes from the list
+        return -2; /* No contact with cluster */
+      }
     }
   }
   return -1; /* Nodeid not available */
