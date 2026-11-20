@@ -2660,6 +2660,7 @@ void Dbdict::initCommonData() {
   m_current_allocated_rate = 0;
   m_current_allocated_memory_quota_mb = 0;
   m_current_allocated_disk_quota_mb = 0;
+  c_first_dangling_alias = RNIL;
 
   Uint32 num_threads = getNumThreads() + getNumSendThreads();
   Uint32 tot_rates = num_threads * 1000000;
@@ -33043,6 +33044,160 @@ void Dbdict::execCREATE_DATABASE_REQ(Signal* signal) {
 	     CreateDatabaseRef::SignalLength, JBB);
 }
 
+/**
+ * Resolves an alias target by name for the create parse. A USER of that
+ * name gives its object id, no object gives RNIL (the alias waits for the
+ * USER, see bindDanglingAliases). Anything else is refused, as is a USER
+ * whose drop is pending in this schema transaction: the alias would be
+ * counted on a target that commits its drop in the same transaction.
+ *
+ * The restart replays committed state in id order, so an alias can come
+ * back before its target or after its target name was taken by another
+ * kind of object; it then waits as RNIL instead of failing the restart.
+ */
+Uint32
+Dbdict::resolveAliasTarget(SchemaOpPtr op_ptr,
+                           const char *alias_name,
+                           const char *target,
+                           Uint32 &target_id) {
+  target_id = RNIL;
+  const bool restart = (op_ptr.p->m_restart != 0);
+  const Uint32 target_len = Uint32(strnlen(target, MAX_DB_NAME_SIZE));
+  /* A user name leaves room for its '$' and the NUL. */
+  if (target_len == 0 || target_len > MAX_DB_NAME_SIZE - 2) {
+    jam();
+    return CreateTableRef::InvalidFormat;
+  }
+  if (target[0] == '$') {
+    jam();
+    return CreateTableRef::AliasTargetNotUser;
+  }
+  char user_name[MAX_DB_NAME_SIZE];
+  user_name[0] = '$';
+  memcpy(&user_name[1], target, target_len + 1);
+  if (strcmp(user_name, alias_name) == 0) {
+    jam();
+    return restart ? 0 : Uint32(CreateTableRef::AliasTargetNotUser);
+  }
+  DictObject *obj = get_object(user_name);
+  if (obj == nullptr) {
+    jam();
+    return 0;
+  }
+  DatabasePtr target_ptr;
+  if (obj->m_type != DictTabInfo::Database ||
+      !find_object(target_ptr, obj->m_id) ||
+      !target_ptr.p->m_is_user ||
+      target_ptr.p->m_is_alias) {
+    jam();
+    return restart ? 0 : Uint32(CreateTableRef::AliasTargetNotUser);
+  }
+  if (!restart) {
+    const SchemaFile::TableEntry *te =
+      getTableEntry(&c_schemaFile[SchemaRecord::NEW_SCHEMA_FILE], obj->m_id);
+    if (te->m_tableState == SchemaFile::SF_DROP) {
+      jam();
+      return CreateTableRef::AliasTargetDropPending;
+    }
+  }
+  target_id = obj->m_id;
+  return 0;
+}
+
+/**
+ * A USER committed: every waiting alias that names it is bound to it and
+ * counted, whether the USER is new, recreated, or rebuilt by a restart.
+ * Without this an alias created before its target would never count, and
+ * the target could be dropped while the alias resolves to it.
+ */
+void
+Dbdict::bindDanglingAliases(DatabasePtr user_ptr) {
+  char user_name[MAX_DB_NAME_SIZE + 1];
+  {
+    LcConstRope name(user_ptr.p->m_name);
+    name.copy(user_name, sizeof(user_name));
+  }
+  /* Users are stored as "$name", alias targets as "name". */
+  const char *target_name = &user_name[1];
+  Uint32 *link = &c_first_dangling_alias;
+  Uint32 alias_i = c_first_dangling_alias;
+  while (alias_i != RNIL) {
+    jam();
+    DatabasePtr alias_ptr;
+    alias_ptr.i = alias_i;
+    c_database_pool.getPtr(alias_ptr);
+    alias_i = alias_ptr.p->m_next_dangling_alias;
+    LcConstRope target(alias_ptr.p->m_alias_target);
+    if (target.compare(target_name) == 0) {
+      jam();
+      *link = alias_i;
+      alias_ptr.p->m_next_dangling_alias = RNIL;
+      alias_ptr.p->m_alias_target_id = user_ptr.p->key;
+      increase_ref_count(user_ptr.p->m_obj_ptr_i);
+    } else {
+      link = &alias_ptr.p->m_next_dangling_alias;
+    }
+  }
+}
+
+void
+Dbdict::unlinkDanglingAlias(DatabasePtr alias_ptr) {
+  Uint32 *link = &c_first_dangling_alias;
+  while (*link != RNIL) {
+    jam();
+    if (*link == alias_ptr.i) {
+      jam();
+      *link = alias_ptr.p->m_next_dangling_alias;
+      alias_ptr.p->m_next_dangling_alias = RNIL;
+      return;
+    }
+    DatabasePtr next_ptr;
+    next_ptr.i = *link;
+    c_database_pool.getPtr(next_ptr);
+    link = &next_ptr.p->m_next_dangling_alias;
+  }
+  ndbabort();
+}
+
+/**
+ * True when this schema transaction holds a parsed, uncommitted alias
+ * create that names the USER. The alias counts on its target only at
+ * commit, so a drop of the target in the same transaction would otherwise
+ * see no alias and commit under one.
+ */
+bool
+Dbdict::aliasCreatePendingFor(SchemaTransPtr trans_ptr,
+                              const char *user_name) {
+  /* Users are stored as "$name", alias targets as "name". */
+  const char *target_name = &user_name[1];
+  LocalSchemaOp_list list(c_schemaOpPool, trans_ptr.p->m_op_list);
+  SchemaOpPtr loop_op_ptr;
+  for (bool found = list.first(loop_op_ptr);
+       found;
+       found = list.next(loop_op_ptr)) {
+    jam();
+    if (memcmp(loop_op_ptr.p->m_oprec_ptr.p->m_opType,
+               CreateDatabaseRec::g_opInfo.m_opType,
+               sizeof(loop_op_ptr.p->m_oprec_ptr.p->m_opType)) != 0) {
+      continue;
+    }
+    CreateDatabaseRecPtr createDbPtr;
+    getOpRec(loop_op_ptr, createDbPtr);
+    DatabasePtr alias_ptr;
+    if (!createDbPtr.p->m_parsed ||
+        !find_object(alias_ptr, createDbPtr.p->m_request.databaseId) ||
+        !alias_ptr.p->m_is_alias) {
+      continue;
+    }
+    LcConstRope target(alias_ptr.p->m_alias_target);
+    if (target.compare(target_name) == 0) {
+      jam();
+      return true;
+    }
+  }
+  return false;
+}
+
 void
 Dbdict::packDatabaseIntoPages(SimpleProperties::Writer & w,
                               DatabasePtr db_ptr) {
@@ -33063,6 +33218,12 @@ Dbdict::packDatabaseIntoPages(SimpleProperties::Writer & w,
     db.DiskSpaceSize = db_ptr.p->m_disk_space_size;
   }
   db.IsUser = db_ptr.p->m_is_user;
+  db.IsAlias = db_ptr.p->m_is_alias;
+  if (db_ptr.p->m_is_alias) {
+    jam();
+    LcConstRope r(db_ptr.p->m_alias_target);
+    r.copy(db.AliasTarget, sizeof(db.AliasTarget));
+  }
   db.RatePerSec = db_ptr.p->m_rate_per_sec;
   db.MaxTransactionSize = db_ptr.p->m_max_transaction_size;
   db.MaxParallelTransactions = db_ptr.p->m_max_parallel_transactions;
@@ -33192,6 +33353,37 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
     memmove(&db.DatabaseName[1], &db.DatabaseName[0], MAX_DB_NAME_SIZE - 1);
     db.DatabaseName[0] = '$';
   }
+
+  /**
+   * An alias is validated and its target resolved before anything is
+   * seized: a refusal after the seizes below goes through the error
+   * label, which releases objects the hashes have not received yet.
+   */
+  const bool is_alias = (db.IsAlias != 0);
+  Uint32 alias_target_id = RNIL;
+  if (is_alias) {
+    jam();
+    if (!is_user ||
+        db.RatePerSec != 0 ||
+        db.InMemorySize != 0 ||
+        db.DiskSpaceSize != 0 ||
+        db.MaxTransactionSize != 0 ||
+        db.MaxParallelTransactions != 0 ||
+        db.MaxParallelComplexQueries != 0) {
+      jam();
+      setError(error, CreateTableRef::InvalidFormat, __LINE__);
+      return;
+    }
+    Uint32 err = resolveAliasTarget(op_ptr,
+                                    db.DatabaseName,
+                                    db.AliasTarget,
+                                    alias_target_id);
+    if (err) {
+      jam();
+      setError(error, err, __LINE__);
+      return;
+    }
+  }
   DEB_QUOTAS(("Create Database %s with quotas", db.DatabaseName));
 
   Uint32 len = Uint32(strnlen(db.DatabaseName, MAX_DB_NAME_SIZE) + 1);
@@ -33203,8 +33395,22 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
     return;
   }
 
+  /* Owned here until the database record takes it below. */
+  LcRopeHandle alias_target;
+  if (is_alias) {
+    jam();
+    LcLocalRope target(alias_target);
+    if (!target.assign(db.AliasTarget)) {
+      jam();
+      setError(error, CreateTableRef::OutOfStringBuffer, __LINE__);
+      return;
+    }
+  }
+
   if(!c_obj_pool.seize(obj_ptr)) {
     jam();
+    LcLocalRope target(alias_target);
+    target.erase();
     setError(error, CreateTableRef::NoMoreTableRecords, __LINE__);
     return;
   }
@@ -33226,6 +33432,9 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
     }
   }
   db_ptr.p->m_is_user = is_user;
+  db_ptr.p->m_is_alias = is_alias;
+  db_ptr.p->m_alias_target = alias_target;
+  db_ptr.p->m_alias_target_id = alias_target_id;
   if (!is_user) {
     jam();
     db_ptr.p->m_in_memory_size = db.InMemorySize;
@@ -33318,6 +33527,10 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
 
 error:
   jam();
+  {
+    LcLocalRope target(alias_target);
+    target.erase();
+  }
   if (!db_ptr.isNull()) {
     jam();
     c_database_pool.release(db_ptr);
@@ -33882,6 +34095,27 @@ void Dbdict::execCOMMIT_DB_CONF(Signal *signal) {
       m_current_allocated_memory_quota_mb,
       m_current_allocated_disk_quota_mb));
   }
+  /**
+   * An alias counts on its target from its commit, never from its parse,
+   * so an aborted create leaves the count alone. The parse refusals keep
+   * a resolved target alive until here.
+   */
+  if (db_ptr.p->m_is_alias) {
+    jam();
+    if (db_ptr.p->m_alias_target_id != RNIL) {
+      jam();
+      DatabasePtr target_ptr;
+      ndbrequire(find_object(target_ptr, db_ptr.p->m_alias_target_id));
+      increase_ref_count(target_ptr.p->m_obj_ptr_i);
+    } else {
+      jam();
+      db_ptr.p->m_next_dangling_alias = c_first_dangling_alias;
+      c_first_dangling_alias = db_ptr.i;
+    }
+  } else if (db_ptr.p->m_is_user) {
+    jam();
+    bindDanglingAliases(db_ptr);
+  }
   /* Finished commit phase of create database */
   execute(signal, createDbPtr.p->m_callback, db_ptr.p->key);
 }
@@ -33988,6 +34222,11 @@ Dbdict::createDatabase_abortParse(Signal* signal, SchemaOpPtr op_ptr) {
      */
     DatabasePtr db_ptr;
     ndbrequire(find_object(db_ptr, databaseId));
+    {
+      /* An alias is counted and listed only from its commit. */
+      LcLocalRope target(db_ptr.p->m_alias_target);
+      target.erase();
+    }
     release_object(db_ptr.p->m_obj_ptr_i);
     c_database_pool.release(db_ptr);
   } while (0);
@@ -34167,9 +34406,25 @@ Dbdict::dropDatabase_parse(Signal* signal, bool master,
     setError(error, GetTabInfoRef::TableNotDefined, __LINE__);
     return;
   }
-  if (db_ptr.p->m_is_user != is_user) {
+  if (db_ptr.p->m_is_user != is_user ||
+      db_ptr.p->m_is_alias != (db.IsAlias != 0)) {
     jam();
     setError(error, GetTabInfoRef::TableNotDefined, __LINE__);
+    return;
+  }
+  /**
+   * A USER that aliases resolve to cannot be dropped: object ids are
+   * reused, so an alias holding the id of a dropped USER would charge
+   * whatever object gets the id next. The count covers committed aliases;
+   * an alias create pending in this transaction counts only at its commit
+   * and is checked here by name. Restarts rebuild objects in id order and
+   * are exempt.
+   */
+  if (is_user && !db_ptr.p->m_is_alias && op_ptr.p->m_restart == 0 &&
+      (obj_ptr->m_ref_count != 0 ||
+       aliasCreatePendingFor(trans_ptr, db.DatabaseName))) {
+    jam();
+    setError(error, CreateTableRef::UserHasAliases, __LINE__);
     return;
   }
   impl_req->databaseVersion = db_ptr.p->m_version;
@@ -34551,6 +34806,20 @@ void Dbdict::dropDatabase_complete(Signal* signal, SchemaOpPtr op_ptr) {
                  DropDatabaseRep::SignalLength, JBB, lsPtr, 1);
     }
   }
+  if (db_ptr.p->m_is_alias) {
+    jam();
+    if (db_ptr.p->m_alias_target_id != RNIL) {
+      jam();
+      DatabasePtr target_ptr;
+      ndbrequire(find_object(target_ptr, db_ptr.p->m_alias_target_id));
+      decrease_ref_count(target_ptr.p->m_obj_ptr_i);
+    } else {
+      jam();
+      unlinkDanglingAlias(db_ptr);
+    }
+    LcLocalRope target(db_ptr.p->m_alias_target);
+    target.erase();
+  }
   unlinkDictObject(op_ptr);
   release_object(db_ptr.p->m_obj_ptr_i);
   db_ptr.p->m_obj_ptr_i = RNIL;
@@ -34789,10 +35058,38 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
     setError(error, GetTabInfoRef::TableNotDefined, __LINE__);
     return;
   }
-  if (db_ptr.p->m_is_user != is_user) {
+  if (db_ptr.p->m_is_user != is_user ||
+      db_ptr.p->m_is_alias != (db.IsAlias != 0)) {
     jam();
     setError(error, GetTabInfoRef::TableNotDefined, __LINE__);
     return;
+  }
+  if (db_ptr.p->m_is_alias) {
+    jam();
+    /**
+     * An alias has no budget and never changes target: the ALTER that
+     * the management server falls back to when an alias SET finds the
+     * alias existing confirms the target, and a different target is
+     * refused, so moving an account to another USER is a DROP and a SET.
+     */
+    if ((db.RatePerSec != RNIL && db.RatePerSec != 0) ||
+        (db.InMemorySize != RNIL && db.InMemorySize != 0) ||
+        (db.DiskSpaceSize != RNIL && db.DiskSpaceSize != 0) ||
+        (db.MaxTransactionSize != RNIL && db.MaxTransactionSize != 0) ||
+        (db.MaxParallelTransactions != RNIL &&
+         db.MaxParallelTransactions != 0) ||
+        (db.MaxParallelComplexQueries != RNIL &&
+         db.MaxParallelComplexQueries != 0)) {
+      jam();
+      setError(error, CreateTableRef::InvalidFormat, __LINE__);
+      return;
+    }
+    LcConstRope target(db_ptr.p->m_alias_target);
+    if (target.compare(db.AliasTarget) != 0) {
+      jam();
+      setError(error, CreateTableRef::AliasTargetConflict, __LINE__);
+      return;
+    }
   }
   impl_req->databaseVersion = db_ptr.p->m_version;
   if (check_write_obj(impl_req->databaseId,
@@ -34909,6 +35206,10 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
         db_ptr.p->m_max_parallel_complex_queries;
     }
     alter_db_ptr.p->m_is_user = db_ptr.p->m_is_user;
+    /* Shares the live record's rope; the shadow is released, never erased. */
+    alter_db_ptr.p->m_is_alias = db_ptr.p->m_is_alias;
+    alter_db_ptr.p->m_alias_target = db_ptr.p->m_alias_target;
+    alter_db_ptr.p->m_alias_target_id = db_ptr.p->m_alias_target_id;
     alter_db_ptr.p->m_type = db_ptr.p->m_type;
     alter_db_ptr.p->m_obj_ptr_i = db_ptr.p->m_obj_ptr_i;
     alter_db_ptr.p->m_table_id_check = db_ptr.p->m_table_id_check;

@@ -259,6 +259,8 @@ DictDatabaseInfo::Mapping[] = {
   DDBI_MAP_INT64(Database, MaxParallelTransactions, MaxParallelTransactions),
   DDBI_MAP_INT64(Database, MaxParallelComplexQueries, MaxParallelComplexQueries),
   DDBI_MAP_INT(Database, IsUser, IsUser),
+  DDBI_MAP_INT(Database, IsAlias, IsAlias),
+  DDBI_MAP_STR(Database, AliasTarget, AliasTarget, MAX_DB_NAME_SIZE),
 
   DDBIBREAK(ParameterEnd)
 };
@@ -278,6 +280,8 @@ DictDatabaseInfo::Database::init(){
   MaxParallelTransactions = 0;
   MaxParallelComplexQueries = 0;
   IsUser = false;
+  IsAlias = 0;
+  std::memset(AliasTarget, 0, sizeof(AliasTarget));
 }
 
 //static 

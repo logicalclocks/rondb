@@ -1,17 +1,41 @@
 --source include/have_ndb.inc
 
-# RONDB-1158: DBDICT database and user operations driven at signal level by
-# the NDB API test program testDict, for what the management server cannot
-# produce: several operations in one schema transaction, and an abort after
-# a successful parse (ndb_mgm sends one operation per transaction).
+# RONDB-1158: DBDICT database, user and user alias operations driven at
+# signal level by the NDB API test program testDict, for what the
+# management server cannot produce: several operations in one schema
+# transaction, and an abort after a successful parse (ndb_mgm sends one
+# operation per transaction).
 #
 # UserCreateAbortedInParse: a USER create aborted after its parse leaves no
 # dictionary object behind, so GET finds nothing and the name can be
 # created again.
+# UserAliasDropProtection: a USER that aliases resolve to cannot be
+# dropped until they are; a repeated alias SET (the ALTER fallback)
+# confirms the target and refuses another; USER and alias operations do
+# not cross kinds.
+# UserAliasTargetValidation: the target may be absent, but not the alias
+# itself, another alias, or a '$' name.
+# UserAliasDanglingTarget: an alias set before its USER binds when the USER
+# is created, in a later transaction or later in the same one.
+# UserAliasPendingOps: an alias create and its target's drop in one schema
+# transaction are refused in either order, and the abort leaves no alias
+# and no count behind.
 #
 # The test program creates no tables, so no TEST_DB is needed; T1 is only
 # the table argument every testDict run takes.
 
 let NDBAPITEST_NAME=testDict;
 let NDBAPITEST_ARGS=-n UserCreateAbortedInParse T1;
+--source suite/ndb/include/run_ndbapitest.inc
+
+let NDBAPITEST_ARGS=-n UserAliasDropProtection T1;
+--source suite/ndb/include/run_ndbapitest.inc
+
+let NDBAPITEST_ARGS=-n UserAliasTargetValidation T1;
+--source suite/ndb/include/run_ndbapitest.inc
+
+let NDBAPITEST_ARGS=-n UserAliasDanglingTarget T1;
+--source suite/ndb/include/run_ndbapitest.inc
+
+let NDBAPITEST_ARGS=-n UserAliasPendingOps T1;
 --source suite/ndb/include/run_ndbapitest.inc

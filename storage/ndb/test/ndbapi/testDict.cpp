@@ -48,9 +48,12 @@
 #include <NdbSleep.h>
 #include <SimpleProperties.hpp>
 #include <UtilBuffer.hpp>
+#include <signaldata/AlterDatabase.hpp>
 #include <signaldata/CreateDatabase.hpp>
+#include <signaldata/CreateTable.hpp>
 #include <signaldata/DropDatabase.hpp>
 #include <signaldata/DropTable.hpp>
+#include <signaldata/GetTabInfo.hpp>
 #include <signaldata/QueryDatabase.hpp>
 #include <signaldata/SchemaTrans.hpp>
 #include "../../src/ndbapi/SignalSender.hpp"
@@ -11344,6 +11347,37 @@ class DictDatabaseClient {
                                    GSN_DROP_DATABASE_REF);
   }
 
+  int createAlias(const char *name, const char *target) {
+    DictDatabaseInfo::Database db;
+    initAliasInfo(db, name, target);
+    return sendOp<CreateDatabaseReq>(GSN_CREATE_DATABASE_REQ, db,
+                                     GSN_CREATE_DATABASE_CONF,
+                                     GSN_CREATE_DATABASE_REF);
+  }
+
+  /* The ALTER the management server sends when an alias SET finds it. */
+  int alterAlias(const char *name, const char *target) {
+    DictDatabaseInfo::Database db;
+    initAliasInfo(db, name, target);
+    db.InMemorySize = RNIL;
+    db.DiskSpaceSize = RNIL;
+    db.RatePerSec = RNIL;
+    db.MaxTransactionSize = RNIL;
+    db.MaxParallelTransactions = RNIL;
+    db.MaxParallelComplexQueries = RNIL;
+    return sendOp<AlterDatabaseReq>(GSN_ALTER_DATABASE_REQ, db,
+                                    GSN_ALTER_DATABASE_CONF,
+                                    GSN_ALTER_DATABASE_REF);
+  }
+
+  int dropAlias(const char *name) {
+    DictDatabaseInfo::Database db;
+    initAliasInfo(db, name, "");
+    return sendOp<DropDatabaseReq>(GSN_DROP_DATABASE_REQ, db,
+                                   GSN_DROP_DATABASE_CONF,
+                                   GSN_DROP_DATABASE_REF);
+  }
+
   /* Looks the object up by name, outside any schema transaction. */
   int getDatabase(const char *name, bool isUser) {
     Uint32 nameWords[MAX_DB_NAME_SIZE / 4 + 1];
@@ -11379,6 +11413,13 @@ class DictDatabaseClient {
     db.IsUser = isUser;
     db.DatabaseId = 0;
     db.DatabaseVersion = 0;
+  }
+
+  static void initAliasInfo(DictDatabaseInfo::Database &db, const char *name,
+                            const char *target) {
+    initDatabaseInfo(db, name, true);
+    db.IsAlias = 1;
+    strncpy(db.AliasTarget, target, MAX_DB_NAME_SIZE - 1);
   }
 
   /**
@@ -11479,6 +11520,141 @@ int runUserCreateAbortedInParse(NDBT_Context *ctx, NDBT_Step *step) {
   DICTDB_CHECK(dict.dropDatabase(name, true), 0);
   DICTDB_CHECK(dict.endTrans(false), 0);
   DICTDB_CHECK(dict.getDatabase(name, true), DropTableRef::NoSuchTable);
+  return NDBT_OK;
+}
+
+/* One operation in its own committed transaction, as ndb_mgm sends it. */
+#define DICTDB_ONE(op, expected)                     \
+  do {                                               \
+    DICTDB_CHECK(dict.beginTrans(), 0);              \
+    const int one_res_ = (op);                       \
+    DICTDB_CHECK(one_res_, (expected));              \
+    DICTDB_CHECK(dict.endTrans(one_res_ != 0), 0);   \
+  } while (0)
+
+/**
+ * A USER that a USER ALIAS resolves to cannot be dropped until the alias
+ * is dropped; an alias SET repeated through ALTER confirms the target and
+ * refuses another one; USER and alias operations do not cross kinds.
+ */
+int runUserAliasDropProtection(NDBT_Context *ctx, NDBT_Step *step) {
+  DictDatabaseClient dict(&GETNDB(step)->get_ndb_cluster_connection());
+
+  DICTDB_ONE(dict.createDatabase("rl_target", true, 1000), 0);
+  DICTDB_ONE(dict.createDatabase("rl_other", true, 1000), 0);
+  DICTDB_ONE(dict.createAlias("rl_alias", "rl_target"), 0);
+  DICTDB_ONE(dict.dropDatabase("rl_target", true),
+             CreateTableRef::UserHasAliases);
+
+  DICTDB_ONE(dict.alterAlias("rl_alias", "rl_target"), 0);
+  DICTDB_ONE(dict.alterAlias("rl_alias", "rl_other"),
+             CreateTableRef::AliasTargetConflict);
+  DICTDB_ONE(dict.createAlias("rl_alias", "rl_target"),
+             CreateTableRef::TableAlreadyExist);
+
+  /* USER commands never act on an alias, alias commands never on a USER. */
+  DICTDB_ONE(dict.dropDatabase("rl_alias", true),
+             GetTabInfoRef::TableNotDefined);
+  DICTDB_ONE(dict.dropAlias("rl_target"), GetTabInfoRef::TableNotDefined);
+  DICTDB_ONE(dict.alterAlias("rl_target", "rl_other"),
+             GetTabInfoRef::TableNotDefined);
+
+  /* Two aliases on one target: the USER drops after the second goes. */
+  DICTDB_ONE(dict.createAlias("rl_alias2", "rl_target"), 0);
+  DICTDB_ONE(dict.dropAlias("rl_alias"), 0);
+  DICTDB_ONE(dict.dropDatabase("rl_target", true),
+             CreateTableRef::UserHasAliases);
+  DICTDB_ONE(dict.dropAlias("rl_alias2"), 0);
+  DICTDB_ONE(dict.dropDatabase("rl_target", true), 0);
+  DICTDB_ONE(dict.dropDatabase("rl_other", true), 0);
+  return NDBT_OK;
+}
+
+/**
+ * The target is checked against the dictionary when the alias is set: it
+ * may be absent, but it may not be the alias itself, another alias, or a
+ * name a USER cannot have.
+ */
+int runUserAliasTargetValidation(NDBT_Context *ctx, NDBT_Step *step) {
+  DictDatabaseClient dict(&GETNDB(step)->get_ndb_cluster_connection());
+
+  DICTDB_ONE(dict.createDatabase("rl_target", true, 1000), 0);
+  DICTDB_ONE(dict.createAlias("rl_alias", "rl_target"), 0);
+  DICTDB_ONE(dict.createAlias("rl_self", "rl_self"),
+             CreateTableRef::AliasTargetNotUser);
+  DICTDB_ONE(dict.createAlias("rl_chain", "rl_alias"),
+             CreateTableRef::AliasTargetNotUser);
+  DICTDB_ONE(dict.createAlias("rl_dollar", "$rl_target"),
+             CreateTableRef::AliasTargetNotUser);
+  DICTDB_ONE(dict.createAlias("rl_empty", ""), CreateTableRef::InvalidFormat);
+  DICTDB_CHECK(dict.getDatabase("rl_self", true), DropTableRef::NoSuchTable);
+  DICTDB_CHECK(dict.getDatabase("rl_chain", true), DropTableRef::NoSuchTable);
+  DICTDB_ONE(dict.dropAlias("rl_alias"), 0);
+  DICTDB_ONE(dict.dropDatabase("rl_target", true), 0);
+  return NDBT_OK;
+}
+
+/**
+ * An alias set before its target waits for it: creating the USER later,
+ * in its own transaction or after the alias in the same one, binds the
+ * alias and the USER can then not be dropped under it.
+ */
+int runUserAliasDanglingTarget(NDBT_Context *ctx, NDBT_Step *step) {
+  DictDatabaseClient dict(&GETNDB(step)->get_ndb_cluster_connection());
+
+  DICTDB_ONE(dict.createAlias("rl_alias", "rl_late"), 0);
+  DICTDB_CHECK(dict.getDatabase("rl_alias", true), 0);
+  DICTDB_ONE(dict.createDatabase("rl_late", true, 1000), 0);
+  DICTDB_ONE(dict.dropDatabase("rl_late", true),
+             CreateTableRef::UserHasAliases);
+  DICTDB_ONE(dict.dropAlias("rl_alias"), 0);
+  DICTDB_ONE(dict.dropDatabase("rl_late", true), 0);
+
+  /* A dangling alias can also be dropped before any target appears. */
+  DICTDB_ONE(dict.createAlias("rl_alias", "rl_never"), 0);
+  DICTDB_ONE(dict.dropAlias("rl_alias"), 0);
+
+  DICTDB_CHECK(dict.beginTrans(), 0);
+  DICTDB_CHECK(dict.createAlias("rl_alias", "rl_same_trans"), 0);
+  DICTDB_CHECK(dict.createDatabase("rl_same_trans", true, 1000), 0);
+  DICTDB_CHECK(dict.endTrans(false), 0);
+  DICTDB_ONE(dict.dropDatabase("rl_same_trans", true),
+             CreateTableRef::UserHasAliases);
+  DICTDB_ONE(dict.dropAlias("rl_alias"), 0);
+  DICTDB_ONE(dict.dropDatabase("rl_same_trans", true), 0);
+  return NDBT_OK;
+}
+
+/**
+ * Within one schema transaction an alias counts on its target only at
+ * commit, so both orders of an alias create and its target's drop are
+ * refused at parse, and the abort leaves neither the alias nor a count.
+ */
+int runUserAliasPendingOps(NDBT_Context *ctx, NDBT_Step *step) {
+  DictDatabaseClient dict(&GETNDB(step)->get_ndb_cluster_connection());
+
+  DICTDB_ONE(dict.createDatabase("rl_target", true, 1000), 0);
+
+  /* Alias create, then the target's drop. */
+  DICTDB_CHECK(dict.beginTrans(), 0);
+  DICTDB_CHECK(dict.createAlias("rl_alias", "rl_target"), 0);
+  DICTDB_CHECK(dict.dropDatabase("rl_target", true),
+               CreateTableRef::UserHasAliases);
+  DICTDB_CHECK(dict.endTrans(true), 0);
+  DICTDB_CHECK(dict.getDatabase("rl_alias", true), DropTableRef::NoSuchTable);
+
+  /* The target's drop, then an alias create naming it. */
+  DICTDB_CHECK(dict.beginTrans(), 0);
+  DICTDB_CHECK(dict.dropDatabase("rl_target", true), 0);
+  DICTDB_CHECK(dict.createAlias("rl_alias", "rl_target"),
+               CreateTableRef::AliasTargetDropPending);
+  DICTDB_CHECK(dict.endTrans(true), 0);
+  DICTDB_CHECK(dict.getDatabase("rl_target", true), 0);
+
+  /* The same alias name is free, and no count survived the aborts. */
+  DICTDB_ONE(dict.createAlias("rl_alias", "rl_target"), 0);
+  DICTDB_ONE(dict.dropAlias("rl_alias"), 0);
+  DICTDB_ONE(dict.dropDatabase("rl_target", true), 0);
   return NDBT_OK;
 }
 
@@ -11940,6 +12116,26 @@ TESTCASE("UserCreateAbortedInParse",
          "RONDB-1158: a USER create aborted after a successful parse "
          "leaves no dictionary object behind") {
   INITIALIZER(runUserCreateAbortedInParse);
+}
+TESTCASE("UserAliasDropProtection",
+         "RONDB-1158: a USER with aliases cannot be dropped, an alias keeps "
+         "its target, USER and alias operations do not cross kinds") {
+  INITIALIZER(runUserAliasDropProtection);
+}
+TESTCASE("UserAliasTargetValidation",
+         "RONDB-1158: an alias target may be absent but not the alias "
+         "itself, another alias or a '$' name") {
+  INITIALIZER(runUserAliasTargetValidation);
+}
+TESTCASE("UserAliasDanglingTarget",
+         "RONDB-1158: an alias set before its target binds when the USER "
+         "is created, also later in the same transaction") {
+  INITIALIZER(runUserAliasDanglingTarget);
+}
+TESTCASE("UserAliasPendingOps",
+         "RONDB-1158: an alias create and its target's drop in one schema "
+         "transaction are refused in both orders and abort cleanly") {
+  INITIALIZER(runUserAliasPendingOps);
 }
 NDBT_TESTSUITE_END(testDict)
 

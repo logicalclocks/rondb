@@ -723,6 +723,14 @@ struct DictDatabaseInfo {
     MaxParallelTransactions = 104,
     MaxParallelComplexQueries = 105,
     IsUser = 106,
+    /**
+     * A USER ALIAS is a user object with no budget whose traffic is
+     * charged to the USER named by AliasTarget (the name without the '$'
+     * users are stored under). Zero and empty on every other object; a
+     * node that predates them skips both keys when it unpacks.
+     */
+    IsAlias = 107,
+    AliasTarget = 108,
     ParameterEnd = 199,
   };
   struct Database {
@@ -738,6 +746,9 @@ struct DictDatabaseInfo {
     Uint64 MaxParallelTransactions;
     Uint64 MaxParallelComplexQueries;
     bool IsUser;
+    /* After IsUser: its Uint32 mapping writes into the bool's padding. */
+    Uint32 IsAlias;
+    char AliasTarget[MAX_DB_NAME_SIZE];
     Database() {}
     void init();
   };

@@ -513,6 +513,12 @@ ErrorBundle ErrorCodes[] = {
   { 1242, DMEC, AE, "Drop File failed, Not allowed with Disk quotas" },
   { 1243,  HA_WRONG_CREATE_OPTION, SE, "Invalid partition hash definition" },
   { 1244,  HA_WRONG_CREATE_OPTION, SE, "Invalid fanout in partition hash definition" },
+  { 1246, DMEC, AE, "User Alias failed, the target is not a user" },
+  { 1247, DMEC, AE, "User Alias failed, the alias exists with another target" },
+  { 1248, DMEC, AE, "Drop User failed, user aliases point at the user,"
+                    " drop them first" },
+  { 1249, DMEC, AE, "User Alias failed, the target is dropped in the same"
+                    " schema transaction" },
   { 4256, DMEC, AE, "Must call Ndb::init() before this function" },
   { 4257, DMEC, AE, "Tried to read too much - too many getValue calls" },
   { 320,  DMEC, AE, "Invalid no of nodes specified for new nodegroup" },

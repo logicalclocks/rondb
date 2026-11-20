@@ -106,7 +106,11 @@ struct CreateTableRef {
     AlterDbNoAvailableDiskQuota = 1241,
     NotAllowedToDropFileWithQuotas = 1242,
     InvalidPartitionHash = 1243,
-    InvalidFanout = 1244
+    InvalidFanout = 1244,
+    AliasTargetNotUser = 1246,
+    AliasTargetConflict = 1247,
+    UserHasAliases = 1248,
+    AliasTargetDropPending = 1249
   };
 
   Uint32 senderRef;

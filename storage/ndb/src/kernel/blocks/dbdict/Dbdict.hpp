@@ -698,6 +698,9 @@ class Dbdict : public SimulatedBlock {
     Database()
     {
       m_alter_db_ref = RNIL;
+      m_is_alias = false;
+      m_alias_target_id = RNIL;
+      m_next_dangling_alias = RNIL;
     }
 
     static bool isCompatible(Uint32 type) { return DictTabInfo::isDatabase(type); }
@@ -725,11 +728,26 @@ class Dbdict : public SimulatedBlock {
     Uint32 m_max_parallel_transactions;
     Uint32 m_max_parallel_complex_queries;
     bool m_is_user;
+    /**
+     * A USER ALIAS is a user object (m_is_user) with no budget. Its target
+     * is kept by name (no '$') and resolved to the target USER's object id
+     * when a USER of that name exists, otherwise RNIL; an alias committed
+     * with no target sits on c_first_dangling_alias until a USER with the
+     * name commits. A resolved target counts the alias in its DictObject
+     * m_ref_count, which refuses dropping the USER while aliases use it.
+     */
+    bool m_is_alias;
+    LcRopeHandle m_alias_target;
+    Uint32 m_alias_target_id;
+    Uint32 m_next_dangling_alias;
   };
   typedef Ptr<Database> DatabasePtr;
   typedef RecordPool<RWPool<Database> > Database_pool;
   Database_pool c_database_pool;
   Database_pool& get_pool(DatabasePtr) { return c_database_pool; }
+
+  /* Head of the committed aliases whose target USER does not exist. */
+  Uint32 c_first_dangling_alias;
 
   Uint32 m_current_allocated_rate;
   Uint32 m_allocated_create_rate_limit;
@@ -4792,6 +4810,13 @@ class Dbdict : public SimulatedBlock {
 
   void packDatabaseIntoPages(SimpleProperties::Writer & w,
                              DatabasePtr db_ptr);
+  Uint32 resolveAliasTarget(SchemaOpPtr op_ptr,
+                            const char *alias_name,
+                            const char *target,
+                            Uint32 &target_id);
+  void bindDanglingAliases(DatabasePtr user_ptr);
+  void unlinkDanglingAlias(DatabasePtr alias_ptr);
+  bool aliasCreatePendingFor(SchemaTransPtr trans_ptr, const char *user_name);
 
   void createDb_writeTableConf(Signal* signal,
                                Uint32 op_key,
