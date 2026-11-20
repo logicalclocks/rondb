@@ -11658,6 +11658,45 @@ int runUserAliasPendingOps(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+/* Friend of NdbTransaction: the rate limit name a transaction holds. */
+struct ReleasedTransactionRateLimitName {
+  static bool held(const NdbTransaction *trans) {
+    return trans->m_current_username != nullptr || trans->m_user_id != RNIL;
+  }
+};
+
+/**
+ * setUserId keeps the caller's pointer to the name, and a caller may free
+ * the name once it has closed the transaction. The closed transaction
+ * goes back to the Ndb object's pool, where it must not keep the pointer.
+ */
+int runTransactionReleaseClearsUser(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *ndb = GETNDB(step);
+  static const char name[] = "rl_released";
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    g_err << "startTransaction: " << ndb->getNdbError() << endl;
+    return NDBT_FAILED;
+  }
+  if (trans->setUserId(name, Uint32(strlen(name))) != 0) {
+    g_err << "setUserId: " << trans->getNdbError() << endl;
+    ndb->closeTransaction(trans);
+    return NDBT_FAILED;
+  }
+  if (!ReleasedTransactionRateLimitName::held(trans)) {
+    g_err << "the open transaction does not hold the name" << endl;
+    ndb->closeTransaction(trans);
+    return NDBT_FAILED;
+  }
+  ndb->closeTransaction(trans);
+  /* The Ndb object keeps the released transaction in its free list. */
+  if (ReleasedTransactionRateLimitName::held(trans)) {
+    g_err << "the released transaction still holds the name" << endl;
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
 /**
  * A user or alias name is stored as "$name" in MAX_DB_NAME_SIZE bytes with
  * its NUL, so DBDICT itself refuses a client name longer than
@@ -12175,6 +12214,11 @@ TESTCASE("UserNameLimits",
          "RONDB-1158: DBDICT refuses user and alias names longer than 126 "
          "bytes or beginning with '$'") {
   INITIALIZER(runUserNameLimits);
+}
+TESTCASE("TransactionReleaseClearsUser",
+         "RONDB-1158: a closed transaction keeps no pointer to the rate "
+         "limit name its caller passed to setUserId") {
+  INITIALIZER(runTransactionReleaseClearsUser);
 }
 NDBT_TESTSUITE_END(testDict)
 

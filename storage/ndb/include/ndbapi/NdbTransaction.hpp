@@ -1241,6 +1241,8 @@ class NdbTransaction {
   NdbLockHandle *getLockHandle();
 
   friend class HugoOperations;
+  /* testNdbApi: reads the rate limit name of a released transaction */
+  friend struct ReleasedTransactionRateLimitName;
   friend struct Ndb_free_list_t<NdbTransaction>;
 
   NdbTransaction(const NdbTransaction &);  // Not impl.

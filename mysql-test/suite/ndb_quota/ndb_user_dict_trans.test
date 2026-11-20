@@ -22,6 +22,8 @@
 # and no count behind.
 # UserNameLimits: DBDICT itself refuses user and alias names longer than
 # 126 bytes or beginning with '$'.
+# TransactionReleaseClearsUser: a closed NdbTransaction keeps no pointer to
+# the rate limit name its caller passed to setUserId.
 #
 # The test program creates no tables, so no TEST_DB is needed; T1 is only
 # the table argument every testDict run takes.
@@ -43,4 +45,7 @@ let NDBAPITEST_ARGS=-n UserAliasPendingOps T1;
 --source suite/ndb/include/run_ndbapitest.inc
 
 let NDBAPITEST_ARGS=-n UserNameLimits T1;
+--source suite/ndb/include/run_ndbapitest.inc
+
+let NDBAPITEST_ARGS=-n TransactionReleaseClearsUser T1;
 --source suite/ndb/include/run_ndbapitest.inc

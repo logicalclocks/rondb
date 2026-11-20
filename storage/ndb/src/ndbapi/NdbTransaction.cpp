@@ -1821,6 +1821,15 @@ void NdbTransaction::release() {
   }  // if
   theMagicNumber = 0xFE11DC;
   theInUseState = false;
+  /**
+   * setUserId keeps the caller's name pointer, and the caller may free the
+   * name once the transaction is closed (ClusterJ frees its buffer then),
+   * so a pooled transaction must not keep pointing at it.
+   */
+  m_user_id = RNIL;
+  m_user_id_version = 0;
+  m_current_username = nullptr;
+  m_current_username_len = 0;
 #ifdef VM_TRACE
   if (theListState != NotInList && theListState != InPreparedList) {
     theNdb->printState("release %p", this);
