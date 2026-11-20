@@ -1,11 +1,12 @@
 This directory has a number of "vendored" dependencies:
 - drogon/drogon-<VERSION>/
-- drogon/drogon-<VERSION>/trantor-<VERSION>/
+- drogon/trantor-<VERSION>/
 - simdjson/simdjson-<VERSION>/
 
-Changes to these dependencies are captured in ./*.patch, and these patches need
-to be applied after an upgrade. In more detail, to upgrade a vendored
-dependency:
+Every change to these dependencies is captured in ./*.patch, and these patches
+need to be applied after an upgrade. When you change a vendored source file,
+add or update its patch file in the same commit; a change without a patch file
+is lost in the next upgrade. In more detail, to upgrade a vendored dependency:
 
 1) In a separate commit, add the new files. For example, add
    drogon/drogon-<NEWVERSION>/ without deleting drogon/drogon-<OLDVERSION>/

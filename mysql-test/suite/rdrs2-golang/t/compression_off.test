@@ -1,0 +1,80 @@
+# RONDB-1160: the JSON handlers do not gzip with REST.UseCompression off.
+#
+# pk-read, batch, batchwrite, batchdelete, feature_store and
+# batch_feature_store answer with JSON, and REST.UseCompression decides
+# whether Drogon may gzip the body. They used to switch compression off by
+# giving the response the content type code of application/octet-stream,
+# which a RonDB patch to Drogon's MIME table (RONDB-813) rendered as
+# application/json. They now set the JSON content type and call
+# HttpResponse::setAllowCompression().
+#
+# rdrs.1.1 (see the companion .cnf) runs with REST.UseCompression off. The
+# Go driver (internal/integrationtests/compression) sends each handler a
+# request that accepts gzip and whose response is over 1 KiB, the size
+# below which Drogon compresses nothing, and checks that
+#   - Content-Type is "application/json; charset=utf-8",
+#   - the response has no Content-Encoding.
+#
+# The same package checks the default, REST.UseCompression on, in the
+# normal pass over all Go packages (ping_health_stat_jsonerrors_smoke):
+# there the responses must have Content-Encoding: gzip, except a feature
+# vector with a complex feature.
+
+--source include/have_ndb.inc
+
+# The Go package seeds the test databases, and the cleanup at the end drops
+# them on both MySQL servers. See run_gotest.inc for why this error is
+# benign.
+--disable_query_log
+--disable_warnings
+call mtr.add_suppression("Failed to acquire MDL for db");
+--connect(rdrs2_suppress_server2, 127.0.0.1, root, , test, $MASTER_MYPORT1)
+call mtr.add_suppression("Failed to acquire MDL for db");
+--disconnect rdrs2_suppress_server2
+--connection default
+--enable_warnings
+--enable_query_log
+
+--echo # Response headers with REST.UseCompression off
+perl END_OF_PERL;
+use strict;
+use warnings;
+use File::Spec;
+
+my $MYSQL_BASEDIR = $ENV{'MYSQL_BASEDIR'};
+my $TEST_GO_DIR = File::Spec->catdir($MYSQL_BASEDIR, 'storage', 'ndb',
+                                     'rest-server2', 'server', 'test_go');
+die "Directory $TEST_GO_DIR does not exist\n" unless -d $TEST_GO_DIR;
+chdir $TEST_GO_DIR or die "Cannot change directory to $TEST_GO_DIR: $!";
+
+my $log_dir = $ENV{'MYSQLTEST_VARDIR'} ? "$ENV{'MYSQLTEST_VARDIR'}/log"
+                                       : $ENV{'MYSQL_TMP_DIR'};
+my $go_log_file = "$log_dir/rdrs2-golang_compression_off.output.log";
+if (open(my $trunc, '>', $go_log_file)) { close($trunc); }
+
+$ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_NOCOMPRESS'};
+
+system("go test -v -count 1 -timeout 10m " .
+       "hopsworks.ai/rdrs2/internal/integrationtests/compression " .
+       ">> \"$go_log_file\" 2>&1");
+my $exit_code = $? >> 8;
+my $out = '';
+if (open(my $fh, '<', $go_log_file)) { local $/; $out = <$fh>; close($fh); }
+if ($exit_code != 0) {
+    print "FAIL: the compression package exited with code $exit_code\n";
+    print "Full log: $go_log_file\n";
+    print $out;
+    exit 1;
+}
+# TestNoGzipWithoutUseCompression skips itself, and a skip exits 0, if the
+# server it is pointed at has REST.UseCompression on. It must have passed.
+if ($out !~ /^--- PASS: TestNoGzipWithoutUseCompression /m) {
+    print "FAIL: TestNoGzipWithoutUseCompression did not run or was skipped\n";
+    print $out;
+    exit 1;
+}
+print "PASS\n";
+exit 0;
+END_OF_PERL
+
+--source suite/rdrs2-golang/include/cleanup_testdbs.inc

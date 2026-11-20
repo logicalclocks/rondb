@@ -1,0 +1,416 @@
+#include <drogon/drogon_test.h>
+
+#include <set>
+#include <unordered_map>
+#include <unordered_set>
+#include <future>
+#include <condition_variable>
+
+namespace drogon
+{
+namespace test
+{
+std::mutex ThreadSafeStream::mtx_;
+
+namespace internal
+{
+std::mutex mtxRegister;
+std::mutex mtxTestStats;
+bool testHasPrinted = false;
+std::set<Case *> registeredTests;
+std::promise<void> allTestRan;
+std::atomic<size_t> numAssertions;
+std::atomic<size_t> numCorrectAssertions;
+size_t numTestCases;
+std::atomic<size_t> numFailedTestCases;
+bool printSuccessfulTests;
+
+void registerCase(Case *test)
+{
+    std::unique_lock<std::mutex> l(mtxRegister);
+    registeredTests.insert(test);
+}
+
+void unregisterCase(Case *test)
+{
+    std::unique_lock<std::mutex> l(mtxRegister);
+    registeredTests.erase(test);
+
+    if (registeredTests.empty())
+        allTestRan.set_value();
+}
+
+static std::string leftpad(const std::string &str, size_t len)
+{
+    if (len <= str.size())
+        return str;
+    return std::string(len - str.size(), ' ') + str;
+}
+
+std::string prettifyString(const std::string_view sv, size_t maxLength)
+{
+    if (sv.size() <= maxLength)
+        return "\"" + escapeString(sv) + "\"";
+
+    const std::string msg = "...\" (truncated)";
+    return "\"" + escapeString(sv.substr(0, maxLength)) + msg;
+}
+
+}  // namespace internal
+
+static void printHelp(std::string_view argv0)
+{
+    print() << "A Drogon Test application:\n\n"
+            << "Usage: " << argv0 << " [options]\n"
+            << "options:\n"
+            << "    -r <tests...> Run one or more specific tests\n"
+            << "    -s            Print successful tests\n"
+            << "    -l            List available tests\n"
+            << "    -h | --help   Print this help message\n"
+            << "\n"
+            << "Example: " << argv0 << " -r $(cat selected-tests.txt)\n";
+}
+
+void printTestStats()
+{
+    std::unique_lock<std::mutex> lk(internal::mtxTestStats);
+    if (internal::testHasPrinted)
+        return;
+    const size_t successAssertions = internal::numCorrectAssertions;
+    const size_t totalAssertions = internal::numAssertions;
+    const size_t successTests =
+        internal::numTestCases - internal::numFailedTestCases;
+    const size_t totalTests = internal::numTestCases;
+
+    float ratio;
+    if (totalAssertions != 0)
+        ratio = (float)successTests / totalTests;
+    else
+        ratio = 1;
+    const size_t barSize = 80;
+    auto greenBar = size_t(barSize * ratio);
+    auto redBar = size_t(barSize * (1 - ratio));
+    if (greenBar + redBar != barSize)
+    {
+        float fraction = (ratio * barSize) - (size_t)(ratio * barSize);
+        if (fraction >= 0.5f)
+            greenBar++;
+        else
+            redBar++;
+    }
+    if (successAssertions != totalAssertions && redBar == 0)
+    {
+        redBar = 1;
+        greenBar--;
+    }
+
+    print() << "\n\x1B[0;31m" << std::string(redBar, '=') << "\x1B[0;32m"
+            << std::string(greenBar, '=') << "\x1B[0m\n";
+
+    if (successAssertions == totalAssertions)
+    {
+        print() << "\x1B[1;32m  All tests passed\x1B[0m (" << totalAssertions
+                << " assertions in " << totalTests << " tests cases).\n";
+    }
+    else
+    {
+        std::string totalAssertsionStr = std::to_string(totalAssertions);
+        std::string successAssertionsStr = std::to_string(successAssertions);
+        std::string failedAssertsionStr =
+            std::to_string(totalAssertions - successAssertions);
+        std::string totalTestsStr = std::to_string(totalTests);
+        std::string successTestsStr = std::to_string(successTests);
+        std::string failedTestsStr = std::to_string(totalTests - successTests);
+        const size_t totalLen =
+            (std::max)(totalAssertsionStr.size(), totalTestsStr.size());
+        const size_t successLen =
+            (std::max)(successAssertionsStr.size(), successTestsStr.size());
+        const size_t failedLen =
+            (std::max)(failedAssertsionStr.size(), failedTestsStr.size());
+        using internal::leftpad;
+        print() << "assertions: " << leftpad(totalAssertsionStr, totalLen)
+                << " | \x1B[0;32m" << leftpad(successAssertionsStr, successLen)
+                << " passed\x1B[0m | \x1B[0;31m"
+                << leftpad(failedAssertsionStr, failedLen) << " failed\x1B[0m\n"
+                << "test cases: " << leftpad(totalTestsStr, totalLen)
+                << " | \x1B[0;32m" << leftpad(successTestsStr, successLen)
+                << " passed\x1B[0m | \x1B[0;31m"
+                << leftpad(failedTestsStr, failedLen) << " failed\x1B[0m\n";
+    }
+    internal::testHasPrinted = true;
+}
+
+int run(int argc, char **argv)
+{
+    internal::numCorrectAssertions = 0;
+    internal::numAssertions = 0;
+    internal::numFailedTestCases = 0;
+    internal::numTestCases = 0;
+    internal::printSuccessfulTests = false;
+
+    std::vector<std::string> orderedTestNames;
+    std::unordered_set<std::string> uniqueTestNames;
+    bool listTests = false;
+    for (int i = 1; i < argc; i++)
+    {
+        const std::string param = argv[i];
+        if (param == "-r")
+        {
+            if (i + 1 >= argc || argv[i + 1][0] == '-')
+            {
+                printErr() << "Missing test name after -r.\n";
+                return 1;
+            }
+
+            while (i + 1 < argc && argv[i + 1][0] != '-')
+            {
+                const std::string testName = argv[++i];
+                if (uniqueTestNames.emplace(testName).second)
+                {
+                    orderedTestNames.emplace_back(std::move(testName));
+                }
+                else
+                {
+                    printErr() << "Duplicate test name: " << testName << "\n";
+                    return 1;
+                }
+            }
+        }
+        else if (param == "-h" || param == "--help")
+        {
+            printHelp(argv[0]);
+            return 0;
+        }
+        else if (param == "-s")
+        {
+            internal::printSuccessfulTests = true;
+        }
+        else if (param == "-l")
+        {
+            listTests = true;
+        }
+        else
+        {
+            printErr() << "Unknown parameter: " << param << "\n";
+            printHelp(argv[0]);
+            return 1;
+        }
+    }
+    auto classNames = DrClassMap::getAllClassName();
+
+    if (listTests)
+    {
+        print() << "Available Tests:\n";
+        for (const auto &name : classNames)
+        {
+            if (name.find(DROGON_TESTCASE_PREIX_STR_) == 0)
+            {
+                auto test =
+                    std::unique_ptr<DrObjectBase>(DrClassMap::newObject(name));
+                auto ptr = dynamic_cast<TestCase *>(test.get());
+                if (ptr == nullptr)
+                    continue;
+                print() << "  " << ptr->name() << "\n";
+            }
+        }
+        return 0;
+    }
+
+    std::unordered_map<std::string, std::shared_ptr<TestCase>>
+        availableTestCases;
+    std::vector<std::string> availableTestNames;
+    for (const auto &name : classNames)
+    {
+        if (name.find(DROGON_TESTCASE_PREIX_STR_) != 0)
+            continue;
+
+        auto obj = std::shared_ptr<DrObjectBase>(DrClassMap::newObject(name));
+        auto test = std::dynamic_pointer_cast<TestCase>(obj);
+        if (test == nullptr)
+        {
+            LOG_WARN << "Class " << name
+                     << " seems to be a test case. But type information "
+                        "disagrees.";
+            continue;
+        }
+        const auto testName = test->name();
+        if (availableTestCases.emplace(testName, std::move(test)).second)
+            availableTestNames.emplace_back(testName);
+    }
+
+    std::vector<std::string> missingTestNames;
+    for (const auto &name : orderedTestNames)
+    {
+        if (availableTestCases.find(name) == availableTestCases.end())
+            missingTestNames.emplace_back(name);
+    }
+    if (!missingTestNames.empty())
+    {
+        printErr() << "Cannot find test(s) named:\n";
+        for (const auto &name : missingTestNames)
+            printErr() << "  " << name << "\n";
+        return 1;
+    }
+
+    std::vector<std::shared_ptr<TestCase>> testCases;
+    // NOTE: Registering a dummy case prevents the test-end signal to be
+    // emitted too early as there's always an case that hasn't finish
+    std::shared_ptr<Case> dummyCase = std::make_shared<Case>("__dummy_dummy_");
+    const auto &testNames =
+        orderedTestNames.empty() ? availableTestNames : orderedTestNames;
+    for (const auto &name : testNames)
+    {
+        auto &test = availableTestCases.at(name);
+        internal::numTestCases++;
+        test->doTest_(std::make_shared<Case>(test->name()));
+        testCases.emplace_back(std::move(test));
+    }
+    dummyCase = {};
+
+    std::unique_lock<std::mutex> l(internal::mtxRegister);
+    if (internal::registeredTests.empty() == false)
+    {
+        auto fut = internal::allTestRan.get_future();
+        l.unlock();
+        fut.get();
+        assert(internal::registeredTests.empty());
+    }
+    testCases.clear();
+
+    printTestStats();
+
+    return internal::numCorrectAssertions != internal::numAssertions;
+}
+
+ThreadSafeStream print()
+{
+    return ThreadSafeStream(std::cout);
+}
+
+ThreadSafeStream printErr()
+{
+    return ThreadSafeStream(std::cerr);
+}
+
+namespace
+{
+// Writes the shared header of an assertion message. The caller owns the locked
+// stream and holds it for the whole statement, so nothing escapes.
+void writeHeader(ThreadSafeStream &out,
+                 const CaseBase &testCase,
+                 const char *file,
+                 int line,
+                 const char *funcName,
+                 const char *expr,
+                 const char *verdictColor,
+                 const char *verdict)
+{
+    out << "\x1B[1;37mIn test case " << testCase.fullname() << "\n"
+        << "\x1B[0;37m↳ " << file << ":" << line << " " << verdictColor
+        << verdict << "\x1B[0m\n"
+        << "  \033[0;34m" << internal::stringifyFuncCall(funcName, expr)
+        << "\x1B[0m\n";
+}
+}  // namespace
+
+void reportCheckFailure(const CaseBase &testCase,
+                        const char *file,
+                        int line,
+                        const char *funcName,
+                        const char *expr,
+                        const std::string &expansion)
+{
+    ThreadSafeStream out = printErr();
+    writeHeader(
+        out, testCase, file, line, funcName, expr, "\x1B[0;31m", " FAILED:");
+    out << "With expansion\n"
+        << "  \033[0;33m" << expansion << "\x1B[0m\n\n";
+}
+
+void reportUnexpectedException(const CaseBase &testCase,
+                               const char *file,
+                               int line,
+                               const char *funcName,
+                               const char *expr,
+                               const char *what)
+{
+    ThreadSafeStream out = printErr();
+    writeHeader(
+        out, testCase, file, line, funcName, expr, "\x1B[0;31m", " FAILED:");
+    out << "An unexpected exception is thrown. what():\n"
+        << "  \033[0;33m" << what << "\x1B[0m\n\n";
+}
+
+void reportUnknownException(const CaseBase &testCase,
+                            const char *file,
+                            int line,
+                            const char *funcName,
+                            const char *expr)
+{
+    ThreadSafeStream out = printErr();
+    writeHeader(
+        out, testCase, file, line, funcName, expr, "\x1B[0;31m", " FAILED:");
+    out << "Unexpected unknown exception is thrown.\n\n";
+}
+
+void reportNoException(const CaseBase &testCase,
+                       const char *file,
+                       int line,
+                       const char *funcName,
+                       const char *expr)
+{
+    ThreadSafeStream out = printErr();
+    writeHeader(
+        out, testCase, file, line, funcName, expr, "\x1B[0;31m", " FAILED:");
+    out << "With expecitation\n"
+        << "  Expected to throw an exception. But none are thrown.\n\n";
+}
+
+void reportUnwantedException(const CaseBase &testCase,
+                             const char *file,
+                             int line,
+                             const char *funcName,
+                             const char *expr)
+{
+    ThreadSafeStream out = printErr();
+    writeHeader(
+        out, testCase, file, line, funcName, expr, "\x1B[0;31m", " FAILED:");
+    out << "With expecitation\n"
+        << "  Should to not throw an exception. But one is thrown.\n\n";
+}
+
+void reportBadExceptionType(const CaseBase &testCase,
+                            const char *file,
+                            int line,
+                            const char *funcName,
+                            const char *expr,
+                            bool exceptionThrown,
+                            const char *expectedType)
+{
+    ThreadSafeStream out = printErr();
+    writeHeader(
+        out, testCase, file, line, funcName, expr, "\x1B[0;31m", " FAILED:");
+    out << "With expecitation\n";
+    if (exceptionThrown)
+        out << "  Exception have been throw but not of type \033[0;33m"
+            << expectedType << "\033[0m.\n\n";
+    else
+        out << "  A \033[0;33m" << expectedType
+            << "\033[0m exception is expected. But nothing was "
+               "thrown\033[0m.\n\n";
+}
+
+void reportPassed(const CaseBase &testCase,
+                  const char *file,
+                  int line,
+                  const char *funcName,
+                  const char *expr)
+{
+    ThreadSafeStream out = print();
+    writeHeader(
+        out, testCase, file, line, funcName, expr, "\x1B[0;32m", " PASSED:");
+    out << "\n";
+}
+
+}  // namespace test
+}  // namespace drogon

@@ -339,11 +339,9 @@ void BatchFeatureStoreCtrl::batch_featureStore(
     fsResp.detailedStatus =  detailedStatus;
   }
 
-  if (use_compressed) {
-    resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
-  } else {
-    resp->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
-  }
+  // JSON either way; use_compressed only decides whether Drogon may gzip it.
+  resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+  resp->setAllowCompression(use_compressed);
   std::string fsRespStr = std::move(fsResp).to_string();
   DEB_BFS_CTRL("JSON response: %s", fsRespStr.c_str());
   resp->setBody(std::move(fsRespStr));

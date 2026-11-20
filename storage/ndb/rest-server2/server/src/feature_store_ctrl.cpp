@@ -880,11 +880,9 @@ void FeatureStoreCtrl::featureStore(
       fsResp.detailedStatus = detailedStatus;
     }
     DEB_FS_CTRL("Send response for  Feature Store request");
-    if (use_compressed) {
-      resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
-    } else {
-      resp->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
-    }
+    // JSON either way; use_compressed only decides whether Drogon may gzip it.
+    resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+    resp->setAllowCompression(use_compressed);
     std::string respBody = std::move(fsResp).to_string();
 #ifdef DEBUG_FS_CTRL
     printf("JSON response: %s\n", respBody.c_str());

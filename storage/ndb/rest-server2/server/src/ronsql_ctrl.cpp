@@ -542,7 +542,8 @@ void RonSQLRequest::execute(Uint32 ndb_thread_index) {
        *
        * [1] https://www.rfc-editor.org/rfc/rfc8259#section-8.1
        * [2] https://www.iana.org/assignments/media-types/application/json
-       * [3] ../../extra/drogon/drogon-1.8.7/lib/src/HttpUtils.cc:565
+       * [3] mimeTypeDatabase_ in
+       *     ../../extra/drogon/drogon-<VERSION>/lib/src/HttpUtils.cc
        */
       resp->setContentTypeCodeAndCustomString(
         drogon::CT_APPLICATION_JSON,

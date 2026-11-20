@@ -68,6 +68,9 @@ type REST struct {
 	// Directory for temporary request-body files; empty keeps Drogon's
 	// default of ./uploads. Mirrors REST.UploadPath.
 	UploadPath string
+	// Whether the server may gzip a JSON response for a client that accepts
+	// gzip. Mirrors REST.UseCompression.
+	UseCompression bool
 }
 
 // RateLimit mirrors the server's top-level .RateLimit section (RONDB-978):

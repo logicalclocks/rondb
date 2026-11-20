@@ -15,11 +15,11 @@
 
 Remove install logic from drogon build since we only link to its libraries.
 
-diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/CMakeLists.txt b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/CMakeLists.txt
-index e0e35a291ae..3edf4ed92a1 100644
---- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/CMakeLists.txt
-+++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/CMakeLists.txt
-@@ -844,12 +844,6 @@ install(FILES
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/CMakeLists.txt b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/CMakeLists.txt
+index a03b8d7e027..2f26a01c709 100644
+--- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/CMakeLists.txt
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/CMakeLists.txt
+@@ -846,12 +846,6 @@ install(FILES
      DESTINATION "${INSTALL_DROGON_CMAKE_DIR}"
      COMPONENT dev)
  
