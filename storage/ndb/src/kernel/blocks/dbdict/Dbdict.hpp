@@ -4824,6 +4824,7 @@ class Dbdict : public SimulatedBlock {
   void bindDanglingAliases(DatabasePtr user_ptr, Uint32 &bound_aliases);
   void sendBindAlias(Signal *signal, SchemaOpPtr op_ptr);
   void unlinkDanglingAlias(DatabasePtr alias_ptr);
+  void unbindAliasesOf(DatabasePtr user_ptr);
   bool aliasCreatePendingFor(SchemaTransPtr trans_ptr, const char *user_name);
   bool matchesDatabaseFilter(DatabasePtr db_ptr, Uint32 filter);
   Uint32 copyAliasTarget(DatabasePtr db_ptr, Uint32 *buf, Uint32 buf_bytes);

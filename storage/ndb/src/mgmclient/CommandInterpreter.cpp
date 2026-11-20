@@ -4903,6 +4903,7 @@ int CommandInterpreter::executeUserRestore(char* parameters) {
     ndbout << " with errno: " << error_code << endl;
     return -1;
   }
+  Uint32 alias_failures = 0;
   while (std::getline(input, str, '\n')) {
     if (input.fail()) {
       ndbout << "Malformed restore file" << endl;
@@ -4917,6 +4918,20 @@ int CommandInterpreter::executeUserRestore(char* parameters) {
       char* firstToken = strtok(line, " ");
       char* allAfterFirstToken = strtok(NULL, "");
       if (native_strcasecmp(firstToken, "USER") == 0 &&
+          allAfterFirstToken != NULL &&
+          native_strncasecmp(allAfterFirstToken, "ALIAS",
+                             sizeof("ALIAS") - 1) == 0) {
+        /* An alias that already exists with the same target replays as a
+           success, so unlike a USER SET over an existing user, a failure
+           here is real (another target) and fails the restore. */
+        if (executeUserAlias(allAfterFirstToken) != 0) {
+          alias_failures++;
+          ndbout << "USER ALIAS SET command failed" << endl;
+          ndbout << "Will continue with next command" << endl;
+        } else {
+          ndbout << "USER ALIAS SET command succeeded for RESTORE" << endl;
+        }
+      } else if (native_strcasecmp(firstToken, "USER") == 0 &&
           allAfterFirstToken != NULL) {
         int error_code = executeUserSet(allAfterFirstToken);
         if (error_code != 0) {
@@ -4930,6 +4945,10 @@ int CommandInterpreter::executeUserRestore(char* parameters) {
         return -1;
       }
     }
+  }
+  if (alias_failures > 0) {
+    ndbout << alias_failures << " USER ALIAS SET commands failed" << endl;
+    return -1;
   }
   return 0;
 }
@@ -4975,7 +4994,6 @@ int CommandInterpreter::executeUserBackup(char* parameters) {
     if (result == 0) {
       if (nextUserId == RNIL) {
         free(result_buf);
-        fprintf(stdout, "User Backup command completed\n");
         break;
       }
       int res = fprintf(fd, "%s", result_buf);
@@ -4992,6 +5010,31 @@ int CommandInterpreter::executeUserBackup(char* parameters) {
       break;
     }
   } while (true);
+  /* The aliases follow the users, so a restore creates each target before
+     the aliases that name it. */
+  Uint32 nextAliasId = 0;
+  while (result == 0) {
+    char *result_buf = nullptr;
+    result = ndb_mgm_backup_user_aliases(m_mgmsrv, &nextAliasId, &result_buf);
+    if (result != 0) {
+      ndbout << "USER BACKUP" << " command failed: Error:" << endl;
+      printError();
+      break;
+    }
+    if (nextAliasId == RNIL) {
+      fprintf(stdout, "User Backup command completed\n");
+      break;
+    }
+    const int res = fprintf(fd, "%s", result_buf);
+    delete[] result_buf;
+    if (res == -1) {
+      int error_code = errno;
+      ndbout << "Failed to write backup file with errno: " << error_code;
+      ndbout << endl;
+      fclose(fd);
+      return -1;
+    }
+  }
   fclose(fd);
   return result;
 }

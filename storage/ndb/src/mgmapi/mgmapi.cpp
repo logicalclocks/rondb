@@ -4938,19 +4938,20 @@ int ndb_mgm_get_user_alias(NdbMgmHandle handle,
   DBUG_RETURN(read_user_alias_rows(handle, num_rows, result_buf));
 }
 
-int ndb_mgm_list_user_aliases(NdbMgmHandle handle,
-                              Uint32 *nextAliasId,
-                              char **result_buf) {
-  DBUG_ENTER("ndb_mgm_list_user_aliases");
-  CHECK_HANDLE(handle, -1);
-  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_list_user_aliases");
-  CHECK_CONNECTED(handle, -1);
-
+/**
+ * One page of "list user alias" or "backup user alias": the rows of one
+ * alias and the next alias id, or *nextAliasId = RNIL on the terminal page.
+ */
+static int user_alias_page(NdbMgmHandle handle,
+                           const char *cmd,
+                           const char *reply_name,
+                           Uint32 *nextAliasId,
+                           char **result_buf) {
   Properties args;
   args.put("nextAliasId", *nextAliasId);
 
-  const ParserRow<ParserDummy> list_user_alias_reply[] = {
-    MGM_CMD("list user alias reply", nullptr, ""),
+  const ParserRow<ParserDummy> user_alias_page_reply[] = {
+    MGM_CMD(reply_name, nullptr, ""),
     MGM_ARG("result", String, Mandatory, "Error message"),
     MGM_ARG("num_rows", Int, Optional, "Number of result rows"),
     MGM_ARG("nextAliasId", Int, Optional, "next User Alias Id"),
@@ -4958,34 +4959,59 @@ int ndb_mgm_list_user_aliases(NdbMgmHandle handle,
     MGM_END()
   };
   const Properties *reply = ndb_mgm_call(handle,
-                                         list_user_alias_reply,
-                                         "list user alias",
+                                         user_alias_page_reply,
+                                         cmd,
                                          &args);
   if (reply == nullptr) {
-    SET_ERROR(handle, EIO, "Unable to list user aliases, internal error");
-    DBUG_RETURN(-1);
+    SET_ERROR(handle, EIO, "Unable to read user aliases, internal error");
+    return -1;
   }
   Uint32 num_rows = 0;
   const bool has_rows = reply->get("num_rows", &num_rows);
   const bool has_next = reply->get("nextAliasId", nextAliasId);
   if (user_alias_result(handle, reply) != 0) {
-    DBUG_RETURN(-1);
+    return -1;
   }
   if (!has_rows) {
     SET_ERROR(handle, 1, "Protocol error in user alias reply");
-    DBUG_RETURN(-1);
+    return -1;
   }
   if (num_rows == 0) {
     /* The terminal page: the list is complete. */
     *nextAliasId = RNIL;
     *result_buf = nullptr;
-    DBUG_RETURN(0);
+    return 0;
   }
   if (!has_next) {
     SET_ERROR(handle, 1, "Protocol error in user alias reply");
-    DBUG_RETURN(-1);
+    return -1;
   }
-  DBUG_RETURN(read_user_alias_rows(handle, num_rows, result_buf));
+  return read_user_alias_rows(handle, num_rows, result_buf);
+}
+
+int ndb_mgm_list_user_aliases(NdbMgmHandle handle,
+                              Uint32 *nextAliasId,
+                              char **result_buf) {
+  DBUG_ENTER("ndb_mgm_list_user_aliases");
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_list_user_aliases");
+  CHECK_CONNECTED(handle, -1);
+  DBUG_RETURN(user_alias_page(handle, "list user alias",
+                              "list user alias reply", nextAliasId,
+                              result_buf));
+}
+
+int ndb_mgm_backup_user_aliases(NdbMgmHandle handle,
+                                Uint32 *nextAliasId,
+                                char **result_buf) {
+  DBUG_ENTER("ndb_mgm_backup_user_aliases");
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR,
+            "Executing: ndb_mgm_backup_user_aliases");
+  CHECK_CONNECTED(handle, -1);
+  DBUG_RETURN(user_alias_page(handle, "backup user alias",
+                              "backup user alias reply", nextAliasId,
+                              result_buf));
 }
 
 int ndb_mgm_get_quotas(NdbMgmHandle handle,

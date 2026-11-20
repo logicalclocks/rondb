@@ -1,0 +1,186 @@
+--source include/have_ndb.inc
+
+# RONDB-1158: USER ALIAS objects survive restarts and USER BACKUP/RESTORE.
+#
+# A restart rebuilds dictionary objects in object-id order. rl_early is set
+# before its target exists, so it holds a lower id than rl_late and comes
+# back first: it waits, unbound, until rl_late is rebuilt, which binds it
+# again. After a system restart and a node restart the test checks that
+# every alias still names its target (LIST), that the target still cannot
+# be dropped (the alias count is rebuilt, never read from the schema file)
+# and that alias traffic is charged to the target again (DBTC learns the
+# late binding). A node restart after a target was altered, an alias and
+# its target dropped and a new alias set while the node was down brings
+# the node back with the cluster's objects and bindings. USER BACKUP
+# writes the users before the aliases, so USER RESTORE recreates each
+# target before the aliases that name it; a restore that would move an
+# alias to another target fails the restore.
+
+CREATE DATABASE marketing;
+CREATE TABLE marketing.clicks (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO marketing.clicks VALUES (1,1),(2,2),(3,3),(4,4),(5,5);
+CREATE USER 'rl_early'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'rl_norm'@'%' IDENTIFIED BY 'pw';
+GRANT ALL PRIVILEGES ON marketing.* TO 'rl_early'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'rl_norm'@'%';
+
+--disable_result_log
+--exec $NDB_MGM -e "USER ALIAS SET rl_early --target=rl_late"
+--exec $NDB_MGM -e "USER SET rl_late --rate-per-sec=1"
+--exec $NDB_MGM -e "USER SET rl_t2 --rate-per-sec=1"
+--exec $NDB_MGM -e "USER ALIAS SET rl_norm --target=rl_t2"
+--exec $NDB_MGM -e "USER ALIAS GET rl_early" > $MYSQLTEST_VARDIR/tmp/rl_early.txt
+--exec $NDB_MGM -e "USER GET rl_late" > $MYSQLTEST_VARDIR/tmp/rl_late.txt
+--enable_result_log
+--perl
+use strict;
+my $dir = "$ENV{MYSQLTEST_VARDIR}/tmp";
+sub object_id {
+  my ($file, $key) = @_;
+  open(my $f, '<', "$dir/$file") or die "$file: $!";
+  while (<$f>) { return $1 if /^$key = (\d+)/; }
+  die "no $key in $file";
+}
+print object_id('rl_early.txt', 'aliasId') < object_id('rl_late.txt', 'userId')
+  ? "rl_early holds a lower object id than its target rl_late\n"
+  : "rl_early does NOT hold a lower id - the restart order case is not exercised\n";
+unlink("$dir/rl_early.txt", "$dir/rl_late.txt");
+EOF
+
+--echo #
+--echo # System restart
+--echo #
+--exec $NDB_MGM -e "ALL RESTART -N" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --not-started >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "ALL START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+--source include/ndb_not_readonly.inc
+
+--replace_regex /aliasId = [0-9]+/aliasId = <id>/
+--exec $NDB_MGM -e "USER ALIAS LIST"
+--echo # The targets cannot be dropped: the restart rebuilt the alias counts.
+--error 255,65280
+--exec $NDB_MGM -e "USER DROP rl_late"
+--error 255,65280
+--exec $NDB_MGM -e "USER DROP rl_t2"
+
+--echo # Alias traffic is charged to the targets again.
+connect (early, 127.0.0.1, rl_early, pw, marketing, $MASTER_MYPORT);
+connect (norm,  127.0.0.1, rl_norm,  pw, marketing, $MASTER_MYPORT);
+let $throttle_count = 300;
+let $throttle_stmt = SELECT a FROM marketing.clicks WHERE b > 0;
+connection early;
+--source suite/ndb_quota/include/user_throttle_count.inc
+if ($throttled)
+{
+  --echo rl_early: throttled through rl_late after the restart
+}
+if (!$throttled)
+{
+  --echo rl_early: NOT THROTTLED - the late binding was lost in the restart
+}
+connection norm;
+--source suite/ndb_quota/include/user_throttle_count.inc
+if ($throttled)
+{
+  --echo rl_norm: throttled through rl_t2 after the restart
+}
+if (!$throttled)
+{
+  --echo rl_norm: NOT THROTTLED - the binding was lost in the restart
+}
+connection default;
+disconnect early;
+disconnect norm;
+
+--echo #
+--echo # Node restart while targets and aliases change: node 1 comes back
+--echo # with the cluster's objects. Its restart drops its old rl_t2, which
+--echo # rl_norm resolves to, and recreates it, binding rl_norm again.
+--echo #
+CREATE USER 'rl_new'@'%' IDENTIFIED BY 'pw';
+GRANT ALL PRIVILEGES ON marketing.* TO 'rl_new'@'%';
+--exec $NDB_MGM -e "1 RESTART -n" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --nowait-nodes=2 --not-started >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "USER ALTER rl_t2 --rate-per-sec=2"
+--exec $NDB_MGM -e "USER ALIAS DROP rl_early"
+--exec $NDB_MGM -e "USER DROP rl_late"
+--exec $NDB_MGM -e "USER ALIAS SET rl_new --target=rl_t2"
+--exec $NDB_MGM -e "1 START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+--source include/ndb_not_readonly.inc
+
+--replace_regex /aliasId = [0-9]+/aliasId = <id>/
+--exec $NDB_MGM -e "USER ALIAS LIST"
+--replace_regex /(userId|userVersion) = [0-9]+/\1 = <id>/
+--exec $NDB_MGM -e "USER LIST"
+--error 255,65280
+--exec $NDB_MGM -e "USER DROP rl_t2"
+--echo # rl_new, set while node 1 was down, is charged to rl_t2.
+connect (new, 127.0.0.1, rl_new, pw, marketing, $MASTER_MYPORT);
+--source suite/ndb_quota/include/user_throttle_count.inc
+if ($throttled)
+{
+  --echo rl_new: throttled through rl_t2 after the node restart
+}
+if (!$throttled)
+{
+  --echo rl_new: NOT THROTTLED after the node restart
+}
+connection default;
+disconnect new;
+
+--echo #
+--echo # USER BACKUP writes the users, then the aliases.
+--echo #
+--exec $NDB_MGM -e "USER BACKUP $MYSQLTEST_VARDIR/tmp/user_backup.txt"
+--cat_file $MYSQLTEST_VARDIR/tmp/user_backup.txt
+
+--echo # Drop everything, then restore it.
+--disable_result_log
+--exec $NDB_MGM -e "USER ALIAS DROP rl_norm"
+--exec $NDB_MGM -e "USER ALIAS DROP rl_new"
+--exec $NDB_MGM -e "USER DROP rl_t2"
+--enable_result_log
+--exec $NDB_MGM -e "USER ALIAS LIST"
+--exec $NDB_MGM -e "USER RESTORE $MYSQLTEST_VARDIR/tmp/user_backup.txt"
+--replace_regex /aliasId = [0-9]+/aliasId = <id>/
+--exec $NDB_MGM -e "USER ALIAS LIST"
+--echo # The restored aliases bound at once: their target cannot be dropped.
+--error 255,65280
+--exec $NDB_MGM -e "USER DROP rl_t2"
+
+--echo # Restoring over the restored state: the USER SET line fails on the
+--echo # existing user and the restore goes on; the identical aliases replay
+--echo # as no-ops, so the restore succeeds.
+--disable_result_log
+--exec $NDB_MGM -e "USER RESTORE $MYSQLTEST_VARDIR/tmp/user_backup.txt"
+--enable_result_log
+
+--echo # A restore line that would move an alias to another target fails the
+--echo # restore.
+--exec $NDB_MGM -e "USER SET rl_other --rate-per-sec=1" >> $NDB_TOOLS_OUTPUT
+--write_file $MYSQLTEST_VARDIR/tmp/alias_conflict.txt
+USER ALIAS SET rl_norm --target=rl_other
+EOF
+--disable_result_log
+--error 255,65280
+--exec $NDB_MGM -e "USER RESTORE $MYSQLTEST_VARDIR/tmp/alias_conflict.txt"
+--enable_result_log
+--replace_regex /aliasId = [0-9]+/aliasId = <id>/
+--exec $NDB_MGM -e "USER ALIAS GET rl_norm"
+--remove_file $MYSQLTEST_VARDIR/tmp/alias_conflict.txt
+--remove_file $MYSQLTEST_VARDIR/tmp/user_backup.txt
+
+--echo #
+--echo # Cleanup
+--echo #
+--disable_result_log
+--exec $NDB_MGM -e "USER ALIAS DROP rl_norm"
+--exec $NDB_MGM -e "USER ALIAS DROP rl_new"
+--exec $NDB_MGM -e "USER DROP rl_t2"
+--exec $NDB_MGM -e "USER DROP rl_other"
+--enable_result_log
+DROP USER 'rl_early'@'%', 'rl_norm'@'%', 'rl_new'@'%';
+DROP DATABASE marketing;
+--remove_file $NDB_TOOLS_OUTPUT

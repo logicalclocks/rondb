@@ -33174,6 +33174,36 @@ Dbdict::sendBindAlias(Signal *signal, SchemaOpPtr op_ptr) {
              ConnectTableDbReq::SignalLength, JBB);
 }
 
+/**
+ * A restart drops a USER that aliases resolve to when the USER changed or
+ * went away while the node was down: it rebuilds the node's old objects
+ * in id order and drops the stale ones before creating the cluster's
+ * current ones. The aliases go back to waiting for the USER by name, so
+ * a recreated USER binds and counts them again. The walk over every
+ * object id runs only on that restart path.
+ */
+void
+Dbdict::unbindAliasesOf(DatabasePtr user_ptr) {
+  DictObjectPtr user_obj_ptr;
+  user_obj_ptr.i = user_ptr.p->m_obj_ptr_i;
+  ndbrequire(c_obj_pool.getValidPtr(user_obj_ptr));
+  for (Uint32 id = 0;
+       id < c_noOfMetaTables && user_obj_ptr.p->m_ref_count != 0;
+       id++) {
+    DatabasePtr alias_ptr;
+    if (find_object(alias_ptr, id) &&
+        alias_ptr.p->m_is_alias &&
+        alias_ptr.p->m_alias_target_id == user_ptr.p->key) {
+      jam();
+      alias_ptr.p->m_alias_target_id = RNIL;
+      alias_ptr.p->m_next_dangling_alias = c_first_dangling_alias;
+      c_first_dangling_alias = alias_ptr.i;
+      decrease_ref_count(user_obj_ptr.i);
+    }
+  }
+  ndbrequire(user_obj_ptr.p->m_ref_count == 0);
+}
+
 void
 Dbdict::unlinkDanglingAlias(DatabasePtr alias_ptr) {
   Uint32 *link = &c_first_dangling_alias;
@@ -34923,6 +34953,9 @@ void Dbdict::dropDatabase_complete(Signal* signal, SchemaOpPtr op_ptr) {
     }
     LcLocalRope target(db_ptr.p->m_alias_target);
     target.erase();
+  } else if (db_ptr.p->m_is_user && op_ptr.p->m_restart) {
+    jam();
+    unbindAliasesOf(db_ptr);
   }
   unlinkDictObject(op_ptr);
   release_object(db_ptr.p->m_obj_ptr_i);

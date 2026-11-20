@@ -170,6 +170,10 @@ const ParserRow<MgmApiSession> commands[] = {
     MGM_CMD("list user alias", &MgmApiSession::listUserAliases, "", &Basic),
     MGM_ARG("nextAliasId", Int, Mandatory, "next User Alias Id"),
 
+    MGM_CMD("backup user alias", &MgmApiSession::backupUserAliases, "",
+            &Basic),
+    MGM_ARG("nextAliasId", Int, Mandatory, "next User Alias Id"),
+
     MGM_CMD("set quotas", &MgmApiSession::setQuotas, "", &Basic),
     MGM_ARG("database", String, Mandatory, "Database name"),
     MGM_ARG("in_memory_size", Int, Mandatory, "Max in-memory size"),
@@ -1241,6 +1245,16 @@ MgmApiSession::listUserAliases(Parser_t::Context &,
   m_output->println("list user alias reply");
   NdbOut socket_out(*m_output);
   m_mgmsrv.list_user_aliases(nextAliasId, socket_out);
+}
+
+void
+MgmApiSession::backupUserAliases(Parser_t::Context &,
+                                 const class Properties &args) {
+  Uint32 nextAliasId = 0;
+  args.get("nextAliasId", &nextAliasId);
+  m_output->println("backup user alias reply");
+  NdbOut socket_out(*m_output);
+  m_mgmsrv.backup_user_aliases(nextAliasId, socket_out);
 }
 
 void MgmApiSession::getConfig_v1(Parser_t::Context &ctx,

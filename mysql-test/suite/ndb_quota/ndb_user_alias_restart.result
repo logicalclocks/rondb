@@ -1,0 +1,109 @@
+CREATE DATABASE marketing;
+CREATE TABLE marketing.clicks (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO marketing.clicks VALUES (1,1),(2,2),(3,3),(4,4),(5,5);
+CREATE USER 'rl_early'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'rl_norm'@'%' IDENTIFIED BY 'pw';
+GRANT ALL PRIVILEGES ON marketing.* TO 'rl_early'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'rl_norm'@'%';
+rl_early holds a lower object id than its target rl_late
+#
+# System restart
+#
+User alias rl_early
+  aliasId = <id>
+  target = rl_late
+
+User alias rl_norm
+  aliasId = <id>
+  target = rl_t2
+
+User Alias List command completed
+# The targets cannot be dropped: the restart rebuilt the alias counts.
+USER DROP command failed: Error:
+*  1248: Error
+*        Drop User failed, user aliases point at the user, drop them first
+USER DROP command failed: Error:
+*  1248: Error
+*        Drop User failed, user aliases point at the user, drop them first
+# Alias traffic is charged to the targets again.
+rl_early: throttled through rl_late after the restart
+rl_norm: throttled through rl_t2 after the restart
+#
+# Node restart while targets and aliases change: node 1 comes back
+# with the cluster's objects. Its restart drops its old rl_t2, which
+# rl_norm resolves to, and recreates it, binding rl_norm again.
+#
+CREATE USER 'rl_new'@'%' IDENTIFIED BY 'pw';
+GRANT ALL PRIVILEGES ON marketing.* TO 'rl_new'@'%';
+USER ALTER successfully executed
+USER ALIAS DROP successfully executed
+USER DROP successfully executed
+USER ALIAS SET successfully executed
+User alias rl_new
+  aliasId = <id>
+  target = rl_t2
+
+User alias rl_norm
+  aliasId = <id>
+  target = rl_t2
+
+User Alias List command completed
+User rate limits for rl_t2
+  userId = <id>
+  userVersion = <id>
+  RatePerSec = 2
+  MaxTransactionSize = 0
+  MaxParallelTransactions = 0
+  MaxParallelComplexQueries = 0
+
+User List command completed
+USER DROP command failed: Error:
+*  1248: Error
+*        Drop User failed, user aliases point at the user, drop them first
+# rl_new, set while node 1 was down, is charged to rl_t2.
+rl_new: throttled through rl_t2 after the node restart
+#
+# USER BACKUP writes the users, then the aliases.
+#
+User Backup command completed
+##USER BACKUP%%
+USER SET rl_t2 --rate-per-sec = 2 --max-transaction-size = 0 --max-parallel-transactions = 0 --max-parallel-complex-queries = 0
+USER ALIAS SET rl_new --target=rl_t2
+USER ALIAS SET rl_norm --target=rl_t2
+# Drop everything, then restore it.
+User Alias List command completed
+Execute USER SET rl_t2 --rate-per-sec = 2 --max-transaction-size = 0 --max-parallel-transactions = 0 --max-parallel-complex-queries = 0
+USER SET successfully executed
+USER SET command succeeded for RESTORE
+Execute USER ALIAS SET rl_new --target=rl_t2
+USER ALIAS SET successfully executed
+USER ALIAS SET command succeeded for RESTORE
+Execute USER ALIAS SET rl_norm --target=rl_t2
+USER ALIAS SET successfully executed
+USER ALIAS SET command succeeded for RESTORE
+User alias rl_new
+  aliasId = <id>
+  target = rl_t2
+
+User alias rl_norm
+  aliasId = <id>
+  target = rl_t2
+
+User Alias List command completed
+# The restored aliases bound at once: their target cannot be dropped.
+USER DROP command failed: Error:
+*  1248: Error
+*        Drop User failed, user aliases point at the user, drop them first
+# Restoring over the restored state: the USER SET line fails on the
+# existing user and the restore goes on; the identical aliases replay
+# as no-ops, so the restore succeeds.
+# A restore line that would move an alias to another target fails the
+# restore.
+User alias rl_norm
+aliasId = <id>
+target = rl_t2
+#
+# Cleanup
+#
+DROP USER 'rl_early'@'%', 'rl_norm'@'%', 'rl_new'@'%';
+DROP DATABASE marketing;

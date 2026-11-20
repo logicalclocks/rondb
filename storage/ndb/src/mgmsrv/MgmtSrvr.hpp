@@ -624,6 +624,8 @@ private:
   int drop_user_alias(const char *alias_name);
   void get_user_alias(const char *alias_name, NdbOut& out);
   void list_user_aliases(Uint32 nextAliasId, NdbOut& out);
+  void backup_user_aliases(Uint32 nextAliasId, NdbOut& out);
+  void user_alias_page(Uint32 nextAliasId, bool backup_line, NdbOut& out);
   int user_alias_schema_op(Uint32 req_gsn,
                            const char *alias_name,
                            const char *target_name);

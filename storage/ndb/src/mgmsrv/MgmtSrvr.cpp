@@ -7216,6 +7216,21 @@ void MgmtSrvr::get_user_alias(const char *alias_name, NdbOut& out) {
 }
 
 void MgmtSrvr::list_user_aliases(Uint32 nextAliasId, NdbOut& out) {
+  user_alias_page(nextAliasId, false, out);
+}
+
+void MgmtSrvr::backup_user_aliases(Uint32 nextAliasId, NdbOut& out) {
+  user_alias_page(nextAliasId, true, out);
+}
+
+/**
+ * One alias per round trip, from nextAliasId on. LIST prints the alias,
+ * its id and its target; BACKUP prints the USER ALIAS SET line that
+ * recreates it, which USER RESTORE replays after the USER lines.
+ */
+void MgmtSrvr::user_alias_page(Uint32 nextAliasId,
+                               bool backup_line,
+                               NdbOut& out) {
   SignalSender ss(theFacade);
   ss.lock();
 
@@ -7280,13 +7295,20 @@ void MgmtSrvr::list_user_aliases(Uint32 nextAliasId, NdbOut& out) {
         }
         /* num_rows must match the rows printed, see list_quotas. */
         nextAliasId = conf->databaseId + 1;
+        const char *aliasName = (const char*)signal->ptr[0].p;
+        const char *targetName = (const char*)signal->ptr[1].p;
         out << "result: Ok" << endl;
-        out << "num_rows: 4" << endl;
+        out << "num_rows: " << (backup_line ? 1 : 4) << endl;
         out << "nextAliasId: " << nextAliasId << endl;
         out << endl;
-        out << "User alias " << (const char*)signal->ptr[0].p << endl;
+        if (backup_line) {
+          out << "USER ALIAS SET " << aliasName << " --target="
+              << targetName << endl;
+          return;
+        }
+        out << "User alias " << aliasName << endl;
         out << "  aliasId = " << conf->databaseId << endl;
-        out << "  target = " << (const char*)signal->ptr[1].p << endl;
+        out << "  target = " << targetName << endl;
         out << endl;
         return;
       }
