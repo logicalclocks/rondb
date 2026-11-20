@@ -620,11 +620,26 @@ Configuration::get_schema_memory(ndb_mgm_configuration_iterator *p,
   Uint64 dict_key_descriptor_mem =
     sizeof(struct KeyDescriptor) * num_table_objects;
 
+  /**
+   * Every USER or USER ALIAS object MaxNoOfUserObjects allows holds a
+   * DICT database record, a dictionary object, its name and an alias's
+   * target name, and a database record in every TC and LDM instance, all
+   * schema memory. None of the table-sized records above grow with it.
+   */
+#define PER_MALLOC_OVERHEAD 16
+  Uint32 num_user_objects = 0;
+  ndb_mgm_get_int_parameter(p, CFG_DB_MAX_USER_OBJECTS, &num_user_objects);
+  Uint64 dict_user_mem =
+    (Dbdict::getDatabaseRecordSize() +
+     Dbdict::getDictObjectRecordSize() + 8 +
+     2 * (MAX_DB_NAME_SIZE + PER_MALLOC_OVERHEAD)) * num_user_objects;
+
   Uint64 dict_mem = dict_attribute_mem +
                     dict_trigger_mem +
                     dict_table_mem +
                     dict_obj_mem +
-                    dict_key_descriptor_mem;
+                    dict_key_descriptor_mem +
+                    dict_user_mem;
 
   DEB_AUTOMATIC_MEMORY(("DICT Schema Memory %llu MBytes", dict_mem / MBYTE64));
   DEB_AUTOMATIC_MEMORY(("DICT Attribute record size: %zu",
@@ -637,6 +652,8 @@ Configuration::get_schema_memory(ndb_mgm_configuration_iterator *p,
                         Dbdict::getDictObjectRecordSize() + 8));
   DEB_AUTOMATIC_MEMORY(("DICT Key Descriptor size: %zu",
                         sizeof(struct KeyDescriptor)));
+  DEB_AUTOMATIC_MEMORY(("DICT Database record size: %zu",
+                        Dbdict::getDatabaseRecordSize()));
 
   Uint64 acc_table_mem = num_ldm_threads *
     Dbacc::getTableRecordSize() * num_table_objects;
@@ -656,7 +673,10 @@ Configuration::get_schema_memory(ndb_mgm_configuration_iterator *p,
   Uint64 lqh_fragment_mem = num_ldm_threads *
     Dblqh::getFragmentRecordSize() * num_fragments;
 
-  Uint64 lqh_mem = lqh_table_mem + lqh_fragment_mem;
+  Uint64 lqh_user_mem = num_ldm_threads *
+    Dblqh::getDatabaseRecordSize() * num_user_objects;
+
+  Uint64 lqh_mem = lqh_table_mem + lqh_fragment_mem + lqh_user_mem;
 
   DEB_AUTOMATIC_MEMORY(("LQH Schema Memory %llu MBytes", lqh_mem / MBYTE64));
   DEB_AUTOMATIC_MEMORY(("LQH Table record size: %zu",
@@ -719,7 +739,10 @@ Configuration::get_schema_memory(ndb_mgm_configuration_iterator *p,
   Uint64 spj_table_mem = num_tc_threads *
     Dbspj::getTableRecordSize() * num_table_objects;
 
-  Uint64 tc_mem = tc_table_mem + tc_trigger_mem + spj_table_mem;
+  Uint64 tc_user_mem = num_tc_threads *
+    Dbtc::getDatabaseRecordSize() * num_user_objects;
+
+  Uint64 tc_mem = tc_table_mem + tc_trigger_mem + spj_table_mem + tc_user_mem;
 
   DEB_AUTOMATIC_MEMORY(("TC Schema Memory %llu MBytes", tc_mem / MBYTE64));
   DEB_AUTOMATIC_MEMORY(("TC Table record size: %zu",
@@ -834,6 +857,9 @@ Configuration::get_schema_memory(ndb_mgm_configuration_iterator *p,
                     tc_trigger_mem;
   DEB_AUTOMATIC_MEMORY(("Trigger memory %llu MBytes", trig_mem / MBYTE64));
 
+  Uint64 user_mem = dict_user_mem + lqh_user_mem + tc_user_mem;
+  DEB_AUTOMATIC_MEMORY(("User object memory %llu MBytes", user_mem / MBYTE64));
+
   Uint64 schema_mem_block = dict_mem +
                             tup_mem +
                             acc_mem +
@@ -847,11 +873,11 @@ Configuration::get_schema_memory(ndb_mgm_configuration_iterator *p,
                            fragment_mem +
                            trig_mem +
                            attr_mem +
-                           suma_other_mem;
+                           suma_other_mem +
+                           user_mem;
                  
   require(schema_mem_block == schema_mem_type);
 
-#define PER_MALLOC_OVERHEAD 16
   Uint64 ldm_fragment_map_size = sizeof(Uint64) +
                                  sizeof(Uint16) +
                                  PER_MALLOC_OVERHEAD;
@@ -2225,6 +2251,7 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
   unsigned int automaticThreadConfig = 1;
   unsigned int automaticMemoryConfig = 1;
   unsigned int max_schema_objects = OLD_NDB_MAX_TABLES;
+  unsigned int maxNoOfUserObjects = 0;
 
   struct AttribStorage {
     int paramId;
@@ -2238,6 +2265,7 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
     { CFG_DB_RESERVED_LOCAL_SCANS, &reservedLocalScanRecords, true },
     { CFG_DB_BATCH_SIZE, &noBatchSize, false },
     { CFG_DB_MAX_NUM_SCHEMA_OBJECTS, &max_schema_objects, false },
+    { CFG_DB_MAX_USER_OBJECTS, &maxNoOfUserObjects, true },
     { CFG_DB_NO_TABLES, &noOfTables, false },
     { CFG_DB_NO_ORDERED_INDEXES, &noOfOrderedIndexes, false },
     { CFG_DB_NO_UNIQUE_HASH_INDEXES, &noOfUniqueHashIndexes, false },
@@ -2361,16 +2389,23 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
   }
 
   
-  if (max_schema_objects < noOfMetaTables)
+  /**
+   * USER and USER ALIAS objects take schema object ids too, from the
+   * MaxNoOfUserObjects ids added after the tables' and indexes' ids, so
+   * the schema file must hold both. A configuration from an older
+   * management server has no MaxNoOfUserObjects, which reads as 0.
+   */
+  if (max_schema_objects < noOfMetaTables + maxNoOfUserObjects)
   {
     char reason_msg[256];
     const char *msg = "Schema File Error";
     BaseString::snprintf(reason_msg, sizeof(reason_msg),
-      "Trying to start with less schema objects than table objects"
-      ", started with %u table objects and a maximum of %u"
-      " schema objects in schema file, increase"
-      " MaxNoOfSchemaObjects",
+      "Trying to start with less schema objects than table and user"
+      " objects, started with %u table objects, %u user objects"
+      " (MaxNoOfUserObjects) and a maximum of %u schema objects in"
+      " schema file, increase MaxNoOfSchemaObjects",
       noOfMetaTables,
+      maxNoOfUserObjects,
       max_schema_objects);
     ERROR_SET(fatal,
               NDBD_EXIT_SR_SCHEMAFILE,

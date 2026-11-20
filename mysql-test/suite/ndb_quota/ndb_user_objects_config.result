@@ -1,0 +1,5 @@
+# A private one-node cluster per case.
+The default MaxNoOfSchemaObjects: Trying to start with less schema objects than table and user objects, started with 320 table objects, 20100 user objects (MaxNoOfUserObjects) and a maximum of 20320 schema objects in schema file, increase MaxNoOfSchemaObjects
+MaxNoOfSchemaObjects=20420: started
+With MaxNoOfUserObjects=100 the user took id 320
+Restarted with MaxNoOfUserObjects=0: Trying to start with less table objects than exists in schema file, started with 320 table objects and 0 user objects, increase MaxNoOfTables or MaxNoOfUserObjects

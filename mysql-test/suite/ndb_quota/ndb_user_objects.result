@@ -1,0 +1,60 @@
+The user and its first 59 aliases took ids 320 to 379, in order
+Ids taken from the added range: 60 (320 to 379)
+Every later alias took an id below 320: yes
+The refusal: No more schema object ids for users and user aliases (increase MaxNoOfUserObjects): Permanent error: Application error, error 1277
+Both data nodes still answer: yes
+# No id is left for a table, and the added range does not take one.
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE ndb;
+ERROR HY000: Can't create table 't1' (use SHOW WARNINGS for more info).
+# Ids below 320 freed by aliases go to tables again.
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO t1 VALUES (1, 1), (2, 2);
+SELECT COUNT(*) AS tables_above_319 FROM ndbinfo.dict_obj_info
+WHERE id >= 320 AND fq_name LIKE '%t1%';
+tables_above_319
+0
+# Objects in the added range can be read, altered and dropped.
+User rate limits for uo_target
+userId = 320
+userVersion = 320
+RatePerSec = 0
+MaxTransactionSize = 0
+MaxParallelTransactions = 0
+USER ALTER successfully executed
+USER ALIAS SET successfully executed
+User alias uo_a1
+aliasId = 321
+target = uo_target
+USER ALIAS DROP successfully executed
+# The freed id goes to the next user object.
+USER ALIAS SET successfully executed
+User alias uo_again
+aliasId = 322
+target = uo_target
+# A system restart brings every object back.
+User rate limits for uo_target
+userId = 320
+userVersion = 320
+RatePerSec = 1000
+MaxTransactionSize = 0
+MaxParallelTransactions = 0
+User alias uo_a1
+aliasId = 321
+target = uo_target
+User alias uo_again
+aliasId = 322
+target = uo_target
+SELECT * FROM t1 ORDER BY a;
+a	b
+1	1
+2	2
+# So does a node restart, which copies the schema from the master.
+User alias uo_again
+aliasId = 322
+target = uo_target
+SELECT * FROM t1 ORDER BY a;
+a	b
+1	1
+2	2
+# Cleanup
+DROP TABLE t1;

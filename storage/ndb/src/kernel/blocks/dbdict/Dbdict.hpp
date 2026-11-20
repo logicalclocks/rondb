@@ -4647,6 +4647,7 @@ class Dbdict : public SimulatedBlock {
   // General Stuff
   /* ------------------------------------------------------------ */
   Uint32 getFreeObjId(bool both = false);
+  Uint32 getFreeUserObjId();
   Uint32 getFreeTableRecord();
   bool seizeTableRecord(TableRecordPtr &tableRecord, Uint32 &schemaFileId);
   Uint32 getFreeTriggerRecord();
@@ -5061,7 +5062,11 @@ class Dbdict : public SimulatedBlock {
 
  private:
   ArenaAllocator c_arenaAllocator;
+  /* Ids below c_noOfMetaTables index the table arrays of every block. */
   Uint32 c_noOfMetaTables;
+  /* MaxNoOfUserObjects: ids added above them for USER and USER ALIAS. */
+  Uint32 c_maxNoOfUserObjects;
+  Uint32 c_noOfSchemaIds;
   Uint32 c_default_hashmap_size;
   Uint32 m_use_checksum;
   Uint32 m_full_restart_logs;
@@ -5093,6 +5098,10 @@ public:
   static size_t getDictObjectRecordSize()
   {
     return sizeof(struct DictObject);
+  }
+  static size_t getDatabaseRecordSize()
+  {
+    return sizeof(struct Database);
   }
 
 private:

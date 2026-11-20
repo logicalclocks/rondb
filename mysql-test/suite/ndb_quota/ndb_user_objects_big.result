@@ -1,0 +1,27 @@
+Created a user and 21000 aliases
+Aliases: 21000, above the table ids: 20999, highest id: 31427, the user's id: 10428
+# Tables and indexes are created and used beside them.
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT, c INT, UNIQUE KEY (b), KEY (c))
+ENGINE ndb;
+INSERT INTO t1 VALUES (1, 1, 1), (2, 2, 2), (3, 3, 3);
+SELECT a FROM t1 WHERE b = 2;
+a
+2
+SELECT a FROM t1 WHERE c > 1 ORDER BY a;
+a
+2
+3
+SELECT COUNT(*) AS objects_of_t1_above_10427 FROM ndbinfo.dict_obj_info
+WHERE id >= 10428 AND (fq_name LIKE '%t1%' OR parent_obj_id IN
+(SELECT id FROM ndbinfo.dict_obj_info WHERE fq_name LIKE '%t1'));
+objects_of_t1_above_10427
+0
+# A system restart brings every object back.
+Aliases: 21000, above the table ids: 20999, highest id: 31427, the user's id: 10428
+SELECT a FROM t1 WHERE b = 3;
+a
+3
+# USER BACKUP and USER RESTORE recreate dropped aliases.
+Aliases: 21000, above the table ids: 20999, highest id: 31427, the user's id: 10428
+# Cleanup
+DROP TABLE t1;

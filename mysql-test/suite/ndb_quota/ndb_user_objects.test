@@ -1,0 +1,180 @@
+--source include/have_ndb.inc
+
+# RONDB-1158: MaxNoOfUserObjects adds schema object ids for USER and USER
+# ALIAS objects above the ids of tables and indexes, which index the
+# table arrays of every block and so must stay below their sum (320 here,
+# .cnf). A user object takes an id from the added range first (320 to
+# 379) and then shares the tables' ids, as all user objects did before;
+# tables never take an id from the added range. The schema file rounds up
+# to whole pages (381 ids here), and no object takes an id past the
+# added range. When every id is taken a user object create is refused
+# with 1277 and the nodes stay up. Objects in the added range can be
+# altered, dropped and listed, and come back after a system and a node
+# restart.
+
+--perl
+use strict;
+use IO::Socket::INET;
+
+my $cs = $ENV{'NDB_CONNECTSTRING'} or die "NDB_CONNECTSTRING not set";
+my ($host, $port) = split(/:/, (split(/[;,]/, $cs))[0]);
+my $sock = IO::Socket::INET->new(PeerAddr => $host, PeerPort => $port,
+                                 Proto => 'tcp')
+  or die "Cannot connect to $host:$port: $!";
+
+# Sends one command, returns the header fields and the rows after it.
+sub mgm {
+  my ($cmd, @args) = @_;
+  print $sock "$cmd\n";
+  while (@args) {
+    my ($k, $v) = splice(@args, 0, 2);
+    print $sock "$k: $v\n";
+  }
+  print $sock "\n";
+  my %header;
+  while (defined(my $line = <$sock>)) {
+    chomp $line;
+    last if $line eq '';
+    $header{$1} = $2 if $line =~ /^(\w+): (.*)$/;
+  }
+  my @rows;
+  for (my $i = 0; $i < ($header{'num_rows'} || 0); $i++) {
+    my $line = <$sock>;
+    die "Reply ended early" unless defined($line);
+    chomp $line;
+    push(@rows, $line);
+  }
+  return (\%header, \@rows);
+}
+
+my ($h, $rows) = mgm('set user', 'username', 'uo_target', 'rate_per_sec', 0,
+                     'max_transaction_size', 0,
+                     'max_parallel_transactions', 0,
+                     'max_parallel_complex_queries', 0);
+die "set user: $h->{result}" unless $h->{result} eq 'Ok';
+
+# Aliases until the dictionary refuses one.
+my $created = 0;
+my $refusal;
+for (my $i = 1; $i <= 1000; $i++) {
+  ($h, $rows) = mgm('set user alias', 'aliasname', "uo_a$i",
+                    'target', 'uo_target');
+  if ($h->{result} ne 'Ok') {
+    $refusal = $h;
+    last;
+  }
+  $created++;
+}
+die "No refusal after $created aliases" unless defined($refusal);
+
+my %id;
+($h, $rows) = mgm('get user', 'username', 'uo_target');
+$id{'uo_target'} = $1 if join("\n", @$rows) =~ /userId = (\d+)/;
+my $next = 0;
+while (1) {
+  ($h, $rows) = mgm('list user alias', 'nextAliasId', $next);
+  last if !$h->{num_rows};
+  my ($name) = $rows->[0] =~ /^User alias (\S+)/;
+  my ($alias_id) = $rows->[1] =~ /aliasId = (\d+)/;
+  $id{$name} = $alias_id;
+  $next = $h->{nextAliasId};
+}
+die "LIST shows " . (keys(%id) - 1) . " of $created aliases"
+  unless keys(%id) == $created + 1;
+
+my @added = sort { $a <=> $b } grep { $_ >= 320 } values %id;
+my @first = map { $id{$_} } ('uo_target', map { "uo_a$_" } (1 .. 59));
+print "The user and its first 59 aliases took ids ",
+      join(' ', @first) eq join(' ', 320 .. 379) ? "320 to 379, in order"
+                                                 : "@first", "\n";
+print "Ids taken from the added range: ", scalar(@added), " (",
+      $added[0], " to ", $added[-1], ")\n";
+my @low = grep { $_ < 320 } map { $id{"uo_a$_"} } (60 .. $created);
+print "Every later alias took an id below 320: ",
+      (@low == $created - 59 ? "yes" : "no"), "\n";
+print "The refusal: $refusal->{result}, error $refusal->{error_code}\n";
+($h, $rows) = mgm('user capacity');
+print "Both data nodes still answer: ",
+      ($h->{result} eq 'Ok' && @$rows == 10 ? "yes" : "no"), "\n";
+open(my $f, '>', "$ENV{MYSQLTEST_VARDIR}/tmp/uo_created.txt") or die;
+print $f "$created\n";
+close($f);
+close($sock);
+EOF
+
+--echo # No id is left for a table, and the added range does not take one.
+--exec $NDB_MGM -e "USER ALIAS DROP uo_a59" >> $NDB_TOOLS_OUTPUT
+--error ER_CANT_CREATE_TABLE
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE ndb;
+--echo # Ids below 320 freed by aliases go to tables again.
+--exec $NDB_MGM -e "USER ALIAS DROP uo_a60" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "USER ALIAS DROP uo_a61" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "USER ALIAS DROP uo_a62" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "USER ALIAS DROP uo_a63" >> $NDB_TOOLS_OUTPUT
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO t1 VALUES (1, 1), (2, 2);
+SELECT COUNT(*) AS tables_above_319 FROM ndbinfo.dict_obj_info
+  WHERE id >= 320 AND fq_name LIKE '%t1%';
+
+--echo # Objects in the added range can be read, altered and dropped.
+--exec $NDB_MGM -e "USER GET uo_target"
+--exec $NDB_MGM -e "USER ALTER uo_target --rate-per-sec=1000"
+--exec $NDB_MGM -e "USER ALIAS SET uo_a1 --target=uo_target"
+--exec $NDB_MGM -e "USER ALIAS GET uo_a1"
+--exec $NDB_MGM -e "USER ALIAS DROP uo_a2"
+--echo # The freed id goes to the next user object.
+--exec $NDB_MGM -e "USER ALIAS SET uo_again --target=uo_target"
+--exec $NDB_MGM -e "USER ALIAS GET uo_again"
+
+--echo # A system restart brings every object back.
+--exec $NDB_MGM -e "ALL RESTART -N" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --not-started >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "ALL START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+--source include/ndb_not_readonly.inc
+--exec $NDB_MGM -e "USER GET uo_target"
+--exec $NDB_MGM -e "USER ALIAS GET uo_a1"
+--exec $NDB_MGM -e "USER ALIAS GET uo_again"
+SELECT * FROM t1 ORDER BY a;
+
+--echo # So does a node restart, which copies the schema from the master.
+--exec $NDB_MGM -e "2 RESTART -I -n" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --not-started --wait-nodes=2 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "2 START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "1 RESTART -n" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --not-started --wait-nodes=1 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "1 START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+--source include/ndb_not_readonly.inc
+--exec $NDB_MGM -e "USER ALIAS GET uo_again"
+SELECT * FROM t1 ORDER BY a;
+
+--echo # Cleanup
+DROP TABLE t1;
+--perl
+use strict;
+open(my $f, '<', "$ENV{MYSQLTEST_VARDIR}/tmp/uo_created.txt") or die;
+my $created = <$f>;
+close($f);
+chomp $created;
+unlink("$ENV{MYSQLTEST_VARDIR}/tmp/uo_created.txt");
+my $mgm = $ENV{'NDB_MGM'};
+my $script = "$ENV{MYSQLTEST_VARDIR}/tmp/uo_drop.txt";
+open(my $s, '>', $script) or die;
+for my $i (1 .. $created) {
+  next if grep { $_ == $i } (2, 59, 60, 61, 62, 63);
+  print $s "USER ALIAS DROP uo_a$i\n";
+}
+print $s "USER ALIAS DROP uo_again\n";
+print $s "USER DROP uo_target\n";
+close($s);
+open(my $in, '<', $script) or die;
+while (my $cmd = <$in>) {
+  chomp $cmd;
+  system("$mgm -e \"$cmd\" > /dev/null 2>&1") == 0 or die "$cmd failed";
+}
+close($in);
+unlink($script);
+EOF
+--remove_file $NDB_TOOLS_OUTPUT

@@ -1,0 +1,111 @@
+--source include/have_ndb.inc
+--source include/big_test.inc
+
+# RONDB-1158: user objects beyond the old limit of 20320 schema objects,
+# with automatic memory configuration as in production (.cnf: 10428 table
+# and index ids, MaxNoOfUserObjects=21000). A USER and 21000 aliases are
+# created, the user and the first 20999 aliases in the added ids. Tables
+# and indexes are then created and used, a system restart brings every
+# object back, and USER BACKUP and USER RESTORE recreate dropped aliases.
+
+--perl
+use strict;
+use IO::Socket::INET;
+
+my $cs = $ENV{'NDB_CONNECTSTRING'} or die "NDB_CONNECTSTRING not set";
+my ($host, $port) = split(/:/, (split(/[;,]/, $cs))[0]);
+my $sock = IO::Socket::INET->new(PeerAddr => $host, PeerPort => $port,
+                                 Proto => 'tcp')
+  or die "Cannot connect to $host:$port: $!";
+
+sub mgm {
+  my ($cmd, @args) = @_;
+  print $sock "$cmd\n";
+  while (@args) {
+    my ($k, $v) = splice(@args, 0, 2);
+    print $sock "$k: $v\n";
+  }
+  print $sock "\n";
+  my %header;
+  while (defined(my $line = <$sock>)) {
+    chomp $line;
+    last if $line eq '';
+    $header{$1} = $2 if $line =~ /^(\w+): (.*)$/;
+  }
+  my @rows;
+  for (my $i = 0; $i < ($header{'num_rows'} || 0); $i++) {
+    my $line = <$sock>;
+    die "Reply ended early" unless defined($line);
+    chomp $line;
+    push(@rows, $line);
+  }
+  return (\%header, \@rows);
+}
+
+my ($h, $rows) = mgm('set user', 'username', 'ub_target', 'rate_per_sec', 0,
+                     'max_transaction_size', 0,
+                     'max_parallel_transactions', 0,
+                     'max_parallel_complex_queries', 0);
+die "set user: $h->{result}" unless $h->{result} eq 'Ok';
+for (my $i = 1; $i <= 21000; $i++) {
+  ($h, $rows) = mgm('set user alias', 'aliasname', "ub_a$i",
+                    'target', 'ub_target');
+  die "alias $i: $h->{result}" unless $h->{result} eq 'Ok';
+}
+print "Created a user and 21000 aliases\n";
+close($sock);
+EOF
+
+--source suite/ndb_quota/include/user_objects_big_count.inc
+
+--echo # Tables and indexes are created and used beside them.
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT, c INT, UNIQUE KEY (b), KEY (c))
+  ENGINE ndb;
+INSERT INTO t1 VALUES (1, 1, 1), (2, 2, 2), (3, 3, 3);
+SELECT a FROM t1 WHERE b = 2;
+SELECT a FROM t1 WHERE c > 1 ORDER BY a;
+SELECT COUNT(*) AS objects_of_t1_above_10427 FROM ndbinfo.dict_obj_info
+  WHERE id >= 10428 AND (fq_name LIKE '%t1%' OR parent_obj_id IN
+    (SELECT id FROM ndbinfo.dict_obj_info WHERE fq_name LIKE '%t1'));
+
+--echo # A system restart brings every object back.
+--exec $NDB_MGM -e "ALL RESTART -N" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --not-started >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "ALL START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+--source include/ndb_not_readonly.inc
+--source suite/ndb_quota/include/user_objects_big_count.inc
+SELECT a FROM t1 WHERE b = 3;
+
+--echo # USER BACKUP and USER RESTORE recreate dropped aliases.
+--exec $NDB_MGM -e "USER BACKUP $MYSQLTEST_VARDIR/tmp/ub.backup" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "USER ALIAS DROP ub_a1" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "USER ALIAS DROP ub_a21000" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "USER RESTORE $MYSQLTEST_VARDIR/tmp/ub.backup" >> $NDB_TOOLS_OUTPUT
+--remove_file $MYSQLTEST_VARDIR/tmp/ub.backup
+--source suite/ndb_quota/include/user_objects_big_count.inc
+
+--echo # Cleanup
+DROP TABLE t1;
+--perl
+use strict;
+use IO::Socket::INET;
+my ($host, $port) = split(/:/, (split(/[;,]/, $ENV{'NDB_CONNECTSTRING'}))[0]);
+my $sock = IO::Socket::INET->new(PeerAddr => $host, PeerPort => $port,
+                                 Proto => 'tcp') or die;
+sub drop {
+  my ($cmd, $key, $name) = @_;
+  print $sock "$cmd\n$key: $name\n\n";
+  my $result = '';
+  while (defined(my $line = <$sock>)) {
+    chomp $line;
+    last if $line eq '';
+    $result = $1 if $line =~ /^result: (.*)$/;
+  }
+  die "$cmd $name: $result" unless $result eq 'Ok';
+}
+drop('drop user alias', 'aliasname', "ub_a$_") for (1 .. 21000);
+drop('drop user', 'username', 'ub_target');
+close($sock);
+EOF
+--remove_file $NDB_TOOLS_OUTPUT

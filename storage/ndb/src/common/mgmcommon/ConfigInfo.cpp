@@ -788,6 +788,19 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "100" },
 
   {
+    CFG_DB_MAX_USER_OBJECTS,
+    "MaxNoOfUserObjects",
+    DB_TOKEN,
+    "Schema object ids added for USER and USER ALIAS objects, beyond those of"
+    " tables and indexes; MaxNoOfSchemaObjects must cover both",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT,
+    "0",
+    "0",
+    "1000000" },
+
+  {
     CFG_DB_MAX_NUM_SCHEMA_OBJECTS,
     "MaxNoOfSchemaObjects",
     DB_TOKEN,

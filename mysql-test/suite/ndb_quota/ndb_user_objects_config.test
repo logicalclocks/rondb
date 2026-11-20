@@ -1,0 +1,187 @@
+--source include/have_ndb.inc
+
+# RONDB-1158: MaxNoOfUserObjects at data node start, on a private one-node
+# cluster with its own management server on a free port and 320 table and
+# index ids (128 tables, 128 ordered and 64 unique hash indexes).
+#
+# A data node starts only when MaxNoOfSchemaObjects covers the table and
+# index ids plus MaxNoOfUserObjects, and its refusal names both: with
+# MaxNoOfUserObjects=20100 the default MaxNoOfSchemaObjects of 20320 is
+# refused, 20420 starts.
+#
+# MaxNoOfUserObjects cannot be lowered under a live object: a USER created
+# with MaxNoOfUserObjects=100 holds id 320, the first added id, and the
+# node then refuses to restart with MaxNoOfUserObjects=0.
+
+--echo # A private one-node cluster per case.
+--perl
+use strict;
+use File::Basename;
+use File::Path qw(make_path remove_tree);
+use IO::Socket::INET;
+use POSIX ":sys_wait_h";
+
+my $mgmd = $ENV{'NDB_MGMD_EXE'} or die "NDB_MGMD_EXE not set";
+my $bindir = dirname($mgmd);
+my $ndbmtd = "$bindir/ndbmtd";
+my $waiter = "$bindir/ndb_waiter";
+my $mgm = "$bindir/ndb_mgm";
+my $base = "$ENV{MYSQLTEST_VARDIR}/tmp/uo_config";
+
+sub spawn {
+  my ($log, @cmd) = @_;
+  my $pid = fork();
+  die "fork: $!" unless defined($pid);
+  if ($pid == 0) {
+    open(STDOUT, '>>', $log) or die;
+    open(STDERR, '>&', \*STDOUT) or die;
+    exec(@cmd) or die "exec $cmd[0]: $!";
+  }
+  return $pid;
+}
+
+# Waits up to $secs for $pid to exit; kills it after that.
+sub reap {
+  my ($pid, $secs) = @_;
+  for (my $i = 0; $i < $secs * 10; $i++) {
+    return if waitpid($pid, WNOHANG) == $pid;
+    select(undef, undef, undef, 0.1);
+  }
+  kill('KILL', $pid);
+  waitpid($pid, 0);
+}
+
+sub free_port {
+  my $probe = IO::Socket::INET->new(Listen => 1, LocalAddr => '127.0.0.1',
+                                    LocalPort => 0) or die "port: $!";
+  my $port = $probe->sockport();
+  close($probe);
+  return $port;
+}
+
+# Writes the configuration and starts its management server, which reads
+# it afresh (--initial). Returns the server's pid.
+sub start_mgmd {
+  my ($dir, $port, $extra) = @_;
+  open(my $ini, '>', "$dir/config.ini") or die;
+  print $ini "[ndbd default]\nNoOfReplicas=1\nDataMemory=32M\n",
+             "AutomaticMemoryConfig=0\nAutomaticThreadConfig=1\nNumCPUs=2\n",
+             "StopOnError=1\n$extra",
+             "DataDir=$dir\n\n",
+             "[ndb_mgmd]\nNodeId=1\nHostName=127.0.0.1\nPortNumber=$port\n",
+             "DataDir=$dir\n\n",
+             "[ndbd]\nNodeId=2\nHostName=127.0.0.1\n\n[api]\nNodeId=3\n",
+             "[api]\nNodeId=4\n";
+  close($ini);
+  unlink(glob("$dir/ndb_1_config.bin*"));
+  my $pid = spawn("$dir/mgmd.log", $mgmd, "--config-file=$dir/config.ini",
+                  "--configdir=$dir", "--initial", "--nodaemon");
+  for (my $i = 0; $i < 300; $i++) {
+    return $pid if IO::Socket::INET->new(PeerAddr => '127.0.0.1',
+                                         PeerPort => $port);
+    select(undef, undef, undef, 0.1);
+  }
+  die "The private management server did not start";
+}
+
+# Starts the data node and returns 'started', or 'exited' when it stops
+# by itself first.
+sub start_node {
+  my ($dir, $cs, @opts) = @_;
+  my $pid = spawn("$dir/ndbmtd.log", $ndbmtd, "--ndb-connectstring=$cs",
+                  "--ndb-nodeid=2", "--nodaemon", @opts);
+  for (my $i = 0; $i < 60; $i++) {
+    return ('exited', $pid) if waitpid($pid, WNOHANG) == $pid;
+    return ('started', $pid)
+      if system("$waiter --ndb-connectstring=$cs --timeout=2"
+                . " > /dev/null 2>&1") == 0;
+  }
+  die "The data node neither started nor stopped";
+}
+
+sub stop_node {
+  my ($cs, $pid) = @_;
+  system("$mgm --ndb-connectstring=$cs -e 'ALL STOP' > /dev/null 2>&1");
+  reap($pid, 120);
+}
+
+sub stop_mgmd {
+  my ($pid) = @_;
+  kill('TERM', $pid);
+  reap($pid, 30);
+}
+
+# The node's own words for why it stopped.
+sub refusal {
+  my ($dir) = @_;
+  for my $log (glob("$dir/*.log"), glob("$dir/ndb_2_*")) {
+    open(my $f, '<', $log) or next;
+    while (my $line = <$f>) {
+      return $1 if $line =~ /(Trying to start with less .*)$/;
+    }
+  }
+  return 'no refusal found';
+}
+
+sub fresh_dir {
+  my ($name) = @_;
+  my $dir = "$base/$name";
+  remove_tree($dir);
+  make_path($dir);
+  return $dir;
+}
+
+for my $schema_objects (0, 20420) {
+  my $dir = fresh_dir("start_$schema_objects");
+  my $port = free_port();
+  my $cs = "127.0.0.1:$port";
+  my $extra = "MaxNoOfUserObjects=20100\n";
+  $extra .= "MaxNoOfSchemaObjects=$schema_objects\n" if $schema_objects;
+  my $mgmd_pid = start_mgmd($dir, $port, $extra);
+  my ($state, $node_pid) = start_node($dir, $cs, "--initial");
+  print $schema_objects ? "MaxNoOfSchemaObjects=$schema_objects: "
+                        : "The default MaxNoOfSchemaObjects: ";
+  if ($state eq 'started') {
+    print "started\n";
+    stop_node($cs, $node_pid);
+  } else {
+    print refusal($dir), "\n";
+  }
+  stop_mgmd($mgmd_pid);
+}
+
+{
+  my $dir = fresh_dir("shrink");
+  my $port = free_port();
+  my $cs = "127.0.0.1:$port";
+  my $mgmd_pid = start_mgmd($dir, $port, "MaxNoOfUserObjects=100\n");
+  my ($state, $node_pid) = start_node($dir, $cs, "--initial");
+  die "The node did not start: $state" unless $state eq 'started';
+  system("$mgm --ndb-connectstring=$cs -e"
+         . " 'USER SET uo_shrink --rate-per-sec=1' > /dev/null 2>&1") == 0
+    or die "USER SET failed";
+  my $get = `$mgm --ndb-connectstring=$cs -e 'USER GET uo_shrink'`;
+  my ($id) = $get =~ /userId = (\d+)/;
+  print "With MaxNoOfUserObjects=100 the user took id $id\n";
+  # Without a local checkpoint after the create the node would come back
+  # by an initial start, which keeps nothing.
+  system("$mgm --ndb-connectstring=$cs -e 'ALL DUMP 7099' > /dev/null 2>&1");
+  my $lcp = 0;
+  for (my $i = 0; $i < 600 && !$lcp; $i++) {
+    open(my $log, '<', "$dir/ndb_1_cluster.log") or die;
+    while (<$log>) { $lcp = 1 if /Local checkpoint 2 completed/; }
+    close($log);
+    select(undef, undef, undef, 0.2) unless $lcp;
+  }
+  die "No local checkpoint after the create" unless $lcp;
+  stop_node($cs, $node_pid);
+  stop_mgmd($mgmd_pid);
+  $mgmd_pid = start_mgmd($dir, $port, "MaxNoOfUserObjects=0\n");
+  ($state, $node_pid) = start_node($dir, $cs);
+  print "Restarted with MaxNoOfUserObjects=0: ",
+        $state eq 'started' ? "started" : refusal($dir), "\n";
+  stop_node($cs, $node_pid) if $state eq 'started';
+  stop_mgmd($mgmd_pid);
+}
+remove_tree($base);
+EOF

@@ -1,0 +1,10 @@
+!include suite/ndb_quota/my.cnf
+
+# RONDB-1158: 60 schema object ids for USER and USER ALIAS objects above
+# the 320 of the tables and indexes this configuration allows (128 tables,
+# 128 ordered and 64 unique hash indexes).
+[cluster_config.ndbd.1.1]
+MaxNoOfUserObjects=60
+
+[cluster_config.ndbd.2.1]
+MaxNoOfUserObjects=60

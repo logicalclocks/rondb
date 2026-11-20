@@ -2292,7 +2292,7 @@ void Dbdict::closeReadSchemaConf(Signal *signal, FsConnectRecordPtr fsPtr) {
         ndbrequire(c_writeSchemaRecord.inUse == false);
         XSchemaFile *xsf = &c_schemaFile[c_schemaRecord.oldSchemaPage != 0];
         Uint32 noOfPages =
-            (c_noOfMetaTables + NDB_SF_PAGE_ENTRIES - 1) / NDB_SF_PAGE_ENTRIES;
+            (c_noOfSchemaIds + NDB_SF_PAGE_ENTRIES - 1) / NDB_SF_PAGE_ENTRIES;
         resizeSchemaFile(xsf, noOfPages);
 
         if (c_at_restart_skip_indexes || c_at_restart_skip_fks) {
@@ -2922,7 +2922,13 @@ Uint32 Dbdict::getFsConnRecord() {
 Uint32 Dbdict::getFreeObjId(bool both) {
   const XSchemaFile *newxsf = &c_schemaFile[SchemaRecord::NEW_SCHEMA_FILE];
   const XSchemaFile *oldxsf = &c_schemaFile[SchemaRecord::OLD_SCHEMA_FILE];
-  const Uint32 noOfEntries = newxsf->noOfPages * NDB_SF_PAGE_ENTRIES;
+  /**
+   * The schema file rounds up to whole pages, but ids at or above
+   * c_noOfMetaTables index past the table arrays of other blocks, and
+   * the restart scan refuses them, so the search stops there.
+   */
+  const Uint32 noOfEntries =
+      MIN(newxsf->noOfPages * NDB_SF_PAGE_ENTRIES, c_noOfMetaTables);
   for (Uint32 i = 0; i < noOfEntries; i++) {
     const SchemaFile::TableEntry *oldentry = getTableEntry(oldxsf, i);
     const SchemaFile::TableEntry *newentry = getTableEntry(newxsf, i);
@@ -2936,6 +2942,26 @@ Uint32 Dbdict::getFreeObjId(bool both) {
     }
   }
   return RNIL;
+}
+
+/**
+ * A USER or USER ALIAS takes an id from the MaxNoOfUserObjects ids above
+ * the tables' first, so it leaves the tables theirs, and then shares the
+ * tables' ids as it did before MaxNoOfUserObjects existed. Only DBDICT
+ * indexes by these ids: DBTC and DBLQH hash their database records.
+ */
+Uint32 Dbdict::getFreeUserObjId() {
+  const XSchemaFile *newxsf = &c_schemaFile[SchemaRecord::NEW_SCHEMA_FILE];
+  const Uint32 noOfEntries =
+      MIN(newxsf->noOfPages * NDB_SF_PAGE_ENTRIES, c_noOfSchemaIds);
+  for (Uint32 i = c_noOfMetaTables; i < noOfEntries; i++) {
+    if (getTableEntry(newxsf, i)->m_tableState ==
+        (Uint32)SchemaFile::SF_UNUSED) {
+      jam();
+      return i;
+    }
+  }
+  return getFreeObjId();
 }
 
 bool Dbdict::seizeTableRecord(TableRecordPtr &tablePtr, Uint32 &schemaFileId) {
@@ -3219,6 +3245,11 @@ void Dbdict::execREAD_CONFIG_REQ(Signal *signal) {
   Uint32 attributesize;
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DICT_ATTRIBUTE,&attributesize));
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DICT_TABLE, &c_noOfMetaTables));
+  /* A configuration from an older management server has no value. */
+  c_maxNoOfUserObjects = 0;
+  ndb_mgm_get_int_parameter(p, CFG_DB_MAX_USER_OBJECTS,
+                            &c_maxNoOfUserObjects);
+  c_noOfSchemaIds = c_noOfMetaTables + c_maxNoOfUserObjects;
   c_indexStatAutoCreate = 0;
   ndb_mgm_get_int_parameter(p, CFG_DB_INDEX_STAT_AUTO_CREATE,
                             &c_indexStatAutoCreate);
@@ -3311,7 +3342,7 @@ void Dbdict::execREAD_CONFIG_REQ(Signal *signal) {
   c_obj_pool.init(
     DictObject::TYPE_ID,
     pc,
-    c_noOfMetaTables+c_maxNoOfTriggers,
+    c_noOfSchemaIds+c_maxNoOfTriggers,
     UINT32_MAX);
 
   while (c_obj_pool.startup())
@@ -3319,8 +3350,8 @@ void Dbdict::execREAD_CONFIG_REQ(Signal *signal) {
     refresh_watch_dog();
   }
 
-  c_obj_name_hash.setSize(c_noOfMetaTables+c_maxNoOfTriggers);
-  c_obj_id_hash.setSize(c_noOfMetaTables+c_maxNoOfTriggers);
+  c_obj_name_hash.setSize(c_noOfSchemaIds+c_maxNoOfTriggers);
+  c_obj_id_hash.setSize(c_noOfSchemaIds+c_maxNoOfTriggers);
   m_dict_lock_pool.setSize(MAX_NDB_NODES);
 
   c_file_pool.init(RT_DBDICT_FILE, pc);
@@ -3591,7 +3622,7 @@ void Dbdict::execREAD_NODESCONF(Signal *signal) {
 void Dbdict::initSchemaFile(Signal *signal) {
   XSchemaFile *xsf = &c_schemaFile[SchemaRecord::NEW_SCHEMA_FILE];
   xsf->noOfPages =
-      (c_noOfMetaTables + NDB_SF_PAGE_ENTRIES - 1) / NDB_SF_PAGE_ENTRIES;
+      (c_noOfSchemaIds + NDB_SF_PAGE_ENTRIES - 1) / NDB_SF_PAGE_ENTRIES;
   initSchemaFile(xsf, 0, xsf->noOfPages, true);
   // init alt copy too for INR
   XSchemaFile *oldxsf = &c_schemaFile[SchemaRecord::OLD_SCHEMA_FILE];
@@ -4654,7 +4685,13 @@ void Dbdict::checkSchemaStatus(Signal *signal) {
     SchemaFile::EntryState ownState =
         (SchemaFile::EntryState)ownEntry->m_tableState;
 
-    if (c_restartRecord.activeTable >= c_noOfMetaTables) {
+    /* Above the tables' ids only USER and USER ALIAS objects may live. */
+    const bool user_id = tableId < c_noOfSchemaIds &&
+        (masterState == SchemaFile::SF_UNUSED ||
+         masterEntry->m_tableType == DictTabInfo::Database) &&
+        (ownState == SchemaFile::SF_UNUSED ||
+         ownEntry->m_tableType == DictTabInfo::Database);
+    if (c_restartRecord.activeTable >= c_noOfMetaTables && !user_id) {
       jam();
       if (masterState != SchemaFile::SF_UNUSED ||
           ownState != SchemaFile::SF_UNUSED) {
@@ -4663,7 +4700,7 @@ void Dbdict::checkSchemaStatus(Signal *signal) {
                   "Too many tables or too high id number for some table. "
                   "Please check configuration. Have sum of MaxNoOfTables, "
                   "MaxNoOfOrderedIndexes, and, MaxNoOfUniqueHashIndexes "
-                  "decreased?");
+                  "decreased, or MaxNoOfUserObjects?");
       }
       continue;
     }  // if
@@ -22764,7 +22801,7 @@ void Dbdict::resizeSchemaFile(XSchemaFile * xsf, Uint32 noOfPages) {
   else
   {
     jam();
-    Uint32 tableId = c_noOfMetaTables;
+    Uint32 tableId = c_noOfSchemaIds;
     while (tableId < xsf->noOfPages * NDB_SF_PAGE_ENTRIES) {
       SchemaFile::TableEntry * te = getTableEntry(xsf, tableId);
       if (te->m_tableState != SchemaFile::SF_UNUSED)
@@ -22772,9 +22809,9 @@ void Dbdict::resizeSchemaFile(XSchemaFile * xsf, Uint32 noOfPages) {
         char reason_msg[256];
         BaseString::snprintf(reason_msg, sizeof(reason_msg),
           "Trying to start with less table objects than exists"
-          " in schema file, started with %u table objects"
-          ", increase MaxNoOfTables",
-          c_noOfMetaTables);
+          " in schema file, started with %u table objects and %u"
+          " user objects, increase MaxNoOfTables or MaxNoOfUserObjects",
+          c_noOfMetaTables, c_maxNoOfUserObjects);
         progError(__LINE__, NDBD_EXIT_SR_SCHEMAFILE, reason_msg);
       }
       tableId++;
@@ -33262,7 +33299,7 @@ Dbdict::unbindAliasesOf(DatabasePtr user_ptr) {
   user_obj_ptr.i = user_ptr.p->m_obj_ptr_i;
   ndbrequire(c_obj_pool.getValidPtr(user_obj_ptr));
   for (Uint32 id = 0;
-       id < c_noOfMetaTables && user_obj_ptr.p->m_ref_count != 0;
+       id < c_noOfSchemaIds && user_obj_ptr.p->m_ref_count != 0;
        id++) {
     DatabasePtr alias_ptr;
     if (find_object(alias_ptr, id) &&
@@ -33627,6 +33664,27 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
     return;
   }
 
+  /* The id, like the alias target, is found before anything is seized. */
+  if (master) {
+    jam();
+    Uint32 objId = is_user ? getFreeUserObjId() : getFreeObjId();
+    if (objId == RNIL) {
+      jam();
+      setError(error,
+               is_user ? Uint32(CreateTableRef::NoMoreUserObjectIds)
+                       : Uint32(CreateFilegroupRef::NoMoreObjectRecords),
+               __LINE__);
+      return;
+    }
+    Uint32 version = getTableEntry(objId)->m_tableVersion;
+    impl_req->databaseId = objId;
+    impl_req->databaseVersion = create_obj_inc_schema_version(version);
+  } else if (op_ptr.p->m_restart) {
+    jam();
+    impl_req->databaseId = c_restartRecord.activeTable;
+    impl_req->databaseVersion = c_restartRecord.m_entry.m_tableVersion;
+  }
+
   /* Owned here until the database record takes it below. */
   LcRopeHandle alias_target;
   if (is_alias) {
@@ -33686,22 +33744,6 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
               db_ptr.p->m_max_parallel_transactions,
               db_ptr.p->m_max_parallel_complex_queries));
 
-  if (master) {
-    jam();
-    Uint32 objId = getFreeObjId();
-    if (objId == RNIL) {
-      jam();
-      setError(error, CreateFilegroupRef::NoMoreObjectRecords, __LINE__);
-      goto error;
-    }
-    Uint32 version = getTableEntry(objId)->m_tableVersion;
-    impl_req->databaseId = objId;
-    impl_req->databaseVersion = create_obj_inc_schema_version(version);
-  } else if (op_ptr.p->m_restart) {
-    jam();
-    impl_req->databaseId = c_restartRecord.activeTable;
-    impl_req->databaseVersion = c_restartRecord.m_entry.m_tableVersion;
-  }
   ndbassert(db.DatabaseType == DictTabInfo::Database);
   db_ptr.p->key = impl_req->databaseId;
   db_ptr.p->m_type = db.DatabaseType;
@@ -34652,7 +34694,7 @@ Dbdict::dropDatabase_parse(Signal* signal, bool master,
   bool is_user = db.IsUser;
   Uint32 databaseId = impl_req->databaseId;
   getOpRec(op_ptr, dropDbPtr);
-  ndbrequire(databaseId < c_noOfMetaTables);
+  ndbrequire(databaseId < c_noOfSchemaIds);
 
   SchemaTransPtr trans_ptr = op_ptr.p->m_trans_ptr;
   Uint32 err = check_read_obj(impl_req->databaseId, trans_ptr.p->m_transId);
@@ -35316,7 +35358,7 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
   Uint32 databaseId = obj_ptr->m_id;
   impl_req->databaseId = databaseId;
   getOpRec(op_ptr, alterDbPtr);
-  ndbrequire(databaseId < c_noOfMetaTables);
+  ndbrequire(databaseId < c_noOfSchemaIds);
 
   SchemaTransPtr trans_ptr = op_ptr.p->m_trans_ptr;
   Uint32 err = check_read_obj(impl_req->databaseId, trans_ptr.p->m_transId);
@@ -36027,7 +36069,7 @@ void Dbdict::execLIST_DATABASE_REQ(Signal *signal) {
   bool found = false;
   Uint32 dbId = req->nextDatabaseId;
   Uint32 loop_count = 0;
-  for (; dbId < c_noOfMetaTables; dbId++) {
+  for (; dbId < c_noOfSchemaIds; dbId++) {
     bool ok = find_object(db_ptr, dbId);
     if (ok && matchesDatabaseFilter(db_ptr, filter)) {
       found = true;

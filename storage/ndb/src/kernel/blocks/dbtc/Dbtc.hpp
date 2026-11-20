@@ -3621,6 +3621,10 @@ public:
   {
     return sizeof(struct TableRecord) + sizeof(struct TcIndexData);
   }
+  static size_t getDatabaseRecordSize()
+  {
+    return sizeof(struct DatabaseRecord);
+  }
   static size_t getTriggerRecordSize()
   {
     return sizeof(struct TcDefinedTriggerData);

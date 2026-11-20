@@ -1,0 +1,11 @@
+!include suite/ndb_quota/my.cnf
+
+# RONDB-1158: automatic memory configuration as in production. The table
+# and index limits take their defaults (8000 tables, 2300 unique hash
+# indexes; the suite sets 128 ordered indexes), 10428 ids, and
+# MaxNoOfUserObjects adds 21000, so MaxNoOfSchemaObjects must cover 31428.
+[cluster_config]
+AutomaticMemoryConfig=1
+TotalMemoryConfig=3G
+MaxNoOfUserObjects=21000
+MaxNoOfSchemaObjects=31428

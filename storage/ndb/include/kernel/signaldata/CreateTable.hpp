@@ -111,7 +111,8 @@ struct CreateTableRef {
     AliasTargetConflict = 1247,
     UserHasAliases = 1248,
     AliasTargetDropPending = 1249,
-    RateChangedInSchemaTrans = 1276
+    RateChangedInSchemaTrans = 1276,
+    NoMoreUserObjectIds = 1277
   };
 
   Uint32 senderRef;

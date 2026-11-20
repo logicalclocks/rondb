@@ -5427,6 +5427,10 @@ private:
   {
     return sizeof(struct Tablerec);
   }
+  static size_t getDatabaseRecordSize()
+  {
+    return sizeof(struct DatabaseRecord);
+  }
   void reset_curr_ldm()
   {
     m_curr_lqh = this;
