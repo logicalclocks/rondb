@@ -27,6 +27,8 @@ package com.mysql.clusterj.core.store;
 
 import com.mysql.clusterj.LockMode;
 
+import java.nio.ByteBuffer;
+
 /**
  *
  */
@@ -75,6 +77,10 @@ public interface ClusterTransaction {
     public void setPartitionKey(PartitionKey partitionKey);
 
     public void setLockMode(LockMode lockmode);
+
+    /** Charge this transaction to a rate limit name: length bytes followed
+     * by a NUL in a direct buffer, kept until the transaction closes. */
+    public void setRateLimitUser(ByteBuffer name, int length);
 
     public void setAutocommit(boolean autocommit);
 

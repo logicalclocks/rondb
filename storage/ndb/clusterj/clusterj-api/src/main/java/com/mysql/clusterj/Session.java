@@ -250,6 +250,22 @@ public interface Session  extends AutoCloseable {
      */
     void setLockMode(LockMode lockmode);
 
+    /** Set the RonDB rate limit USER or USER ALIAS that every transaction
+     * this session begins from now on is charged to, explicit and autocommit
+     * alike. A transaction that has begun keeps the name it began with, and
+     * a session handed back to the session cache by closeCache loses it.
+     * A name RonDB does not know is not rate limited. An operation the rate
+     * limit throttles fails with error 243 (write) or 2203 (read).
+     * @param name the name, 1 to 126 bytes in UTF-8, or null to clear it
+     * @throws ClusterJUserException if the name is empty or too long
+     */
+    void setRateLimitUser(String name);
+
+    /** Get the name set by setRateLimitUser.
+     * @return the name, or null
+     */
+    String getRateLimitUser();
+
     /** Mark the field in the object as modified so it is flushed.
      *
      * @param instance the persistent instance

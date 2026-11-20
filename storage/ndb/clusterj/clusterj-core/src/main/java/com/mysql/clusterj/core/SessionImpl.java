@@ -71,6 +71,9 @@ import com.mysql.clusterj.query.QueryDomainType;
 import java.lang.reflect.Proxy;
 import java.lang.reflect.InvocationHandler;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.Collections;
@@ -142,6 +145,17 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
 
     /** The lock mode for read operations */
     private LockMode lockmode = LockMode.READ_COMMITTED;
+
+    /** RonDB stores a USER name in 128 bytes with a '$' and a NUL. */
+    static final int MAX_RATE_LIMIT_USER_BYTES = 126;
+
+    /** The rate limit name, and its UTF-8 bytes and NUL in a direct buffer.
+     * A transaction keeps the buffer it began with until it closes, since
+     * the native transaction holds its address; a new name gets a new
+     * buffer. */
+    private String rateLimitUser;
+    private ByteBuffer rateLimitUserBuffer;
+    private int rateLimitUserLength;
 
     /**
      * A cache for Data Transport Objects used by ClusterJ, retrieved by
@@ -932,6 +946,14 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
         }
 
         if (factory.isSessionCacheEnabled()) {
+            /* The next borrower must get a session with no transaction and
+             * no rate limit name, or it would join this owner's transaction
+             * and be charged to this owner's name. */
+            if (isActive()) {
+                logger.warn(local.message("WARN_Close_Cache_Rollback"));
+                rollback();
+            }
+            setRateLimitUser(null);
             factory.storeCachedSession(this, db.getName());
         } else {
             close();
@@ -991,6 +1013,10 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
         try {
             clusterTransaction = db.startTransaction();
             clusterTransaction.setLockMode(lockmode);
+            if (rateLimitUserBuffer != null) {
+                clusterTransaction.setRateLimitUser(rateLimitUserBuffer,
+                                                    rateLimitUserLength);
+            }
             // if a transaction has already begun, tell the cluster transaction about the key
             if (partitionKey != null) {
                 clusterTransaction.setPartitionKey(partitionKey);
@@ -1694,6 +1720,32 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
         if (clusterTransaction != null) {
             clusterTransaction.setLockMode(lockmode);
         }
+    }
+
+    public void setRateLimitUser(String name) {
+        if (name == null) {
+            rateLimitUser = null;
+            rateLimitUserBuffer = null;
+            rateLimitUserLength = 0;
+            return;
+        }
+        byte[] bytes = name.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length == 0 || bytes.length > MAX_RATE_LIMIT_USER_BYTES) {
+            throw new ClusterJUserException(local.message(
+                "ERR_Rate_Limit_User_Length", name, bytes.length,
+                MAX_RATE_LIMIT_USER_BYTES));
+        }
+        ByteBuffer buffer = ByteBuffer.allocateDirect(bytes.length + 1);
+        buffer.put(bytes);
+        buffer.put((byte)0);
+        buffer.flip();
+        rateLimitUser = name;
+        rateLimitUserBuffer = buffer;
+        rateLimitUserLength = bytes.length;
+    }
+
+    public String getRateLimitUser() {
+        return rateLimitUser;
     }
 
     /** Unload the schema associated with the domain class. This allows schema changes to work.

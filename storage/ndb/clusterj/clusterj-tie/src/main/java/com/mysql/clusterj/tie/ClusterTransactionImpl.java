@@ -121,6 +121,11 @@ class ClusterTransactionImpl implements ClusterTransaction {
     private List<Operation> operationsToCheck = new ArrayList<Operation>();
 
     private boolean isPartitionKeySet = false;
+
+    /** The rate limit name every enlisted NdbTransaction is charged to, or
+     * null; the session's buffer, kept here until this transaction ends. */
+    private ByteBuffer rateLimitUser;
+    private int rateLimitUserLength;
     private final boolean hops_pk_fix = true;
 
     public ClusterTransactionImpl(ClusterConnectionImpl clusterConnectionImpl,
@@ -161,6 +166,28 @@ class ClusterTransactionImpl implements ClusterTransaction {
             logger.trace("ndbTransaction: " + ndbTransaction);
         if (ndbTransaction == null) {
             ndbTransaction = partitionKey.enlist(db);
+            if (rateLimitUser != null) {
+                applyRateLimitUser();
+            }
+        }
+    }
+
+    public void setRateLimitUser(ByteBuffer name, int length) {
+        rateLimitUser = name;
+        rateLimitUserLength = length;
+    }
+
+    /** A transaction the name cannot be applied to is closed before the
+     * error is thrown, so nothing runs uncharged; the exception has copied
+     * the error by then. */
+    private void applyRateLimitUser() {
+        int returnCode = ndbTransaction.setUserId(rateLimitUser,
+                                                  rateLimitUserLength);
+        try {
+            handleError(returnCode, ndbTransaction);
+        } catch (ClusterJDatastoreException ex) {
+            close();
+            throw ex;
         }
     }
 

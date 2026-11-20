@@ -10858,6 +10858,24 @@ Java_com_mysql_ndbjtie_ndbapi_NdbTransaction_getTransactionId(JNIEnv *env,
 
 /*
  * Class:     com_mysql_ndbjtie_ndbapi_NdbTransaction
+ * Method:    setUserId
+ * Signature: (Ljava/nio/ByteBuffer;I)I
+ *
+ * NdbTransaction keeps the name's address, not a copy, so the name is a
+ * direct ByteBuffer the caller keeps alive until the transaction closes.
+ */
+JNIEXPORT jint JNICALL Java_com_mysql_ndbjtie_ndbapi_NdbTransaction_setUserId(
+    JNIEnv *env, jobject obj, jobject p0, jint p1) {
+  TRACE(
+      "jint Java_com_mysql_ndbjtie_ndbapi_NdbTransaction_setUserId(JNIEnv *, "
+      "jobject, jobject, jint)");
+  return gcall_mfr<ttrait_c_m_n_n_NdbTransaction_t, ttrait_int,
+                   ttrait_char_1cp_bb, ttrait_Uint32,
+                   &NdbTransaction::setUserId>(env, obj, p0, p1);
+}
+
+/*
+ * Class:     com_mysql_ndbjtie_ndbapi_NdbTransaction
  * Method:    commitStatus
  * Signature: ()I
  */

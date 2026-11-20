@@ -139,6 +139,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/QueryTimestampAsUtilDateTypesTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/QueryUniqueKeyTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/QueryYearTypesTest.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/RateLimitTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/Reconnect2Test.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/ReconnectTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/RecvThreadCPUTest.java
@@ -225,6 +226,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/NullValues.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/Order.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/OrderLine.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/model/RateLimitRow.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/StringTypes.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/ThrowNullPointerException.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/TimeAsSqlTimeTypes.java
@@ -248,6 +250,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_JUNIT_PREFIX}/junit/textui/TestRunner.java
   ${CLUSTERJ_JUNIT_PREFIX}/org/junit/Ignore.java
   ${CLUSTERJ_JUNIT_PREFIX}/org/junit/DebugTest.java
+  ${CLUSTERJ_JUNIT_PREFIX}/org/junit/NamedOnly.java
   )
 
 SET(CLASSPATH

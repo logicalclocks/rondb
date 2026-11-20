@@ -25,6 +25,8 @@
 
 package testsuite.clusterj;
 
+import com.mysql.clusterj.ClusterJHelper;
+
 /*
   The purpose of the ClearSmokeTest is to ensure that the SessionFactory
   will be closed at the conclusion of the test suite, so that the NDB API
@@ -36,8 +38,11 @@ public class ClearSmokeTest extends AbstractClusterJTest {
   public void test() {
   }
 
+  /* The shared SessionFactory, without loading the test schema, so that a
+     run of named tests that need no schema can end with this test too. */
   public void localSetUp() {
-    createSessionFactory();
+    loadProperties();
+    sessionFactory = ClusterJHelper.getSessionFactory(props);
     session = sessionFactory.getSession();
   }
 

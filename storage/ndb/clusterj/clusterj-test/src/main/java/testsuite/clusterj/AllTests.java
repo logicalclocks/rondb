@@ -94,7 +94,9 @@ public class AllTests {
     }
 
     private static boolean isTestDisabled(Class<?> klass) {
-        return (isIgnoreAnnotationPresent(klass) || (!enableDebugTests && isDebugTestAnnotationPresent(klass)));
+        return (isIgnoreAnnotationPresent(klass) ||
+                isAnnotationPresent(klass, "NamedOnly") ||
+                (!enableDebugTests && isDebugTestAnnotationPresent(klass)));
     }
 
     private static List<Class<?>> getClasses(File jarFile) throws IOException, ClassNotFoundException {

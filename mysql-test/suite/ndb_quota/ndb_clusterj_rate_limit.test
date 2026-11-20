@@ -1,0 +1,56 @@
+--source include/have_ndb.inc
+--source include/not_asan.inc
+--source include/not_parallel.inc
+
+# RONDB-1158: ClusterJ sessions charged to a RonDB rate limit USER with
+# Session.setRateLimitUser, run as the JUnit test RateLimitTest: tagged
+# transactions are throttled, explicit and autocommit alike, through an
+# alias too; untagged ones and ones tagged with an unknown name are not; a
+# transaction keeps the name it began with; the name is limited to 126
+# bytes of UTF-8; and closeCache rolls back an open transaction and clears
+# the name. The database test carries a rate quota of its own, which the
+# untagged reads stay within.
+
+--let JAVA_MIN_REQUIRED_VERSION=1.8
+--source suite/ndb/include/have_java.inc
+--source suite/ndb/include/have_clusterj.inc
+
+CREATE TABLE rl_cj (id INT PRIMARY KEY, val INT) ENGINE ndb;
+--exec $NDB_MGM -e "USER SET rl_cj_user --rate-per-sec=1" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "USER ALIAS SET rl_cj_alias --target=rl_cj_user" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "DATABASE QUOTA SET test --rate-per-sec=1000000" >> $NDB_TOOLS_OUTPUT
+
+--let SEP=:
+exec
+  $MTR_JAVA -ea -Xcheck:jni
+  -Dclusterj.properties=$MYSQLTEST_VARDIR/tmp/clusterj.properties
+  -Djava.library.path=$NDBCLIENT_LIB_DIR
+  -Djava.io.tmpdir=$MYSQLTEST_VARDIR/tmp
+  -XX:ErrorFile=$MYSQLTEST_VARDIR/tmp/clusterj_jvm_error.file
+  -classpath $CLUSTERJ_TEST_JAR$SEP$CLUSTERJ_JAR$SEP$MTR_CLASSPATH
+  testsuite.clusterj.AllTests
+  $CLUSTERJ_TEST_JAR -n RateLimitTest
+  > $MYSQLTEST_VARDIR/tmp/clusterj_rate_limit.log;
+
+--echo # The tests that ran and the verdict, so that a run of none cannot pass.
+--perl
+use strict;
+open(my $f, '<', "$ENV{MYSQLTEST_VARDIR}/tmp/clusterj_rate_limit.log") or die;
+while (my $line = <$f>) {
+  if ($line =~ /^\d+: (testsuite\.clusterj\.\S+) running/) {
+    print "$1\n";
+  } elsif ($line =~ /^(All tests succeeded|Some tests failed|All tests failed|No tests run)/) {
+    print $line;
+  }
+}
+close($f);
+EOF
+
+--echo # Cleanup
+--remove_file $MYSQLTEST_VARDIR/tmp/clusterj.properties
+--remove_file $MYSQLTEST_VARDIR/tmp/clusterj_rate_limit.log
+DROP TABLE rl_cj;
+--exec $NDB_MGM -e "DATABASE QUOTA DROP test" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "USER ALIAS DROP rl_cj_alias" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "USER DROP rl_cj_user" >> $NDB_TOOLS_OUTPUT
+--remove_file $NDB_TOOLS_OUTPUT

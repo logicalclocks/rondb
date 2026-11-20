@@ -1,0 +1,18 @@
+Looking for a suitable Java...
+Found Java
+Found clusterj.jar
+Found clusterj_test jar
+Found ndbclient library
+CREATE TABLE rl_cj (id INT PRIMARY KEY, val INT) ENGINE ndb;
+# The tests that ran and the verdict, so that a run of none cannot pass.
+testsuite.clusterj.ClearSmokeTest.test
+testsuite.clusterj.RateLimitTest.testAliasChargesItsTarget
+testsuite.clusterj.RateLimitTest.testCloseCacheRollsBackAndClearsTheName
+testsuite.clusterj.RateLimitTest.testNameIsTakenAtBegin
+testsuite.clusterj.RateLimitTest.testNameLimits
+testsuite.clusterj.RateLimitTest.testTaggedIsThrottled
+testsuite.clusterj.RateLimitTest.testUnknownNameIsNotThrottled
+testsuite.clusterj.RateLimitTest.testUntaggedIsNotThrottled
+All tests succeeded.
+# Cleanup
+DROP TABLE rl_cj;
