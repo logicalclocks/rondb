@@ -274,11 +274,24 @@ logic of any kind.</p>
 <section id="admin">
 <h2>3. The admin page</h2>
 <p>One page: a list of groups on the left, and a form for the selected group on the
-right. Each form field writes to exactly one table, shown in the right margin. The list
+right. Each form field writes to exactly one table, shown in the right margin.
+<strong>The list is grouped by cluster</strong> (decided 2026-11-20), because every
+capacity number is per cluster: each cluster has its own cap, its own thread count and
+its own allocated total, so a single global bar is meaningful only on a one-cluster
+deployment. Each cluster&rsquo;s section header shows, once, <em>cap · groups · other ·
+free</em>: the configured cap (section 14), the sum of the budgets desired on that
+cluster (the section 11 sum, so a fully overridden group does not appear or count
+there), the budget held outside groups, operator <code>USER</code> entries and database
+quotas carrying a <code>rate-per-sec</code>, and what remains, all read live per data
+node through <code>USER CAPACITY</code> (13.3). Under the header sit the groups desired
+on that cluster, an every-cluster group appearing in each section with that
+cluster&rsquo;s own state and converted rate; an unreachable cluster&rsquo;s header says
+capacity unknown and its groups show <em>pending</em>. On one cluster the page degrades
+to a single section, today&rsquo;s view. The list
 also shows the per-cluster install state written back by the installer
 (<a href="#install">section 10</a>), so an administrator can see when a saved group has
 actually been installed.</p>
-<figure class="erd"><img src="img/v2/admin-page.png" alt="Mockup of the admin page: a list of the three example groups with their cluster state, an unsaved budget edit of recommender2_rl with the command saving will run, the confirmation for deleting it with the aliases and USER it drops, and callouts naming the table and column each field writes."><figcaption>Editing <code>recommender2_rl</code>: the budget is raised from 5% to 8% and not yet saved, and the form shows the command saving will run. Bottom left, the confirmation that Delete group opens. &ldquo;Every cluster&rdquo; is the default; naming one cluster scopes the budget to it. The right margin names the table and column each field writes.</figcaption></figure>
+<figure class="erd"><img src="img/v2/admin-page.png" alt="Mockup of the admin page: the group list grouped by cluster, each section header showing cap, groups, other and free; rondb-m shows a named group partially installed and a note that the overridden every-cluster group holds no budget there; an unsaved budget edit of recommender2_rl with the command saving will run; the confirmation for deleting it with the aliases and USER it drops; and callouts naming the table and column each field writes."><figcaption>The list grouped by cluster: <code>main</code> expanded with the three every-cluster groups, <code>rondb-m</code> expanded with the named <code>recommender_m_rl</code> (10%, <em>partial</em>) overriding <code>recommender_team_rl</code> there, <code>rondb-s</code> collapsed and <code>rondb-r</code> unreachable. Each header shows cap, groups, other and free once per cluster. Editing <code>recommender2_rl</code> raises the budget from 5% to 8%, not yet saved; the affected headers show the would-be totals, and a section that would exceed its cap turns red. Bottom left, the confirmation that Delete group opens. The right margin names the table and column each field writes.</figcaption></figure>
 <p>Three details carried from the design sections: the name is read-only after creation
 (renaming would drop and recreate the RonDB entry); the budget field shows the converted
 <code>rate-per-sec</code> per targeted cluster so the administrator sees what each
@@ -291,9 +304,10 @@ saving an edit is the same write as creating: the rows change and the immediate 
 pass runs, so the list&rsquo;s per-cluster state shows the outcome of the new pass within
 seconds (<a href="#flow">section 2</a>). A budget edit alters the group&rsquo;s
 <code>USER</code> in place; a Who or cluster edit adds and drops only the affected
-aliases. Before Save, the form lists the commands saving will run, and the allocation
-bar shows the total the edit would reach, so a raise that would meet the cluster&rsquo;s
-cap is visible before RonDB refuses it. Deleting a group removes its Who rows and its state
+aliases. Before Save, the form lists the commands saving will run, and each affected cluster
+section&rsquo;s header shows the total the edit would reach, the section turning red when
+it would exceed that cluster&rsquo;s cap, so the administrator sees <em>which</em>
+cluster refuses before RonDB does. Deleting a group removes its Who rows and its state
 rows and marks the group row deleted, and the immediate pass drops the group&rsquo;s <code>USER</code> and its members&rsquo; aliases on every
 targeted cluster; a member another group still covers is repointed there, and one no
 group covers runs unmetered afterwards (<a href="#rules">section 11</a>).
@@ -1566,7 +1580,7 @@ targeted RonDB.</p>
   <tbody>
     <tr><td>Hopsworks tables</td><td>new</td><td>Flyway migration with the two group tables and the state table (appendix); JPA entities; the save rules of section 11 in the controller; re-check &ldquo;no ties&rdquo; in the facade transaction that writes <code>project_team</code>, under the same lock as the save rules, because the controllers on that path run under <code>NEVER</code> and a check outside the writing transaction races a concurrent save (the behavior on a tie is section 16 item 3, still open); in the project-delete and user-delete paths, mark deleted every group whose only Who row the delete removes, and name those groups in the two delete confirmations (section 11).</td></tr>
     <tr><td>Hopsworks installer</td><td>new</td><td>Section 10: extend <code>RonDbManagementClient</code> with the <code>USER</code> / <code>USER ALIAS</code> command family (same framing as its quota commands) and per-cluster endpoints from the namespace discovery; the expansion of Who rows into account names (the clip is <code>OnlineFeaturestoreController.onlineDbUsername</code>&rsquo;s); an <code>OnlinefsOperationHandler</code> implementation for membership churn; a primary-gated reconciler on the <code>TrinoReconciler</code> template; state rows per (group, cluster).</td></tr>
-    <tr><td>Hopsworks admin page</td><td>new</td><td>Section 3: list + form, cluster picker from discovery, per-cluster state badges (installed, pending, partial, refused; partial and refused expand to the applied coverage and <code>last_error</code>, section 10), converted rate shown per cluster, the commands a save will run, the delete confirmation.</td></tr>
+    <tr><td>Hopsworks admin page</td><td>new</td><td>Section 3: the list grouped by cluster with <em>cap · groups · other · free</em> once per section header (from <code>USER CAPACITY</code> and the desired budgets; red would-be totals while editing; capacity unknown for an unreachable cluster) + form, cluster picker from discovery, per-cluster state badges (installed, pending, partial, refused; partial and refused expand to the applied coverage and <code>last_error</code>, section 10), converted rate shown per cluster, the commands a save will run, the delete confirmation.</td></tr>
     <tr><td>RDRS</td><td>exists</td><td>Username mode (merged on the ticket branch): tag the project-user name. <strong>No group code.</strong></td></tr>
     <tr><td>RonDB kernel</td><td>new</td><td>Section 13: alias flag and single target (by name) on the <code>$name</code> object in Dbdict (not budgeted, persisted, backed up, re-resolved on target recreate); <code>USER DROP</code> refused while aliases point at the target (per-target alias count in the drop parse, new error, restart and restore waived; 13.3); the alias-to-target swap at the three Dbtc admission points; <code>USER ALIAS SET/DROP/GET/LIST</code> and <code>USER CAPACITY</code> (per-node thread count, configured cap percent, allocated total; 13.3) in the mgm server (<code>Services.cpp</code>) and client; MTR tests in <code>suite/ndb_quota</code>: lifecycle, enforcement through an alias on both key and scan paths, restart and backup/restore, a refused target drop with a live alias, target drop and recreate. Two additions from the scale
     measurement (13.5): a <code>MaxNoOfUserObjects</code> configuration parameter added
