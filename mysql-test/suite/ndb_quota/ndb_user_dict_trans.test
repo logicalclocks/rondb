@@ -1,0 +1,17 @@
+--source include/have_ndb.inc
+
+# RONDB-1158: DBDICT database and user operations driven at signal level by
+# the NDB API test program testDict, for what the management server cannot
+# produce: several operations in one schema transaction, and an abort after
+# a successful parse (ndb_mgm sends one operation per transaction).
+#
+# UserCreateAbortedInParse: a USER create aborted after its parse leaves no
+# dictionary object behind, so GET finds nothing and the name can be
+# created again.
+#
+# The test program creates no tables, so no TEST_DB is needed; T1 is only
+# the table argument every testDict run takes.
+
+let NDBAPITEST_NAME=testDict;
+let NDBAPITEST_ARGS=-n UserCreateAbortedInParse T1;
+--source suite/ndb/include/run_ndbapitest.inc

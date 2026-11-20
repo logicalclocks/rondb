@@ -2848,6 +2848,7 @@ class Dbdict : public SimulatedBlock {
       std::memset(&m_request, 0, sizeof(m_request));
       m_parsed = false;
       m_prepared = false;
+      m_abortPrepareDone = false;
       m_modified_by_subOps = false;
     }
 

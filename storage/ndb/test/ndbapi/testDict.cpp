@@ -45,6 +45,15 @@
 #include <Vector.hpp>
 #include <signaldata/DictTabInfo.hpp>
 #include <signaldata/DumpStateOrd.hpp>
+#include <NdbSleep.h>
+#include <SimpleProperties.hpp>
+#include <UtilBuffer.hpp>
+#include <signaldata/CreateDatabase.hpp>
+#include <signaldata/DropDatabase.hpp>
+#include <signaldata/DropTable.hpp>
+#include <signaldata/QueryDatabase.hpp>
+#include <signaldata/SchemaTrans.hpp>
+#include "../../src/ndbapi/SignalSender.hpp"
 #include "util/require.h"
 
 #define ERR_INSERT_MASTER_FAILURE1 6013
@@ -11245,6 +11254,234 @@ done:
   return result;
 }
 
+/**
+ * Signal-level client for the DICT database and user operations
+ * (RONDB-1158). The management server sends one operation per schema
+ * transaction (MgmtSrvr::set_quotas and friends), so the cases that need
+ * several operations in one transaction, or an abort after a successful
+ * parse, drive the DICT signals here. Every call returns 0 or the error
+ * code of the REF.
+ */
+class DictDatabaseClient {
+ public:
+  explicit DictDatabaseClient(Ndb_cluster_connection *conn)
+      : m_ss(conn), m_nodeId(0), m_transId(0), m_transKey(0) {
+    m_ss.lock();
+  }
+  ~DictDatabaseClient() { m_ss.unlock(); }
+
+  int beginTrans() {
+    m_transId = (Uint32)rand();
+    SimpleSignal ssig;
+    ssig.set(m_ss, 0, DBDICT, GSN_SCHEMA_TRANS_BEGIN_REQ,
+             SchemaTransBeginReq::SignalLength);
+    SchemaTransBeginReq *req =
+        CAST_PTR(SchemaTransBeginReq, ssig.getDataPtrSend());
+    req->clientRef = m_ss.getOwnRef();
+    req->transId = m_transId;
+    req->requestInfo = 0;
+    m_nodeId = m_ss.get_an_alive_node();
+    for (int attempt = 0; attempt < 1200; attempt++) {
+      if (m_ss.sendSignal(m_nodeId, &ssig) != SEND_OK) return -1;
+      SimpleSignal *reply = waitReply();
+      if (reply == nullptr) return -1;
+      const int gsn = reply->readSignalNumber();
+      if (gsn == GSN_SCHEMA_TRANS_BEGIN_CONF) {
+        m_transKey = CAST_CONSTPTR(SchemaTransBeginConf, reply->getDataPtr())
+                         ->transKey;
+        return 0;
+      }
+      if (gsn != GSN_SCHEMA_TRANS_BEGIN_REF) return -1;
+      const SchemaTransBeginRef *ref =
+          CAST_CONSTPTR(SchemaTransBeginRef, reply->getDataPtr());
+      if (ref->errorCode == SchemaTransBeginRef::NotMaster) {
+        m_nodeId = ref->masterNodeId;
+      } else if (ref->errorCode == SchemaTransBeginRef::Busy ||
+                 ref->errorCode == SchemaTransBeginRef::BusyWithNR) {
+        NdbSleep_MilliSleep(100);
+      } else {
+        return ref->errorCode;
+      }
+    }
+    return SchemaTransBeginRef::Busy;
+  }
+
+  int endTrans(bool abort) {
+    SimpleSignal ssig;
+    ssig.set(m_ss, 0, DBDICT, GSN_SCHEMA_TRANS_END_REQ,
+             SchemaTransEndReq::SignalLength);
+    SchemaTransEndReq *req = CAST_PTR(SchemaTransEndReq, ssig.getDataPtrSend());
+    req->clientRef = m_ss.getOwnRef();
+    req->transId = m_transId;
+    req->requestInfo = 0;
+    req->transKey = m_transKey;
+    req->flags = abort ? SchemaTransEndReq::SchemaTransAbort : 0;
+    if (m_ss.sendSignal(m_nodeId, &ssig) != SEND_OK) return -1;
+    SimpleSignal *reply = waitReply();
+    if (reply == nullptr) return -1;
+    const int gsn = reply->readSignalNumber();
+    if (gsn == GSN_SCHEMA_TRANS_END_CONF) return 0;
+    if (gsn == GSN_SCHEMA_TRANS_END_REF)
+      return CAST_CONSTPTR(SchemaTransEndRef, reply->getDataPtr())->errorCode;
+    return -1;
+  }
+
+  /* A USER when isUser, else a DATABASE quota object. */
+  int createDatabase(const char *name, bool isUser, Uint32 ratePerSec) {
+    DictDatabaseInfo::Database db;
+    initDatabaseInfo(db, name, isUser);
+    db.RatePerSec = ratePerSec;
+    return sendOp<CreateDatabaseReq>(GSN_CREATE_DATABASE_REQ, db,
+                                     GSN_CREATE_DATABASE_CONF,
+                                     GSN_CREATE_DATABASE_REF);
+  }
+
+  int dropDatabase(const char *name, bool isUser) {
+    DictDatabaseInfo::Database db;
+    initDatabaseInfo(db, name, isUser);
+    return sendOp<DropDatabaseReq>(GSN_DROP_DATABASE_REQ, db,
+                                   GSN_DROP_DATABASE_CONF,
+                                   GSN_DROP_DATABASE_REF);
+  }
+
+  /* Looks the object up by name, outside any schema transaction. */
+  int getDatabase(const char *name, bool isUser) {
+    Uint32 nameWords[MAX_DB_NAME_SIZE / 4 + 1];
+    std::memset(nameWords, 0, sizeof(nameWords));
+    strncpy((char *)nameWords, name, MAX_DB_NAME_SIZE);
+    SimpleSignal ssig;
+    ssig.set(m_ss, 0, DBDICT, GSN_GET_DATABASE_REQ,
+             GetDatabaseReq::SignalLength);
+    GetDatabaseReq *req = CAST_PTR(GetDatabaseReq, ssig.getDataPtrSend());
+    req->senderRef = m_ss.getOwnRef();
+    req->senderData = 0;
+    req->requestInfo = isUser ? 1 : 0;
+    ssig.header.m_noOfSections = 1;
+    ssig.ptr[0].p = nameWords;
+    ssig.ptr[0].sz = Uint32(strlen(name) + 4) / 4;
+    if (m_ss.sendSignal(m_ss.get_an_alive_node(), &ssig) != SEND_OK)
+      return -1;
+    SimpleSignal *reply = waitReply();
+    if (reply == nullptr) return -1;
+    const int gsn = reply->readSignalNumber();
+    if (gsn == GSN_GET_DATABASE_CONF) return 0;
+    if (gsn == GSN_GET_DATABASE_REF)
+      return CAST_CONSTPTR(GetDatabaseRef, reply->getDataPtr())->errorCode;
+    return -1;
+  }
+
+ private:
+  static void initDatabaseInfo(DictDatabaseInfo::Database &db,
+                               const char *name, bool isUser) {
+    db.init();
+    strncpy(db.DatabaseName, name, MAX_DB_NAME_SIZE - 1);
+    db.DatabaseType = DictTabInfo::Database;
+    db.IsUser = isUser;
+    db.DatabaseId = 0;
+    db.DatabaseVersion = 0;
+  }
+
+  /**
+   * One database operation in the open transaction, filled as the
+   * management server fills it: the packed DictDatabaseInfo in section 0.
+   */
+  template <class Req>
+  int sendOp(Uint32 gsn, DictDatabaseInfo::Database &db, Uint32 confGsn,
+             Uint32 refGsn) {
+    UtilBuffer buf;
+    UtilBufferWriter w(buf);
+    if (SimpleProperties::pack(w, &db, DictDatabaseInfo::Mapping,
+                               DictDatabaseInfo::MappingSize) !=
+        SimpleProperties::Eof)
+      return -1;
+    SimpleSignal ssig;
+    Req *req = CAST_PTR(Req, ssig.getDataPtrSend());
+    req->senderRef = m_ss.getOwnRef();
+    req->senderData = 0;
+    req->requestInfo = db.IsUser ? 1 : 0;
+    req->transId = m_transId;
+    req->transKey = m_transKey;
+    req->requestType = DictTabInfo::Database;
+    req->databaseId = 0;
+    req->databaseVersion = 0;
+    ssig.header.m_noOfSections = 1;
+    ssig.ptr[0].p = (const Uint32 *)buf.get_data();
+    ssig.ptr[0].sz = buf.length() / 4;
+    if (m_ss.sendFragmentedSignal(m_nodeId, ssig, DBDICT, gsn,
+                                  Req::SignalLength) != SEND_OK)
+      return -1;
+    SimpleSignal *reply = waitReply();
+    if (reply == nullptr) return -1;
+    const Uint32 replyGsn = reply->readSignalNumber();
+    if (replyGsn == confGsn) return 0;
+    if (replyGsn != refGsn) return -1;
+    /* The three REFs keep errorCode at the same offset. */
+    return CAST_CONSTPTR(CreateDatabaseRef, reply->getDataPtr())->errorCode;
+  }
+
+  /* The next reply to this client, skipping cluster membership noise. */
+  SimpleSignal *waitReply() {
+    while (true) {
+      SimpleSignal *signal = m_ss.waitFor(30000);
+      if (signal == nullptr) {
+        g_err << "DictDatabaseClient: timed out waiting for DICT" << endl;
+        return nullptr;
+      }
+      switch (signal->readSignalNumber()) {
+        case GSN_NF_COMPLETEREP:
+        case GSN_NODE_FAILREP:
+        case GSN_API_REGCONF:
+        case GSN_TAKE_OVERTCCONF:
+        case GSN_CONNECT_REP:
+          continue;
+        default:
+          return signal;
+      }
+    }
+  }
+
+  SignalSender m_ss;
+  NodeId m_nodeId;
+  Uint32 m_transId;
+  Uint32 m_transKey;
+};
+
+#define DICTDB_CHECK(expr, expected)                                   \
+  do {                                                                 \
+    const int res_ = (expr);                                           \
+    if (res_ != (expected)) {                                          \
+      g_err << "line " << __LINE__ << ": " #expr " returned " << res_ \
+            << ", expected " << (expected) << endl;                    \
+      return NDBT_FAILED;                                              \
+    }                                                                  \
+  } while (0)
+
+/**
+ * A USER whose create was parsed and then aborted must leave nothing
+ * behind: GET finds no such user, and creating the same name again in a
+ * new transaction succeeds instead of failing with 721.
+ */
+int runUserCreateAbortedInParse(NDBT_Context *ctx, NDBT_Step *step) {
+  DictDatabaseClient dict(&GETNDB(step)->get_ndb_cluster_connection());
+  const char *name = "rl_aborted_user";
+
+  DICTDB_CHECK(dict.beginTrans(), 0);
+  DICTDB_CHECK(dict.createDatabase(name, true, 1000), 0);
+  DICTDB_CHECK(dict.endTrans(true), 0);
+  DICTDB_CHECK(dict.getDatabase(name, true), DropTableRef::NoSuchTable);
+
+  DICTDB_CHECK(dict.beginTrans(), 0);
+  DICTDB_CHECK(dict.createDatabase(name, true, 1000), 0);
+  DICTDB_CHECK(dict.endTrans(false), 0);
+  DICTDB_CHECK(dict.getDatabase(name, true), 0);
+
+  DICTDB_CHECK(dict.beginTrans(), 0);
+  DICTDB_CHECK(dict.dropDatabase(name, true), 0);
+  DICTDB_CHECK(dict.endTrans(false), 0);
+  DICTDB_CHECK(dict.getDatabase(name, true), DropTableRef::NoSuchTable);
+  return NDBT_OK;
+}
+
 NDBT_TESTSUITE(testDict);
 TESTCASE("testDropDDObjects",
          "* 1. start cluster\n"
@@ -11698,6 +11935,11 @@ TESTCASE("InvalidateParkedByPointer",
          "parked (RONDB-1092) dictionary object releases exactly its own "
          "reference and leaves the current incarnation cached") {
   INITIALIZER(runInvalidateParkedByPointer);
+}
+TESTCASE("UserCreateAbortedInParse",
+         "RONDB-1158: a USER create aborted after a successful parse "
+         "leaves no dictionary object behind") {
+  INITIALIZER(runUserCreateAbortedInParse);
 }
 NDBT_TESTSUITE_END(testDict)
 

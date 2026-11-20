@@ -33972,17 +33972,24 @@ Dbdict::createDatabase_abortParse(Signal* signal, SchemaOpPtr op_ptr) {
       break;
     }
 
-    DatabasePtr db_ptr;
-    bool ok = find_object(db_ptr, databaseId);
-
-    // any link was to a new object
-    if (hasDictObject(op_ptr)) {
+    if (!createDbPtr.p->m_parsed) {
       jam();
-      unlinkDictObject(op_ptr);
-      if (ok) {
-        jam();
-      }
+      D("parse failed on this node, its error path released the object");
+      break;
     }
+
+    /**
+     * A successful parse added the new object to the name and id hashes
+     * (it never links the object to the op), so an aborted create must
+     * remove it again. Left in place, the name stays taken without a
+     * schema file entry: a later create of the same name fails with 721,
+     * and GET and LIST report an object that was never committed. The
+     * schema file entry itself is restored by the transaction log abort.
+     */
+    DatabasePtr db_ptr;
+    ndbrequire(find_object(db_ptr, databaseId));
+    release_object(db_ptr.p->m_obj_ptr_i);
+    c_database_pool.release(db_ptr);
   } while (0);
   sendTransConf(signal, op_ptr);
 }
