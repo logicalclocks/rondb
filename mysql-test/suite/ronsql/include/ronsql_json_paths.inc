@@ -24,7 +24,9 @@
 --echo == Rows of the RDRS bodies vs mysqld ==
 --exec $RDRS_RONSQL '{"query":"$jp_query","database":"test"}' > $MYSQL_TMP_DIR/jp-rdrs.out
 --exec $MYSQL --default-character-set=utf8mb4 -D test -e '$jp_query' > $MYSQL_TMP_DIR/jp-mysql.out
---let JP_QUERY=$jp_query
+# The query reaches perl through a file: $ENV{JP_QUERY}, set with
+# --let JP_QUERY=..., was not defined in the perl block.
+--exec printf '%s' '$jp_query' > $MYSQL_TMP_DIR/jp-query.sql
 --perl
 use strict;
 use warnings;
@@ -41,7 +43,7 @@ sub slurp {
 }
 binmode(STDOUT, ':encoding(UTF-8)');
 # The main query is ordered when an ORDER BY follows its last ')'.
-my $ordered = ($ENV{JP_QUERY} =~ /ORDER\s+BY[^)]*$/i);
+my $ordered = (slurp("$dir/jp-query.sql") =~ /ORDER\s+BY[^)]*$/i);
 my @mysql = split(/\n/, decode('UTF-8', slurp("$dir/jp-mysql.out")));
 my @header = @mysql ? split(/\t/, shift(@mysql), -1) : ();
 my $ascii_only = (slurp("$dir/jp-cli-ascii.out") .
@@ -80,7 +82,7 @@ foreach my $format ('JSON', 'JSON_ASCII') {
   }
 }
 EOF
---let JP_QUERY=
+--remove_file $MYSQL_TMP_DIR/jp-query.sql
 --remove_file $MYSQL_TMP_DIR/jp-cli-ascii.out
 --remove_file $MYSQL_TMP_DIR/jp-rdrs-ascii.out
 --remove_file $MYSQL_TMP_DIR/jp-rdrs.out

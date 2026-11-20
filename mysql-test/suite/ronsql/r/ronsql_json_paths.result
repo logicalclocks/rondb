@@ -351,7 +351,7 @@ RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
 
 === jp-13: IN list on the key, some keys hit (control) ===
 == Query ==
-SELECT id, label FROM jp WHERE id IN (1, 4, 99);
+SELECT id, label FROM jp WHERE id IN (1, 4, 99) ORDER BY id;
 == ronsql_cli JSON ==
 [{"id":1,"label":"café"},{"id":4,"label":null}]
 [{"id":1,"label":"café"},{"id":4,"label":null}]

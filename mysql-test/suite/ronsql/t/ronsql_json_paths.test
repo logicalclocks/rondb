@@ -156,7 +156,9 @@ let $RDRS_RONSQL = curl --no-progress-meter --fail-with-body -X POST
 
 --echo
 --echo === jp-13: IN list on the key, some keys hit (control) ===
---let $QUERY=SELECT id, label FROM jp WHERE id IN (1, 4, 99);
+# ORDER BY: jp's key also has an ordered index, so the IN list can run as
+# a multi-range scan over both fragments, in an order of its own.
+--let $QUERY=SELECT id, label FROM jp WHERE id IN (1, 4, 99) ORDER BY id;
 --source suite/ronsql/include/ronsql_json_paths.inc
 
 --echo
