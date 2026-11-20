@@ -117,6 +117,25 @@
 #include "../dbtup/VecSearchInterpreter.hpp"
 #include <CteLinkedAttr.hpp>
 
+#ifdef ERROR_INSERT
+#include <atomic>
+/* Node-wide one-shot error inserts 5155-5157 (see Dblqh.hpp).  One token
+ * per data node process, shared by its LQH instances. */
+static std::atomic<Uint32> g_lqh_node_one_shot_error{0};
+
+void lqh_arm_node_one_shot_error() {
+  g_lqh_node_one_shot_error.store(1);
+}
+
+bool lqh_take_node_one_shot_error() {
+  if (globalData.ndbMtLqhWorkers == 0) {
+    return true;  // ndbd: one LQH instance, the insert itself is one-shot
+  }
+  Uint32 armed = 1;
+  return g_lqh_node_one_shot_error.compare_exchange_strong(armed, 0);
+}
+#endif
+
 /**
  * overload handling...
  * TODO: cleanup...from all sorts of perspective
@@ -9873,6 +9892,18 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     SET_ERROR_INSERT_VALUE(5079);
   }
 
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5155) && LqhKeyReq::getOperation(Treqinfo) == ZREAD) {
+    /* Node-wide one-shot (Dblqh.hpp): the first read LQHKEYREQ on the
+     * node fails with 1218 (as 5047, below), on whichever LQH instance
+     * runs it.  Writes (schema distribution, other sessions) do not take
+     * the token. */
+    CLEAR_ERROR_INSERT_VALUE;
+    if (lqh_take_node_one_shot_error()) {
+      SET_ERROR_INSERT_VALUE(5047);
+    }
+  }
+#endif
   if (ERROR_INSERTED_CLEAR(5047) || ERROR_INSERTED_CLEAR(5108) ||
       ERROR_INSERTED(5079) ||
       (ERROR_INSERTED(5102) && LqhKeyReq::getNoTriggersFlag(Treqinfo)) ||
@@ -18939,6 +18970,16 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
     CLEAR_ERROR_INSERT_VALUE;
   }
 
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5157) && refToMain(senderBlockRef) != getBACKUP()) {
+    /* Node-wide one-shot (Dblqh.hpp): drop the first SCAN_NEXTREQ on the
+     * node (as 5030, below), on whichever LQH instance runs the scan. */
+    CLEAR_ERROR_INSERT_VALUE;
+    if (lqh_take_node_one_shot_error()) {
+      SET_ERROR_INSERT_VALUE(5030);
+    }
+  }
+#endif
   if (ERROR_INSERTED(5030)) {
     if (refToMain(senderBlockRef) != getBACKUP()) {
       ndbout << "ERROR 5030" << endl;
@@ -25792,6 +25833,18 @@ void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
   const Uint32 senderData = scanFragReq->senderData;
   const Uint32 senderBlockNo = refToMain(senderBlockRef);
   TcConnectionrecPtr tcConnectptr;
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5156) &&
+      !ScanFragReq::getLcpScanFlag(scanFragReq->requestInfo) &&
+      senderBlockNo != getBACKUP() && senderBlockNo != DBUTIL) {
+    /* Node-wide one-shot (Dblqh.hpp): refuse the first user scan on the
+     * node with 1217 (as 5055, below), on whichever LQH instance runs it. */
+    CLEAR_ERROR_INSERT_VALUE;
+    if (lqh_take_node_one_shot_error()) {
+      SET_ERROR_INSERT_VALUE(5055);
+    }
+  }
+#endif
   if (likely(ctcNumFree > ZNUM_RESERVED_UTIL_CONNECT_RECORDS &&
              ((!ERROR_INSERTED(5099)) &&
               (!ERROR_INSERTED(5055)) &&

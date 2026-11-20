@@ -534,6 +534,22 @@ class FsReadWriteReq;
 #define ZFIRST_QUERY_THREAD_ERROR_INSERT 5128
 #endif
 
+#ifdef ERROR_INSERT
+/* Node-wide one-shot error inserts 5155 (read LQHKEYREQ), 5156
+ * (SCAN_FRAGREQ) and 5157 (SCAN_NEXTREQ): every LQH instance of the node,
+ * LDM or query worker, is armed (the codes are >=
+ * ZFIRST_QUERY_THREAD_ERROR_INSERT), but only the first instance that
+ * meets such a request after the arming acts on it, by setting its own
+ * one-shot 5047, 5055 or 5030 for the code that follows.  DblqhProxy arms
+ * one token per node when it gets the NDB_TAMPER; an instance takes it
+ * with lqh_take_node_one_shot_error.  In ndbd, with one LQH instance and
+ * no proxy, the insert itself is the one shot.  RONDB-1124 T-4
+ * (ronsql_single_table_faults): a committed read or scan may run on any
+ * instance, so the LDM-only 5047, 5055 and 5030 may not fire at all. */
+void lqh_arm_node_one_shot_error();
+bool lqh_take_node_one_shot_error();
+#endif
+
 /* Join aggregation error codes (outside DBLQH_C for DblqhProxy) */
 #define ZJOIN_AGG_STATE_ALLOC_FAILED       1250
 #define ZJOIN_AGG_STATE_NOT_FOUND          1251

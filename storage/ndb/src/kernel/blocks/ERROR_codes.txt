@@ -202,7 +202,17 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
       node-failure protocol); emits [JOIN_AGG_MERGE_HELD node=N iteration=I
       coordinator=C] (extra = iteration, top bit = event sent). NF-14: the
       host record's ZNODE_DOWN must stop it
-Next DBLQH 5155
+5155: Fail the next read LQHKEYREQ on the node with 1218 (as 5047), once
+      per data node: every LQH instance, LDM or query worker, is armed (>= 5128)
+      and the first one that gets an LQHKEYREQ takes the node's one token,
+      armed by DblqhProxy (lqh_arm_node_one_shot_error, Dblqh.hpp); the
+      others clear the insert.  ronsql_single_table_faults (RONDB-1124 T-4).
+5156: Refuse the next SCAN_FRAGREQ on the node with 1217 (as 5055), once per
+      data node, as 5155.  LCP, backup and DBUTIL scans are not refused.
+5157: Drop the next SCAN_NEXTREQ on the node (as 5030; DBTC fails the scan
+      with 274 after its timeout), once per data node, as 5155.  Backup
+      scans are not affected.
+Next DBLQH 5158
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8135

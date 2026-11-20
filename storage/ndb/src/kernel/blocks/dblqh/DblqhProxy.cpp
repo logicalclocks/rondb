@@ -294,6 +294,11 @@ void DblqhProxy::execNDB_TAMPER(Signal *signal) {
    * they parked, past the hold armed on every LDM.  Forward the codes
    * from ZFIRST_QUERY_THREAD_ERROR_INSERT on to DbqlqhProxy, which fans
    * them out to its workers; code 0 reaches every proxy from CMVMI. */
+  if (signal->theData[0] >= 5155 && signal->theData[0] <= 5157) {
+    /* Node-wide one-shot inserts (Dblqh.hpp): one token per node, armed
+     * here once, before the instances get the insert. */
+    lqh_arm_node_one_shot_error();
+  }
   if (signal->theData[0] >= ZFIRST_QUERY_THREAD_ERROR_INSERT &&
       globalData.ndbMtQueryWorkers > 0) {
     jam();

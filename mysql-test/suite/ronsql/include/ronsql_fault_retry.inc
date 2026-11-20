@@ -7,10 +7,11 @@
 #                   backslashes (it is put in a JSON string as it is)
 #   $fault_node     the data node that holds the primary replica of the
 #                   table's one fragment
-#   $fault_insert   the DBLQH error insert armed on $fault_node only:
-#                   5055 fails the next SCAN_FRAGREQ (NDB error 1217),
-#                   5047 the next LQHKEYREQ (1218) of the LDM instance
-#                   that runs it, and clears itself there
+#   $fault_insert   the node-wide one-shot DBLQH error insert armed on
+#                   $fault_node only: 5156 fails the node's next
+#                   SCAN_FRAGREQ (NDB error 1217), 5155 its next
+#                   LQHKEYREQ (1218), on whichever LDM instance or query
+#                   worker runs it
 #   $fault_error    the NDB error code the insert fails the request with
 #   $fault_ordered  non-empty: the statement has a top-level ORDER BY,
 #                   compare the rows in order; otherwise both outputs are
