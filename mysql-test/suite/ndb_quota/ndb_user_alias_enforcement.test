@@ -1,0 +1,263 @@
+--source include/have_ndb.inc
+
+# RONDB-1158: SQL traffic tagged with a USER ALIAS is charged to the alias's
+# target USER. DBTC swaps the alias for its target at each admission point,
+# so each point gets its own alias and target here and each throttle proves
+# its own path: key reads (TCKEYREQ), unique index reads (TCINDXREQ) and
+# scans (SCAN_TABREQ). Further: two aliases share their target's budget, an
+# alias whose target does not exist runs unmetered, and the object id of a
+# dropped target, reused by another USER, is never charged through the
+# alias (the drop refusal makes the alias wait for its target by name).
+#
+# Throttling is counted only as the rate-limit error (1297, see
+# include/user_throttle_count.inc). A target of rate 1 drains at one unit
+# per second, so once exhausted it stays refused for the rest of the test,
+# while a fresh one passes its first statement.
+
+CREATE DATABASE marketing;
+CREATE TABLE marketing.clicks (a INT PRIMARY KEY, b INT NOT NULL,
+                               c INT NOT NULL, UNIQUE KEY ub (b))
+  ENGINE ndb;
+INSERT INTO marketing.clicks VALUES
+  (1,1,1),(2,2,1),(3,3,1),(4,4,2),(5,5,2),(6,6,2),(7,7,3),(8,8,3),(9,9,3),
+  (10,10,4);
+
+CREATE USER 'alice'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'ivan'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'sam'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'mary'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'mike'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'ctl_rl'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'bob'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'carl'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'rl_b'@'%' IDENTIFIED BY 'pw';
+GRANT ALL PRIVILEGES ON marketing.* TO 'alice'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'ivan'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'sam'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'mary'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'mike'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'ctl_rl'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'bob'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'carl'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'rl_b'@'%';
+
+--disable_result_log
+--exec $NDB_MGM -e "USER SET kp_rl --rate-per-sec=1"
+--exec $NDB_MGM -e "USER SET ix_rl --rate-per-sec=1"
+--exec $NDB_MGM -e "USER SET sc_rl --rate-per-sec=1"
+--exec $NDB_MGM -e "USER SET shared_rl --rate-per-sec=1"
+--exec $NDB_MGM -e "USER SET ctl_rl --rate-per-sec=1"
+--exec $NDB_MGM -e "USER ALIAS SET alice --target=kp_rl"
+--exec $NDB_MGM -e "USER ALIAS SET ivan --target=ix_rl"
+--exec $NDB_MGM -e "USER ALIAS SET sam --target=sc_rl"
+--exec $NDB_MGM -e "USER ALIAS SET mary --target=shared_rl"
+--exec $NDB_MGM -e "USER ALIAS SET mike --target=shared_rl"
+--exec $NDB_MGM -e "USER ALIAS SET bob --target=nobody_rl"
+--enable_result_log
+
+connect (alice, 127.0.0.1, alice,  pw, marketing, $MASTER_MYPORT);
+connect (ivan,  127.0.0.1, ivan,   pw, marketing, $MASTER_MYPORT);
+connect (sam,   127.0.0.1, sam,    pw, marketing, $MASTER_MYPORT);
+connect (mary,  127.0.0.1, mary,   pw, marketing, $MASTER_MYPORT);
+connect (mike,  127.0.0.1, mike,   pw, marketing, $MASTER_MYPORT);
+connect (ctl,   127.0.0.1, ctl_rl, pw, marketing, $MASTER_MYPORT);
+connect (bob,   127.0.0.1, bob,    pw, marketing, $MASTER_MYPORT);
+connect (carl,  127.0.0.1, carl,   pw, marketing, $MASTER_MYPORT);
+connect (rl_b,  127.0.0.1, rl_b,   pw, marketing, $MASTER_MYPORT);
+
+let $throttle_count = 300;
+
+--echo #
+--echo # 1. Each admission point charges an alias's traffic to its target.
+--echo #
+connection alice;
+let $throttle_stmt = SELECT b FROM marketing.clicks WHERE a = 1;
+--source suite/ndb_quota/include/user_throttle_count.inc
+if ($throttled)
+{
+  --echo alice: key reads throttled through kp_rl
+}
+if (!$throttled)
+{
+  --echo alice: NOT THROTTLED - key reads not charged to kp_rl
+}
+
+connection ivan;
+let $throttle_stmt = SELECT a FROM marketing.clicks WHERE b = 1;
+--source suite/ndb_quota/include/user_throttle_count.inc
+if ($throttled)
+{
+  --echo ivan: unique index reads throttled through ix_rl
+}
+if (!$throttled)
+{
+  --echo ivan: NOT THROTTLED - index reads not charged to ix_rl
+}
+
+connection sam;
+let $throttle_stmt = SELECT a FROM marketing.clicks WHERE c > 0;
+--source suite/ndb_quota/include/user_throttle_count.inc
+if ($throttled)
+{
+  --echo sam: scans throttled through sc_rl
+}
+if (!$throttled)
+{
+  --echo sam: NOT THROTTLED - scans not charged to sc_rl
+}
+
+--echo #
+--echo # 2. Two aliases share their target: once mary exhausts shared_rl,
+--echo #    mike's first statement is refused, while a fresh USER of the same
+--echo #    rate (ctl_rl, tagged directly) passes its first.
+--echo #
+connection mary;
+--source suite/ndb_quota/include/user_throttle_count.inc
+if (!$throttled)
+{
+  --echo mary: NOT THROTTLED - shared_rl not charged
+}
+
+let $throttle_count = 1;
+connection mike;
+--source suite/ndb_quota/include/user_throttle_count.inc
+if ($throttled)
+{
+  --echo mike: first statement refused, shared_rl is shared
+}
+if (!$throttled)
+{
+  --echo mike: first statement passed - shared_rl NOT shared
+}
+
+connection ctl;
+--source suite/ndb_quota/include/user_throttle_count.inc
+if (!$throttled)
+{
+  --echo ctl_rl: a fresh USER passes its first statement
+}
+if ($throttled)
+{
+  --echo ctl_rl: first statement refused - the control is invalid
+}
+let $throttle_count = 300;
+
+--echo #
+--echo # 3. An alias whose target does not exist runs unmetered.
+--echo #
+connection bob;
+--source suite/ndb_quota/include/user_throttle_count.inc
+if (!$throttled)
+{
+  --echo bob: not throttled, nobody_rl does not exist
+}
+if ($throttled)
+{
+  --echo bob: THROTTLED - an absent target charged something
+}
+
+--echo #
+--echo # 4. A dropped target's object id is never charged through the alias.
+--echo #    The target cannot be dropped while the alias resolves to it; once
+--echo #    both are dropped, rl_b takes rl_a's id, the alias set again to
+--echo #    rl_a waits for rl_a by name and charges nothing, rl_b included,
+--echo #    and recreating rl_a binds the alias again.
+--echo #
+--disable_result_log
+--exec $NDB_MGM -e "USER SET rl_a --rate-per-sec=1"
+--exec $NDB_MGM -e "USER ALIAS SET carl --target=rl_a"
+--exec $NDB_MGM -e "USER GET rl_a" > $MYSQLTEST_VARDIR/tmp/rl_a_get.txt
+--error 255,65280
+--exec $NDB_MGM -e "USER DROP rl_a"
+--exec $NDB_MGM -e "USER ALIAS DROP carl"
+--exec $NDB_MGM -e "USER DROP rl_a"
+--exec $NDB_MGM -e "USER SET rl_b --rate-per-sec=1"
+--exec $NDB_MGM -e "USER GET rl_b" > $MYSQLTEST_VARDIR/tmp/rl_b_get.txt
+--exec $NDB_MGM -e "USER ALIAS SET carl --target=rl_a"
+--enable_result_log
+--perl
+use strict;
+my $dir = "$ENV{MYSQLTEST_VARDIR}/tmp";
+sub user_id {
+  open(my $f, '<', "$dir/$_[0]") or die "$_[0]: $!";
+  while (<$f>) { return $1 if /^userId = (\d+)/; }
+  die "no userId in $_[0]";
+}
+print user_id('rl_a_get.txt') == user_id('rl_b_get.txt')
+  ? "rl_b reuses the object id rl_a had\n"
+  : "rl_b did NOT reuse rl_a's object id - the case is not exercised\n";
+unlink("$dir/rl_a_get.txt", "$dir/rl_b_get.txt");
+EOF
+
+connection carl;
+--source suite/ndb_quota/include/user_throttle_count.inc
+if (!$throttled)
+{
+  --echo carl: not throttled while rl_a is absent
+}
+if ($throttled)
+{
+  --echo carl: THROTTLED - charged an object that is not rl_a
+}
+
+let $throttle_count = 1;
+connection rl_b;
+--source suite/ndb_quota/include/user_throttle_count.inc
+if (!$throttled)
+{
+  --echo rl_b: untouched by carl's traffic
+}
+if ($throttled)
+{
+  --echo rl_b: first statement refused - carl was charged to rl_b
+}
+let $throttle_count = 300;
+
+--disable_result_log
+--exec $NDB_MGM -e "USER SET rl_a --rate-per-sec=1"
+--enable_result_log
+connection carl;
+--source suite/ndb_quota/include/user_throttle_count.inc
+if ($throttled)
+{
+  --echo carl: throttled through the recreated rl_a
+}
+if (!$throttled)
+{
+  --echo carl: NOT THROTTLED - the alias did not bind to rl_a
+}
+--error 255,65280
+--exec $NDB_MGM -e "USER DROP rl_a" > /dev/null
+
+--echo #
+--echo # Cleanup
+--echo #
+connection default;
+disconnect alice;
+disconnect ivan;
+disconnect sam;
+disconnect mary;
+disconnect mike;
+disconnect ctl;
+disconnect bob;
+disconnect carl;
+disconnect rl_b;
+--disable_result_log
+--exec $NDB_MGM -e "USER ALIAS DROP alice"
+--exec $NDB_MGM -e "USER ALIAS DROP ivan"
+--exec $NDB_MGM -e "USER ALIAS DROP sam"
+--exec $NDB_MGM -e "USER ALIAS DROP mary"
+--exec $NDB_MGM -e "USER ALIAS DROP mike"
+--exec $NDB_MGM -e "USER ALIAS DROP bob"
+--exec $NDB_MGM -e "USER ALIAS DROP carl"
+--exec $NDB_MGM -e "USER DROP kp_rl"
+--exec $NDB_MGM -e "USER DROP ix_rl"
+--exec $NDB_MGM -e "USER DROP sc_rl"
+--exec $NDB_MGM -e "USER DROP shared_rl"
+--exec $NDB_MGM -e "USER DROP ctl_rl"
+--exec $NDB_MGM -e "USER DROP rl_a"
+--exec $NDB_MGM -e "USER DROP rl_b"
+--enable_result_log
+DROP USER 'alice'@'%', 'ivan'@'%', 'sam'@'%', 'mary'@'%', 'mike'@'%',
+          'ctl_rl'@'%', 'bob'@'%', 'carl'@'%', 'rl_b'@'%';
+DROP DATABASE marketing;

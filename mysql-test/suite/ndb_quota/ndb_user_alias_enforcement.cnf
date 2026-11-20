@@ -1,0 +1,7 @@
+!include suite/ndb_quota/my_1rpl.cnf
+
+# RONDB-1158: aliases are exercised through tagged SQL traffic, so the
+# server must tag transactions; the sysvar is PLUGIN_VAR_READONLY and can
+# only be turned on at startup. ActivateRateLimits comes from my_1rpl.cnf.
+[mysqld.1.1]
+ndb-user-rate-limits=ON

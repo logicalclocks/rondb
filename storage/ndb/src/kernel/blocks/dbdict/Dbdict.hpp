@@ -2861,6 +2861,12 @@ class Dbdict : public SimulatedBlock {
     // Table has been modified by subOps
     bool m_modified_by_subOps;
 
+    /**
+     * A USER's commit binds the aliases that waited for it; they are kept
+     * here, linked by m_next_dangling_alias, until DBTC has bound each.
+     */
+    Uint32 m_bind_aliases;
+
     CreateDatabaseRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
       std::memset(&m_request, 0, sizeof(m_request));
@@ -2868,6 +2874,7 @@ class Dbdict : public SimulatedBlock {
       m_prepared = false;
       m_abortPrepareDone = false;
       m_modified_by_subOps = false;
+      m_bind_aliases = RNIL;
     }
 
 #if defined(VM_TRACE)
@@ -4814,7 +4821,8 @@ class Dbdict : public SimulatedBlock {
                             const char *alias_name,
                             const char *target,
                             Uint32 &target_id);
-  void bindDanglingAliases(DatabasePtr user_ptr);
+  void bindDanglingAliases(DatabasePtr user_ptr, Uint32 &bound_aliases);
+  void sendBindAlias(Signal *signal, SchemaOpPtr op_ptr);
   void unlinkDanglingAlias(DatabasePtr alias_ptr);
   bool aliasCreatePendingFor(SchemaTransPtr trans_ptr, const char *user_name);
   bool matchesDatabaseFilter(DatabasePtr db_ptr, Uint32 filter);

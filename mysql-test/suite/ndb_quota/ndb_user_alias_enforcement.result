@@ -1,0 +1,59 @@
+CREATE DATABASE marketing;
+CREATE TABLE marketing.clicks (a INT PRIMARY KEY, b INT NOT NULL,
+c INT NOT NULL, UNIQUE KEY ub (b))
+ENGINE ndb;
+INSERT INTO marketing.clicks VALUES
+(1,1,1),(2,2,1),(3,3,1),(4,4,2),(5,5,2),(6,6,2),(7,7,3),(8,8,3),(9,9,3),
+(10,10,4);
+CREATE USER 'alice'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'ivan'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'sam'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'mary'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'mike'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'ctl_rl'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'bob'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'carl'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'rl_b'@'%' IDENTIFIED BY 'pw';
+GRANT ALL PRIVILEGES ON marketing.* TO 'alice'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'ivan'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'sam'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'mary'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'mike'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'ctl_rl'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'bob'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'carl'@'%';
+GRANT ALL PRIVILEGES ON marketing.* TO 'rl_b'@'%';
+#
+# 1. Each admission point charges an alias's traffic to its target.
+#
+alice: key reads throttled through kp_rl
+ivan: unique index reads throttled through ix_rl
+sam: scans throttled through sc_rl
+#
+# 2. Two aliases share their target: once mary exhausts shared_rl,
+#    mike's first statement is refused, while a fresh USER of the same
+#    rate (ctl_rl, tagged directly) passes its first.
+#
+mike: first statement refused, shared_rl is shared
+ctl_rl: a fresh USER passes its first statement
+#
+# 3. An alias whose target does not exist runs unmetered.
+#
+bob: not throttled, nobody_rl does not exist
+#
+# 4. A dropped target's object id is never charged through the alias.
+#    The target cannot be dropped while the alias resolves to it; once
+#    both are dropped, rl_b takes rl_a's id, the alias set again to
+#    rl_a waits for rl_a by name and charges nothing, rl_b included,
+#    and recreating rl_a binds the alias again.
+#
+rl_b reuses the object id rl_a had
+carl: not throttled while rl_a is absent
+rl_b: untouched by carl's traffic
+carl: throttled through the recreated rl_a
+#
+# Cleanup
+#
+DROP USER 'alice'@'%', 'ivan'@'%', 'sam'@'%', 'mary'@'%', 'mike'@'%',
+'ctl_rl'@'%', 'bob'@'%', 'carl'@'%', 'rl_b'@'%';
+DROP DATABASE marketing;

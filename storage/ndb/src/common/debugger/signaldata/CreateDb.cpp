@@ -46,6 +46,10 @@ bool printCREATE_DB_REQ(FILE *output,
     fprintf(output, " maxParallelTransactions: %.8u, maxParallelComplexQueries: %.8u\n",
             sig->maxParallelTransactions, sig->maxParallelComplexQueries);
   }
+  if (len >= CreateDbReq::SignalLengthTC) {
+    fprintf(output, " isAlias: %u, aliasTargetId: %.8u\n",
+            sig->isAlias, sig->aliasTargetId);
+  }
   return true;
 }
 

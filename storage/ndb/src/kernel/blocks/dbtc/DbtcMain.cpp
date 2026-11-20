@@ -3739,6 +3739,9 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
       g_eventLogger->info("(%u) Sending incorrect user id: %u",
         instance(), user_id);
       ndbassert(false);
+    } else if (unlikely(databaseRecordPtr.p->m_is_alias)) {
+      jam();
+      swapAliasForTarget(databaseRecordPtr, localTabptr.p->databaseRecord);
     }
   } else {
     databaseRecordPtr.i = localTabptr.p->databaseRecord;
@@ -16303,6 +16306,9 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
         g_eventLogger->info("(%u) Sending incorrect user id for scan: %u",
           instance(), user_id);
         ndbassert(false);
+      } else if (unlikely(databaseRecordPtr.p->m_is_alias)) {
+        jam();
+        swapAliasForTarget(databaseRecordPtr, tabptr.p->databaseRecord);
       }
     } else {
       databaseRecordPtr.i = tabptr.p->databaseRecord;
@@ -22531,6 +22537,9 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
       g_eventLogger->info("(%u) Sending incorrect user id: %u",
         instance(), user_id);
       ndbassert(false);
+    } else if (unlikely(databaseRecordPtr.p->m_is_alias)) {
+      jam();
+      swapAliasForTarget(databaseRecordPtr, localTabptr.p->databaseRecord);
     }
   } else {
     databaseRecordPtr.i = localTabptr.p->databaseRecord;
@@ -27580,6 +27589,30 @@ Dbtc::handleBackgroundRateLimits(Signal *signal, Uint32 nextDatabaseId) {
   sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, delay, 2);
 }
 
+/**
+ * A transaction tagged with a USER ALIAS is charged to the alias's target
+ * USER: the target replaces the alias as the record the transaction pins
+ * and forwards to DBLQH and DBSPJ. An alias whose target is not known here
+ * runs unmetered, as an unknown name does. DBDICT refuses to drop a USER
+ * that aliases resolve to, so a resolved id never names another object.
+ */
+void Dbtc::swapAliasForTarget(DatabaseRecordPtr &dbPtr,
+                              Uint64 tableDatabaseRecord) {
+  DatabaseRecordPtr targetPtr;
+  DatabaseRecord key(*this, dbPtr.p->m_alias_target_id);
+  if (dbPtr.p->m_alias_target_id != RNIL &&
+      m_databaseRecordHash.find(targetPtr, key) &&
+      targetPtr.p->m_is_user &&
+      !targetPtr.p->m_is_alias) {
+    jam();
+    dbPtr = targetPtr;
+    return;
+  }
+  jam();
+  dbPtr.i = tableDatabaseRecord;
+  dbPtr.p = nullptr;
+}
+
 Dbtc::DatabaseRecord*
 Dbtc::getDatabaseRecord(Uint32 databaseId) {
   DatabaseRecordPtr dbPtr;
@@ -27673,6 +27706,8 @@ void Dbtc::execCREATE_DB_REQ(Signal* signal) {
     Uint64(req.diskSpaceSizeGB) * Uint64(1024 * 32);
   dbPtr.p->m_rate_per_sec = req.ratePerSec;
   dbPtr.p->m_is_user = req.isUser;
+  dbPtr.p->m_is_alias = req.isAlias;
+  dbPtr.p->m_alias_target_id = req.aliasTargetId;
   dbPtr.p->m_max_transaction_size = req.maxTransactionSize;
   dbPtr.p->m_max_parallel_transactions = req.maxParallelTransactions;
   dbPtr.p->m_max_parallel_complex_queries = req.maxParallelComplexQueries;
@@ -27793,6 +27828,20 @@ void Dbtc::execCONNECT_TABLE_DB_REQ(Signal *signal) {
     ref->errorStatus = 0;
     sendSignal(req.senderRef, GSN_CONNECT_TABLE_DB_REF, signal,
                ConnectTableDbRef::SignalLength, JBB);
+    return;
+  }
+  if (req.requestType == ConnectTableDbReq::BIND_ALIAS) {
+    jam();
+    ndbrequire(dbPtr.p->m_is_alias);
+    dbPtr.p->m_alias_target_id = req.tableId;
+    ConnectTableDbConf* conf = (ConnectTableDbConf*)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = req.senderData;
+    conf->requestType = req.requestType;
+    conf->databaseId = req.databaseId;
+    conf->tableId = req.tableId;
+    sendSignal(req.senderRef, GSN_CONNECT_TABLE_DB_CONF, signal,
+               ConnectTableDbConf::SignalLength, JBB);
     return;
   }
   ndbrequire(dbPtr.p->m_is_user == false);

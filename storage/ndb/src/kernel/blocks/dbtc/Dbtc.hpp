@@ -2962,6 +2962,8 @@ class Dbtc : public SimulatedBlock {
       m_is_memory_quota_exceeded(false),
       m_is_disk_quota_exceeded(false),
       m_is_user(false),
+      m_is_alias(false),
+      m_alias_target_id(RNIL),
       m_current_in_memory_size8k(0),
       m_current_disk_space_size32k(0),
       m_current_used_rate_us(0),
@@ -3001,6 +3003,13 @@ class Dbtc : public SimulatedBlock {
     bool m_is_memory_quota_exceeded;
     bool m_is_disk_quota_exceeded;
     bool m_is_user;
+    /**
+     * A USER ALIAS is a user record with no budget: transactions tagged
+     * with it are charged to the USER with object id m_alias_target_id,
+     * RNIL while DBDICT has no USER of the target's name.
+     */
+    bool m_is_alias;
+    Uint32 m_alias_target_id;
 
     NDB_TICKS m_last_rate_decrement;
 
@@ -3245,6 +3254,8 @@ class Dbtc : public SimulatedBlock {
   typedef DatabaseRecord_hash::Iterator DatabaseRecordIterator;
   DatabaseRecord_pool m_databaseRecordPool;
   DatabaseRecord_hash m_databaseRecordHash;
+  void swapAliasForTarget(DatabaseRecordPtr &dbPtr,
+                          Uint64 tableDatabaseRecord);
   RSS_AP_SNAPSHOT(m_databaseRecordPool);
   NDB_TICKS m_last_database_check_time;
   Uint32 m_max_database_id;

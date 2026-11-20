@@ -33,7 +33,7 @@
 
 struct CreateDbReq
 {
-  static constexpr Uint32 SignalLengthTC = 12;
+  static constexpr Uint32 SignalLengthTC = 14;
   static constexpr Uint32 SignalLengthLQH = 9;
 
   Uint32 senderRef;
@@ -48,6 +48,13 @@ struct CreateDbReq
   Uint32 maxTransactionSize;
   Uint32 maxParallelTransactions;
   Uint32 maxParallelComplexQueries;
+  /**
+   * DBTC only, sent within the node: a USER ALIAS and the object id of its
+   * target USER, RNIL while there is none (ConnectTableDbReq::BIND_ALIAS
+   * sets it when the target appears).
+   */
+  Uint32 isAlias;
+  Uint32 aliasTargetId;
 
   friend bool printCREATE_DB_REQ(FILE *, const Uint32 *, Uint32, Uint16);
 };
@@ -83,7 +90,13 @@ struct ConnectTableDbReq {
     CREATE_DB = 0,
     CONNECT_GLOBAL_INSTANCE = 1,
     CREATE_TABLE = 2,
-    RENAME_TABLE = 3
+    RENAME_TABLE = 3,
+    /**
+     * DBTC only: the alias databaseId now charges the USER whose object id
+     * travels in tableId. Sent when a USER commits that aliases set before
+     * it were waiting for.
+     */
+    BIND_ALIAS = 4
   };
   Uint32 senderRef;
   Uint32 senderData;

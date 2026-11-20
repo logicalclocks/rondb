@@ -33108,10 +33108,12 @@ Dbdict::resolveAliasTarget(SchemaOpPtr op_ptr,
  * A USER committed: every waiting alias that names it is bound to it and
  * counted, whether the USER is new, recreated, or rebuilt by a restart.
  * Without this an alias created before its target would never count, and
- * the target could be dropped while the alias resolves to it.
+ * the target could be dropped while the alias resolves to it. The bound
+ * aliases are returned linked in bound_aliases for DBTC, see
+ * sendBindAlias.
  */
 void
-Dbdict::bindDanglingAliases(DatabasePtr user_ptr) {
+Dbdict::bindDanglingAliases(DatabasePtr user_ptr, Uint32 &bound_aliases) {
   char user_name[MAX_DB_NAME_SIZE + 1];
   {
     LcConstRope name(user_ptr.p->m_name);
@@ -33131,13 +33133,45 @@ Dbdict::bindDanglingAliases(DatabasePtr user_ptr) {
     if (target.compare(target_name) == 0) {
       jam();
       *link = alias_i;
-      alias_ptr.p->m_next_dangling_alias = RNIL;
+      alias_ptr.p->m_next_dangling_alias = bound_aliases;
+      bound_aliases = alias_ptr.i;
       alias_ptr.p->m_alias_target_id = user_ptr.p->key;
       increase_ref_count(user_ptr.p->m_obj_ptr_i);
     } else {
       link = &alias_ptr.p->m_next_dangling_alias;
     }
   }
+}
+
+/**
+ * Tells DBTC, one alias per round trip, that each alias bound at this
+ * USER's commit now charges the USER, then finishes the commit step.
+ */
+void
+Dbdict::sendBindAlias(Signal *signal, SchemaOpPtr op_ptr) {
+  CreateDatabaseRecPtr createDbPtr;
+  getOpRec(op_ptr, createDbPtr);
+  if (createDbPtr.p->m_bind_aliases == RNIL) {
+    jam();
+    execute(signal, createDbPtr.p->m_callback,
+            createDbPtr.p->m_request.databaseId);
+    return;
+  }
+  jam();
+  DatabasePtr alias_ptr;
+  alias_ptr.i = createDbPtr.p->m_bind_aliases;
+  c_database_pool.getPtr(alias_ptr);
+  createDbPtr.p->m_bind_aliases = alias_ptr.p->m_next_dangling_alias;
+  alias_ptr.p->m_next_dangling_alias = RNIL;
+
+  ConnectTableDbReq* req = (ConnectTableDbReq*)signal->getDataPtrSend();
+  req->senderRef = reference();
+  req->senderData = op_ptr.p->op_key;
+  req->requestType = ConnectTableDbReq::BIND_ALIAS;
+  req->databaseId = alias_ptr.p->key;
+  req->tableId = alias_ptr.p->m_alias_target_id;
+  sendSignal(DBTC_REF, GSN_CONNECT_TABLE_DB_REQ, signal,
+             ConnectTableDbReq::SignalLength, JBB);
 }
 
 void
@@ -33762,6 +33796,8 @@ Dbdict::execCREATE_DB_CONF(Signal *signal) {
       db_ptr.p->m_max_parallel_transactions;
     req->maxParallelComplexQueries =
       db_ptr.p->m_max_parallel_complex_queries;
+    req->isAlias = db_ptr.p->m_is_alias;
+    req->aliasTargetId = db_ptr.p->m_alias_target_id;
     sendSignal(DBTC_REF, GSN_CREATE_DB_REQ, signal,
                CreateDbReq::SignalLengthTC, JBB);
     return;
@@ -34005,6 +34041,11 @@ void Dbdict::execCONNECT_TABLE_DB_CONF(Signal *signal) {
     AlterTableRecPtr alterTabPtr;
     ndbrequire(findSchemaOp(op_ptr, alterTabPtr, conf.senderData));
     alterTable_contComplete(signal, op_ptr);
+  } else if (conf.requestType == ConnectTableDbReq::BIND_ALIAS) {
+    jam();
+    CreateDatabaseRecPtr createDbPtr;
+    ndbrequire(findSchemaOp(op_ptr, createDbPtr, conf.senderData));
+    sendBindAlias(signal, op_ptr);
   } else {
     ndbabort();
   }
@@ -34159,10 +34200,10 @@ void Dbdict::execCOMMIT_DB_CONF(Signal *signal) {
     }
   } else if (db_ptr.p->m_is_user) {
     jam();
-    bindDanglingAliases(db_ptr);
+    bindDanglingAliases(db_ptr, createDbPtr.p->m_bind_aliases);
   }
-  /* Finished commit phase of create database */
-  execute(signal, createDbPtr.p->m_callback, db_ptr.p->key);
+  /* The commit phase of create database ends once DBTC knows the binds. */
+  sendBindAlias(signal, op_ptr);
 }
 
 void Dbdict::execCOMMIT_DB_REF(Signal *signal) {
