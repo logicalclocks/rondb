@@ -13613,11 +13613,12 @@ RonSQLPreparer::execute_join()
   // NdbDictionary::Table objects alive until the end-of-execute cleanup.
   NdbDictionary::Table** cteChildVTAll = NULL;
   if (m_cte_scopes.size() > 0) {
+    // Each checked at once: no allocation after a failed one.
     cteAggs = m_amalloc->calloc<NdbAggregator*>(m_cte_scopes.size());
+    if (unlikely(cteAggs == NULL)) throw std::bad_alloc();
     cteChildVTAll = m_amalloc->calloc<NdbDictionary::Table*>(
         m_cte_scopes.size() * MAX_SPJ_TREE_NODES);
-    if (unlikely(cteAggs == NULL || cteChildVTAll == NULL))
-      throw std::bad_alloc();
+    if (unlikely(cteChildVTAll == NULL)) throw std::bad_alloc();
     objs.cte_aggs = cteAggs;
     objs.cte_child_vts = cteChildVTAll;
     objs.num_ctes = m_cte_scopes.size();
