@@ -1,0 +1,30 @@
+--source include/have_ndb.inc
+
+# RONDB-1158: a node restarts although USER and DATABASE QUOTA objects were
+# dropped or altered while it was down. Its restart rebuilds its own old
+# objects first and then drops each one the cluster no longer has in that
+# form (restartDropObj); the drop names the object by id and carries no
+# packed properties, which the database drop parse used to require, so the
+# restart failed with "Failed to drop object <id> during restart, error
+# 703". Rolling restarts make this routine for anything that edits users.
+
+--exec $NDB_MGM -e "USER SET rl_gone --rate-per-sec=1000" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "USER SET rl_altered --rate-per-sec=1000" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "DATABASE QUOTA SET qdb_gone --rate-per-sec=1000" >> $NDB_TOOLS_OUTPUT
+
+--exec $NDB_MGM -e "1 RESTART -n" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --nowait-nodes=2 --not-started >> $NDB_TOOLS_OUTPUT
+--echo # While node 1 is down
+--exec $NDB_MGM -e "USER DROP rl_gone"
+--exec $NDB_MGM -e "USER ALTER rl_altered --rate-per-sec=2000"
+--exec $NDB_MGM -e "DATABASE QUOTA DROP qdb_gone"
+--exec $NDB_MGM -e "1 START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --timeout=120 >> $NDB_TOOLS_OUTPUT
+--echo # Node 1 started; it has the cluster's objects.
+--source include/ndb_not_readonly.inc
+--replace_regex /(userId|userVersion) = [0-9]+/\1 = <id>/
+--exec $NDB_MGM -e "USER LIST"
+--exec $NDB_MGM -e "DATABASE QUOTA LIST"
+
+--exec $NDB_MGM -e "USER DROP rl_altered" >> $NDB_TOOLS_OUTPUT
+--remove_file $NDB_TOOLS_OUTPUT

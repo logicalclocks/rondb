@@ -34437,44 +34437,62 @@ Dbdict::dropDatabase_parse(Signal* signal, bool master,
   getOpRec(op_ptr, dropDbPtr);
   DropDatabaseReq* impl_req = &dropDbPtr.p->m_request;
 
-  SegmentedSectionPtr objInfoPtr;
-  {
-    bool ok = handle.getSection(objInfoPtr, 0);
-    if (!ok) {
+  DictDatabaseInfo::Database db;
+  db.init();
+  DictObject *obj_ptr = nullptr;
+  if (op_ptr.p->m_restart) {
+    jam();
+    /**
+     * A node restart drops an object that changed or went away while the
+     * node was down (restartDropObj). It names the object by id and sends
+     * no section, so the kind comes from the object the restart rebuilt.
+     */
+    DatabasePtr restart_db_ptr;
+    ndbrequire(find_object(restart_db_ptr, impl_req->databaseId));
+    DictObjectPtr restart_obj_ptr;
+    restart_obj_ptr.i = restart_db_ptr.p->m_obj_ptr_i;
+    ndbrequire(c_obj_pool.getValidPtr(restart_obj_ptr));
+    obj_ptr = restart_obj_ptr.p;
+    db.IsUser = restart_db_ptr.p->m_is_user;
+    db.IsAlias = restart_db_ptr.p->m_is_alias;
+  } else {
+    SegmentedSectionPtr objInfoPtr;
+    {
+      bool ok = handle.getSection(objInfoPtr, 0);
+      if (!ok) {
+        jam();
+        setError(error, CreateTableRef::InvalidFormat, __LINE__);
+        return;
+      }
+    }
+    SimplePropertiesSectionReader it(objInfoPtr, getSectionSegmentPool());
+    SimpleProperties::UnpackStatus status =
+      SimpleProperties::unpack(it,
+                               &db,
+                               DictDatabaseInfo::Mapping,
+                               DictDatabaseInfo::MappingSize);
+    if (status != SimpleProperties::Eof) {
       jam();
       setError(error, CreateTableRef::InvalidFormat, __LINE__);
       return;
     }
+    /* is_user travels in the packed properties, see createDatabase_parse */
+    if (db.IsUser) {
+      memmove(&db.DatabaseName[1], &db.DatabaseName[0], MAX_DB_NAME_SIZE - 1);
+      db.DatabaseName[0] = '$';
+    }
+    Uint32 len = Uint32(strnlen(db.DatabaseName, MAX_DB_NAME_SIZE) + 1);
+    Uint32 hash = LcLocalRope::hash(db.DatabaseName, len);
+    obj_ptr = get_object(db.DatabaseName, len, hash);
+    if (obj_ptr == nullptr) {
+      jam();
+      setError(error, DropTableRef::NoSuchTable, __LINE__);
+      return;
+    }
+    impl_req->databaseId = obj_ptr->m_id;
   }
-  SimplePropertiesSectionReader it(objInfoPtr, getSectionSegmentPool());
-  DictDatabaseInfo::Database db;
-  db.init();
-  SimpleProperties::UnpackStatus status =
-    SimpleProperties::unpack(it,
-                             &db,
-                             DictDatabaseInfo::Mapping,
-                             DictDatabaseInfo::MappingSize);
-  if (status != SimpleProperties::Eof) {
-    jam();
-    setError(error, CreateTableRef::InvalidFormat, __LINE__);
-    return;
-  }
-  /* is_user travels in the packed properties, see createDatabase_parse */
   bool is_user = db.IsUser;
-  if (is_user) {
-    memmove(&db.DatabaseName[1], &db.DatabaseName[0], MAX_DB_NAME_SIZE - 1);
-    db.DatabaseName[0] = '$';
-  }
-  Uint32 len = Uint32(strnlen(db.DatabaseName, MAX_DB_NAME_SIZE) + 1);
-  Uint32 hash = LcLocalRope::hash(db.DatabaseName, len);
-  DictObject *obj_ptr = get_object(db.DatabaseName, len, hash);
-  if (obj_ptr == nullptr) {
-    jam();
-    setError(error, DropTableRef::NoSuchTable, __LINE__);
-    return;
-  }
-  Uint32 databaseId = obj_ptr->m_id;
-  impl_req->databaseId = databaseId;
+  Uint32 databaseId = impl_req->databaseId;
   getOpRec(op_ptr, dropDbPtr);
   ndbrequire(databaseId < c_noOfMetaTables);
 

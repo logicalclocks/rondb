@@ -1,0 +1,15 @@
+# While node 1 is down
+USER DROP successfully executed
+USER ALTER successfully executed
+DATABASE QUOTA DROP successfully executed
+# Node 1 started; it has the cluster's objects.
+User rate limits for rl_altered
+  userId = <id>
+  userVersion = <id>
+  RatePerSec = 2000
+  MaxTransactionSize = 0
+  MaxParallelTransactions = 0
+  MaxParallelComplexQueries = 0
+
+User List command completed
+Database Quota List command completed
