@@ -115,9 +115,15 @@ public:
       std::span<const Uint32, TRP_ACTIVITY_HIST_BIN_COUNT> bin_limits);
   static constexpr void static_invariants();
 
-  NodeId m_dbHbSender;
-  TrpId m_dbHbSenderTrp;
-  Uint32 m_dbHbInterval;
+  /**
+   * Initialized here and not only in READ_CONFIG_REQ: a node started
+   * with --nostart gets READ_CONFIG_REQ only at START_ORD, but
+   * CLOSE_COMREQ for its management server connection already calls
+   * set_db_hb_sender(), which reads m_dbHbSenderTrp.
+   */
+  NodeId m_dbHbSender{0};
+  TrpId m_dbHbSenderTrp{0};
+  Uint32 m_dbHbInterval{0};
   bool m_init_continueb;
 
   static constexpr Uint32 m_activity_bin_bounds[TRP_ACTIVITY_HIST_BIN_COUNT] = {
