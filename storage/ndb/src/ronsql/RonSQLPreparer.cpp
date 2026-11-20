@@ -18119,9 +18119,12 @@ std::ostream& operator<<(std::ostream& os, const NdbError& err) {
   if (err.message != NULL) {
     os << ": " << err.message;
   }
-  if (err.details != NULL) {
-    os << " (" << err.details << ")";
-  }
+  // X-37: err.details is not printed.  It is not a string: the NDB API
+  // stores a signal's extra error data there as an integer
+  // (NdbOperation::receiveTCKEYREF, NdbQueryOperation, the dictionary's
+  // foreign key ids), readable only through Ndb::getNdbErrorDetail.
+  // Printing it as a char* read that integer as an address: RDRS died
+  // with SIGSEGV on a key read refused with 1218 and error data.
   return os;
 }
 
