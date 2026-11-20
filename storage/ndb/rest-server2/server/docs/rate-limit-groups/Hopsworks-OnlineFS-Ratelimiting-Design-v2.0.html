@@ -574,8 +574,8 @@ people on data, and the per-cluster form of the third requirement (&ldquo;5% of
 <section id="tables">
 <h2>7. The new tables</h2>
 <p>Two tables in the <code>hopsworks</code> database, plus one state table the installer
-writes. They refer to the existing rows above by id and change nothing in the existing
-tables. Column definitions are in the <a href="#appendix">appendix</a>.</p>
+writes and a one-row lock table that serializes changes to them. They refer to the
+existing rows above by id and change nothing in the existing tables. Column definitions are in the <a href="#appendix">appendix</a>.</p>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col">Table</th><th scope="col">Answers the question</th><th scope="col">One row is</th></tr></thead>
   <tbody>
@@ -857,9 +857,10 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     once per pass from the cluster itself and never cached across passes,
     so a resized cluster is reconverted by the next pass that reads it, with one guard:
     after a restart onto <em>fewer</em> threads the already-allocated total can exceed
-    the new cap, a state the restart itself permits (an upgrade to the new 50% default
-    over a larger total, or a lowered cap, creates the same state, section 14), and in
-    that state the data node
+    the new cap, a state the restart itself permits (an upgrade to the single cap,
+    <code>RateLimitBudgetPercent</code> at its default 50, over a larger total, or a
+    lowered cap, creates the same state, section 14), and in that state a data node of a
+    release without the single cap
     asserts on any schema change whose post-change total still exceeds the cap: an alter
     that does not land under it (<code>Dbdict.cpp:36034-36037</code>), and every
     create&rsquo;s commit, a zero-rate alias included, whose assertion exempts only restart
@@ -876,14 +877,15 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     stay allowed: they strictly drain the pool and are assert-safe on every kernel, the
     drop path&rsquo;s only rate assertion being the subtraction guard
     (<code>Dbdict.cpp:35399-35400</code>), so deleting a group drains an oversubscribed
-    cluster without hand intervention. The cap rework (section 14) closes the assert with parse-time
-    refusals on new kernels; the guard stays regardless, since deployed clusters run
+    cluster without hand intervention. The single cap (section 14) closes the assert with parse-time
+    refusals on this branch; the guard stays regardless, since deployed clusters run
     older kernels for a long time, and on fixed kernels a slipped command gets error
-    1235 instead of killing a node. That refusal is deliberately broader than the exact
-    kernel behavior (a single lowering straight to under the cap would pass), because
+    1235 (create) or 1236 (alter) instead of killing a node. That refusal is deliberately
+    broader than the exact kernel behavior (an older kernel passes a single lowering
+    straight to under the cap, a fixed one passes every lowering), because
     predicting which command sequence survives is the kernel&rsquo;s job, not the
     installer&rsquo;s. The read is one new management command (decided 2026-11-19):
-    <code>USER CAPACITY</code> (13.3, name settled in review), answered by each
+    <code>USER CAPACITY</code> (13.3), answered by each
     cluster&rsquo;s management server from Dbdict, returns the per-node thread count, the
     configured cap percent (section 14) and the currently allocated total, the
     kernel&rsquo;s own counter covering every <code>USER</code> allocation, operator
@@ -894,7 +896,8 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     JDBC read and the region-addressed admin connection
     (<code>OnlineFeaturestoreFacade.establishAdminConnection(region, &hellip;)</code>)
     remain available but are no longer needed for this. A cluster whose capacity cannot
-    be read, an older kernel included, stays <em>pending</em>.</li>
+    be read stays <em>pending</em>: the command fails while any data node is not
+    started or runs a release without it (13.3).</li>
     <li><strong>Read back and fix the differences</strong>, in group-id order so a cap
     refusal is deterministic: <code>USER LIST</code> and <code>USER ALIAS LIST</code>,
     then
@@ -910,7 +913,14 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
     deleted) becomes <code>USER DROP</code> plus <code>USER ALIAS DROP</code> for every
     alias targeting it; a member
     who left loses their aliases; a member who moved between groups gets
-    <code>USER ALIAS DROP</code> then <code>SET</code> (13.3). The diff is per name, and
+    <code>USER ALIAS DROP</code> then <code>SET</code> (13.3). A move, or the
+    replacement of an operator&rsquo;s alias (below), is withheld while the destination
+    group is <em>refused</em> on that cluster (a wrong-kind name collision, the sum rule
+    of section 11 or the oversubscription freeze of step 4), unless the old target
+    <code>USER</code> is itself being dropped, which needs the alias gone first (13.3):
+    the account keeps the alias it has and stays metered where it is, and its old group
+    shows <em>partial</em> with a note naming the reason, so a refused group never
+    removes metering an account already has. The diff is per name, and
     nothing is dropped to be re-added: editing a Who list from {Mary, Mike} to {Mary, Sam}
     sends one <code>USER ALIAS DROP Marketing_mike7c3d</code> and one
     <code>USER ALIAS SET Sales_sam00035 --target=mary_mike_rl</code>, and Mary&rsquo;s alias
@@ -1046,7 +1056,8 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
   account that already has an alias an operator created, the installer replaces that
   alias, and the replacement is a <code>USER ALIAS DROP</code> followed by a
   <code>SET</code>, because a <code>SET</code> naming a different target is refused
-  (13.3); between the two commands the account briefly charges nothing. The contract
+  (13.3); between the two commands the account briefly charges nothing, and while the
+  group is <em>refused</em> on that cluster the replacement is withheld (step 5). The contract
   also cuts the other way, and the page help says so: <strong>creating a group claims an
   existing <code>USER</code> of the same name</strong>. The name enters the table, so the
   <code>USER</code> and every alias targeting it become the installer&rsquo;s on the next
@@ -1080,7 +1091,7 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
     <tr><td>A Who row names a person or a project, not both; a group has at least one Who row, so an edit that removes every Who row is refused (Delete group removes a group).</td><td>A row with <code>uid = 1001</code> and <code>project_id = 11</code>. Rejected.</td></tr>
     <tr><td>No ties: two groups with the same cluster scope may not cover the same person. A person is &ldquo;covered&rdquo; by a project row if they have any <code>project_team</code> row for that project. A named-cluster group and an every-cluster group may overlap: the named one wins on its cluster (7.4).</td><td>Group X: {Mary}, every cluster. Group Y: {project 11}, every cluster. Mary is in both. Rejected.<br><br>Group X: {project 13}, every cluster, 20%. Group Z: {project 13}, cluster M, 30%. Allowed: on M the members charge Z, elsewhere X.</td></tr>
     <tr><td>Budget between 0.01 and the configured cap of every targeted cluster (section 14, default 50%), with at most two decimals, as the table stores it. Zero is refused: RonDB reads a rate of 0 as <em>unlimited</em> (section 14), the opposite of what a zero budget would mean. RonDB will not accept one entry above its cap.</td><td>A group at 60% on a cluster with the default cap. Rejected.<br><br>A group at 0%. Rejected: 0 would run unlimited.</td></tr>
-    <tr><td>On every cluster, the budgets sum to at most that cluster&rsquo;s configured cap (section 14, default 50%), counting exactly the groups whose <code>USER</code> is desired there (section 10 step 2): a named group on its cluster, and an every-cluster group on every cluster where at least one of its accounts is not overridden. A full override (7.4) counts only the named group there; a partial override counts both, because the overridden group&rsquo;s <code>USER</code> must still exist for its uncovered members, and a <code>USER</code> holds its budget while idle. Enforced on save against each cluster whose cap is readable; a cluster whose cap cannot be read does not block the save and is not guessed at, since save validity must not depend on connectivity (section 16 item 1): the group stays <em>pending</em> there as it already would, and the installer re-checks the sum against the real cap before issuing (section 10), recording <em>refused</em> naming the sum rule when it does not fit. So every configuration Hopsworks accepts fits each cluster it could see and, under the single cap decided in section 14, can always be reinstalled from scratch.</td><td>Groups at 30% and 25%, both on every cluster, caps at the default. The second save is rejected: 55% on each cluster.</td></tr>
+    <tr><td>On every cluster, a save is refused when the budget sum it leaves exceeds both that cluster&rsquo;s configured cap (section 14, default 50%) and the sum before the save, the kernel&rsquo;s own test (section 14), counting exactly the groups whose <code>USER</code> is desired there (section 10 step 2): a named group on its cluster, and an every-cluster group on every cluster where at least one of its accounts is not overridden. A full override (7.4) counts only the named group there; a partial override counts both, because the overridden group&rsquo;s <code>USER</code> must still exist for its uncovered members, and a <code>USER</code> holds its budget while idle. Enforced on save against each cluster whose cap is readable; a cluster whose cap cannot be read does not block the save and is not guessed at, since save validity must not depend on connectivity (section 16 item 1): the group stays <em>pending</em> there as it already would, and the installer re-checks the sum against the real cap before issuing (section 10), recording <em>refused</em> naming the sum rule when it does not fit. So a save Hopsworks accepts either fits each cluster it could see or lowers a sum that was already past the cap (after a lowered cap or a restart onto fewer threads), and every configuration that fits can, under the single cap of section 14, always be reinstalled from scratch.</td><td>Groups at 30% and 25%, both on every cluster, caps at the default. The second save is rejected: 55% on each cluster.<br><br>The three example groups (27%) on a cluster whose cap was lowered to 20%: lowering <code>recommender2_rl</code> from 5% to 3% is accepted (25%, down from 27%); raising any budget is rejected.</td></tr>
     <tr><td>The group name may not equal any account name the group would alias: the <code>USER</code> and that member&rsquo;s alias would collide in RonDB&rsquo;s shared namespace and leave the group permanently <em>partial</em>. Checked over the group&rsquo;s own expansion at save; a collision a later join creates surfaces as <em>partial</em> with the error.</td><td>Group <code>Recommender_alice4f2</code> covering Alice. Rejected: her alias would need the group&rsquo;s own name.</td></tr>
     <tr><td>The cluster name, when set, should name a discovered cluster; a free-text name is accepted but flagged.</td><td>A group on cluster <code>mrketing</code> (typo). Saved, shown <em>pending</em> with a &ldquo;no such cluster&rdquo; hint.</td></tr>
   </tbody>
@@ -1253,15 +1264,16 @@ ndb_mgm&gt; USER ALIAS GET  Marketing_mary01ab
 ndb_mgm&gt; USER ALIAS LIST</code></pre>
 <p>A <code>SET</code> creates the alias or confirms it: repeating a <code>SET</code> with
 the same target is a no-op, and a <code>SET</code> naming a <em>different</em> target for
-an existing alias is refused, so moving an account between groups is an explicit
+an existing alias is refused (error 1247, &ldquo;User Alias failed, the alias exists with
+another target&rdquo;), so moving an account between groups is an explicit
 <code>DROP</code> followed by a <code>SET</code> (the installer computes that diff).
 The refusal protects against an out-of-order writer: a command that would silently
 repoint a person&rsquo;s budget must instead fail loudly and be reconciled.
 <code>DROP</code> drops the alias. The management-server side mirrors the existing
 <code>set user</code> family in <code>Services.cpp</code>.</p>
 <p><strong>A <code>USER</code> with aliases cannot be dropped (decided 2026-11-19).</strong>
-<code>USER DROP</code> on a target that aliases still point at is refused with a new
-error telling the operator to drop the aliases first. Object ids are reused, so an alias
+<code>USER DROP</code> on a target that aliases still point at is refused with error 1248,
+&ldquo;Drop User failed, user aliases point at the user, drop them first&rdquo;. Object ids are reused, so an alias
 holding the id of a dropped target would silently charge whatever object the id is given
 next; the refusal makes that state impossible to create, from any client, in any command
 order, and no use-time check is needed. The check runs in Dbdict&rsquo;s drop parse,
@@ -1272,8 +1284,8 @@ follows live alias objects: it changes at alias create commit and alias drop com
 never at parse, so a failed or aborted operation leaves it untouched, and a repeated
 <code>SET</code> that falls back to the management server&rsquo;s ALTER changes no
 object and does not count; the target resolver also refuses a target whose drop is
-pending in the same schema transaction, and the drop refuses a target that a pending
-alias create in the same transaction references, both orders of a state nothing checks
+pending in the same schema transaction (1249), and the drop refuses a target that a pending
+alias create in the same transaction references (1248), both orders of a state nothing checks
 today, since the count itself moves only at commit. System restart
 is waived (the kernel&rsquo;s restart flag, set only on node and system restart), since
 restart rebuilds objects in id order and an alias may briefly exist before its target,
@@ -1296,38 +1308,104 @@ deferring to the reconciler when a read fails. Over the management API the list 
 one alias per round trip (<code>ndb_mgm_list_user_aliases(handle, &amp;nextAliasId,
 &amp;buf)</code> until <code>nextAliasId</code> is <code>RNIL</code>), so its cost grows
 with the alias count: 64&nbsp;ms for 306 objects on a debug build (13.5).
-<code>USER LIST</code> excludes aliases, so the two lists never overlap. Proposed output,
-mirroring <code>USER LIST</code>&rsquo;s rows (the branch still prints the v1.0 rule form,
-<code>numRules</code> plus one <code>--target=</code> line per rule); ids are
+<code>USER LIST</code> excludes aliases, so the two lists never overlap. The output has
+<code>USER LIST</code>&rsquo;s form: per alias a <code>User alias</code> line, its
+<code>aliasId</code> and <code>target</code>, and a blank line; ids are
 illustrative and the listing is cut to three of section 10&rsquo;s five aliases:</p>
 <pre><code>ndb_mgm&gt; USER ALIAS LIST
 User alias Recommender_alice4f2
   aliasId = 412
   target = recommender_team_rl
+
 User alias Marketing_mary01ab
   aliasId = 415
   target = mary_mike_rl
+
 User alias Recommender2_rosa9e1f
   aliasId = 418
   target = recommender2_rl
+
 User Alias List command completed</code></pre>
-<p><strong><code>USER CAPACITY</code> (decided 2026-11-19; name settled in review).</strong>
+<p>Over the protocol each page (<code>list user alias</code>) replies
+<code>result: Ok</code>, <code>num_rows: 4</code>, the next <code>nextAliasId</code>, a
+blank line and that one alias&rsquo;s block; the terminal page replies <code>result: Ok</code>
+and <code>num_rows: 0</code>. <code>GET</code> prints one alias, unindented:</p>
+<pre><code>ndb_mgm&gt; USER ALIAS GET Marketing_mary01ab
+User alias Marketing_mary01ab
+aliasId = 415
+target = mary_mike_rl</code></pre>
+<p><strong><code>USER CAPACITY</code> (decided 2026-11-19).</strong>
 One more command in the same family. Each data node sizes its rate pool from its own
 thread count and keeps its own allocated counter, and with automatic thread
 configuration the layout follows each host&rsquo;s CPUs, so nodes can differ even under
 one configuration file; no existing signal exposes any of it (<code>GET</code> and
 <code>LIST DATABASE</code> carry per-database fields only). The management server
-therefore asks <em>every</em> data node with a new request/reply pair and returns one
-tuple per node: the node id, the thread count, the configured cap percent (section 14)
-and the allocated total (the pool is the thread count times 1,000,000). The per-node
+therefore asks the Dbdict of <em>every</em> active data node with a new request/reply
+pair (<code>GET_RATE_CAPACITY_REQ</code>/<code>CONF</code>, GSN 987/988). The protocol
+command is <code>user capacity</code> with no arguments, the mgmapi function
+<code>ndb_mgm_get_user_capacity</code>. The reply is <code>result: Ok</code>,
+<code>num_rows: </code><em>5 &times; data nodes</em>, a blank line, then one block per
+data node in node-id order with its thread count, its configured cap percent (section
+14) and its allocated total; the pool is the thread count times 1,000,000 and the cap is
+pool / 100 &times; <code>RateLimitBudgetPercent</code>. <code>ndb_mgm</code> prints the
+same blocks; on two 20-thread data nodes carrying the example&rsquo;s three groups:</p>
+<pre><code>ndb_mgm&gt; USER CAPACITY
+Data node 1
+  NumThreads = 20
+  RateLimitBudgetPercent = 50
+  AllocatedRatePerSec = 5400000
+
+Data node 2
+  NumThreads = 20
+  RateLimitBudgetPercent = 50
+  AllocatedRatePerSec = 5400000</code></pre>
+<p>A data node that is not started fails the command
+(<code>result: Data node N is not started</code>, <code>error_code: 5000</code>), as
+does one that fails before it answers (<code>Data node N failed before it
+answered</code>, 5000); there is never a partial answer, so an answer cannot hide the
+most restrictive node. The per-node
 replies are gathered per command, not transaction-consistent across nodes; the gate
 stays conservative and the kernel&rsquo;s own refusal is the backstop. The installer takes the most restrictive node&rsquo;s allowance as
 the cluster&rsquo;s cap for the save-time sum rule (section 11) and the resize gate
-(section 10), converts percentages with the minimum thread count, and treats an answer
-missing any node as unreadable, leaving the cluster <em>pending</em>. All over the same
+(section 10), converts percentages with the minimum thread count, and treats a failed
+command as unreadable, leaving the cluster <em>pending</em>. All over the same
 mgmd socket the other commands use, with no per-cluster database credentials, and
-version-gated like the alias commands: a cluster whose kernel does not answer it stays
-<em>pending</em>.</p>
+gated like the alias commands (below): a cluster with a data node on a release without
+it stays <em>pending</em>.</p>
+<p><strong>Capability gate.</strong> <code>ndbd_support_user_alias_v2</code>
+(<code>ndb_version.h.in</code>) is true on the 26.02 line from 26.02.15 and on no other
+line until the feature is merged into it; each merge adds that line&rsquo;s first release.
+A newer line&rsquo;s release can therefore lack what an older line&rsquo;s has, so the
+cluster&rsquo;s minimum version cannot decide: the management server checks each connected
+data node&rsquo;s own version on every <code>USER ALIAS</code> command, on the alias part
+of <code>USER BACKUP</code> (<code>USER RESTORE</code> replays through
+<code>USER ALIAS SET</code>) and on <code>USER CAPACITY</code>, and refuses with
+management error 5072. Dbdict also refuses an alias create with 794 while a live data
+node lacks support, so a client that skips the management server&rsquo;s check cannot
+put an alias into a schema transaction an older node joins; restarts replay without the
+check. A data node that rejoins on an older release is a downgrade, which requires
+dropping every alias first. Upgrade order: data nodes, then the management servers,
+then the Hopsworks installer.</p>
+<div class="tablewrap"><table>
+  <caption>Errors the alias and capacity commands return</caption>
+  <thead><tr><th scope="col">Code</th><th scope="col">Meaning</th></tr></thead>
+  <tbody>
+    <tr><td>709</td><td>No such alias.</td></tr>
+    <tr><td>721</td><td>The name exists. A repeated <code>SET</code> falls back to an alter, which accepts the same target.</td></tr>
+    <tr><td>723</td><td>The name is a <code>USER</code>, not an alias.</td></tr>
+    <tr><td>1246</td><td>The alias target is not a user.</td></tr>
+    <tr><td>1247</td><td>The alias exists with another target (kernel name <code>AliasTargetConflict</code>).</td></tr>
+    <tr><td>1248</td><td><code>USER DROP</code> refused while aliases point at the user; drop them first.</td></tr>
+    <tr><td>1249</td><td>The alias target is dropped in the same schema transaction.</td></tr>
+    <tr><td>1235, 1236</td><td>A create (1235) or an alter (1236) would leave the allocated total past both the cap and the total before it (section 14).</td></tr>
+    <tr><td>1276</td><td>The rate allocation was already changed in this schema transaction: one rate-changing database operation per schema transaction.</td></tr>
+    <tr><td>1277</td><td>No more schema object ids for users and user aliases; increase <code>MaxNoOfUserObjects</code> (13.5).</td></tr>
+    <tr><td>794</td><td>Dbdict refuses an alias create while a live data node lacks alias support.</td></tr>
+    <tr><td>5072</td><td>The management server refuses: user aliases need every data node on a release that supports them.</td></tr>
+    <tr><td>5000</td><td><code>USER CAPACITY</code>: a data node is not started or failed before it answered.</td></tr>
+    <tr><td>4572</td><td>The cluster does not support quotas or rate limits (data nodes before 24.10.0).</td></tr>
+  </tbody>
+</table></div>
 
 <h3>13.4 What the other components do</h3>
 <div class="tablewrap"><table>
@@ -1336,9 +1414,9 @@ version-gated like the alias commands: a cluster whose kernel does not answer it
     <tr><td>MySQL server</td><td>None. <code>ndb_user_rate_limits</code> must be on; it is read-only at runtime, so it is set in the server configuration by rondb-helm.</td></tr>
     <tr><td>Data nodes</td><td><code>ActivateRateLimits=true</code> in the cluster configuration.</td></tr>
     <tr><td>RDRS</td><td>Tag REST transactions with the project-user string (username mode). No group code of any kind (section 8).</td></tr>
-    <tr><td>ClusterJ</td><td>Phase 1. <code>Session.setRateLimitUser(String name)</code>, with its getter, sets the name every transaction the session starts afterwards carries, explicit or autocommit; <code>null</code> clears it, and a change takes effect at the next transaction, so one process can tag each transaction differently (OnlineFS writes for many projects). clusterj-tie applies the name in <code>DbImpl.enlist</code> right after <code>Ndb.startTransaction</code> (<code>DbImpl.java:294</code>, <code>:321</code>, <code>:324</code>) through a new <code>NdbTransaction.setUserId</code> binding in <code>ndbjtie</code>. Two details. <code>setUserId</code> keeps the caller&rsquo;s pointer, and <code>rateOverflowError()</code> reads it after the call returns (<code>NdbTransaction.cpp:525</code>, <code>:516</code>), so the binding passes a direct <code>ByteBuffer</code> the session owns, never a JNI-converted <code>String</code>, which is freed when the call returns. And a session handed back to the session cache (<code>closeCache</code>) clears its name and rolls back a transaction still open, with a logged warning (decided 2026-11-19): today the open transaction rides into the cache unexamined (<code>SessionImpl.java:929-938</code>; <code>SessionCache.storeCachedSession</code> checks nothing, <code>SessionCache.java:102-122</code>), so the next borrower would silently join the previous owner&rsquo;s transaction and charge the previous owner&rsquo;s name. The invariant is that a session coming out of the cache is clean: no transaction, no name. A name RonDB does not know runs unmetered; a name over the size limit fails the transaction start with the NDB error. A throttled operation fails with NDB error 243 (write) or 2203 (read) (<code>ndberror.cpp:360</code>) as a <code>ClusterJDatastoreException</code>.</td></tr>
+    <tr><td>ClusterJ</td><td>Phase 1. <code>Session.setRateLimitUser(String name)</code>, with its getter <code>getRateLimitUser()</code>, sets the name every transaction the session begins afterwards carries, explicit or autocommit. The name is 1 to 126 bytes of UTF-8, anything else throws <code>ClusterJUserException</code>, and <code>null</code> clears it. The name is captured when a transaction begins, so a change applies from the next transaction and one process can tag each transaction differently (OnlineFS writes for many projects). clusterj-tie applies the name right after the native transaction is created (<code>ClusterTransactionImpl.enlist</code>, <code>ClusterTransactionImpl.java:163-173</code>) through a new <code>ndbjtie</code> binding, <code>NdbTransaction.setUserId(ByteBuffer, int)</code>. Two details. <code>setUserId</code> keeps the caller&rsquo;s pointer, and <code>rateOverflowError()</code> reads it after the call returns (<code>NdbTransaction.cpp:525</code>, <code>:516</code>), so the binding passes a direct <code>ByteBuffer</code> the session owns, never a JNI-converted <code>String</code>, which is freed when the call returns; there is no copy, and the transaction keeps the buffer until it closes. A <code>setUserId</code> failure closes the native transaction before the exception is thrown, so nothing runs uncharged. And with the session cache on, a session handed back to it (<code>closeCache</code>) rolls back a transaction still open, with a logged warning, and clears its name (decided 2026-11-19): <code>SessionCache.storeCachedSession</code> checks nothing (<code>SessionCache.java:102-122</code>), so without this the next borrower would silently join the previous owner&rsquo;s transaction and charge the previous owner&rsquo;s name. The invariant is that a session coming out of the cache is clean: no transaction, no name. A name RonDB does not know runs unmetered. A throttled operation fails with NDB error 243 (write) or 2203 (read) (<code>ndberror.cpp:360</code>) as a <code>ClusterJDatastoreException</code>. Tested by <code>RateLimitTest</code>, run by the MTR test <code>ndb_quota.ndb_clusterj_rate_limit</code> (section 15).</td></tr>
     <tr><td>OnlineFS (<a href="https://github.com/logicalclocks/clusterj-onlinefs">clusterj-onlinefs</a>)</td><td>Phase 2. Until then ingestion runs unmetered, as today. Tag each write transaction with the project-user account of the user who produced the data, through the ClusterJ setting above. That account is a group member&rsquo;s, which the installer already aliases, so ingestion charges the producing user&rsquo;s group with no installer change, and a user in no group writes unmetered. How OnlineFS learns the user is open (section 16).</td></tr>
-    <tr><td>NDB API</td><td>None; <code>setUserId</code> exists.</td></tr>
+    <tr><td>NDB API</td><td><code>setUserId</code> exists. <code>NdbTransaction::release()</code> now clears the rate limit user id and name, so a transaction object reused from the pool carries no previous owner&rsquo;s tag and no pointer to a name its caller has freed.</td></tr>
   </tbody>
 </table></div>
 
@@ -1362,16 +1440,20 @@ defect:</p>
   entries on that configuration) ran out. Aliases scale as
   members &times; projects per member, hundreds to a few thousand in a large deployment,
   so they would eat the headroom tables and indexes need. <strong>Decided 2026-11-18: a
-  dedicated <code>MaxNoOfUserObjects</code> configuration parameter</strong>, added to
-  the object-slot sum in the kernel, so alias capacity has its
+  dedicated <code>MaxNoOfUserObjects</code> configuration parameter</strong> (data node,
+  config id 712, range 0 to 1,000,000), so alias capacity has its
   own labeled budget instead of overloading <code>MaxNoOfTables</code> (which also
-  sizes trigger pools through the index parameters). It adds capacity to the shared
-  schema-file id range for <code>USER</code> and alias objects; the lowest-free id scan
-  is shared, so nothing stops tables from consuming the added slots unless the kernel
-  work splits the ranges, a choice the kernel step records either way.
+  sizes trigger pools through the index parameters). <code>USER</code> and
+  <code>USER ALIAS</code> objects take schema-object ids from the
+  <code>MaxNoOfUserObjects</code> ids added above the table and index ids first, then
+  share the table and index ids as before; tables, indexes and every other object kind
+  stay below the table and index sum, because those ids index the per-block table
+  arrays (<code>Dbdict::getFreeUserObjId</code>, <code>Dbdict.cpp:2953</code>;
+  <code>getFreeObjId</code>, <code>:2922</code>). Dbtc and Dblqh keep database records
+  in hash tables, so only Dbdict indexes by these ids.
   <strong>Its kernel default is 0
-  (decided 2026-11-19)</strong>: with 0, those objects share the free schema-file entries
-  exactly as today, the startup sum does not change, and a cluster upgraded from a cached
+  (decided 2026-11-19)</strong>: with 0, those objects share the table and index ids
+  as today, the startup sum does not change, and a cluster upgraded from a cached
   binary configuration that still says 20,320 (mgmd starts from its saved configuration
   when one exists, <code>ConfigManager.cpp:366</code>) starts as before. rondb-helm
   refuses to render when rate limiting is enabled
@@ -1383,96 +1465,103 @@ defect:</p>
   exist</strong>: the schema file is rewritten to the configured size on every start,
   and the shrink path kills a node when any live object holds an id at or above the new
   sum (<code>resizeSchemaFile</code>, <code>Dbdict.cpp:22782-22802</code>), a
-  data-dependent failure that can pass on a young cluster and fail after churn. For
-  rolling upgrades the new parameter also needs a registered default and the same
-  missing-parameter handling <code>MaxNoOfSchemaObjects</code> got
-  (<code>Configuration.cpp:2269-2279</code>), or a binary configuration from an older
-  mgmd kills the data node; in the chart this matters less, because rondb-helm starts
+  data-dependent failure that can pass on a young cluster and fail after churn. Lowering
+  <code>MaxNoOfUserObjects</code> under a live object in the added range is refused at
+  restart the same way (&ldquo;Trying to start with less table objects than exists in
+  schema file &hellip; increase MaxNoOfTables or MaxNoOfUserObjects&rdquo;). For
+  rolling upgrades the parameter has a registered default and the data node reads a
+  missing value as 0 (<code>Configuration.cpp:2268</code>, <code>:2298-2300</code>), so
+  a binary configuration from an older mgmd starts as before; in the chart this matters
+  less, because rondb-helm starts
   every mgmd with <code>--initial</code>, which rebuilds the configuration from
-  <code>config.ini</code>. A slot stores no rows in DataMemory, but its dictionary
-  records come out of the memory that automatic memory configuration would otherwise give
-  to DataMemory (<code>Configuration.cpp:583-621</code>, <code>:1495-1585</code>), so the
-  user objects join that accounting too. Mikael agreed on 2026-11-18, provided it
+  <code>config.ini</code>. A slot stores no rows in DataMemory, but its records come out
+  of the memory that automatic memory configuration would otherwise give to DataMemory,
+  so every object <code>MaxNoOfUserObjects</code> allows is added to the automatic
+  SchemaMemory sizing (<code>Configuration.cpp:623-636</code>): about 0.5&nbsp;KB in
+  Dbdict (database record 120&nbsp;B, dictionary object 80&nbsp;B, two names) plus
+  208&nbsp;B per TC thread and 88&nbsp;B per LDM thread, about 2&nbsp;KB on a node with
+  4 TC and 8 LDM threads, so about 40&nbsp;MB per data node for 20,000 objects, and
+  nothing at the default 0. Mikael agreed on 2026-11-18, provided it
   integrates with RONDB-136 (in 26.02-main and later), which lets the schema file hold
   more than 20,320 objects (tested at about 200,000): <code>MaxNoOfSchemaObjects</code>
   (default and minimum 20,320, <code>ConfigInfo.cpp:777-787</code>; read at
   <code>Dbdict.cpp:3204-3207</code>) must
   cover the whole configured object-slot sum, <code>MaxNoOfUserObjects</code> included.
-  The sum the data node checks today is <code>MaxNoOfTables + MaxNoOfOrderedIndexes +
+  The table and index sum is <code>MaxNoOfTables + MaxNoOfOrderedIndexes +
   MaxNoOfUniqueHashIndexes</code> (<code>Configuration.cpp:2323-2325</code>; the two
   system tables are added after the sum, <code>:2343-2345</code>, and are not in it),
-  and RONDB-136 refuses to start a data node whose
-  <code>MaxNoOfSchemaObjects</code> is below it (<code>:2364-2379</code>). With
+  and a data node refuses to start when <code>MaxNoOfSchemaObjects</code> is below that
+  sum plus <code>MaxNoOfUserObjects</code>, with a message naming both parameters
+  (RONDB-136&rsquo;s check, extended, <code>:2398-2414</code>). With
   <code>AutomaticMemoryConfig</code>, the default (<code>ConfigInfo.cpp:797</code>) and
   what rondb-helm sets, the sum is 8,000 + 128 + 2,300 = 10,428: the ordered-index
   default is 128 (<code>ConfigInfo.cpp:425-428</code>), and the 10,000 substitution fires
   only on an explicit 0 (<code>Configuration.cpp:2307-2313</code>), which neither the
-  defaults nor rondb-helm set. The schema <em>file</em> is sized from that sum rounded up
-  to 127-entry pages (<code>Dbdict.cpp:3585-3586</code>; recomputed on restart,
-  <code>:2319-2321</code>); <code>MaxNoOfSchemaObjects</code> itself only bounds the
+  defaults nor rondb-helm set. The schema <em>file</em> is sized from that sum plus
+  <code>MaxNoOfUserObjects</code>, rounded up to 127-entry pages
+  (<code>Dbdict.cpp:3624-3625</code>; recomputed on restart,
+  <code>:2294-2295</code>); <code>MaxNoOfSchemaObjects</code> itself only bounds the
   in-memory page buffer (<code>:3244-3254</code>) and the startup check. An allowance
   therefore grows the sum directly, and <code>MaxNoOfSchemaObjects</code> must grow with
   it past its 20,320 floor only when the sum does.
   So whenever rondb-helm renders an allowance it also renders a
   <code>MaxNoOfSchemaObjects</code> covering tables, indexes and the allowance, unless
   <code>MaxNoOfSchemaObjects</code> is set explicitly.
-  <strong>The id range must be made safe end to end.</strong> Page rounding leaves a tail
+  <strong>The id range is made safe end to end.</strong> Page rounding leaves a tail
   of ids above the configured sum (113 on the helm default, 61 on the MTR configuration),
-  and today <code>getFreeObjId</code> hands them out once everything below is in use
+  and in 26.02 <code>getFreeObjId</code> hands them out once everything below is in use
   (<code>Dbdict.cpp:2921-2922</code>; the USER create path never checks the sum,
   <code>:33705-33715</code>, only tables are protected, <code>:2946-2949</code>), while
   <code>LIST</code> stops at the sum (<code>:36349</code>), <code>ALTER</code> and
   <code>DROP</code> hit an <code>ndbrequire</code> on such an id (<code>:34970</code>,
   <code>:35619</code>), and a restart refuses the schema file outright
   (<code>progError</code>, <code>:22785-22797</code>, <code>:4649-4659</code>): an object
-  in the tail is invisible, immutable and fatal to the next restart. The kernel work
-  establishes the invariant that every id a create can return is enumerable, alterable,
-  droppable and restart-safe, by bounding allocation to the sum or by extending the
-  bounds to the page capacity, one choice applied everywhere, and the tests create into
-  the last legal id and past it under allowance 0, a non-zero allowance, and an
-  explicitly oversized <code>MaxNoOfSchemaObjects</code>. The kernel gets no automatic
+  in the tail is invisible, immutable and fatal to the next restart. The branch bounds
+  allocation: no create takes an id in the page-rounding tail (tables and indexes stop at
+  the table and index sum, user objects at that sum plus
+  <code>MaxNoOfUserObjects</code>), so every id a create can return is enumerable,
+  alterable, droppable and restart-safe, and a full id space refuses a user or alias
+  create with error 1277 and no node stops (MTR <code>ndb_quota.ndb_user_objects</code>
+  creates into the last id and past it). The kernel gets no automatic
   sentinel: mgmd fills every omitted integer parameter with its registered default
   (<code>ConfigInfo.cpp</code> <code>applyDefaultValues</code>), so &ldquo;not set&rdquo; cannot
   be detected on the data node. An explicit value below the sum stays refused. The tests
   cover the 0 default (value omitted, a start on 20,320, an upgrade from a cached binary
   configuration) as well as non-zero allowances; Mikael is still to confirm this as the
-  RONDB-136 integration. The scale test runs
-  with automatic memory configuration, creates more than 20,320 live schema objects, then
-  creates and uses tables and indexes at the resulting high ids, and repeats after a
-  restart and a backup and restore.</li>
-  <li><strong>Exhaustion crashes the cluster (defect, fix in scope).</strong> With the
-  pool full, each refused <code>USER ALIAS SET</code> took longer than the one before
+  RONDB-136 integration. Tested beyond 20,320 objects with automatic memory
+  configuration (<code>ndb_quota.ndb_user_objects_big</code>): 21,000 aliases, tables
+  and indexes created and used beside them, a system restart, and
+  <code>USER BACKUP</code> / <code>USER RESTORE</code>.</li>
+  <li><strong>Exhaustion crashed the cluster (defect, fixed on this branch).</strong> With
+  the pool full, each refused <code>USER ALIAS SET</code> took longer than the one before
   (0.3 s, then 9.8 s, then 55 s) until the watchdog killed the DBDICT thread mid
   <code>CREATE_DATABASE_REQ</code> (error 6050, block 250, gsn 645) and the second data
-  node followed with an abort: a reconciler retrying creates against a full pool takes
-  the cluster down. The growth per attempt points at state leaked by each failed create.
-  Probably reachable with plain <code>USER</code> creates on the base version too. The
-  clean-refusal fix, with an MTR test that drives creates past the limit, is a blocker
-  for the kernel PR; error logs and traces are preserved in the ticket workspace
+  node followed with an abort: a reconciler retrying creates against a full pool took
+  the cluster down. Probably reachable with plain <code>USER</code> creates on the base
+  version too; error logs and traces are preserved in the ticket workspace
   (<code>RONDB-1158_alias_bench/</code>). The saved jam trail (33706, 33709, 33777,
-  33786, 5811, 5820) points at a concrete cause, unconfirmed until reproduced: the create
-  error path (<code>Dbdict.cpp:33785-33787</code>) calls <code>release_object</code>,
-  which removes the object from the name hash (<code>:5821</code>) that only the success
-  path has added it to (<code>:33759-33760</code>), and the abort sits exactly between
-  those jam points. Mikael will investigate the crash given a failing
-  test case, so the first deliverable is an MTR reproducer, ideally with plain
-  <code>USER</code> creates on the base version.</li>
+  33786, 5811, 5820) pointed at the create error path, which called
+  <code>release_object</code> on an object the name hash had not yet received. The
+  create parse now finds the object id before it seizes anything, so a create into a
+  full id space is refused at once with error 1277, leaves nothing behind, and no node
+  stops; <code>ndb_quota.ndb_user_objects</code> drives creates past the limit.</li>
   <li>Restart and backup paths for a new object flag, including that restore re-resolves
   targets by name.</li>
   <li>The alias drop protection (13.3, decided 2026-11-19): the per-target alias count
-  in Dbdict&rsquo;s drop parse, the new error code, and the restart waiver,
+  in Dbdict&rsquo;s drop parse, error 1248, and the restart waiver,
   reviewed with the kernel team.</li>
   <li>The cost of the one extra indirection on the <code>TCKEYREQ</code> path, and
   sign-off on the new management syntax.</li>
-  <li>The rate caps (section 14), decided 2026-11-19: the separate create (50%) and
-  alter (70%) caps, hardcoded per node (<code>Dbdict.cpp:2706-2709</code>) with no
-  comment explaining the split, are replaced by a single cap, default 50%, configurable
-  in <code>config.ini</code> (section 15). The single cap removes the history-dependent
+  <li>The rate caps (section 14), decided 2026-11-19 and built on this branch: the
+  separate create (50%) and alter (70%) caps, hardcoded per node in 26.02
+  (<code>Dbdict.cpp:2706-2709</code>) with no comment explaining the split, are replaced
+  by a single cap, the data-node parameter <code>RateLimitBudgetPercent</code> (default
+  50, 1 to 100) in <code>config.ini</code> (section 15). The single cap removes the history-dependent
   50&ndash;70% stretch zone (a total above the create cap was reachable only by raising
   existing entries and could not be rebuilt after a drop) and lets large deployments
   tune the ceiling. The rework also closes the oversubscription assert with parse-time
   refusals (decided 2026-11-19): one monotonic rule for the parse and commit checks, a
-  command is refused with error 1235 when its post-change total would exceed both the
+  command is refused with error 1235 (create) or 1236 (alter) when its post-change total would exceed both the
   node&rsquo;s cap and the pre-change total, so nothing may worsen an over-cap total,
   while a lowering, which never worsens it, stays legal and a node drains stepwise; on a
   node under its cap the rule reduces to today&rsquo;s check, and a zero-rate alias
@@ -1484,9 +1573,10 @@ defect:</p>
   and not at commit, which cannot fail. Every management client sends one database
   operation per schema transaction and the dictionary serializes transactions, so parse
   always sees the committed total; the rework also refuses a second allocation-changing
-  operation inside one schema transaction, closing the one path, a hand-built signal
-  client, where parse could not. The change, the parameter name and
-  the refusals go through the kernel team in review.</li>
+  operation inside one schema transaction (error 1276; restarts, which replay many
+  creates in one transaction, are exempt), closing the one path, a hand-built signal
+  client, where parse could not. The change and the refusals go through the kernel team
+  in review.</li>
   <li>The 60-second client re-list: a recreated alias is invisible to a connected mysqld
   for up to a minute.</li>
   <li>The query-thread gap of 13.2 (its own branch and review).</li>
@@ -1501,7 +1591,8 @@ defect:</p>
 
 <section id="reference">
 <h2>14. How RonDB enforces a limit</h2>
-<p>Nothing here is new; it is the machinery a group name is handed to.</p>
+<p>Nothing here is new apart from the single rate cap; it is the machinery a group name
+is handed to.</p>
 <h3>A limit measures work, not requests</h3>
 <p>A limit is CPU microseconds of accounted work per second on each data node. Dblqh
 charges per operation (<code>Dblqh.hpp:4707</code>):</p>
@@ -1537,12 +1628,18 @@ small key reads, or about 1 million writes, or about 5 million rows scanned. Eac
 enforces the full rate on its own work; there is no cluster-wide counter.</p>
 <h3>The rate cap, and why it exists</h3>
 <p>At start, Dbdict sizes a pool of 1,000,000 units per block and send thread, i.e. 100%
-of the node&rsquo;s CPU. Today configured rates may sum to 50% of it on create and 70% on
+of the node&rsquo;s CPU. In 26.02 configured rates may sum to 50% of it on create and 70% on
 alter (<code>Dbdict::initCommonData</code>, <code>Dbdict.cpp:2702-2709</code>); a restart
 never refuses. A rate of 0 means unlimited and consumes nothing. <strong>Decided
-2026-11-19:</strong> this design replaces the two limits with a single cap, default 50%
-of the pool, configurable per data node in <code>config.ini</code> (section 15); the
-restart exemption stays, so a node restarting onto fewer threads still restores its
+2026-11-19, built on this branch:</strong> a single cap replaces the two limits, the
+data-node parameter <code>RateLimitBudgetPercent</code> in <code>config.ini</code>
+(default 50, 1 to 100; cap = pool / 100 &times; percent), for creates and alters alike
+(section 15). One rule applies at parse and at commit: an operation is refused when the
+total it leaves exceeds both the cap and the total before it, with error 1235 for a
+create and 1236 for an alter. Under the cap that is the plain cap; on a node already
+over it (a restart onto fewer threads, a lowered cap) nothing may grow the total while a
+lowering, a drop or a zero-rate alias is still allowed, so the node drains step by step.
+The restart exemption stays, so a node restarting onto fewer threads still restores its
 entries.</p>
 <p>The reason the cap exists is the cost model above: <strong>the meter only charges row
 operations</strong>. Redo logging, local and global checkpoints, send and receive
@@ -1578,13 +1675,13 @@ targeted RonDB.</p>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col">Area</th><th scope="col">Status</th><th scope="col">Work, and how</th></tr></thead>
   <tbody>
-    <tr><td>Hopsworks tables</td><td>new</td><td>Flyway migration with the two group tables and the state table (appendix); JPA entities; the save rules of section 11 in the controller; re-check &ldquo;no ties&rdquo; in the facade transaction that writes <code>project_team</code>, under the same lock as the save rules, because the controllers on that path run under <code>NEVER</code> and a check outside the writing transaction races a concurrent save (the behavior on a tie is section 16 item 3, still open); in the project-delete and user-delete paths, mark deleted every group whose only Who row the delete removes, and name those groups in the two delete confirmations (section 11).</td></tr>
+    <tr><td>Hopsworks tables</td><td>new</td><td>Flyway migration with the two group tables, the state table and the lock table with its one row (appendix); JPA entities; the save rules of section 11 in the controller; re-check &ldquo;no ties&rdquo; in the facade transaction that writes <code>project_team</code>, under the same lock as the save rules (the <code>rate_limit_group_lock</code> row), because the controllers on that path run under <code>NEVER</code> and a check outside the writing transaction races a concurrent save (the behavior on a tie is section 16 item 3, still open); in the project-delete and user-delete paths, mark deleted every group whose only Who row the delete removes, and name those groups in the two delete confirmations (section 11).</td></tr>
     <tr><td>Hopsworks installer</td><td>new</td><td>Section 10: extend <code>RonDbManagementClient</code> with the <code>USER</code> / <code>USER ALIAS</code> command family (same framing as its quota commands) and per-cluster endpoints from the namespace discovery; the expansion of Who rows into account names (the clip is <code>OnlineFeaturestoreController.onlineDbUsername</code>&rsquo;s); an <code>OnlinefsOperationHandler</code> implementation for membership churn; a primary-gated reconciler on the <code>TrinoReconciler</code> template; state rows per (group, cluster).</td></tr>
     <tr><td>Hopsworks admin page</td><td>new</td><td>Section 3: the list grouped by cluster with <em>cap · groups · other · free</em> once per section header (from <code>USER CAPACITY</code> and the desired budgets; red would-be totals while editing; capacity unknown for an unreachable cluster) + form, cluster picker from discovery, per-cluster state badges (installed, pending, partial, refused; partial and refused expand to the applied coverage and <code>last_error</code>, section 10), converted rate shown per cluster, the commands a save will run, the delete confirmation.</td></tr>
     <tr><td>RDRS</td><td>exists</td><td>Username mode (merged on the ticket branch): tag the project-user name. <strong>No group code.</strong></td></tr>
-    <tr><td>RonDB kernel</td><td>new</td><td>Section 13: alias flag and single target (by name) on the <code>$name</code> object in Dbdict (not budgeted, persisted, backed up, re-resolved on target recreate); <code>USER DROP</code> refused while aliases point at the target (per-target alias count in the drop parse, new error, restart and restore waived; 13.3); the alias-to-target swap at the three Dbtc admission points; <code>USER ALIAS SET/DROP/GET/LIST</code> and <code>USER CAPACITY</code> (per-node thread count, configured cap percent, allocated total; 13.3) in the mgm server (<code>Services.cpp</code>) and client; MTR tests in <code>suite/ndb_quota</code>: lifecycle, enforcement through an alias on both key and scan paths, restart and backup/restore, a refused target drop with a live alias, target drop and recreate. Two additions from the scale
-    measurement (13.5): a <code>MaxNoOfUserObjects</code> configuration parameter added
-    to the dictionary object-slot sum, so aliases stop competing with tables for
+    <tr><td>RonDB kernel</td><td>new</td><td>Section 13: alias flag and single target (by name) on the <code>$name</code> object in Dbdict (not budgeted, persisted, backed up, re-resolved on target recreate); <code>USER DROP</code> refused while aliases point at the target (per-target alias count in the drop parse, error 1248, restart and restore waived; 13.3); the alias-to-target swap at the three Dbtc admission points; <code>USER ALIAS SET/DROP/GET/LIST</code> and <code>USER CAPACITY</code> (per-node thread count, configured cap percent, allocated total, over <code>GET_RATE_CAPACITY_REQ</code>/<code>CONF</code> to every data node&rsquo;s Dbdict; 13.3) in the mgm server (<code>Services.cpp</code>), mgmapi and <code>ndb_mgm</code>; the capability gate <code>ndbd_support_user_alias_v2</code> (5072 from the management server, 794 from Dbdict; 13.3); <code>NdbTransaction::release()</code> clearing the rate limit user id and name (13.4); MTR tests in <code>suite/ndb_quota</code>: lifecycle, enforcement through an alias on both key and scan paths, restart and backup/restore, a refused target drop with a live alias, target drop and recreate. Two additions from the scale
+    measurement (13.5): a <code>MaxNoOfUserObjects</code> configuration parameter whose
+    added ids user objects take first, so aliases stop competing with tables for
     <code>MaxNoOfTables</code>, with a kernel default of 0 (today&rsquo;s sharing, tested,
     including an upgrade from a cached 20,320 configuration), required by rondb-helm when
     rate limiting is enabled, and RONDB-136&rsquo;s <code>MaxNoOfSchemaObjects</code>
@@ -1592,22 +1689,21 @@ targeted RonDB.</p>
     explicitly (an explicit smaller value stays refused),
     the user objects included in automatic memory accounting, and a test with automatic
     memory configuration that creates more than 20,320 live objects and then uses tables
-    and indexes at the high ids; and a clean,
-    constant-cost refusal when the object pool is exhausted, starting from a failing MTR
-    reproducer handed to Mikael (today exhaustion escalates per attempt and ends in a
-    watchdog kill of the data node). One addition from the cap decision (section 14):
+    and indexes at the high ids; and a clean refusal (1277) when the id space is full
+    (exhaustion used to escalate per attempt and end in a watchdog kill of the data node,
+    13.5). One addition from the cap decision (section 14):
     the separate create (50%) and alter (70%) limits
-    (<code>Dbdict.cpp:2706-2709</code>) replaced by a single cap, default 50%,
-    set per data node by a <code>config.ini</code> percentage parameter (name settled in
-    kernel review; registered with a default and handled like
-    <code>MaxNoOfSchemaObjects</code> on the data-node side so a binary configuration
-    from an older mgmd still starts); creates, raises and the commit-time checks all use
+    (<code>Dbdict.cpp:2706-2709</code>) replaced by a single cap,
+    <code>RateLimitBudgetPercent</code> per data node (default 50, 1 to 100; a binary
+    configuration from an older mgmd has no value and gets the default); creates, raises
+    and the commit-time checks all use
     the one limit, the restart exemption stays, parse-time refusals replace the
-    commit-time asserts for an oversubscribed node (section 14), and the tests cover the default
+    commit-time asserts for an oversubscribed node, a second rate-changing operation in
+    one schema transaction is refused (1276; section 14), and the tests cover the default
     matching today&rsquo;s create behavior, a raised cap accepting what formerly needed
     create-then-alter, a recreate after a drop at the same total, and an omitted
     parameter on upgrade.</td></tr>
-    <tr><td>ClusterJ</td><td>new, phase 1</td><td>Section 13.4: <code>Session.setRateLimitUser</code> in clusterj-api and clusterj-core, applied in <code>DbImpl.enlist</code>, the <code>setUserId</code> binding in <code>ndbjtie</code> over a session-owned direct buffer, and the reset on <code>closeCache</code>, which also rolls back a transaction still open, a logged caller bug, so a cached session is always clean (13.4). Tests: a <code>RateLimitTest</code> class in clusterj-test, run by a new <code>ndb_quota</code> MTR test that turns rate limits on, sets <code>USER</code> and <code>USER ALIAS</code> entries through <code>ndb_mgm</code> and runs <code>AllTests -n RateLimitTest</code>. The class carries <code>@Ignore</code>, so the plain <code>ndb.clusterj</code> run, which has rate limits off, skips it, while a run that names it still executes it (<code>AllTests.java:96-98</code>, <code>:139-145</code>). Cases: a tagged session is throttled (243 / 2203) and an untagged session on the same table is not; a tag naming an alias charges the alias&rsquo;s target; an unknown name runs unmetered; explicit and autocommit transactions are both tagged; a new name takes effect at the next transaction; a session back from the cache carries no name; a session returned with an open transaction is rolled back, its writes invisible and the next borrower clean; a name over the limit fails the transaction start.</td></tr>
+    <tr><td>ClusterJ</td><td>new, phase 1</td><td>Section 13.4: <code>Session.setRateLimitUser</code> and <code>getRateLimitUser</code> in clusterj-api and clusterj-core, applied in <code>ClusterTransactionImpl.enlist</code> right after the native transaction is created, the <code>NdbTransaction.setUserId(ByteBuffer, int)</code> binding in <code>ndbjtie</code> over a session-owned direct buffer, and the reset on <code>closeCache</code>, which also rolls back a transaction still open, a logged caller bug, so a cached session is always clean (13.4). Tests: a <code>RateLimitTest</code> class in clusterj-test, run by the <code>ndb_quota</code> MTR test <code>ndb_clusterj_rate_limit</code>, which turns rate limits on, sets <code>USER</code> and <code>USER ALIAS</code> entries through <code>ndb_mgm</code> and runs <code>AllTests -n RateLimitTest</code>. The class carries a new <code>@NamedOnly</code> annotation (clusterj-unit), which <code>AllTests</code> treats like <code>@Ignore</code> unless the class is named with <code>-n</code>, so the plain <code>ndb.clusterj</code> run, which has rate limits off, skips it, while a run that names it still executes it (<code>AllTests.java:96-100</code>, <code>:139-148</code>). Cases: a tagged session is throttled (243 / 2203) and an untagged session on the same table is not; a tag naming an alias charges the alias&rsquo;s target; an unknown name runs unmetered; explicit and autocommit transactions are both tagged; a transaction keeps the name it began with and a new name takes effect at the next transaction; a session back from the cache carries no name; a session returned with an open transaction is rolled back, its writes invisible and the next borrower clean; an empty name or one over 126 UTF-8 bytes is refused with <code>ClusterJUserException</code>, counted in bytes, and <code>null</code> clears the name.</td></tr>
     <tr><td>OnlineFS ingestion</td><td>new, phase 2</td><td>Section 13.4: <a href="https://github.com/logicalclocks/clusterj-onlinefs">clusterj-onlinefs</a> sets the tag per write transaction to the producing user&rsquo;s project-user account; how it learns that user is open (section 16). No installer change.</td></tr>
     <tr><td>MySQL server</td><td>exists</td><td>Nothing to code. Enable <code>ndb_user_rate_limits</code> through rondb-helm.</td></tr>
     <tr><td>Data nodes</td><td>exists</td><td><code>ActivateRateLimits=true</code> in the cluster configuration.</td></tr>
@@ -1665,24 +1761,29 @@ targeted RonDB.</p>
   (alias), deployment (settings). Unrelated defects found while scouting and verifying
   deserve their own tickets. In Hopsworks: cross-satellite share grants that silently do
   nothing, and <code>DatasetSharedWithFacade.java:169</code> filtering on the dropped
-  <code>accepted</code> column. In RonDB: <code>ClusterMgr::deleteUserId</code> unlocks
+  <code>accepted</code> column. In RonDB, still open: <code>ClusterMgr::deleteUserId</code> unlocks
   <code>theUserIdMutex</code> without locking it and edits the hash chain unlocked
-  (<code>ClusterMgr.cpp:1723-1772</code>); a 127-character <code>USER</code> name
-  overruns <code>DatabaseName</code>; an NDB API table whose name starts with
+  (<code>ClusterMgr.cpp:1723-1772</code>); an NDB API table whose name starts with
   <code>$</code> can hit <code>ndbrequire(m_is_user == false)</code>
   (<code>DbtcMain.cpp:27798</code>) and crash the node;
   <code>execLIST_DATABASE_REQ</code> never increments its <code>loop_count</code>, so the
-  300-object break never fires; after a restart that permits an oversubscribed total
-  (fewer threads), the commit-time cap checks are <code>ndbrequire</code>s that kill the
+  300-object break never fires; and the rate-decay timer computes a constant 99 ms
+  instead of the elapsed time (<code>DbtcMain.cpp:27573-27575</code>). Fixed on this
+  branch, because the installer hits them: a node restart after a <code>USER</code> or
+  quota was dropped or altered while the node was down failed with error 703 and the
+  node stopped (the restart drop now parses the object by id); Dbtc read a dropped
+  database record&rsquo;s reply address after releasing the record, so after many drops
+  every data node stopped with &ldquo;Unknown node in sendSignal&rdquo; (Dbtc now replies
+  before it releases); after a restart that permits an oversubscribed total (fewer
+  threads), the commit-time cap checks were <code>ndbrequire</code>s that killed the
   data node instead of refusing the command (<code>Dbdict.cpp:34687</code>,
-  <code>:36034-36037</code>; the cap rework closes it with parse-time refusals, section
-  14, and the installer&rsquo;s guard in section 10 stays for older kernels);
-  the rate-decay timer computes a constant 99 ms
-  instead of the elapsed time (<code>DbtcMain.cpp:27573-27575</code>); and exhausting
-  the dictionary object pool with repeated creates escalates per refused attempt until
-  the watchdog kills the data node (measured in 13.5; likely pre-existing with plain
-  <code>USER</code> creates, but its fix is in this ticket&rsquo;s scope because the
-  installer&rsquo;s reconciler is exactly the client that would trigger it).</li>
+  <code>:36034-36037</code> in 26.02; the single cap&rsquo;s parse-time refusals close it,
+  section 14, and the installer&rsquo;s guard in section 10 stays for older kernels);
+  exhausting the dictionary object pool with repeated creates escalated per refused
+  attempt until the watchdog killed the data node (13.5; now error 1277); and a
+  127-byte <code>USER</code> name overran <code>DatabaseName</code> (the management
+  server and Dbdict now refuse names over 126 bytes). The first two predate this
+  series.</li>
 </ol>
 </section>
 
@@ -1696,8 +1797,8 @@ save rules of section 11 should restrict it to something like <code>[A-Za-z0-9_]
 The cluster name is a Kubernetes namespace, at most 63 characters by the DNS label rule;
 a state row&rsquo;s target key may also be the region-qualified form
 <code>region:&lt;region name&gt;</code> (section 10), which is why that column is wider.
-Check the unique keys over nullable columns against the RonDB migration limits before
-the migration is written.</p>
+The unique keys over the nullable <code>uid</code> and <code>project_id</code> columns
+work as intended: NDB unique keys allow several NULLs.</p>
 <pre><code>CREATE TABLE `hopsworks`.`rate_limit_group` (
   `id`             int(11)      NOT NULL AUTO_INCREMENT,
   `name`           varchar(63)  COLLATE latin1_general_cs NOT NULL,
@@ -1738,14 +1839,32 @@ CREATE TABLE `hopsworks`.`rate_limit_group_cluster_state` (
   `last_error`   mediumtext   DEFAULT NULL,  -- the last pass's first failed command with its error code and message; NULL after a fully successful pass (section 11)
   `updated`      bigint      NOT NULL,   -- epoch milliseconds; when the applied state was observed
   PRIMARY KEY (`group_id`, `cluster_name`),
-  CONSTRAINT `rlgs_group_fk` FOREIGN KEY (`group_id`) REFERENCES `rate_limit_group` (`id`) ON DELETE CASCADE
-) ENGINE = ndbcluster;</code></pre>
+  CONSTRAINT `rlgs_group_fk` FOREIGN KEY (`group_id`) REFERENCES `rate_limit_group` (`id`) ON DELETE RESTRICT  -- not CASCADE: NDB error 21034 with TEXT columns
+) ENGINE = ndbcluster;
+
+-- Every group mutation, membership change and pass snapshot locks row 1 first.
+CREATE TABLE `hopsworks`.`rate_limit_group_lock` (
+  `id` int(11) NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE = ndbcluster;
+
+INSERT INTO `hopsworks`.`rate_limit_group_lock` (`id`) VALUES (1);</code></pre>
 <p>The &ldquo;one of two columns is set&rdquo; rule and the &ldquo;no ties&rdquo; rule are enforced in application
 code, as the existing sharing tables do; the unique keys prevent duplicate rows.
 A group row is never deleted (section 10): a group delete deletes its Who rows and state
-rows itself and sets <code>deleted</code>, so the two <code>ON DELETE CASCADE</code>
-constraints from <code>rate_limit_group</code> do not fire on that path, and the unique
-<code>name</code> key keeps a deleted name for reuse by the same row. The
+rows itself and sets <code>deleted</code>, so the one <code>ON DELETE CASCADE</code>
+constraint from <code>rate_limit_group</code>, the Who table&rsquo;s, does not fire on that
+path, and the unique
+<code>name</code> key keeps a deleted name for reuse by the same row. The state
+table&rsquo;s key to <code>rate_limit_group</code> is <code>ON DELETE RESTRICT</code>:
+the table has <code>MEDIUMTEXT</code> columns, and RonDB refuses
+<code>ON DELETE CASCADE</code> on a child table with TEXT or BLOB columns (NDB error
+21034). Groups are soft-deleted, so the key never acts; a hard delete of a group that
+still has state rows is refused. The one-row <code>rate_limit_group_lock</code> table
+(row 1, seeded by the migration) serializes every group mutation, membership change and
+installer pass snapshot: each takes row 1&rsquo;s lock first. Locking the group rows
+cannot do this, because in RonDB a locking read of a missing key locks nothing, so two
+transactions creating the same new group would not see each other. The
 <code>uid</code> and <code>project_id</code> cascades do fire: a user or project delete
 removes its Who rows, and a group left with none is marked deleted in the same
 transaction (section 11). The <code>revision</code> column is what lets a pass refuse to
@@ -1761,11 +1880,15 @@ column.</p>
 <pre><code>USER ALIAS SET  &lt;name&gt; --target=&lt;user&gt;
 USER ALIAS DROP &lt;name&gt;
 USER ALIAS GET  &lt;name&gt;
-USER ALIAS LIST</code></pre>
+USER ALIAS LIST
+USER CAPACITY</code></pre>
 <p>The management-server protocol commands mirror the existing <code>set user</code> /
 <code>alter user</code> / <code>drop user</code> / <code>get user</code> /
-<code>list user</code> family (<code>Services.cpp</code>), with the arguments
-<code>username</code> and <code>target</code>.</p>
+<code>list user</code> family (<code>Services.cpp</code>): <code>set user alias</code>
+takes <code>aliasname</code> and <code>target</code>; <code>drop user alias</code> and
+<code>get user alias</code> take <code>aliasname</code>; <code>list user alias</code>
+and <code>backup user alias</code> take <code>nextAliasId</code> and return one alias
+per round trip; <code>user capacity</code> takes no arguments.</p>
 <footer>
   <p class="meta">Basis: the RonDB 26.02 rate-limit implementation (Dbdict, Dbtc, Dblqh,
   ClusterMgr, ha_ndbcluster), the RONDB-1158 branches, the Hopsworks schema at migration
