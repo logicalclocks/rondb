@@ -306,6 +306,17 @@ sub go {
 # For the types with a known_diff prefix, the two aggregate comparisons
 # assert that exact diff (suite/ronsql/known_diffs/<prefix>_*.diff) instead
 # of failing.
+# The first statement on tbl after it was dropped and created again under
+# the same name, or altered, may run twice in RDRS: a pooled Ndb object can
+# still hold the old table (DBDICT's drop/alter notification is best-effort
+# and asynchronous), the data nodes refuse it as a stale schema, and RDRS
+# reloads the schema and retries (attempts=2). Seen for the GROUP BY right
+# after the second CREATE TABLE tbl. ronsql_compare.inc asserts attempts=1
+# (T-7) unless allow_retry is set; it resets after each comparison.
+sub allow_retry_after_ddl {
+  l "--let \$allow_retry=yes";
+}
+
 sub known_diff {
   my ($type, $what) = @_;
   return unless defined $type->{known_diff};
@@ -335,6 +346,7 @@ foreach my $type (@data_types) {
   create_table($type);
 
   l "--echo $disp: SELECT with GROUP BY";
+  allow_retry_after_ddl();
   go("SELECT val, COUNT(*) as cnt",
      "FROM tbl",
      "GROUP BY val;");
@@ -374,6 +386,7 @@ foreach my $type (@data_types) {
   l "--enable_warnings";
 
   l "--echo $disp: Index scan equality. Expect INDEX SCAN on idx_val_foo.";
+  allow_retry_after_ddl();
   go("SELECT COUNT(*) as cnt FROM tbl WHERE " . $type->{eq} . ";",
      ["Execute as index scan.",
       "Index: `idx_val_foo`(`val`, `foo`)",
