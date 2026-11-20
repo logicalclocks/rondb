@@ -33105,6 +33105,30 @@ void Dbdict::execCREATE_DATABASE_REQ(Signal* signal) {
  * back before its target or after its target name was taken by another
  * kind of object; it then waits as RNIL instead of failing the restart.
  */
+/**
+ * An older data node does not know the alias properties, so an alias is
+ * created only while every live data node supports user aliases; the
+ * first release that does differs per release line.
+ */
+bool Dbdict::aliasSupportedByAliveNodes() {
+  for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
+    if (!c_aliveNodes.get(nodeId)) {
+      continue;
+    }
+    Uint32 version = getNodeInfo(nodeId).m_version;
+#ifdef ERROR_INSERT
+    if (ERROR_INSERTED(6230) && nodeId != getOwnNodeId()) {
+      version = NDB_MAKE_VERSION(26, 4, 2);
+    }
+#endif
+    if (!ndbd_support_user_alias_v2(version)) {
+      jam();
+      return false;
+    }
+  }
+  return true;
+}
+
 Uint32
 Dbdict::resolveAliasTarget(SchemaOpPtr op_ptr,
                            const char *alias_name,
@@ -33575,6 +33599,11 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
         db.MaxParallelComplexQueries != 0) {
       jam();
       setError(error, CreateTableRef::InvalidFormat, __LINE__);
+      return;
+    }
+    if (op_ptr.p->m_restart == 0 && !aliasSupportedByAliveNodes()) {
+      jam();
+      setError(error, CreateTableRef::FeatureRequiresUpgrade, __LINE__);
       return;
     }
     Uint32 err = resolveAliasTarget(op_ptr,

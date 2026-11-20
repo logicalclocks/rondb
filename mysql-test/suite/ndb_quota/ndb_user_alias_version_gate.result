@@ -1,0 +1,42 @@
+USER SET successfully executed
+USER ALIAS SET successfully executed
+# Node 2 reports a version without user aliases.
+The user alias gate is refused
+USER ALIAS SET command failed: Error:
+*  5072: Error
+*        User aliases need every data node on a release that supports them: Permanent error: Application error
+USER ALIAS DROP command failed: Error:
+*  5072: Error
+*        User aliases need every data node on a release that supports them: Permanent error: Application error
+USER ALIAS GET command failed: Error:
+*  5072: Error
+*        Data node 2 does not support user aliases
+USER ALIAS LIST command failed: Error:
+*  5072: Error
+*        Data node 2 does not support user aliases
+USER CAPACITY command failed: Error:
+*  5072: Error
+*        Data node 2 does not support user aliases
+# USER BACKUP fails too, since it would leave the aliases out.
+USER BACKUP command failed: Error:
+*  5072: Error
+*        Data node 2 does not support user aliases
+# Plain USER commands still run.
+User rate limits for rl_gate
+userId = <id>
+userVersion = <id>
+RatePerSec = 100
+MaxTransactionSize = 0
+MaxParallelTransactions = 0
+USER ALTER successfully executed
+# Node 2 reports its real version again.
+The user alias gate is accepted
+User alias rl_gate_alias
+aliasId = <id>
+target = rl_gate
+# The dictionary refuses an alias create a node cannot take.
+USER ALIAS SET command failed: Error:
+*   794: Error
+*        Schema feature requires data node upgrade: Permanent error: Application error
+USER ALIAS SET successfully executed
+# Cleanup

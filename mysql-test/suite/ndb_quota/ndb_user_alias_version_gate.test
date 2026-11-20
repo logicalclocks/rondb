@@ -1,0 +1,65 @@
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+# RONDB-1158: the USER ALIAS commands and USER CAPACITY run only when every
+# connected data node supports them. Support starts at a different release
+# on each release line, so versions do not order it: a newer line can lack
+# what an older line's latest release has. A check of the cluster's
+# minimum version passes such a cluster, so mgmd checks each data node.
+#
+# QMGR error 965 makes node 2 report 26.04.2 to management servers, a
+# version that sorts above this build's but whose line has no user
+# aliases yet. The minimum stays this build's version, so only the
+# per-node check refuses. Plain USER commands are not gated.
+#
+# DBDICT error 6230 makes the dictionary see the other data nodes as
+# lacking user alias support, so a USER ALIAS SET that reaches it anyway
+# (a client that skips mgmd's check) is refused before it enters a schema
+# transaction (794, the schema feature requires a data node upgrade).
+
+--exec $NDB_MGM -e "USER SET rl_gate --rate-per-sec=100"
+--exec $NDB_MGM -e "USER ALIAS SET rl_gate_alias --target=rl_gate"
+
+--echo # Node 2 reports a version without user aliases.
+--exec $NDB_MGM -e "2 ERROR 965" >> $NDB_TOOLS_OUTPUT
+--exec perl $MYSQL_TEST_DIR/suite/ndb_quota/include/wait_user_alias_gate.pl refused
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET rl_gate_alias2 --target=rl_gate"
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS DROP rl_gate_alias"
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS GET rl_gate_alias"
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS LIST"
+--error 255,65280
+--exec $NDB_MGM -e "USER CAPACITY"
+--echo # USER BACKUP fails too, since it would leave the aliases out.
+--error 255,65280
+--exec $NDB_MGM -e "USER BACKUP $MYSQLTEST_VARDIR/tmp/rl_gate.backup"
+--error 0,1
+--remove_file $MYSQLTEST_VARDIR/tmp/rl_gate.backup
+--echo # Plain USER commands still run.
+--replace_regex /(userId|userVersion) = [0-9]+/\1 = <id>/
+--exec $NDB_MGM -e "USER GET rl_gate"
+--exec $NDB_MGM -e "USER ALTER rl_gate --rate-per-sec=200"
+
+--echo # Node 2 reports its real version again.
+--exec $NDB_MGM -e "2 ERROR 0" >> $NDB_TOOLS_OUTPUT
+--exec perl $MYSQL_TEST_DIR/suite/ndb_quota/include/wait_user_alias_gate.pl accepted
+--replace_regex /aliasId = [0-9]+/aliasId = <id>/
+--exec $NDB_MGM -e "USER ALIAS GET rl_gate_alias"
+
+--echo # The dictionary refuses an alias create a node cannot take.
+--exec $NDB_MGM -e "ALL ERROR 6230" >> $NDB_TOOLS_OUTPUT
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET rl_gate_alias2 --target=rl_gate"
+--exec $NDB_MGM -e "ALL ERROR 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "USER ALIAS SET rl_gate_alias2 --target=rl_gate"
+
+--echo # Cleanup
+--disable_result_log
+--exec $NDB_MGM -e "USER ALIAS DROP rl_gate_alias"
+--exec $NDB_MGM -e "USER ALIAS DROP rl_gate_alias2"
+--exec $NDB_MGM -e "USER DROP rl_gate"
+--enable_result_log
+--remove_file $NDB_TOOLS_OUTPUT

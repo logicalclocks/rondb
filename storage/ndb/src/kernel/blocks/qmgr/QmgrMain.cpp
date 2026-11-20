@@ -6598,6 +6598,18 @@ void Qmgr::sendApiRegConf(Signal *signal, Uint32 node) {
   apiRegConf->apiHeartbeatInterval = (chbApiDelay[nodeId] / 10);
 
   apiRegConf->version = NDB_VERSION;
+#ifdef ERROR_INSERT
+  /**
+   * Report a release of another line that sorts above this one and lacks
+   * user aliases, to management servers only, so tests can check that
+   * they gate user aliases on every data node's own version.
+   */
+  if (ERROR_INSERTED(965) &&
+      getNodeInfo(apiNodePtr.i).getType() == NodeInfo::MGM) {
+    jam();
+    apiRegConf->version = NDB_MAKE_VERSION(26, 4, 2);
+  }
+#endif
   apiRegConf->mysql_version = NDB_MYSQL_VERSION_D;
   apiRegConf->nodeState = getNodeState();
   {

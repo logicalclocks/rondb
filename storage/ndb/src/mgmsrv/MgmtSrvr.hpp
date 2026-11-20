@@ -593,6 +593,7 @@ private:
   NdbMutex *m_reserved_nodes_mutex;
 
   int check_quota_version(bool is_user);
+  int check_user_alias_version(NodeId &unsupported_node);
   int set_quotas(const char *database_name,
                  bool is_user,
                  Uint32 in_memory_size,

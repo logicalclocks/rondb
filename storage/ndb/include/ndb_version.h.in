@@ -1443,6 +1443,28 @@ ndbd_support_user_rate_limits(Uint32 x) {
 }
 
 /**
+ * USER ALIAS with a single target and USER CAPACITY (RONDB-1158): the
+ * alias object properties, DBTC's alias-to-target swap and
+ * GSN_GET_RATE_CAPACITY_REQ, which an older data node cannot receive.
+ * Each release line gets its own first release, so a newer line can lack
+ * what an older line's latest release has and no single version works as
+ * a threshold: management servers check every data node. The feature is
+ * on the 26.02 line only; merging it into another line adds that line's
+ * first release here.
+ */
+#define NDBD_USER_ALIAS_V2_2602 NDB_MAKE_VERSION(26,2,15)
+static inline
+bool
+ndbd_support_user_alias_v2(Uint32 x) {
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  if (major == 26 && minor == 2) {
+    return x >= NDBD_USER_ALIAS_V2_2602;
+  }
+  return false;
+}
+
+/**
  * Replica rowid forwarding + verification (TTL error 899 hardening).
  *
  * Principle: backup replicas must never receive a rowid-less operation for

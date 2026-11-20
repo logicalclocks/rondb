@@ -6045,6 +6045,43 @@ int MgmtSrvr::check_quota_version(bool is_user) {
   return 0;
 }
 
+/**
+ * USER ALIAS and USER CAPACITY need every data node to support them, and
+ * the first release that does differs per release line, so the minimum
+ * data node version cannot decide: each connected data node is checked.
+ * Returns 0, or USER_ALIAS_NOT_SUPPORTED with the first data node that
+ * lacks support in unsupported_node (0 when the cluster minimum already
+ * fails). A data node that joins later on an older release is a
+ * downgrade, which needs every alias dropped first.
+ */
+int MgmtSrvr::check_user_alias_version(NodeId &unsupported_node) {
+  unsupported_node = 0;
+  if (check_quota_version(true)) {
+    return USER_ALIAS_NOT_SUPPORTED;
+  }
+  for (NodeId nodeId = 0; getNextNodeId(&nodeId, NDB_MGM_NODE_TYPE_NDB);) {
+    const trp_node &node = getNodeInfo(nodeId);
+    if (node.is_confirmed() &&
+        !ndbd_support_user_alias_v2(node.m_info.m_version)) {
+      unsupported_node = nodeId;
+      return USER_ALIAS_NOT_SUPPORTED;
+    }
+  }
+  return 0;
+}
+
+/* The refusal check_user_alias_version gives, in a reply that has rows. */
+static void print_user_alias_unsupported(NdbOut &out, NodeId nodeId) {
+  if (nodeId == 0) {
+    out << "result: User aliases not supported in this cluster" << endl;
+  } else {
+    out << "result: Data node " << nodeId << " does not support user aliases"
+        << endl;
+  }
+  out << "error_code: " << USER_ALIAS_NOT_SUPPORTED << endl;
+  out << endl;
+}
+
 int
 MgmtSrvr::set_quotas(const char *database_name,
                      bool is_user,
@@ -7065,8 +7102,9 @@ int MgmtSrvr::user_alias_schema_op(Uint32 req_gsn,
 
 int MgmtSrvr::set_user_alias(const char *alias_name,
                              const char *target_name) {
-  if (check_quota_version(true)) {
-    return QUOTAS_NOT_SUPPORTED;
+  NodeId unsupported_node;
+  if (int err = check_user_alias_version(unsupported_node)) {
+    return err;
   }
   Uint32 err;
   if ((err = check_user_name(alias_name)) ||
@@ -7089,8 +7127,9 @@ int MgmtSrvr::set_user_alias(const char *alias_name,
 }
 
 int MgmtSrvr::drop_user_alias(const char *alias_name) {
-  if (check_quota_version(true)) {
-    return QUOTAS_NOT_SUPPORTED;
+  NodeId unsupported_node;
+  if (int err = check_user_alias_version(unsupported_node)) {
+    return err;
   }
   Uint32 err;
   if ((err = check_user_name(alias_name))) {
@@ -7103,11 +7142,9 @@ void MgmtSrvr::get_user_alias(const char *alias_name, NdbOut& out) {
   SignalSender ss(theFacade);
   ss.lock();
 
-  if (check_quota_version(true)) {
-    out << "result: Quotas not supported in this cluster, requires 24.10.18"
-        << endl;
-    out << "error_code: " << QUOTAS_NOT_SUPPORTED << endl;
-    out << endl;
+  NodeId unsupported_node;
+  if (check_user_alias_version(unsupported_node)) {
+    print_user_alias_unsupported(out, unsupported_node);
     return;
   }
   Uint32 err = check_user_name(alias_name);
@@ -7234,11 +7271,9 @@ void MgmtSrvr::user_alias_page(Uint32 nextAliasId,
   SignalSender ss(theFacade);
   ss.lock();
 
-  if (check_quota_version(true)) {
-    out << "result: Quotas not supported in this cluster, requires 24.10.18"
-        << endl;
-    out << "error_code: " << QUOTAS_NOT_SUPPORTED << endl;
-    out << endl;
+  NodeId unsupported_node;
+  if (check_user_alias_version(unsupported_node)) {
+    print_user_alias_unsupported(out, unsupported_node);
     return;
   }
   NodeId nodeId = ss.get_an_alive_node();
@@ -7360,11 +7395,9 @@ void MgmtSrvr::get_user_capacity(NdbOut& out) {
   SignalSender ss(theFacade);
   ss.lock();
 
-  if (check_quota_version(true)) {
-    out << "result: Quotas not supported in this cluster, requires 24.10.18"
-        << endl;
-    out << "error_code: " << QUOTAS_NOT_SUPPORTED << endl;
-    out << endl;
+  NodeId unsupported_node;
+  if (check_user_alias_version(unsupported_node)) {
+    print_user_alias_unsupported(out, unsupported_node);
     return;
   }
   NodeBitmask nodes;

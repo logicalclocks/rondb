@@ -22,13 +22,13 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-Next QMGR 965
+Next QMGR 966
 Next NDBCNTR 1030
 Next NDBFS 2002
 Next DBACC 3007
 Next DBTUP 4041
 Next DBLQH 5120
-Next DBDICT 6230
+Next DBDICT 6231
 Next DBDIH 7251
 Next DBTC 8135
 Next DBTC 8319 (RonDB)
@@ -284,6 +284,8 @@ QMGR
 964:  Starting node does not send CM_NODEINFOREQ, so the president aborts
       its inclusion with CM_ADD(Abort) after 10 seconds, as for a node
       without connections to the cluster nodes
+965:  Report version 26.04.2 in API_REGCONF to management servers, a
+      release that sorts above this one and lacks user aliases
 
 ERROR CODES FOR TESTING NODE FAILURE, FAILURE IN COPY FRAGMENT PROCESS:
 -----------------------------------------------------------------------
@@ -896,6 +898,7 @@ Dbdict:
 6223 Only send SCHEMA_TRANS_IMPL_REQ to self preparatory to crashing
 6228 Exercise SUB_START_REQ signal handler version compatibility
 6229 Crash when GET_RATE_CAPACITY_REQ (USER CAPACITY) arrives
+6230 Treat the other data nodes as lacking user alias support
 
 Dbtup:
 4014 - handleInsert - Out of undo buffer

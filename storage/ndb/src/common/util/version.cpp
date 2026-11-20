@@ -428,6 +428,22 @@ TAPTEST(ndb_version) {
      (NDB_MYSQL_VERSION_MAJOR * 10000 + NDB_MYSQL_VERSION_MINOR * 100 +
       NDB_MYSQL_VERSION_BUILD));
 
+  /**
+   * User alias support starts per release line, so it does not follow
+   * version order: 26.04.2 sorts above 26.02.15 and lacks it.
+   */
+  printf("Testing ndbd_support_user_alias_v2\n");
+  OK(ndbd_support_user_alias_v2(NDB_VERSION));
+  OK(!ndbd_support_user_alias_v2(ndbMakeVersion(26, 2, 14)));
+  OK(ndbd_support_user_alias_v2(ndbMakeVersion(26, 2, 15)));
+  OK(ndbd_support_user_alias_v2(ndbMakeVersion(26, 2, 99)));
+  OK(!ndbd_support_user_alias_v2(ndbMakeVersion(25, 10, 99)));
+  OK(!ndbd_support_user_alias_v2(ndbMakeVersion(26, 4, 2)));
+  OK(!ndbd_support_user_alias_v2(ndbMakeVersion(26, 5, 0)));
+  OK(!ndbd_support_user_alias_v2(ndbMakeVersion(26, 10, 1)));
+  OK(!ndbd_support_user_alias_v2(ndbMakeVersion(27, 0, 0)));
+  OK(!ndbd_support_user_alias_v2(0));
+
   /* Check that this node is compatible with 8.0.13 API and data nodes */
   printf("Testing compatibility\n");
   Uint32 ver8013 = ndbMakeVersion(8, 0, 13);

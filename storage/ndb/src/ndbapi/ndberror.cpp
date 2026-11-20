@@ -1147,6 +1147,8 @@ ErrorBundle ErrorCodes[] = {
     "Data nodes failed Set Location_Domain_Id Request"},
   { 5070 /* FAILED_SET_CONFIG_PARAM_REQUEST */, DMEC, AE,
     "Data nodes failed Set Config Param Request"},
+  { 5072 /* USER_ALIAS_NOT_SUPPORTED */, DMEC, AE,
+    "User aliases need every data node on a release that supports them"},
   { 1120, DMEC, AE,
     "Set Location_Domain_Id Request failed, busy state"}
 };
