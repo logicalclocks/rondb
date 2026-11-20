@@ -540,7 +540,10 @@ class FsReadWriteReq;
  * LDM or query worker, is armed (the codes are >=
  * ZFIRST_QUERY_THREAD_ERROR_INSERT), but only the first instance that
  * meets such a request after the arming acts on it, by setting its own
- * one-shot 5047, 5055 or 5030 for the code that follows.  DblqhProxy arms
+ * one-shot 5047, 5055 or 5030 for the code that follows.  A nonzero extra
+ * value ("<node> ERROR 5155 <table id>") limits the insert to requests on
+ * that table: other traffic on the node (mysqld, RDRS background reads)
+ * then can neither take the token nor clear the insert.  DblqhProxy arms
  * one token per node when it gets the NDB_TAMPER; an instance takes it
  * with lqh_take_node_one_shot_error.  In ndbd, with one LQH instance and
  * no proxy, the insert itself is the one shot.  RONDB-1124 T-4

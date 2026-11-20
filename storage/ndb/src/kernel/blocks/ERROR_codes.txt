@@ -212,6 +212,9 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
 5157: Drop the next SCAN_NEXTREQ on the node (as 5030; DBTC fails the scan
       with 274 after its timeout), once per data node, as 5155.  Backup
       scans are not affected.
+      5155-5157 with an extra value ("<node> ERROR 5155 <table id>") act
+      only on requests for that table id; other reads and scans on the node
+      neither take the token nor clear the insert.
 Next DBLQH 5158
 Next DBDICT 6229
 Next DBDIH 7251

@@ -9893,11 +9893,15 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   }
 
 #ifdef ERROR_INSERT
-  if (ERROR_INSERTED(5155) && LqhKeyReq::getOperation(Treqinfo) == ZREAD) {
+  if (ERROR_INSERTED(5155) && LqhKeyReq::getOperation(Treqinfo) == ZREAD &&
+      (ERROR_INSERT_EXTRA == 0 ||
+       ERROR_INSERT_EXTRA ==
+           LqhKeyReq::getTableId(lqhKeyReq->tableSchemaVersion))) {
     /* Node-wide one-shot (Dblqh.hpp): the first read LQHKEYREQ on the
-     * node fails with 1218 (as 5047, below), on whichever LQH instance
-     * runs it.  Writes (schema distribution, other sessions) do not take
-     * the token. */
+     * node, of the table given as the insert's extra value if any, fails
+     * with 1218 (as 5047, below), on whichever LQH instance runs it.
+     * Writes (schema distribution, other sessions) do not take the
+     * token. */
     CLEAR_ERROR_INSERT_VALUE;
     if (lqh_take_node_one_shot_error()) {
       SET_ERROR_INSERT_VALUE(5047);
@@ -18971,9 +18975,12 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
   }
 
 #ifdef ERROR_INSERT
-  if (ERROR_INSERTED(5157) && refToMain(senderBlockRef) != getBACKUP()) {
+  if (ERROR_INSERTED(5157) && refToMain(senderBlockRef) != getBACKUP() &&
+      (ERROR_INSERT_EXTRA == 0 ||
+       ERROR_INSERT_EXTRA == tcConnectptr.p->tableref)) {
     /* Node-wide one-shot (Dblqh.hpp): drop the first SCAN_NEXTREQ on the
-     * node (as 5030, below), on whichever LQH instance runs the scan. */
+     * node, of a scan of the table given as the insert's extra value if
+     * any (as 5030, below), on whichever LQH instance runs the scan. */
     CLEAR_ERROR_INSERT_VALUE;
     if (lqh_take_node_one_shot_error()) {
       SET_ERROR_INSERT_VALUE(5030);
@@ -25836,9 +25843,11 @@ void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
 #ifdef ERROR_INSERT
   if (ERROR_INSERTED(5156) &&
       !ScanFragReq::getLcpScanFlag(scanFragReq->requestInfo) &&
-      senderBlockNo != getBACKUP() && senderBlockNo != DBUTIL) {
+      senderBlockNo != getBACKUP() && senderBlockNo != DBUTIL &&
+      (ERROR_INSERT_EXTRA == 0 || ERROR_INSERT_EXTRA == scanFragReq->tableId)) {
     /* Node-wide one-shot (Dblqh.hpp): refuse the first user scan on the
-     * node with 1217 (as 5055, below), on whichever LQH instance runs it. */
+     * node, of the table given as the insert's extra value if any, with
+     * 1217 (as 5055, below), on whichever LQH instance runs it. */
     CLEAR_ERROR_INSERT_VALUE;
     if (lqh_take_node_one_shot_error()) {
       SET_ERROR_INSERT_VALUE(5055);

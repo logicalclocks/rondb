@@ -28,7 +28,10 @@
 # query worker, but only the first instance that gets such a request
 # fails it (one token per node, Dblqh.hpp).  The LDM-only inserts 5055,
 # 5047 and 5030 missed the request when it ran on a query worker.  The
-# others are cleared by "all error 0" after the request.
+# others are cleared by "all error 0" after the request.  The insert's
+# extra value is stf's table id, so a read or scan of another table on the
+# node does not take the shot: ronsql_cli can take 5 s to connect, and a
+# background read of another table in that time once took it first.
 # The first attempt fails and the second succeeds: attempts=2 in
 # x-ronsql-phases, and one retry in ronsql_cli.  sf-3 and sf-4 fail one
 # key read of an IN list, which the lookup arms raise before they print
@@ -85,6 +88,9 @@ if (!$fault_node)
 {
   --die The primary replica of stf's fragment was not found in ndbinfo
 }
+# The inserts' extra value: only a request on stf takes the node's one
+# shot (other reads on the node, e.g. while ronsql_cli connects, do not).
+--let $fault_table = $sf_table_id
 --let $fault_ordered=
 
 --echo
@@ -163,7 +169,7 @@ WITH t AS (SELECT id, v FROM stf ORDER BY id DESC LIMIT 10) SELECT COUNT(*) AS n
 --exec (head -n 1 $MYSQL_TMP_DIR/sf-mysql.out && tail -n +2 $MYSQL_TMP_DIR/sf-mysql.out | sort) > $MYSQL_TMP_DIR/sf-mysql.cmp
 --echo == RDRS, error insert 5157 armed: retried after it wrote the first batch (X-7) ==
 --exec printf '{"query":"%s","database":"test","outputFormat":"TEXT"}' '$QUERY' > $MYSQL_TMP_DIR/sf-body
---exec $NDB_MGM -e "$fault_node error 5157" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "$fault_node error 5157 $fault_table" >> $NDB_TOOLS_OUTPUT
 --exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/sf-hdrs -o $MYSQL_TMP_DIR/sf-rdrs.out -X POST -H "Content-Type: application/json" -H "x-ronsql-phases: 1" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/sf-body
 --exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
 --exec (head -n 1 $MYSQL_TMP_DIR/sf-rdrs.out && tail -n +2 $MYSQL_TMP_DIR/sf-rdrs.out | sort) > $MYSQL_TMP_DIR/sf-rdrs.cmp
@@ -173,7 +179,7 @@ WITH t AS (SELECT id, v FROM stf ORDER BY id DESC LIMIT 10) SELECT COUNT(*) AS n
 --echo == The last attempt drained 800 rows, after one retry (must be rows=800,attempts=2) ==
 --exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/sf-hdrs | tr -d '\r' | grep -oE 'rows=[0-9]+,attempts=[0-9]+'
 --echo == ronsql_cli, error insert 5157 armed: not retried after it printed rows ==
---exec $NDB_MGM -e "$fault_node error 5157" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "$fault_node error 5157 $fault_table" >> $NDB_TOOLS_OUTPUT
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e '$QUERY' > $MYSQL_TMP_DIR/sf-cli.out 2> $MYSQL_TMP_DIR/sf-cli.err || echo "ronsql_cli failed"
 --exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
 --exec awk 'END { if (NR > 1 && NR < 801) print "partial output: the header and the first batch"; else print "UNEXPECTED: " NR " lines" }' $MYSQL_TMP_DIR/sf-cli.out
