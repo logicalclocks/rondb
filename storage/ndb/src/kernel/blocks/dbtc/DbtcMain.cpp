@@ -27209,9 +27209,10 @@ Dbtc::release_database_record(Signal *signal, DatabaseRecordPtr dbPtr) {
     lc_ndbd_pool_free(dbPtr.p->theDatabaseConcurrentTransactionMutex);
   }
   jam();
+  /* The reply is read from the record, so it goes before the release. */
+  send_drop_db_conf(signal, dbPtr, DropDbReq::COMMIT_DROP);
   m_databaseRecordHash.remove(dbPtr);
   m_databaseRecordPool.release(dbPtr);
-  send_drop_db_conf(signal, dbPtr, DropDbReq::COMMIT_DROP);
 }
 
 void

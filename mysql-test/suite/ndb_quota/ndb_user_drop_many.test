@@ -1,0 +1,70 @@
+--source include/have_ndb.inc
+
+# RONDB-1158: dropping many USER and USER ALIAS objects keeps the data
+# nodes up. DBTC answers a database drop with the sender reference stored
+# in the database record, and used to read it after releasing the record
+# to its pool; once a pool page emptied, the reply went to whatever the
+# freed memory held and the node stopped ("Unknown node in sendSignal").
+# The installer drops an alias on every membership change, so this test
+# creates aliases until the dictionary refuses one and drops them all.
+
+--echo # Aliases created until the dictionary refuses one, then dropped.
+--perl
+use strict;
+use IO::Socket::INET;
+
+my $cs = $ENV{'NDB_CONNECTSTRING'} or die "NDB_CONNECTSTRING not set";
+my ($host, $port) = split(/:/, (split(/[;,]/, $cs))[0]);
+my $sock = IO::Socket::INET->new(PeerAddr => $host, PeerPort => $port,
+                                 Proto => 'tcp')
+  or die "Cannot connect to $host:$port: $!";
+
+sub mgm {
+  my ($cmd, @args) = @_;
+  print $sock "$cmd\n";
+  while (@args) {
+    my ($k, $v) = splice(@args, 0, 2);
+    print $sock "$k: $v\n";
+  }
+  print $sock "\n";
+  my %header;
+  while (defined(my $line = <$sock>)) {
+    chomp $line;
+    last if $line eq '';
+    $header{$1} = $2 if $line =~ /^(\w+): (.*)$/;
+  }
+  my @rows;
+  for (my $i = 0; $i < ($header{'num_rows'} || 0); $i++) {
+    my $line = <$sock>;
+    die "Reply ended early" unless defined($line);
+    chomp $line;
+    push(@rows, $line);
+  }
+  return \%header;
+}
+
+my $h = mgm('set user', 'username', 'dm_target', 'rate_per_sec', 0,
+            'max_transaction_size', 0, 'max_parallel_transactions', 0,
+            'max_parallel_complex_queries', 0);
+die "set user: $h->{result}" unless $h->{result} eq 'Ok';
+my $created = 0;
+while ($created < 1000) {
+  $h = mgm('set user alias', 'aliasname', 'dm_a' . ($created + 1),
+           'target', 'dm_target');
+  last if $h->{result} ne 'Ok';
+  $created++;
+}
+print "Created aliases until the dictionary refused one: ",
+      ($created > 100 ? "more than 100" : "only $created"), "\n";
+for (my $i = 1; $i <= $created; $i++) {
+  $h = mgm('drop user alias', 'aliasname', "dm_a$i");
+  die "drop user alias dm_a$i: $h->{result}" unless $h->{result} eq 'Ok';
+}
+$h = mgm('drop user', 'username', 'dm_target');
+die "drop user: $h->{result}" unless $h->{result} eq 'Ok';
+print "Dropped them all\n";
+$h = mgm('user capacity');
+print "Both data nodes still answer: ",
+      ($h->{result} eq 'Ok' ? "yes" : "no: $h->{result}"), "\n";
+close($sock);
+EOF
