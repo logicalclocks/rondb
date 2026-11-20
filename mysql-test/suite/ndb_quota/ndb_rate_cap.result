@@ -13,7 +13,17 @@ USER ALIAS SET successfully executed
 # A drop and a recreate at the same total succeed.
 USER DROP successfully executed
 USER SET successfully executed
-# Halve the cap: the node is now over it.
+# Halve the cap: the node is now over it, as USER CAPACITY shows.
+Data node 1
+  NumThreads = <threads>
+  RateLimitBudgetPercent = 25
+  AllocatedRatePerSec = <default-cap-filled>
+
+Data node 2
+  NumThreads = <threads>
+  RateLimitBudgetPercent = 25
+  AllocatedRatePerSec = <default-cap-filled>
+
 # Nothing may grow the total.
 USER SET command failed: Error:
 *  1235: Error

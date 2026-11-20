@@ -202,6 +202,7 @@ class CommandInterpreter {
   int executeUserBackup(char* parameters);
   int executeUserRestore(char* parameters);
   int executeUserAlias(char* parameters);
+  int executeUserCapacity(char* parameters);
   int executeUser(char* parameters, int);
   int executeDatabaseQuotaSet(char* parameters);
   int executeDatabaseQuotaAlter(char* parameters);
@@ -849,6 +850,9 @@ static const char* helpUser =
 "USER GET Retrieve rate information for specific user\n\n"
 "USER LIST Retrieve quota information for all users\n\n"
 "USER BACKUP Backup quota information for all users\n\n"
+"USER CAPACITY Show the rate pool of every data node: its threads (the\n"
+"  pool is 1,000,000 per thread), its RateLimitBudgetPercent and the rate\n"
+"  its users and database quotas hold\n\n"
 "USER ALIAS SET <alias> --target=<user> Charge what is tagged with the\n"
 "  name <alias> to the user <user>. The alias has no rate limit of its own.\n"
 "  Setting an alias again with the same target succeeds, with another\n"
@@ -1689,6 +1693,12 @@ bool CommandInterpreter::execute_impl(const char *_line, bool interactive) {
 	    native_strncasecmp(allAfterFirstToken, "ALIAS",
                       sizeof("ALIAS") - 1) == 0) {
     m_error = executeUserAlias(allAfterFirstToken);
+    DBUG_RETURN(true);
+  } else if(native_strcasecmp(firstToken, "USER") == 0 &&
+	    allAfterFirstToken != NULL &&
+	    native_strncasecmp(allAfterFirstToken, "CAPACITY",
+                      sizeof("CAPACITY") - 1) == 0) {
+    m_error = executeUserCapacity(allAfterFirstToken);
     DBUG_RETURN(true);
   } else if(native_strcasecmp(firstToken, "USER") == 0 &&
 	    allAfterFirstToken != NULL &&
@@ -5149,6 +5159,25 @@ int CommandInterpreter::executeUserAlias(char* parameters) {
     return -1;
   }
   ndbout << "USER ALIAS " << sub << " successfully executed" << endl;
+  return 0;
+}
+
+/* USER CAPACITY. "parameters" is just "CAPACITY". */
+int CommandInterpreter::executeUserCapacity(char* parameters) {
+  Vector<BaseString> args;
+  split_args_with_equal(parameters, args);
+  if (args.size() != 1) {
+    ndbout << "USER CAPACITY takes no parameters" << endl;
+    return -1;
+  }
+  char *result_buf = nullptr;
+  if (ndb_mgm_get_user_capacity(m_mgmsrv, &result_buf) != 0) {
+    ndbout << "USER CAPACITY command failed: Error:" << endl;
+    printError();
+    return -1;
+  }
+  fprintf(stdout, "%s", result_buf);
+  delete[] result_buf;
   return 0;
 }
 

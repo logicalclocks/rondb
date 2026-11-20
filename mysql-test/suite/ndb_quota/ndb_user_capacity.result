@@ -1,0 +1,77 @@
+# Each node's threads, as ndbinfo counts them.
+SELECT node_id, COUNT(*) AS threads FROM ndbinfo.threads
+GROUP BY node_id ORDER BY node_id;
+node_id	threads
+1	2
+2	4
+Data node 1
+  NumThreads = 2
+  RateLimitBudgetPercent = 50
+  AllocatedRatePerSec = 0
+
+Data node 2
+  NumThreads = 4
+  RateLimitBudgetPercent = 70
+  AllocatedRatePerSec = 0
+
+# The allocated total follows SET and ALTER, an alias adds nothing,
+# and a database quota rate counts too.
+USER SET successfully executed
+USER ALIAS SET successfully executed
+Data node 1
+  NumThreads = 2
+  RateLimitBudgetPercent = 50
+  AllocatedRatePerSec = 1000
+
+Data node 2
+  NumThreads = 4
+  RateLimitBudgetPercent = 70
+  AllocatedRatePerSec = 1000
+
+USER ALTER successfully executed
+DATABASE QUOTA SET successfully executed
+Data node 1
+  NumThreads = 2
+  RateLimitBudgetPercent = 50
+  AllocatedRatePerSec = 3000
+
+Data node 2
+  NumThreads = 4
+  RateLimitBudgetPercent = 70
+  AllocatedRatePerSec = 3000
+
+# DROP gives the rate back.
+USER ALIAS DROP successfully executed
+USER DROP successfully executed
+DATABASE QUOTA DROP successfully executed
+Data node 1
+  NumThreads = 2
+  RateLimitBudgetPercent = 50
+  AllocatedRatePerSec = 0
+
+Data node 2
+  NumThreads = 4
+  RateLimitBudgetPercent = 70
+  AllocatedRatePerSec = 0
+
+USER CAPACITY takes no parameters
+# A data node that is not started fails the command.
+USER CAPACITY command failed: Error:
+*  5000: Error
+*        Data node 2 is not started
+# So does one that fails before it answers (6229 crashes it when the
+# request arrives).
+USER CAPACITY command failed: Error:
+*  5000: Error
+*        Data node 2 failed before it answered
+# Both nodes answer again after the restart.
+Data node 1
+  NumThreads = 2
+  RateLimitBudgetPercent = 50
+  AllocatedRatePerSec = 0
+
+Data node 2
+  NumThreads = 4
+  RateLimitBudgetPercent = 70
+  AllocatedRatePerSec = 0
+

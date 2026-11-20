@@ -37,7 +37,7 @@
  * version there signal may be sent. The signal number must remain reserved and
  * handled by receiver until that version is no longer supported.
  */
-const GlobalSignalNumber MAX_GSN = 951;
+const GlobalSignalNumber MAX_GSN = 988;
 
 struct GsnName {
   GlobalSignalNumber gsn;
@@ -1291,4 +1291,11 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
  * requested or been granted stop permission, see STOP_PERM_REQ (RONDB-1096).
  */
 #define GSN_STOP_PERM_REL               951
+
+/**
+ * USER CAPACITY: mgmd reads the rate pool of each data node from DBDICT
+ * (RONDB-1158). 952 to 986 are taken on newer release lines.
+ */
+#define GSN_GET_RATE_CAPACITY_REQ       987
+#define GSN_GET_RATE_CAPACITY_CONF      988
 #endif

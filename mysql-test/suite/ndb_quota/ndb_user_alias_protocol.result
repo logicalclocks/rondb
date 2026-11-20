@@ -7,6 +7,21 @@
 <<< set user reply
 <<< result: Ok
 <<< 
+>>> user capacity
+<<< user capacity reply
+<<< result: Ok
+<<< num_rows: 10
+<<< 
+<<< Data node 1
+<<<   NumThreads = 13
+<<<   RateLimitBudgetPercent = 50
+<<<   AllocatedRatePerSec = <rate>
+<<< 
+<<< Data node 2
+<<<   NumThreads = 13
+<<<   RateLimitBudgetPercent = 50
+<<<   AllocatedRatePerSec = <rate>
+<<< 
 >>> set user alias
 >>> aliasname: rl_mary
 >>> target: rl_group

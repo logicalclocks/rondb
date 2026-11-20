@@ -7348,6 +7348,123 @@ void MgmtSrvr::user_alias_page(Uint32 nextAliasId,
   }
 }
 
+/**
+ * USER CAPACITY: the rate pool of every data node, one block per node in
+ * node id order. Each node sizes its pool from its own threads and keeps
+ * its own allocated total, so every active data node is asked, and one
+ * that is not started or fails before it answers fails the command: an
+ * answer without it could hide the cluster's most restrictive node. The
+ * replies are not consistent with each other as of one moment.
+ */
+void MgmtSrvr::get_user_capacity(NdbOut& out) {
+  SignalSender ss(theFacade);
+  ss.lock();
+
+  if (check_quota_version(true)) {
+    out << "result: Quotas not supported in this cluster, requires 24.10.18"
+        << endl;
+    out << "error_code: " << QUOTAS_NOT_SUPPORTED << endl;
+    out << endl;
+    return;
+  }
+  NodeBitmask nodes;
+  {
+    Guard g(m_local_config_mutex);
+    m_local_config->get_nodemask(nodes, NDB_MGM_NODE_TYPE_NDB);
+  }
+  for (Uint32 nodeId = nodes.find_first(); nodeId != NodeBitmask::NotFound;
+       nodeId = nodes.find_next(nodeId + 1)) {
+    if (okToSendTo(nodeId, false) != 0) {
+      out << "result: Data node " << nodeId << " is not started" << endl;
+      out << "error_code: " << NO_CONTACT_WITH_PROCESS << endl;
+      out << endl;
+      return;
+    }
+  }
+
+  SimpleSignal ssig;
+  GetRateCapacityReq* req =
+    CAST_PTR(GetRateCapacityReq, ssig.getDataPtrSend());
+  ssig.set(ss, TestOrd::TraceAPI, DBDICT, GSN_GET_RATE_CAPACITY_REQ,
+           GetRateCapacityReq::SignalLength);
+  req->senderRef = ss.getOwnRef();
+  req->senderData = 89;
+
+  /* Every node sent to is waited for, also after a failure, so that no
+   * late reply reaches a later command that reuses this block reference. */
+  NodeBitmask waiting;
+  NodeId failed_node = 0;
+  for (Uint32 nodeId = nodes.find_first(); nodeId != NodeBitmask::NotFound;
+       nodeId = nodes.find_next(nodeId + 1)) {
+    if (ss.sendSignal(nodeId, &ssig) == SEND_OK) {
+      waiting.set(nodeId);
+    } else if (failed_node == 0) {
+      failed_node = nodeId;
+    }
+  }
+  GetRateCapacityConf replies[ABS_MAX_NDB_NODES];
+  while (!waiting.isclear()) {
+    SimpleSignal *signal = ss.waitFor();
+    int gsn = signal->readSignalNumber();
+    switch (gsn) {
+      case GSN_GET_RATE_CAPACITY_CONF:
+      {
+        const GetRateCapacityConf * conf =
+          CAST_CONSTPTR(GetRateCapacityConf, signal->getDataPtr());
+        const NodeId nodeId = refToNode(conf->senderRef);
+        replies[nodeId] = *conf;
+        waiting.clear(nodeId);
+        break;
+      }
+      case GSN_NF_COMPLETEREP:
+        break;
+      case GSN_NODE_FAILREP:
+      {
+        NodeBitmask mask;
+        node_failrep_get_mask(signal, mask);
+        mask.bitAND(waiting);
+        if (!mask.isclear()) {
+          if (failed_node == 0) {
+            failed_node = mask.find_first();
+          }
+          waiting.bitANDC(mask);
+        }
+        break;
+      }
+      case GSN_API_REGCONF:
+      case GSN_TAKE_OVERTCCONF:
+      case GSN_CONNECT_REP:
+        break;
+      default:
+        report_unknown_signal(signal);
+        out << "result: Send or Receive failed" << endl;
+        out << "error_code: " << SEND_OR_RECEIVE_FAILED << endl;
+        out << endl;
+        return;
+    }
+  }
+  if (failed_node != 0) {
+    out << "result: Data node " << failed_node << " failed before it answered"
+        << endl;
+    out << "error_code: " << NO_CONTACT_WITH_PROCESS << endl;
+    out << endl;
+    return;
+  }
+  /* num_rows must match the rows printed, see get_quotas. */
+  out << "result: Ok" << endl;
+  out << "num_rows: " << 5 * nodes.count() << endl;
+  out << endl;
+  for (Uint32 nodeId = nodes.find_first(); nodeId != NodeBitmask::NotFound;
+       nodeId = nodes.find_next(nodeId + 1)) {
+    out << "Data node " << nodeId << endl;
+    out << "  NumThreads = " << replies[nodeId].numThreads << endl;
+    out << "  RateLimitBudgetPercent = "
+        << replies[nodeId].rateLimitBudgetPercent << endl;
+    out << "  AllocatedRatePerSec = " << replies[nodeId].allocatedRate << endl;
+    out << endl;
+  }
+}
+
 template class MutexVector<NodeId>;
 template class MutexVector<Ndb_mgmd_event_service::Event_listener>;
 template class Vector<EventSubscribeReq>;

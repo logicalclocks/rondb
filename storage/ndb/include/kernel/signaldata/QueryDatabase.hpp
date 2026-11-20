@@ -130,6 +130,29 @@ struct ListDatabaseRef {
   friend bool printGET_DATABASE_REF(FILE *, const Uint32 *, Uint32, Uint16);
 };
 
+/**
+ * USER CAPACITY asks every data node, since each sizes its rate pool from
+ * its own threads: the pool is numThreads x 1,000,000 rate units, of which
+ * RateLimitBudgetPercent may be allocated, and allocatedRate is what USER
+ * and DATABASE QUOTA objects hold on the node now. DBDICT always confirms.
+ */
+struct GetRateCapacityReq {
+  static constexpr Uint32 SignalLength = 2;
+
+  Uint32 senderRef;
+  Uint32 senderData;
+};
+
+struct GetRateCapacityConf {
+  static constexpr Uint32 SignalLength = 5;
+
+  Uint32 senderRef;
+  Uint32 senderData;
+  Uint32 numThreads;
+  Uint32 rateLimitBudgetPercent;
+  Uint32 allocatedRate;
+};
+
 #undef JAM_FILE_ID
 
 #endif

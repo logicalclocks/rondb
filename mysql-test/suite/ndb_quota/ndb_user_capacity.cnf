@@ -1,0 +1,12 @@
+!include suite/ndb_quota/my.cnf
+
+# RONDB-1158: data nodes with different rate pools. Node 1 runs on 2 CPUs
+# under the default cap, node 2 on 4 CPUs under a cap of 70.
+[cluster_config.ndbd.1.1]
+AutomaticThreadConfig=1
+NumCPUs=2
+
+[cluster_config.ndbd.2.1]
+AutomaticThreadConfig=1
+NumCPUs=4
+RateLimitBudgetPercent=70

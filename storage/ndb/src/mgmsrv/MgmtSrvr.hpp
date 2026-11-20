@@ -629,6 +629,7 @@ private:
   int user_alias_schema_op(Uint32 req_gsn,
                            const char *alias_name,
                            const char *target_name);
+  void get_user_capacity(NdbOut& out);
 
   void release_local_nodeid_reservation(NodeId nodeid);
   void release_failed_nodeid_reservation(NodeId nodeid);

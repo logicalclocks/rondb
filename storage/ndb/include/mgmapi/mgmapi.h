@@ -2097,6 +2097,16 @@ int ndb_mgm_get_tls_stats(NdbMgmHandle handle,
                                   char **result_buf);
 
   /**
+   * Get the rate pool of every data node: its thread count, its
+   * RateLimitBudgetPercent and the rate its users and database quotas
+   * hold. Fails when a data node is not started or does not answer.
+   *
+   * @param   handle        Management handle.
+   * @param   result_buf    The result rows, free with delete[]
+   */
+  int ndb_mgm_get_user_capacity(NdbMgmHandle handle, char **result_buf);
+
+  /**
    * Error printer
    */
   void ndb_mgm_print_error(NdbMgmHandle handle);

@@ -4774,10 +4774,11 @@ int ndb_mgm_drop_user(NdbMgmHandle handle,
 }
 
 /**
- * The reply of a USER ALIAS command: 0 when the result is Ok, else -1
- * with the result text and error code set on the handle. Consumes reply.
+ * The reply of a USER ALIAS or USER CAPACITY command: 0 when the result is
+ * Ok, else -1 with the result text and error code set on the handle.
+ * Consumes reply.
  */
-static int user_alias_result(NdbMgmHandle handle, const Properties *reply) {
+static int user_command_result(NdbMgmHandle handle, const Properties *reply) {
   const char *result;
   Uint32 error_code = 0;
   reply->get("result", &result);
@@ -4794,14 +4795,15 @@ static int user_alias_result(NdbMgmHandle handle, const Properties *reply) {
 
 /**
  * Reads the num_rows newline-terminated rows that follow a USER ALIAS GET
- * or LIST reply into a NUL-terminated buffer the caller frees with
- * delete[]. A row holds at most a key and a 126-byte name. A timeout, a
- * read error, or more or fewer rows than announced fail the call and
- * disconnect, since the stream is no longer in step with the server.
+ * or LIST or a USER CAPACITY reply into a NUL-terminated buffer the caller
+ * frees with delete[]. A row holds at most a key and a 126-byte name. A
+ * timeout, a read error, or more or fewer rows than announced fail the
+ * call and disconnect, since the stream is no longer in step with the
+ * server.
  */
-static int read_user_alias_rows(NdbMgmHandle handle,
-                                Uint32 num_rows,
-                                char **result_buf) {
+static int read_user_command_rows(NdbMgmHandle handle,
+                                  Uint32 num_rows,
+                                  char **result_buf) {
   const Uint32 len = num_rows * 256 + 1;
   char *buf = new char[len];
   Uint32 start = 0;
@@ -4812,7 +4814,7 @@ static int read_user_alias_rows(NdbMgmHandle handle,
                                          (int)(len - 1 - start));
     if (read < 1) {
       SET_ERROR(handle, read == 0 ? ETIMEDOUT : errno,
-                "Error reading user alias reply");
+                "Error reading user command reply");
       delete[] buf;
       ndb_mgm_disconnect_quiet(handle);
       return -1;
@@ -4835,7 +4837,7 @@ static int read_user_alias_rows(NdbMgmHandle handle,
       return 0;
     }
   }
-  SET_ERROR(handle, 1, "Protocol error in user alias reply");
+  SET_ERROR(handle, 1, "Protocol error in user command reply");
   delete[] buf;
   ndb_mgm_disconnect_quiet(handle);
   return -1;
@@ -4868,7 +4870,7 @@ int ndb_mgm_set_user_alias(NdbMgmHandle handle,
     SET_ERROR(handle, EIO, "Unable to set user alias, internal error");
     DBUG_RETURN(-1);
   }
-  DBUG_RETURN(user_alias_result(handle, reply));
+  DBUG_RETURN(user_command_result(handle, reply));
 }
 
 int ndb_mgm_drop_user_alias(NdbMgmHandle handle,
@@ -4896,7 +4898,7 @@ int ndb_mgm_drop_user_alias(NdbMgmHandle handle,
     SET_ERROR(handle, EIO, "Unable to drop user alias, internal error");
     DBUG_RETURN(-1);
   }
-  DBUG_RETURN(user_alias_result(handle, reply));
+  DBUG_RETURN(user_command_result(handle, reply));
 }
 
 int ndb_mgm_get_user_alias(NdbMgmHandle handle,
@@ -4928,14 +4930,14 @@ int ndb_mgm_get_user_alias(NdbMgmHandle handle,
   }
   Uint32 num_rows = 0;
   const bool has_rows = reply->get("num_rows", &num_rows);
-  if (user_alias_result(handle, reply) != 0) {
+  if (user_command_result(handle, reply) != 0) {
     DBUG_RETURN(-1);
   }
   if (!has_rows || num_rows == 0) {
     SET_ERROR(handle, 1, "Protocol error in user alias reply");
     DBUG_RETURN(-1);
   }
-  DBUG_RETURN(read_user_alias_rows(handle, num_rows, result_buf));
+  DBUG_RETURN(read_user_command_rows(handle, num_rows, result_buf));
 }
 
 /**
@@ -4969,7 +4971,7 @@ static int user_alias_page(NdbMgmHandle handle,
   Uint32 num_rows = 0;
   const bool has_rows = reply->get("num_rows", &num_rows);
   const bool has_next = reply->get("nextAliasId", nextAliasId);
-  if (user_alias_result(handle, reply) != 0) {
+  if (user_command_result(handle, reply) != 0) {
     return -1;
   }
   if (!has_rows) {
@@ -4986,7 +4988,7 @@ static int user_alias_page(NdbMgmHandle handle,
     SET_ERROR(handle, 1, "Protocol error in user alias reply");
     return -1;
   }
-  return read_user_alias_rows(handle, num_rows, result_buf);
+  return read_user_command_rows(handle, num_rows, result_buf);
 }
 
 int ndb_mgm_list_user_aliases(NdbMgmHandle handle,
@@ -5012,6 +5014,39 @@ int ndb_mgm_backup_user_aliases(NdbMgmHandle handle,
   DBUG_RETURN(user_alias_page(handle, "backup user alias",
                               "backup user alias reply", nextAliasId,
                               result_buf));
+}
+
+int ndb_mgm_get_user_capacity(NdbMgmHandle handle, char **result_buf) {
+  DBUG_ENTER("ndb_mgm_get_user_capacity");
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_get_user_capacity");
+  CHECK_CONNECTED(handle, -1);
+
+  const ParserRow<ParserDummy> user_capacity_reply[] = {
+    MGM_CMD("user capacity reply", nullptr, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_ARG("error_code", Int, Optional, "Error code"),
+    MGM_ARG("num_rows", Int, Optional, "Number of rows in result"),
+    MGM_END()
+  };
+  const Properties *reply = ndb_mgm_call(handle,
+                                         user_capacity_reply,
+                                         "user capacity",
+                                         nullptr);
+  if (reply == nullptr) {
+    SET_ERROR(handle, EIO, "Unable to get user capacity, internal error");
+    DBUG_RETURN(-1);
+  }
+  Uint32 num_rows = 0;
+  const bool has_rows = reply->get("num_rows", &num_rows);
+  if (user_command_result(handle, reply) != 0) {
+    DBUG_RETURN(-1);
+  }
+  if (!has_rows || num_rows == 0) {
+    SET_ERROR(handle, 1, "Protocol error in user capacity reply");
+    DBUG_RETURN(-1);
+  }
+  DBUG_RETURN(read_user_command_rows(handle, num_rows, result_buf));
 }
 
 int ndb_mgm_get_quotas(NdbMgmHandle handle,

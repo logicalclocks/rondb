@@ -28,7 +28,7 @@ Next NDBFS 2002
 Next DBACC 3007
 Next DBTUP 4041
 Next DBLQH 5120
-Next DBDICT 6229
+Next DBDICT 6230
 Next DBDIH 7251
 Next DBTC 8135
 Next DBTC 8319 (RonDB)
@@ -895,6 +895,7 @@ Dbdict:
 6222 Delay CREATE_HASH_MAP_REQ indefinitely
 6223 Only send SCHEMA_TRANS_IMPL_REQ to self preparatory to crashing
 6228 Exercise SUB_START_REQ signal handler version compatibility
+6229 Crash when GET_RATE_CAPACITY_REQ (USER CAPACITY) arrives
 
 Dbtup:
 4014 - handleInsert - Out of undo buffer

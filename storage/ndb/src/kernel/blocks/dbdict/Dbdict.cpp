@@ -2619,6 +2619,8 @@ Dbdict::Dbdict(Block_context &ctx)
 
   addRecSignal(GSN_GET_DATABASE_REQ, &Dbdict::execGET_DATABASE_REQ);
   addRecSignal(GSN_LIST_DATABASE_REQ, &Dbdict::execLIST_DATABASE_REQ);
+  addRecSignal(GSN_GET_RATE_CAPACITY_REQ,
+               &Dbdict::execGET_RATE_CAPACITY_REQ);
 
   c_transient_pools[DBDICT_OBJECT_RECORD_TRANSIENT_POOL_INDEX] =
     &c_obj_pool;
@@ -2708,13 +2710,17 @@ void Dbdict::initCommonData() {
 
 }  // Dbdict::initCommonData()
 
+/* The block and send threads of this node, one ndbinfo.threads row each. */
+Uint32 Dbdict::rateLimitThreadCount() {
+  return getNumThreads() + getNumSendThreads();
+}
+
 /**
  * The pool is one million rate units per block and send thread of this
  * node; USER and DATABASE QUOTA objects may allocate percent of it.
  */
 void Dbdict::setRateLimitBudget(Uint32 percent) {
-  Uint32 num_threads = getNumThreads() + getNumSendThreads();
-  Uint32 tot_rates = num_threads * 1000000;
+  Uint32 tot_rates = rateLimitThreadCount() * 1000000;
   m_rate_limit_budget_percent = percent;
   m_allocated_rate_limit = (tot_rates / 100) * percent;
 }
@@ -35956,6 +35962,26 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
   }
   sendSignal(req->senderRef, GSN_GET_DATABASE_CONF, signal,
              GetDatabaseConf::SignalLength, JBB);
+}
+
+/**
+ * USER CAPACITY: this node's pool, cap and allocated total, as
+ * setRateLimitBudget sized them and the create, alter and drop commits
+ * moved the total.
+ */
+void Dbdict::execGET_RATE_CAPACITY_REQ(Signal *signal) {
+  jamEntry();
+  CRASH_INSERTION(6229);
+  const GetRateCapacityReq req =
+    *(const GetRateCapacityReq*)signal->getDataPtr();
+  GetRateCapacityConf* conf = (GetRateCapacityConf*)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->senderData = req.senderData;
+  conf->numThreads = rateLimitThreadCount();
+  conf->rateLimitBudgetPercent = m_rate_limit_budget_percent;
+  conf->allocatedRate = m_current_allocated_rate;
+  sendSignal(req.senderRef, GSN_GET_RATE_CAPACITY_CONF, signal,
+             GetRateCapacityConf::SignalLength, JBB);
 }
 
 // MODULE: List Database Quotas

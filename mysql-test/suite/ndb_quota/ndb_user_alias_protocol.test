@@ -1,12 +1,13 @@
 --source include/have_ndb.inc
 
-# RONDB-1158: the management-protocol text of the USER and USER ALIAS
-# commands, as the Hopsworks installer reads it over the mgmd socket. A
-# raw client sends each command and prints the request (">>> ") and the
-# complete reply (`<<< `, the blank line that ends the header included)
-# exactly as mgmd wrote them, so the result file doubles as the reference
-# fixture for client-side parsers. Ids depend on what earlier tests left
-# in the dictionary and are masked as <id>.
+# RONDB-1158: the management-protocol text of the USER, USER ALIAS and
+# USER CAPACITY commands, as the Hopsworks installer reads it over the
+# mgmd socket. A raw client sends each command and prints the request
+# (">>> ") and the complete reply (`<<< `, the blank line that ends the
+# header included) exactly as mgmd wrote them, so the result file doubles
+# as the reference fixture for client-side parsers. Ids and the allocated
+# rate depend on what earlier tests left in the dictionary and are masked
+# as <id> and <rate>.
 
 --perl
 use strict;
@@ -21,6 +22,7 @@ my $sock = IO::Socket::INET->new(PeerAddr => $host, PeerPort => $port,
 sub show {
   my ($dir, $line) = @_;
   $line =~ s/((?:alias|user)Id|userVersion|nextAliasId|nextUserId)( = |: )\d+/$1$2<id>/g;
+  $line =~ s/(AllocatedRatePerSec = )\d+/$1<rate>/;
   print "$dir $line\n";
 }
 
@@ -67,6 +69,7 @@ sub list_all {
 mgm('set user', 'username', 'rl_group', 'rate_per_sec', 1000,
     'max_transaction_size', 0, 'max_parallel_transactions', 0,
     'max_parallel_complex_queries', 0);
+mgm('user capacity');
 mgm('set user alias', 'aliasname', 'rl_mary', 'target', 'rl_group');
 mgm('set user alias', 'aliasname', 'rl_mary', 'target', 'rl_group');
 mgm('set user alias', 'aliasname', 'rl_mary', 'target', 'rl_other');

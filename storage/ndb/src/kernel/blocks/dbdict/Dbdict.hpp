@@ -757,6 +757,7 @@ class Dbdict : public SimulatedBlock {
    */
   Uint32 m_rate_limit_budget_percent;
   Uint32 m_allocated_rate_limit;
+  Uint32 rateLimitThreadCount();
   void setRateLimitBudget(Uint32 percent);
   bool rateAllocationRefused(Uint64 total_before, Uint64 total_after) const;
 
@@ -4897,6 +4898,7 @@ class Dbdict : public SimulatedBlock {
 
 
   void execGET_DATABASE_REQ(Signal*);
+  void execGET_RATE_CAPACITY_REQ(Signal*);
   void execLIST_DATABASE_REQ(Signal*);
 
   // support

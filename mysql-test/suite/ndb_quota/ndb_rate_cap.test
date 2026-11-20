@@ -43,8 +43,11 @@ let $half = `SELECT $cap DIV 2`;
 --exec $NDB_MGM -e "USER DROP rl_b"
 --exec $NDB_MGM -e "USER SET rl_b --rate-per-sec=$rest"
 
---echo # Halve the cap: the node is now over it.
+--echo # Halve the cap: the node is now over it, as USER CAPACITY shows.
 --exec $NDB_MGM -e "ALL DUMP 1231 25" >> $NDB_TOOLS_OUTPUT
+--replace_result $cap <default-cap-filled>
+--replace_regex /NumThreads = [0-9]+/NumThreads = <threads>/
+--exec $NDB_MGM -e "USER CAPACITY"
 --echo # Nothing may grow the total.
 --error 255,65280
 --exec $NDB_MGM -e "USER SET rl_c --rate-per-sec=1"

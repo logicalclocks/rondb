@@ -1,0 +1,53 @@
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+# RONDB-1158: USER CAPACITY, the rate pool of every data node. Each node
+# sizes its pool from its own block and send threads, one ndbinfo.threads
+# row each, applies its own RateLimitBudgetPercent and keeps its own
+# allocated total, so mgmd asks every data node and prints one block per
+# node. The two nodes of this cluster differ on purpose (.cnf).
+#
+# The allocated total is the sum of the USER and DATABASE QUOTA rates and
+# follows their SET, ALTER and DROP; an alias holds no rate. A data node
+# that is not started, or that fails before it answers, fails the command,
+# because an answer without it could hide the most restrictive node.
+
+--echo # Each node's threads, as ndbinfo counts them.
+SELECT node_id, COUNT(*) AS threads FROM ndbinfo.threads
+  GROUP BY node_id ORDER BY node_id;
+--exec $NDB_MGM -e "USER CAPACITY"
+
+--echo # The allocated total follows SET and ALTER, an alias adds nothing,
+--echo # and a database quota rate counts too.
+--exec $NDB_MGM -e "USER SET rl_cap --rate-per-sec=1000"
+--exec $NDB_MGM -e "USER ALIAS SET rl_cap_alias --target=rl_cap"
+--exec $NDB_MGM -e "USER CAPACITY"
+--exec $NDB_MGM -e "USER ALTER rl_cap --rate-per-sec=2500"
+--exec $NDB_MGM -e "DATABASE QUOTA SET test --rate-per-sec=500"
+--exec $NDB_MGM -e "USER CAPACITY"
+--echo # DROP gives the rate back.
+--exec $NDB_MGM -e "USER ALIAS DROP rl_cap_alias"
+--exec $NDB_MGM -e "USER DROP rl_cap"
+--exec $NDB_MGM -e "DATABASE QUOTA DROP test"
+--exec $NDB_MGM -e "USER CAPACITY"
+--error 255,65280
+--exec $NDB_MGM -e "USER CAPACITY extra"
+
+--echo # A data node that is not started fails the command.
+--exec $NDB_MGM -e "2 RESTART -n" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --not-started --wait-nodes=2 >> $NDB_TOOLS_OUTPUT
+--error 255,65280
+--exec $NDB_MGM -e "USER CAPACITY"
+--exec $NDB_MGM -e "2 START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+
+--echo # So does one that fails before it answers (6229 crashes it when the
+--echo # request arrives).
+--exec $NDB_MGM -e "2 ERROR 6229" >> $NDB_TOOLS_OUTPUT
+--error 255,65280
+--exec $NDB_MGM -e "USER CAPACITY"
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+--source include/ndb_not_readonly.inc
+--echo # Both nodes answer again after the restart.
+--exec $NDB_MGM -e "USER CAPACITY"
+--remove_file $NDB_TOOLS_OUTPUT
