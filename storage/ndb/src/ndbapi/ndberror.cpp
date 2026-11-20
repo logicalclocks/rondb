@@ -519,6 +519,8 @@ ErrorBundle ErrorCodes[] = {
                     " drop them first" },
   { 1249, DMEC, AE, "User Alias failed, the target is dropped in the same"
                     " schema transaction" },
+  { 1276, DMEC, AE, "The rate allocation was already changed in this schema"
+                    " transaction" },
   { 4256, DMEC, AE, "Must call Ndb::init() before this function" },
   { 4257, DMEC, AE, "Tried to read too much - too many getValue calls" },
   { 320,  DMEC, AE, "Invalid no of nodes specified for new nodegroup" },

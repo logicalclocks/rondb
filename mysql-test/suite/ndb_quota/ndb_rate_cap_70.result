@@ -1,0 +1,5 @@
+USER SET successfully executed
+USER SET command failed: Error:
+*  1235: Error
+*        Create User failed
+USER DROP successfully executed

@@ -1,0 +1,35 @@
+# Fill the default cap exactly.
+USER SET successfully executed
+USER SET successfully executed
+# One unit past it: a create and an alter are refused.
+USER SET command failed: Error:
+*  1235: Error
+*        Create User failed
+USER ALTER command failed: Error:
+*  1236: Error
+*        Alter User failed
+# A zero-rate alias still fits.
+USER ALIAS SET successfully executed
+# A drop and a recreate at the same total succeed.
+USER DROP successfully executed
+USER SET successfully executed
+# Halve the cap: the node is now over it.
+# Nothing may grow the total.
+USER SET command failed: Error:
+*  1235: Error
+*        Create User failed
+USER ALTER command failed: Error:
+*  1236: Error
+*        Alter User failed
+# What does not grow it is allowed: a zero-rate alias, a repeated
+# alias SET, a lowering that stays over the cap, then one that lands
+# under it.
+USER ALIAS SET successfully executed
+USER ALIAS SET successfully executed
+USER ALTER successfully executed
+USER ALTER successfully executed
+# Under the halved cap, growing within it works again; a drop is
+# always allowed.
+USER SET successfully executed
+USER DROP successfully executed
+# Cleanup

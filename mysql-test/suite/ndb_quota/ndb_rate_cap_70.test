@@ -1,0 +1,14 @@
+--source include/have_ndb.inc
+
+# RONDB-1158: RateLimitBudgetPercent sets the one rate cap. At 70, a
+# single create takes 70% of a node's rate, which under the old split caps
+# (create 50%, alter 70%) needed a create followed by an alter, and one
+# unit more is refused. See ndb_rate_cap.test for the default.
+
+let $threads = `SELECT MIN(n) FROM (SELECT node_id, COUNT(*) AS n FROM ndbinfo.threads GROUP BY node_id) AS t`;
+let $cap = `SELECT $threads * 700000`;
+
+--exec $NDB_MGM -e "USER SET rl_big --rate-per-sec=$cap"
+--error 255,65280
+--exec $NDB_MGM -e "USER SET rl_one --rate-per-sec=1"
+--exec $NDB_MGM -e "USER DROP rl_big"

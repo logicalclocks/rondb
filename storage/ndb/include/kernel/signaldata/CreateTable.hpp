@@ -110,7 +110,8 @@ struct CreateTableRef {
     AliasTargetNotUser = 1246,
     AliasTargetConflict = 1247,
     UserHasAliases = 1248,
-    AliasTargetDropPending = 1249
+    AliasTargetDropPending = 1249,
+    RateChangedInSchemaTrans = 1276
   };
 
   Uint32 senderRef;

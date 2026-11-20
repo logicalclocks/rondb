@@ -307,6 +307,8 @@
 #define CFG_DB_GRACEFUL_SHUTDOWN_TIMEOUT 705
 #define CFG_DB_CRASH_ON_LEAKED_LCP_BIT 706
 #define CFG_DB_NODE_START_LOG_REPORT_FREQUENCY 707
+/* 708 to 710 are taken on newer release lines. */
+#define CFG_DB_RATE_LIMIT_BUDGET_PERCENT 711
 
 /* End RonDB only configuration parameters */
 

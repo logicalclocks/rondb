@@ -1,0 +1,8 @@
+!include suite/ndb_quota/my.cnf
+
+# RONDB-1158: the rate cap configured above its default of 50.
+[cluster_config.ndbd.1.1]
+RateLimitBudgetPercent=70
+
+[cluster_config.ndbd.2.1]
+RateLimitBudgetPercent=70

@@ -296,6 +296,23 @@ void Dbdict::execDUMP_STATE_ORD(Signal *signal) {
                             iter.curr.p->m_op_ref_count);
     }
   }
+#ifdef ERROR_INSERT
+  /**
+   * Moves the rate cap the way a restart onto fewer threads or a lowered
+   * RateLimitBudgetPercent would, so tests can put a node over its cap.
+   */
+  if (signal->theData[0] == DumpStateOrd::DictSetRateLimitBudgetPercent &&
+      signal->getLength() == 2 &&
+      signal->theData[1] >= 1 && signal->theData[1] <= 100) {
+    jam();
+    setRateLimitBudget(signal->theData[1]);
+    g_eventLogger->info("DBDICT: rate cap set to %u%%, %u of rate allocated,"
+                        " cap %u",
+                        m_rate_limit_budget_percent,
+                        m_current_allocated_rate,
+                        m_allocated_rate_limit);
+  }
+#endif
   if (signal->theData[0] == DumpStateOrd::DictDumpLockQueue) {
     jam();
     m_dict_lock.dump_queue(m_dict_lock_pool, this);
@@ -2662,10 +2679,7 @@ void Dbdict::initCommonData() {
   m_current_allocated_disk_quota_mb = 0;
   c_first_dangling_alias = RNIL;
 
-  Uint32 num_threads = getNumThreads() + getNumSendThreads();
-  Uint32 tot_rates = num_threads * 1000000;
-  m_allocated_create_rate_limit = (tot_rates / 10) * 5;
-  m_allocated_alter_rate_limit = (tot_rates / 10) * 7;
+  setRateLimitBudget(m_rate_limit_budget_percent);
 
   Uint64 tot_dm_mb = globalData.theDataMemory / (1024 * 1024);
   Uint32 max_dm_mb = (Uint32(tot_dm_mb) / 10) * 8;
@@ -2693,6 +2707,31 @@ void Dbdict::initCommonData() {
 #endif
 
 }  // Dbdict::initCommonData()
+
+/**
+ * The pool is one million rate units per block and send thread of this
+ * node; USER and DATABASE QUOTA objects may allocate percent of it.
+ */
+void Dbdict::setRateLimitBudget(Uint32 percent) {
+  Uint32 num_threads = getNumThreads() + getNumSendThreads();
+  Uint32 tot_rates = num_threads * 1000000;
+  m_rate_limit_budget_percent = percent;
+  m_allocated_rate_limit = (tot_rates / 100) * percent;
+}
+
+/**
+ * One rule for every check of the rate cap, at parse and at commit: an
+ * operation is refused when the allocated total it leaves would exceed
+ * both the cap and the total before it. So nothing may grow a total past
+ * the cap, while an operation that does not grow it (a zero-rate create,
+ * a lowered rate, a drop) stays allowed on a node that is already over
+ * its cap, after a restart onto fewer threads or a lowered cap, and the
+ * node drains step by step. Under the cap this is the plain cap check.
+ */
+bool Dbdict::rateAllocationRefused(Uint64 total_before,
+                                   Uint64 total_after) const {
+  return total_after > m_allocated_rate_limit && total_after > total_before;
+}
 
 void Dbdict::initRecords() {
   initNodeRecords();
@@ -3164,6 +3203,11 @@ void Dbdict::execREAD_CONFIG_REQ(Signal *signal) {
   ndb_mgm_get_int_parameter(p, CFG_DB_MAX_NUM_SCHEMA_OBJECTS,
                             &max_schema_objects);
   m_max_schema_objects = max_schema_objects;
+
+  /* A configuration from an older management server has no value. */
+  m_rate_limit_budget_percent = 50;
+  ndb_mgm_get_int_parameter(p, CFG_DB_RATE_LIMIT_BUDGET_PERCENT,
+                            &m_rate_limit_budget_percent);
 
   c_maxNoOfTriggers = globalData.theMaxNoOfTriggers;
   Uint32 attributesize;
@@ -33262,6 +33306,45 @@ Dbdict::aliasCreatePendingFor(SchemaTransPtr trans_ptr,
   return false;
 }
 
+/**
+ * True when this schema transaction already holds a parsed database
+ * operation that changes the allocated rate. The cap is checked at parse
+ * against the committed total, and the total moves only at commit, so a
+ * second change in the same transaction would be checked against a total
+ * the first change is about to move. One change per transaction keeps the
+ * parse check exact and the commit-time check from ever firing; every
+ * management client sends one operation per transaction anyway.
+ */
+bool
+Dbdict::rateChangePendingInTrans(SchemaTransPtr trans_ptr) {
+  LocalSchemaOp_list list(c_schemaOpPool, trans_ptr.p->m_op_list);
+  SchemaOpPtr loop_op_ptr;
+  for (bool found = list.first(loop_op_ptr);
+       found;
+       found = list.next(loop_op_ptr)) {
+    const char *op_type = loop_op_ptr.p->m_oprec_ptr.p->m_opType;
+    const size_t op_type_size =
+      sizeof(loop_op_ptr.p->m_oprec_ptr.p->m_opType);
+    if (memcmp(op_type, CreateDatabaseRec::g_opInfo.m_opType,
+               op_type_size) == 0) {
+      CreateDatabaseRecPtr rec_ptr;
+      getOpRec(loop_op_ptr, rec_ptr);
+      if (rec_ptr.p->m_rate_change) return true;
+    } else if (memcmp(op_type, AlterDatabaseRec::g_opInfo.m_opType,
+                      op_type_size) == 0) {
+      AlterDatabaseRecPtr rec_ptr;
+      getOpRec(loop_op_ptr, rec_ptr);
+      if (rec_ptr.p->m_rate_change) return true;
+    } else if (memcmp(op_type, DropDatabaseRec::g_opInfo.m_opType,
+                      op_type_size) == 0) {
+      DropDatabaseRecPtr rec_ptr;
+      getOpRec(loop_op_ptr, rec_ptr);
+      if (rec_ptr.p->m_rate_change) return true;
+    }
+  }
+  return false;
+}
+
 /* The objects a GET or LIST with this QueryDatabaseFilter returns. */
 bool
 Dbdict::matchesDatabaseFilter(DatabasePtr db_ptr, Uint32 filter) {
@@ -33393,11 +33476,9 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
     }
   }
 
-  Uint32 available_rate_limit =
-    m_allocated_create_rate_limit - m_current_allocated_rate;
-  if (db.RatePerSec > 0 &&
-      (m_allocated_create_rate_limit < m_current_allocated_rate ||
-      db.RatePerSec > available_rate_limit)) {
+  if (rateAllocationRefused(m_current_allocated_rate,
+                            Uint64(m_current_allocated_rate) +
+                              db.RatePerSec)) {
     if (op_ptr.p->m_restart) {
       jam();
       g_eventLogger->info("Database Rate limits oversubscribed, "
@@ -33407,6 +33488,13 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
       setError(error, CreateTableRef::CreateDbNoAvailableRates, __LINE__);
       return;
     }
+  }
+  if (db.RatePerSec > 0 &&
+      op_ptr.p->m_restart == 0 &&
+      rateChangePendingInTrans(trans_ptr)) {
+    jam();
+    setError(error, CreateTableRef::RateChangedInSchemaTrans, __LINE__);
+    return;
   }
   if (!is_user) {
     Uint32 available_mem_quota_limit =
@@ -33624,6 +33712,7 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
   saveOpSection(op_ptr, handle, 0);
 
   createDbPtr.p->m_parsed = true;
+  createDbPtr.p->m_rate_change = (db_ptr.p->m_rate_per_sec > 0);
 
 #if defined VM_TRACE || defined ERROR_INSERT
   g_eventLogger->info("Dbdict: %u: create database name=%s,id=%u,obj_ptr_i=%d",
@@ -34190,8 +34279,12 @@ void Dbdict::execCOMMIT_DB_CONF(Signal *signal) {
   bool ok = find_object(db_ptr, impl_req->databaseId);
   ndbrequire(ok);
 
+  /* The parse refused this create unless it is a restart, see
+     rateAllocationRefused; a transaction holds one rate change. */
+  const Uint32 rate_before_create = m_current_allocated_rate;
   m_current_allocated_rate += db_ptr.p->m_rate_per_sec;
-  ndbrequire(m_current_allocated_rate <= m_allocated_alter_rate_limit ||
+  ndbrequire(!rateAllocationRefused(rate_before_create,
+                                    m_current_allocated_rate) ||
              op_ptr.p->m_restart);
 
   if (!db_ptr.p->m_is_user) {
@@ -34561,6 +34654,14 @@ Dbdict::dropDatabase_parse(Signal* signal, bool master,
     setError(error, CreateTableRef::UserHasAliases, __LINE__);
     return;
   }
+  const bool rate_change = db_ptr.p->m_rate_per_sec > 0;
+  if (rate_change &&
+      op_ptr.p->m_restart == 0 &&
+      rateChangePendingInTrans(trans_ptr)) {
+    jam();
+    setError(error, CreateTableRef::RateChangedInSchemaTrans, __LINE__);
+    return;
+  }
   impl_req->databaseVersion = db_ptr.p->m_version;
   if (check_write_obj(impl_req->databaseId,
                       trans_ptr.p->m_transId,
@@ -34584,6 +34685,7 @@ Dbdict::dropDatabase_parse(Signal* signal, bool master,
     setError(error, err, __LINE__);
     return;
   }
+  dropDbPtr.p->m_rate_change = rate_change;
 }
 
 bool
@@ -35229,6 +35331,8 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
     }
   }
   impl_req->databaseVersion = db_ptr.p->m_version;
+  const bool rate_change = db.RatePerSec != RNIL &&
+                           db.RatePerSec != db_ptr.p->m_rate_per_sec;
   if (check_write_obj(impl_req->databaseId,
                       trans_ptr.p->m_transId,
                       SchemaFile::SF_ALTER, error)) {
@@ -35243,17 +35347,18 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
   }
   {
     if (db.RatePerSec != RNIL &&
-        db_ptr.p->m_rate_per_sec < db.RatePerSec) {
-      Uint32 increase_rate =
-        db.RatePerSec - db_ptr.p->m_rate_per_sec;
-      Uint32 available_rate_limit =
-        m_allocated_alter_rate_limit - m_current_allocated_rate;
-      if (increase_rate > available_rate_limit ||
-          m_current_allocated_rate > m_allocated_alter_rate_limit) {
-        jam();
-        setError(error, CreateTableRef::AlterDbNoAvailableRates, __LINE__);
-        return;
-      }
+        rateAllocationRefused(m_current_allocated_rate,
+                              Uint64(m_current_allocated_rate) -
+                                db_ptr.p->m_rate_per_sec +
+                                db.RatePerSec)) {
+      jam();
+      setError(error, CreateTableRef::AlterDbNoAvailableRates, __LINE__);
+      return;
+    }
+    if (rate_change && rateChangePendingInTrans(trans_ptr)) {
+      jam();
+      setError(error, CreateTableRef::RateChangedInSchemaTrans, __LINE__);
+      return;
     }
     if (!is_user) {
       if (db.InMemorySize != RNIL &&
@@ -35381,6 +35486,7 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
   }
   // save sections to DICT memory
   saveOpSection(op_ptr, handle, AlterDatabaseReq::DICT_TAB_INFO);
+  alterDbPtr.p->m_rate_change = rate_change;
 #if defined VM_TRACE || defined ERROR_INSERT
   g_eventLogger->info("Dbdict: %u: alter database name=%s,id=%u,obj_ptr_i=%d",
                       __LINE__,
@@ -35574,10 +35680,13 @@ Dbdict::execALTER_DB_CONF(Signal *signal)
     return;
   }
 
+  /* The parse refused this alter otherwise, see rateAllocationRefused. */
+  const Uint32 rate_before_alter = m_current_allocated_rate;
   ndbrequire(m_current_allocated_rate >= db_ptr.p->m_rate_per_sec);
   m_current_allocated_rate -= db_ptr.p->m_rate_per_sec;
   m_current_allocated_rate += alter_db_ptr.p->m_rate_per_sec;
-  ndbrequire(m_current_allocated_rate <= m_allocated_alter_rate_limit);
+  ndbrequire(!rateAllocationRefused(rate_before_alter,
+                                    m_current_allocated_rate));
 
   if (!db_ptr.p->m_is_user) {
     ndbrequire(m_current_allocated_memory_quota_mb >=

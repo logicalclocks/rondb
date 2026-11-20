@@ -750,8 +750,15 @@ class Dbdict : public SimulatedBlock {
   Uint32 c_first_dangling_alias;
 
   Uint32 m_current_allocated_rate;
-  Uint32 m_allocated_create_rate_limit;
-  Uint32 m_allocated_alter_rate_limit;
+  /**
+   * One cap on the rate USER and DATABASE QUOTA objects may allocate
+   * together: RateLimitBudgetPercent of this node's rate, see
+   * rateAllocationRefused.
+   */
+  Uint32 m_rate_limit_budget_percent;
+  Uint32 m_allocated_rate_limit;
+  void setRateLimitBudget(Uint32 percent);
+  bool rateAllocationRefused(Uint64 total_before, Uint64 total_after) const;
 
   Uint32 m_current_allocated_memory_quota_mb;
   Uint32 m_allocated_memory_quota_limit;
@@ -2867,6 +2874,9 @@ class Dbdict : public SimulatedBlock {
      */
     Uint32 m_bind_aliases;
 
+    // Parsed, and changes the allocated rate, see rateChangePendingInTrans
+    bool m_rate_change;
+
     CreateDatabaseRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
       std::memset(&m_request, 0, sizeof(m_request));
@@ -2875,6 +2885,7 @@ class Dbdict : public SimulatedBlock {
       m_abortPrepareDone = false;
       m_modified_by_subOps = false;
       m_bind_aliases = RNIL;
+      m_rate_change = false;
     }
 
 #if defined(VM_TRACE)
@@ -2920,12 +2931,15 @@ class Dbdict : public SimulatedBlock {
 
     bool m_prepared;
     bool m_abortPrepareDone;
+    // Parsed, and changes the allocated rate, see rateChangePendingInTrans
+    bool m_rate_change;
 
     DropDatabaseRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
       std::memset(&m_request, 0, sizeof(m_request));
       m_prepared = false;
       m_abortPrepareDone = false;
+      m_rate_change = false;
     }
 
 #if defined(VM_TRACE)
@@ -2981,6 +2995,8 @@ class Dbdict : public SimulatedBlock {
 
     bool m_prepared;
     bool m_abortPrepareDone;
+    // Parsed, and changes the allocated rate, see rateChangePendingInTrans
+    bool m_rate_change;
 
     AlterDatabaseReq m_request;
 
@@ -2991,6 +3007,7 @@ class Dbdict : public SimulatedBlock {
       std::memset(&m_request, 0, sizeof(m_request));
       m_prepared = false;
       m_abortPrepareDone = false;
+      m_rate_change = false;
     }
 #if defined(VM_TRACE)
     void print(NdbOut&) const;
@@ -4826,6 +4843,7 @@ class Dbdict : public SimulatedBlock {
   void unlinkDanglingAlias(DatabasePtr alias_ptr);
   void unbindAliasesOf(DatabasePtr user_ptr);
   bool aliasCreatePendingFor(SchemaTransPtr trans_ptr, const char *user_name);
+  bool rateChangePendingInTrans(SchemaTransPtr trans_ptr);
   bool matchesDatabaseFilter(DatabasePtr db_ptr, Uint32 filter);
   Uint32 copyAliasTarget(DatabasePtr db_ptr, Uint32 *buf, Uint32 buf_bytes);
 

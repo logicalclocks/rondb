@@ -775,6 +775,19 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     STR_VALUE(MAX_INT_RNIL) },
 
   {
+    CFG_DB_RATE_LIMIT_BUDGET_PERCENT,
+    "RateLimitBudgetPercent",
+    DB_TOKEN,
+    "Percent of a data node's rate that USER and DATABASE QUOTA rate limits"
+    " may allocate in total",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT,
+    "50",
+    "1",
+    "100" },
+
+  {
     CFG_DB_MAX_NUM_SCHEMA_OBJECTS,
     "MaxNoOfSchemaObjects",
     DB_TOKEN,

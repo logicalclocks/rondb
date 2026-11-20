@@ -24,6 +24,8 @@
 # 126 bytes or beginning with '$'.
 # TransactionReleaseClearsUser: a closed NdbTransaction keeps no pointer to
 # the rate limit name its caller passed to setUserId.
+# UserRateChangeOncePerTrans: a schema transaction changes the allocated
+# rate at most once (1276); aliases, which allocate nothing, do not count.
 #
 # The test program creates no tables, so no TEST_DB is needed; T1 is only
 # the table argument every testDict run takes.
@@ -48,4 +50,7 @@ let NDBAPITEST_ARGS=-n UserNameLimits T1;
 --source suite/ndb/include/run_ndbapitest.inc
 
 let NDBAPITEST_ARGS=-n TransactionReleaseClearsUser T1;
+--source suite/ndb/include/run_ndbapitest.inc
+
+let NDBAPITEST_ARGS=-n UserRateChangeOncePerTrans T1;
 --source suite/ndb/include/run_ndbapitest.inc

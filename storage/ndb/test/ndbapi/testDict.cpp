@@ -11658,6 +11658,41 @@ int runUserAliasPendingOps(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+/**
+ * A schema transaction may change the allocated rate once: the cap is
+ * checked at parse against the committed total, which moves only at
+ * commit. Operations that leave the allocation alone (an alias) do not
+ * count; a drop of a USER with a rate does.
+ */
+int runUserRateChangeOncePerTrans(NDBT_Context *ctx, NDBT_Step *step) {
+  DictDatabaseClient dict(&GETNDB(step)->get_ndb_cluster_connection());
+
+  DICTDB_CHECK(dict.beginTrans(), 0);
+  DICTDB_CHECK(dict.createDatabase("rl_first", true, 1000), 0);
+  DICTDB_CHECK(dict.createDatabase("rl_second", true, 1000),
+               CreateTableRef::RateChangedInSchemaTrans);
+  DICTDB_CHECK(dict.endTrans(true), 0);
+  DICTDB_CHECK(dict.getDatabase("rl_first", true), DropTableRef::NoSuchTable);
+
+  DICTDB_CHECK(dict.beginTrans(), 0);
+  DICTDB_CHECK(dict.createDatabase("rl_first", true, 1000), 0);
+  DICTDB_CHECK(dict.createAlias("rl_alias", "rl_first"), 0);
+  DICTDB_CHECK(dict.endTrans(false), 0);
+
+  DICTDB_ONE(dict.createDatabase("rl_plain", true, 1000), 0);
+  DICTDB_CHECK(dict.beginTrans(), 0);
+  DICTDB_CHECK(dict.dropDatabase("rl_plain", true), 0);
+  DICTDB_CHECK(dict.createDatabase("rl_second", true, 1000),
+               CreateTableRef::RateChangedInSchemaTrans);
+  DICTDB_CHECK(dict.endTrans(true), 0);
+  DICTDB_CHECK(dict.getDatabase("rl_plain", true), 0);
+
+  DICTDB_ONE(dict.dropAlias("rl_alias"), 0);
+  DICTDB_ONE(dict.dropDatabase("rl_first", true), 0);
+  DICTDB_ONE(dict.dropDatabase("rl_plain", true), 0);
+  return NDBT_OK;
+}
+
 /* Friend of NdbTransaction: the rate limit name a transaction holds. */
 struct ReleasedTransactionRateLimitName {
   static bool held(const NdbTransaction *trans) {
@@ -12214,6 +12249,11 @@ TESTCASE("UserNameLimits",
          "RONDB-1158: DBDICT refuses user and alias names longer than 126 "
          "bytes or beginning with '$'") {
   INITIALIZER(runUserNameLimits);
+}
+TESTCASE("UserRateChangeOncePerTrans",
+         "RONDB-1158: a schema transaction changes the allocated rate at "
+         "most once") {
+  INITIALIZER(runUserRateChangeOncePerTrans);
 }
 TESTCASE("TransactionReleaseClearsUser",
          "RONDB-1158: a closed transaction keeps no pointer to the rate "

@@ -1,0 +1,73 @@
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+# RONDB-1158: one rate cap, RateLimitBudgetPercent of a data node's rate
+# (default 50), for creates and alters alike, and one rule for every check
+# of it: an operation is refused when the total it leaves exceeds both the
+# cap and the total before it.
+#
+# Under the cap that is the plain cap: a total can be filled to exactly the
+# cap, one more unit is refused for a create (1235) and for an alter
+# (1236), formerly allowed up to 70% for an alter. A drop and a recreate at
+# the same total succeed, so what was accepted can always be rebuilt.
+#
+# Over the cap (DUMP 1231 lowers the cap the way a restart onto fewer
+# threads would) nothing may grow the total, but everything that does not
+# grow it stays allowed, so the node keeps working and drains step by
+# step: a zero-rate alias create and a repeated alias SET (whose ALTER
+# fallback used to assert at commit on such a node), a lowering that stays
+# over the cap, a lowering under it, and a drop.
+#
+# The pool is one million units per block and send thread of a node, one
+# ndbinfo.threads row each; every data node checks against its own, so the
+# smallest one is the cluster's.
+
+let $threads = `SELECT MIN(n) FROM (SELECT node_id, COUNT(*) AS n FROM ndbinfo.threads GROUP BY node_id) AS t`;
+let $cap = `SELECT $threads * 500000`;
+let $quarter = `SELECT $cap DIV 4`;
+let $rest = `SELECT $cap - $quarter`;
+let $rest_plus = `SELECT $rest + 1`;
+let $half = `SELECT $cap DIV 2`;
+
+--echo # Fill the default cap exactly.
+--exec $NDB_MGM -e "USER SET rl_a --rate-per-sec=$quarter"
+--exec $NDB_MGM -e "USER SET rl_b --rate-per-sec=$rest"
+--echo # One unit past it: a create and an alter are refused.
+--error 255,65280
+--exec $NDB_MGM -e "USER SET rl_c --rate-per-sec=1"
+--error 255,65280
+--exec $NDB_MGM -e "USER ALTER rl_b --rate-per-sec=$rest_plus"
+--echo # A zero-rate alias still fits.
+--exec $NDB_MGM -e "USER ALIAS SET rl_zero --target=rl_a"
+--echo # A drop and a recreate at the same total succeed.
+--exec $NDB_MGM -e "USER DROP rl_b"
+--exec $NDB_MGM -e "USER SET rl_b --rate-per-sec=$rest"
+
+--echo # Halve the cap: the node is now over it.
+--exec $NDB_MGM -e "ALL DUMP 1231 25" >> $NDB_TOOLS_OUTPUT
+--echo # Nothing may grow the total.
+--error 255,65280
+--exec $NDB_MGM -e "USER SET rl_c --rate-per-sec=1"
+--error 255,65280
+--exec $NDB_MGM -e "USER ALTER rl_b --rate-per-sec=$rest_plus"
+--echo # What does not grow it is allowed: a zero-rate alias, a repeated
+--echo # alias SET, a lowering that stays over the cap, then one that lands
+--echo # under it.
+--exec $NDB_MGM -e "USER ALIAS SET rl_zero2 --target=rl_a"
+--exec $NDB_MGM -e "USER ALIAS SET rl_zero --target=rl_a"
+--exec $NDB_MGM -e "USER ALTER rl_b --rate-per-sec=$half"
+--exec $NDB_MGM -e "USER ALTER rl_b --rate-per-sec=1"
+--echo # Under the halved cap, growing within it works again; a drop is
+--echo # always allowed.
+--exec $NDB_MGM -e "USER SET rl_c --rate-per-sec=1"
+--exec $NDB_MGM -e "USER DROP rl_b"
+
+--echo # Cleanup
+--exec $NDB_MGM -e "ALL DUMP 1231 50" >> $NDB_TOOLS_OUTPUT
+--disable_result_log
+--exec $NDB_MGM -e "USER ALIAS DROP rl_zero"
+--exec $NDB_MGM -e "USER ALIAS DROP rl_zero2"
+--exec $NDB_MGM -e "USER DROP rl_a"
+--exec $NDB_MGM -e "USER DROP rl_c"
+--enable_result_log
+--remove_file $NDB_TOOLS_OUTPUT

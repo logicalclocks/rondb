@@ -167,6 +167,8 @@ class DumpStateOrd {
     DictDumpLockQueue = 1228,
     DictDumpGetTabInfoQueue = 1229,
     DictDumpSchemaTransactions = 1230,
+    // Test hook (error insert builds): DUMP 1231 <percent> sets the rate cap
+    DictSetRateLimitBudgetPercent = 1231,
     LqhDumpAllDefinedTabs = 1332,
     LqhDumpNoLogPages = 1333,
     LqhDumpOneScanRec = 2300,
