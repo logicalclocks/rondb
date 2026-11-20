@@ -49,7 +49,9 @@ class CappedOStream;    // RDRS's response buffer (capped_ostream.hpp), X-7
  * Per-request phase timing statistics.  All *_us values are microseconds
  * from a monotonic clock.  A phase that did not run for the given query
  * shape stays 0.  On internal retries (ronsql_op), values reflect the LAST
- * attempt; attempts counts how many attempts ran (1 = no retry).  Capture
+ * attempt; attempts counts how many attempts ran (1 = no retry), and
+ * retry_ndb is the NDB error code of the last attempt that failed with a
+ * retryable error (0 = none, or a retry without an NDB error).  Capture
  * sites are compiled in only under RONSQL_PHASE_STATS (RonSQLPerf.hpp,
  * default on) and additionally require this sink to be non-NULL on
  * RonSQLExecParams::phase_stats.
@@ -105,6 +107,8 @@ struct RonSQLPhaseStats
                             // per TRANSID_AI, i.e. per scanned or read
                             // row; mysqld's ndb_api_read_row_count)
   Uint32 attempts = 0;      // ronsql_op attempts (1 = no retry)
+  Uint32 retry_ndb = 0;     // NDB error code that made the last retry
+                            // (0 = no retry, or one without an NDB code)
 };
 
 /*

@@ -81,7 +81,10 @@ static bool ronsql_phases_requested(const drogon::HttpRequestPtr &req) {
  * worker the RonSQL worker that ran it (from 1; 0 = ran on the IO loop,
  * RonSQL.NumThreads = 0).  close is the time spent closing scans, the
  * pushed query and the transaction (part of execute; an early scan close
- * waits for the data nodes).  Field order and names are pinned by
+ * waits for the data nodes).  retry_ndb is the NDB error code that made
+ * the last retry (0 when attempts=1, or for a retry without an NDB code),
+ * so a test that asserts attempts=1 can say why a retry happened.  Field
+ * order and names are pinned by
  * mysql-test/suite/ronsql/t/ronsql_phase_stats and parsed by
  * tools/rondb-cli (ronsql_bench.go); a new field goes last.
  */
@@ -95,7 +98,7 @@ static std::string ronsql_phase_stats_header(const RonSQLPhaseStats& s,
            "prepare=%llu,subquery=%llu,ndbprep=%llu,send=%llu,"
            "firstbatch=%llu,drain=%llu,print=%llu,execute=%llu,"
            "rows=%llu,attempts=%u,fetched=%llu,"
-           "queue=%llu,loop=%u,worker=%u,close=%llu",
+           "queue=%llu,loop=%u,worker=%u,close=%llu,retry_ndb=%u",
            (unsigned long long)s.parse_us,
            (unsigned long long)s.analyze_us,
            (unsigned long long)s.load_us,
@@ -115,7 +118,8 @@ static std::string ronsql_phase_stats_header(const RonSQLPhaseStats& s,
            (unsigned long long)queue_us,
            (unsigned)loop,
            (unsigned)worker,
-           (unsigned long long)s.close_us);
+           (unsigned long long)s.close_us,
+           (unsigned)s.retry_ndb);
   return std::string(buf);
 }
 #endif  // RONSQL_PHASE_STATS
