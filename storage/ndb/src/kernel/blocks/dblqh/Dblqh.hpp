@@ -140,8 +140,8 @@ class FsReadWriteReq;
 
 /**
  * Debug output of node restart copy decisions on character keys and of
- * key errors on backup replicas, see Dblqh::nr_key_debug(). Compiled only
- * into debug and error insert builds, and off until DUMP 2368 1
+ * key errors (626, 630) on any replica, see Dblqh::nr_key_debug(). Compiled
+ * only into debug and error insert builds, and off until DUMP 2368 1
  * (LqhNrKeyDebug) turns it on.
  */
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
@@ -4720,9 +4720,9 @@ private:
   bool nr_key_debug_wanted(Uint32 tableId);
   void nr_key_debug(const char *what, const TcConnectionrec *regTcPtr,
                     const Uint32 *storedKey, int storedLen, int match,
-                    bool uncommitted);
-  void replica_keyref_debug(const TcConnectionrec *regTcPtr,
-                            Uint32 errorCode);
+                    bool uncommitted, const Local_key *rowid = nullptr);
+  void keyref_debug(const TcConnectionrec *regTcPtr, Uint32 errorCode,
+                    const char *source, bool accFound);
 #endif
 
   NdbMutex m_read_redo_log_data_mutex;

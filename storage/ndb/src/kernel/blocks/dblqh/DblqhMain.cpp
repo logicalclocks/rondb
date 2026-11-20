@@ -6867,6 +6867,19 @@ void Dblqh::execTUPKEYREF(Signal *signal) {
         useStat.m_keyRefCount++;
         useStat.m_keyInstructionCount += tupKeyRef->noExecInstructions;
       }
+#ifdef DBLQH_NR_KEY_DEBUG
+      if (unlikely(errorCode == ZTUPLE_ALREADY_EXIST ||
+                   errorCode == ZNO_TUPLE_FOUND)) {
+        /**
+         * DBTUP refuses an insert that follows another operation than a
+         * delete of the same row in the same transaction (630), and any
+         * operation after a delete (626). ACC found the row for both.
+         * keyref_debug checks if DUMP 2368 turned the output on.
+         */
+        jam();
+        keyref_debug(tcConnectptr.p, errorCode, "TUP", true);
+      }
+#endif
       abortErrorLab(signal, tcConnectptr, errorCode);
       return;
     }
@@ -12205,15 +12218,20 @@ Uint32 Dblqh::getKeyInfoWordOrZero(const TcConnectionrec *regTcPtr,
  * but only for tables whose primary key has character columns, and at
  * most NR_KEY_DEBUG_MAX lines after each DUMP 2368 1.
  *
- * replica_keyref_debug prints when a backup replica fails an operation
- * with 626 or 630 that the primary replica executed. A replica that
- * agrees with the primary never does that, so the output is rare.
+ * keyref_debug prints when a replica fails an operation with 626 or 630,
+ * from ACC or from TUP. A backup replica that agrees with the primary
+ * never does that. The primary replica is included too, but only for
+ * tables whose primary key has character columns, since the
+ * InplaceCharPkChange tests expect no 626 or 630 at all. It prints what
+ * the replica holds at the rowid the primary sent and at the rowid ACC
+ * found for the key (for 630, the row that already holds the key). At
+ * most KEYREF_DEBUG_MAX of these after each DUMP 2368 1.
  */
 static constexpr Uint32 NR_KEY_DEBUG_MAX = 20000;
-static constexpr Uint32 REPLICA_KEYREF_DEBUG_MAX = 1000;
+static constexpr Uint32 KEYREF_DEBUG_MAX = 1000;
 static std::atomic<bool> g_nr_key_debug{false};
 static std::atomic<Uint32> g_nr_key_debug_lines{0};
-static std::atomic<Uint32> g_replica_keyref_debug_lines{0};
+static std::atomic<Uint32> g_keyref_debug_lines{0};
 
 static void format_key_bytes(char *buf, size_t bufsz, const Uint32 *key,
                              Uint32 words) {
@@ -12238,7 +12256,9 @@ bool Dblqh::nr_key_debug_wanted(Uint32 tableId) {
 
 void Dblqh::nr_key_debug(const char *what, const TcConnectionrec *regTcPtr,
                          const Uint32 *storedKey, int storedLen, int match,
-                         bool uncommitted) {
+                         bool uncommitted, const Local_key *rowid) {
+  /* The rowid printed is regTcPtr->m_row_id unless one is given */
+  if (rowid == nullptr) rowid = &regTcPtr->m_row_id;
   Uint32 reqKey[MAX_KEY_SIZE_IN_WORDS];
   Uint32 reqLen = 0;
   if (regTcPtr->keyInfoIVal != RNIL &&
@@ -12260,41 +12280,70 @@ void Dblqh::nr_key_debug(const char *what, const TcConnectionrec *regTcPtr,
       instance(), what, regTcPtr->tableref, regTcPtr->fragmentid,
       regTcPtr->operation,
       LqhKeyReq::getNrCopyFlag(regTcPtr->reqinfo) ? " NrCopy" : "",
-      regTcPtr->m_row_id.m_page_no, regTcPtr->m_row_id.m_page_idx,
+      rowid->m_page_no, rowid->m_page_idx,
       regTcPtr->gci_hi, regTcPtr->transid[0], regTcPtr->transid[1],
       storedLen, match, binDiff ? " BINDIFF" : "", (Uint32)uncommitted,
       reqBuf, storedBuf);
 }
 
-void Dblqh::replica_keyref_debug(const TcConnectionrec *regTcPtr,
-                                 Uint32 errorCode) {
-  if (g_replica_keyref_debug_lines.fetch_add(1) >= REPLICA_KEYREF_DEBUG_MAX)
+void Dblqh::keyref_debug(const TcConnectionrec *regTcPtr, Uint32 errorCode,
+                         const char *source, bool accFound) {
+  if (likely(!g_nr_key_debug.load(std::memory_order_relaxed))) return;
+  const bool primary = (regTcPtr->seqNoReplica == 0);
+  if (primary &&
+      !g_key_descriptor_pool.getPtr(regTcPtr->tableref)->hasCharAttr)
     return;
+  if (g_keyref_debug_lines.fetch_add(1) >= KEYREF_DEBUG_MAX) return;
   FragrecordPtr fragPtr;
   ndbrequire(c_fragment_pool.getPtr(fragPtr, regTcPtr->fragmentptr));
   const bool rowidFlag = LqhKeyReq::getRowidFlag(regTcPtr->reqinfo);
-  Uint32 stored[MAX_KEY_SIZE_IN_WORDS + 64];
-  int storedLen = 0;
-  bool uncommitted = false;
-  if (rowidFlag && !m_is_in_query_thread) {
-    /* What does this replica have at the rowid the primary used? */
-    Local_key rowid = regTcPtr->m_row_id;
-    storedLen = c_tup->nr_read_pk(fragPtr.p->tupFragptr, &rowid, stored,
-                                  uncommitted);
-  }
-  int match = (storedLen > 0)
-                  ? compare_key(regTcPtr, stored, (Uint32)storedLen) == 0
-                  : 0;
   g_eventLogger->info(
-      "REPLICA KEYREF %u LDM(%u) seqNoReplica %u lastReplicaNo %u"
-      " tc node %u next node %u activeCreat %u copy state %u fragStatus %u"
-      " rowidFlag %u",
-      errorCode, instance(), regTcPtr->seqNoReplica, regTcPtr->lastReplicaNo,
+      "KEYREF %u from %s LDM(%u) %s tab(%u,%u) op %u seqNoReplica %u"
+      " lastReplicaNo %u tc node %u next node %u activeCreat %u"
+      " copy state %u fragStatus %u copyNode %u rowidFlag %u",
+      errorCode, source, instance(), primary ? "primary" : "backup",
+      regTcPtr->tableref, regTcPtr->fragmentid, regTcPtr->operation,
+      regTcPtr->seqNoReplica, regTcPtr->lastReplicaNo,
       refToNode(regTcPtr->tcBlockref), regTcPtr->nextReplica,
       (Uint32)regTcPtr->activeCreat, (Uint32)fragPtr.p->m_copy_started_state,
-      (Uint32)fragPtr.p->fragStatus, (Uint32)rowidFlag);
-  nr_key_debug("REPLICA_KEYREF", regTcPtr, stored, storedLen, match,
-               uncommitted);
+      (Uint32)fragPtr.p->fragStatus, (Uint32)fragPtr.p->copyNode,
+      (Uint32)rowidFlag);
+  if (m_is_in_query_thread) {
+    nr_key_debug("KEYREF", regTcPtr, nullptr, 0, 0, false);
+    return;
+  }
+  Uint32 stored[MAX_KEY_SIZE_IN_WORDS + 64];
+  if (rowidFlag) {
+    /* What does this replica hold at the rowid the primary sent? */
+    bool uncommitted = false;
+    Local_key rowid = regTcPtr->m_row_id;
+    const int len =
+        c_tup->nr_read_pk(fragPtr.p->tupFragptr, &rowid, stored, uncommitted);
+    const int match =
+        (len > 0) ? compare_key(regTcPtr, stored, (Uint32)len) == 0 : 0;
+    nr_key_debug("KEYREF_AT_WIRE_ROWID", regTcPtr, stored, len, match,
+                 uncommitted);
+  }
+  const Dbacc::Operationrec *accOp = regTcPtr->accConnectPtrP;
+  if (accFound && accOp != nullptr && !accOp->localdata.isInvalid()) {
+    /**
+     * getElement() stores the rowid of the element it found in the ACC
+     * operation, also when ACC then refuses the operation. For 630 it is
+     * the row that already holds the key. When ACC did not find the key
+     * (626 from ACC) the field is left from an earlier operation, so the
+     * caller says whether ACC found it.
+     */
+    bool uncommitted = false;
+    Local_key rowid = accOp->localdata;
+    const int len =
+        c_tup->nr_read_pk(fragPtr.p->tupFragptr, &rowid, stored, uncommitted);
+    const int match =
+        (len > 0) ? compare_key(regTcPtr, stored, (Uint32)len) == 0 : 0;
+    nr_key_debug("KEYREF_AT_ACC_ROWID", regTcPtr, stored, len, match,
+                 uncommitted, &rowid);
+  } else if (!rowidFlag) {
+    nr_key_debug("KEYREF", regTcPtr, nullptr, 0, 0, false);
+  }
 }
 #endif  // DBLQH_NR_KEY_DEBUG
 
@@ -16712,11 +16761,11 @@ void Dblqh::continueACCKEYREF(Signal *signal, TcConnectionrecPtr tcConnectptr,
 
 #ifdef DBLQH_NR_KEY_DEBUG
   if (unlikely(g_nr_key_debug.load(std::memory_order_relaxed)) &&
-      tcPtr->seqNoReplica != 0 &&
       (errorCode == ZTUPLE_ALREADY_EXIST || errorCode == ZNO_TUPLE_FOUND)) {
-    /* A backup replica disagrees with the primary replica */
+    /* ACC found the key only for 630 */
     jam();
-    replica_keyref_debug(tcPtr, errorCode);
+    keyref_debug(tcPtr, errorCode, "ACC",
+                 errorCode == ZTUPLE_ALREADY_EXIST);
   }
 #endif
 
@@ -45109,7 +45158,7 @@ void Dblqh::execDUMP_STATE_ORD(Signal *signal) {
     const bool on = signal->getLength() < 2 || signal->theData[1] != 0;
     if (on && !g_nr_key_debug.load(std::memory_order_relaxed)) {
       g_nr_key_debug_lines.store(0, std::memory_order_relaxed);
-      g_replica_keyref_debug_lines.store(0, std::memory_order_relaxed);
+      g_keyref_debug_lines.store(0, std::memory_order_relaxed);
     }
     g_nr_key_debug.store(on, std::memory_order_relaxed);
     if (instance() == 1 && !m_is_query_block) {

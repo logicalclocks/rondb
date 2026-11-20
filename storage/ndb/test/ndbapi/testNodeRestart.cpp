@@ -9097,6 +9097,51 @@ static int defineUpdateOp(NdbTransaction *trans,
   return NDBT_OK;
 }
 
+/**
+ * After an unexpected error, print the rows whose key starts with the
+ * letter of the failed transaction, in any case. A committed read scan
+ * reads the primary replicas, so a key the insert collided with that is
+ * still there afterwards is on the primary replica, and the failed
+ * transaction aborted without changing anything.
+ */
+static void printCharKeyRows(Ndb *pNdb, const NdbDictionary::Table *nbTab,
+                             char letter) {
+  NdbTransaction *trans = pNdb->startTransaction();
+  if (trans == NULL) {
+    g_err << "printCharKeyRows: " << pNdb->getNdbError() << endl;
+    return;
+  }
+  NdbScanOperation *sop = trans->getNdbScanOperation(nbTab);
+  NdbRecAttr *key = NULL;
+  NdbRecAttr *data0 = NULL;
+  if (sop == NULL || sop->readTuples(NdbOperation::LM_CommittedRead) != 0 ||
+      (key = sop->getValue("Key")) == NULL ||
+      (data0 = sop->getValue("Data_0")) == NULL ||
+      trans->execute(NoCommit) != 0) {
+    g_err << "printCharKeyRows: " << trans->getNdbError() << endl;
+    trans->close();
+    return;
+  }
+  /* The keys are ASCII letters, so case folding is a single bit */
+  const char lower = (char)(letter | 0x20);
+  int rc;
+  while ((rc = sop->nextResult()) == 0) {
+    const char *keyData = (const char *)key->aRef();
+    const Uint32 keyLen = (Uint8)keyData[0];
+    if (keyLen == 0 || (char)(keyData[1] | 0x20) != lower) continue;
+    char keyBuf[41];
+    const Uint32 copyLen = keyLen < 40 ? keyLen : 40;
+    memcpy(keyBuf, keyData + 1, copyLen);
+    keyBuf[copyLen] = 0;
+    g_err << "  row key len " << keyLen << " '" << keyBuf << "' Data_0 "
+          << data0->u_32_value() << endl;
+  }
+  if (rc != 1) {
+    g_err << "printCharKeyRows: " << trans->getNdbError() << endl;
+  }
+  trans->close();
+}
+
 int runChangePkCharKeyTable(NDBT_Context *ctx, NDBT_Step *step) {
   Ndb *pNdb = GETNDB(step);
   NdbDictionary::Dictionary *pDict = pNdb->getDictionary();
@@ -9301,6 +9346,8 @@ int runChangePkCharKeyTable(NDBT_Context *ctx, NDBT_Step *step) {
             trans->close();
             continue;
           }
+          trans->close();
+          printCharKeyRows(pNdb, nbTab, toCaseKey);
           return NDBT_FAILED;
         }
         trans->close();
@@ -9328,8 +9375,8 @@ int runClearErrorInsert(NDBT_Context *ctx, NDBT_Step *step) {
 
 /**
  * DUMP 2368 1 / 0 (LqhNrKeyDebug): log node restart copy decisions on
- * tables with character keys and key errors on backup replicas, in debug
- * and error insert builds. Turned off again at the end so that it does
+ * tables with character keys and key errors 626/630 on any replica, in
+ * debug and error insert builds. Turned off again at the end so that it does
  * not affect later test cases. runRestarter turns it on again in each
  * restarted node when the test case sets NrKeyDebug.
  */

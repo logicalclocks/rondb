@@ -204,7 +204,7 @@ class DumpStateOrd {
     // (still recorded), 1 = applied (the default), 2 = forget them all
     LqhGroupTableSizeHints = 2367,
     // 1 / 0: log node restart copy decisions on tables with character
-    // keys and key errors on backup replicas (debug and error insert
+    // keys and key errors 626/630 on any replica (debug and error insert
     // builds only, used by testNodeRestart -n InplaceCharPkChange*)
     LqhNrKeyDebug = 2368,
 
