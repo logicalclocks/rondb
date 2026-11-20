@@ -30,6 +30,19 @@
 
 #define JAM_FILE_ID 562
 
+/**
+ * requestInfo bits of GetDatabaseReq and ListDatabaseReq. UserKind picks
+ * the user objects, USER ALIAS objects included, so the NDB API name cache
+ * resolves an alias name with no client change. The alias bits narrow it:
+ * the USER commands pass ExcludeAlias, the USER ALIAS commands AliasOnly,
+ * and an AliasOnly reply carries the alias's target name in a section.
+ */
+struct QueryDatabaseFilter {
+  static constexpr Uint32 UserKind = 1;
+  static constexpr Uint32 AliasOnly = 2;
+  static constexpr Uint32 ExcludeAlias = 4;
+};
+
 struct GetDatabaseReq {
   static constexpr Uint32 SignalLength = 3;
 
@@ -55,6 +68,9 @@ struct GetDatabaseConf {
   Uint32 MaxTransactionSize;
   Uint32 MaxParallelTransactions;
   Uint32 MaxParallelComplexQueries;
+
+  /* Present only in the reply to an AliasOnly request. */
+  SECTION( ALIAS_TARGET = 0 );
 
   friend bool printGET_DATABASE_CONF(FILE *, const Uint32 *, Uint32, Uint16);
 };
@@ -96,6 +112,8 @@ struct ListDatabaseConf {
   Uint32 MaxParallelTransactions;
   Uint32 MaxParallelComplexQueries;
   SECTION( DATABASE_NAME = 0 );
+  /* Present only in the reply to an AliasOnly request. */
+  SECTION( ALIAS_TARGET = 1 );
 
   friend bool printLIST_DATABASE_CONF(FILE *, const Uint32 *, Uint32, Uint16);
 };

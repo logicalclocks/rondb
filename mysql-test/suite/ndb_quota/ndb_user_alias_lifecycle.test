@@ -1,0 +1,105 @@
+--source include/have_ndb.inc
+
+# RONDB-1158: USER ALIAS through ndb_mgm. An alias charges what is tagged
+# with its name to one target USER and has no rate limit of its own.
+#
+# Covered: SET, a repeated SET with the same target (succeeds) and with
+# another (refused, 1247); GET and LIST showing the stored target name,
+# also while no USER has it; an alias set before its target; USER DROP
+# refused while an alias points at the user (1248) and accepted after;
+# USER and alias commands not acting on each other's objects; USER LIST
+# leaving aliases out; the 126-byte name limit for users, aliases and
+# targets; the client's argument checks. Ids vary with what earlier tests
+# left in the dictionary and are masked.
+
+--exec $NDB_MGM -e "USER SET rl_group --rate-per-sec=1000"
+--exec $NDB_MGM -e "USER SET rl_other --rate-per-sec=1000"
+--exec $NDB_MGM -e "USER ALIAS SET rl_mary --target=rl_group"
+
+--echo # A repeated SET with the same target succeeds, another target fails.
+--exec $NDB_MGM -e "USER ALIAS SET rl_mary --target=rl_group"
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET rl_mary --target=rl_other"
+--replace_regex /aliasId = [0-9]+/aliasId = <id>/
+--exec $NDB_MGM -e "USER ALIAS GET rl_mary"
+
+--echo # The target USER cannot be dropped while the alias points at it.
+--error 255,65280
+--exec $NDB_MGM -e "USER DROP rl_group"
+
+--echo # An alias may be set before its target; GET shows the stored name.
+--exec $NDB_MGM -e "USER ALIAS SET rl_bob --target=rl_late"
+--replace_regex /aliasId = [0-9]+/aliasId = <id>/
+--exec $NDB_MGM -e "USER ALIAS GET rl_bob"
+--echo # Creating the target binds the alias: now the target cannot be dropped.
+--exec $NDB_MGM -e "USER SET rl_late --rate-per-sec=1000"
+--error 255,65280
+--exec $NDB_MGM -e "USER DROP rl_late"
+
+--echo # LIST shows every alias in id order; USER LIST leaves aliases out.
+--replace_regex /aliasId = [0-9]+/aliasId = <id>/
+--exec $NDB_MGM -e "USER ALIAS LIST"
+--replace_regex /(userId|userVersion) = [0-9]+/\1 = <id>/
+--exec $NDB_MGM -e "USER LIST"
+
+--echo # USER commands do not act on aliases, alias commands not on users.
+--error 255,65280
+--exec $NDB_MGM -e "USER GET rl_mary"
+--error 255,65280
+--exec $NDB_MGM -e "USER ALTER rl_mary --rate-per-sec=2000"
+--error 255,65280
+--exec $NDB_MGM -e "USER DROP rl_mary"
+--error 255,65280
+--exec $NDB_MGM -e "USER SET rl_mary --rate-per-sec=1000"
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS GET rl_group"
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS DROP rl_group"
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET rl_group --target=rl_other"
+--echo # The target must be a user, not an alias.
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET rl_chain --target=rl_mary"
+
+--echo # User and alias names, and targets, hold at most 126 bytes.
+--exec $NDB_MGM -e "USER SET rl_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --rate-per-sec=1000"
+--exec $NDB_MGM -e "USER ALIAS SET rl_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --target=rl_group"
+--exec $NDB_MGM -e "USER ALIAS DROP rl_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+--echo # The 126-byte user name is taken: no alias may have it.
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET rl_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --target=rl_group"
+--exec $NDB_MGM -e "USER ALIAS SET rl_long --target=rl_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET rl_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --target=rl_group"
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET rl_long2 --target=rl_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+--error 255,65280
+--exec $NDB_MGM -e "USER SET rl_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --rate-per-sec=1000"
+--error 255,65280
+--exec $NDB_MGM -e "USER GET rl_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+--exec $NDB_MGM -e "USER ALIAS DROP rl_long"
+--exec $NDB_MGM -e "USER DROP rl_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+--echo # Client argument checks.
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET rl_x"
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS SET rl_x --rate-per-sec=5"
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS DROP rl_x extra"
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS GET"
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS LIST extra"
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS RENAME rl_x"
+
+--echo # Dropping the aliases releases the users.
+--exec $NDB_MGM -e "USER ALIAS DROP rl_mary"
+--exec $NDB_MGM -e "USER ALIAS DROP rl_bob"
+--exec $NDB_MGM -e "USER DROP rl_group"
+--exec $NDB_MGM -e "USER DROP rl_late"
+--exec $NDB_MGM -e "USER DROP rl_other"
+--exec $NDB_MGM -e "USER ALIAS LIST"
+--error 255,65280
+--exec $NDB_MGM -e "USER ALIAS GET rl_mary"

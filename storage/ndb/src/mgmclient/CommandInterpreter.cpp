@@ -201,6 +201,7 @@ class CommandInterpreter {
   int executeUserList(char* parameters);
   int executeUserBackup(char* parameters);
   int executeUserRestore(char* parameters);
+  int executeUserAlias(char* parameters);
   int executeUser(char* parameters, int);
   int executeDatabaseQuotaSet(char* parameters);
   int executeDatabaseQuotaAlter(char* parameters);
@@ -848,6 +849,16 @@ static const char* helpUser =
 "USER GET Retrieve rate information for specific user\n\n"
 "USER LIST Retrieve quota information for all users\n\n"
 "USER BACKUP Backup quota information for all users\n\n"
+"USER ALIAS SET <alias> --target=<user> Charge what is tagged with the\n"
+"  name <alias> to the user <user>. The alias has no rate limit of its own.\n"
+"  Setting an alias again with the same target succeeds, with another\n"
+"  target it fails: drop the alias and set it again to move it.\n\n"
+"USER ALIAS DROP <alias> Drop a user alias\n\n"
+"USER ALIAS GET <alias> Show a user alias and the name of its target\n\n"
+"USER ALIAS LIST Show every user alias and the name of its target\n\n"
+"  A user that aliases point at cannot be dropped until the aliases are.\n"
+"  The target user may not exist yet; the alias charges nothing until it\n"
+"  does.\n\n"
 "  The following properties can be set (altered):\n"
 "    --rate-per-sec = VALUE\n"
 "      The maximum rate per second a user is allowed to perform\n\n"
@@ -1672,6 +1683,12 @@ bool CommandInterpreter::execute_impl(const char *_line, bool interactive) {
 	    native_strncasecmp(allAfterFirstToken, "QUOTA RESTORE",
                       sizeof("QUOTA RESTORE") - 1) == 0) {
     m_error = executeDatabaseQuotaRestore(allAfterFirstToken);
+    DBUG_RETURN(true);
+  } else if(native_strcasecmp(firstToken, "USER") == 0 &&
+	    allAfterFirstToken != NULL &&
+	    native_strncasecmp(allAfterFirstToken, "ALIAS",
+                      sizeof("ALIAS") - 1) == 0) {
+    m_error = executeUserAlias(allAfterFirstToken);
     DBUG_RETURN(true);
   } else if(native_strcasecmp(firstToken, "USER") == 0 &&
 	    allAfterFirstToken != NULL &&
@@ -5009,6 +5026,87 @@ int CommandInterpreter::executeUserList(char* parameters) {
     }
   } while (true);
   return result;
+}
+
+/**
+ * USER ALIAS SET <alias> --target=<user>, USER ALIAS DROP <alias>,
+ * USER ALIAS GET <alias> and USER ALIAS LIST. "parameters" starts with
+ * "ALIAS", then the sub-command.
+ */
+int CommandInterpreter::executeUserAlias(char* parameters) {
+  Vector<BaseString> args;
+  split_args_with_equal(parameters, args);
+  const Uint32 num_args = args.size();
+  if (num_args < 2) {
+    ndbout << "Expected USER ALIAS SET, DROP, GET or LIST" << endl;
+    return -1;
+  }
+  const char *sub = args[1].c_str();
+  if (native_strcasecmp(sub, "LIST") == 0) {
+    if (num_args != 2) {
+      ndbout << "USER ALIAS LIST takes no parameters" << endl;
+      return -1;
+    }
+    Uint32 nextAliasId = 0;
+    while (true) {
+      char *result_buf = nullptr;
+      if (ndb_mgm_list_user_aliases(m_mgmsrv, &nextAliasId,
+                                    &result_buf) != 0) {
+        ndbout << "USER ALIAS LIST command failed: Error:" << endl;
+        printError();
+        return -1;
+      }
+      if (nextAliasId == RNIL) {
+        fprintf(stdout, "User Alias List command completed\n");
+        return 0;
+      }
+      fprintf(stdout, "%s", result_buf);
+      delete[] result_buf;
+    }
+  }
+  if (num_args < 3) {
+    ndbout << "USER ALIAS " << sub << " expects an alias name" << endl;
+    return -1;
+  }
+  const char *alias_name = args[2].c_str();
+  int result;
+  if (native_strcasecmp(sub, "SET") == 0) {
+    if (num_args != 6 ||
+        native_strcasecmp(args[3].c_str(), "--target") != 0 ||
+        strcmp(args[4].c_str(), "=") != 0) {
+      ndbout << "Expected USER ALIAS SET <alias> --target=<user>" << endl;
+      return -1;
+    }
+    result = ndb_mgm_set_user_alias(m_mgmsrv, alias_name, args[5].c_str());
+  } else if (native_strcasecmp(sub, "DROP") == 0) {
+    if (num_args != 3) {
+      ndbout << "USER ALIAS DROP takes only an alias name" << endl;
+      return -1;
+    }
+    result = ndb_mgm_drop_user_alias(m_mgmsrv, alias_name);
+  } else if (native_strcasecmp(sub, "GET") == 0) {
+    if (num_args != 3) {
+      ndbout << "USER ALIAS GET takes only an alias name" << endl;
+      return -1;
+    }
+    char *result_buf = nullptr;
+    result = ndb_mgm_get_user_alias(m_mgmsrv, alias_name, &result_buf);
+    if (result == 0) {
+      fprintf(stdout, "%s", result_buf);
+      delete[] result_buf;
+      return 0;
+    }
+  } else {
+    ndbout << "Expected USER ALIAS SET, DROP, GET or LIST" << endl;
+    return -1;
+  }
+  if (result != 0) {
+    ndbout << "USER ALIAS " << sub << " command failed: Error:" << endl;
+    printError();
+    return -1;
+  }
+  ndbout << "USER ALIAS " << sub << " successfully executed" << endl;
+  return 0;
 }
 
 #define SET_USER 0

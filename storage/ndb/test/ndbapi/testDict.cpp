@@ -11658,6 +11658,40 @@ int runUserAliasPendingOps(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+/**
+ * A user or alias name is stored as "$name" in MAX_DB_NAME_SIZE bytes with
+ * its NUL, so DBDICT itself refuses a client name longer than
+ * MAX_DB_NAME_SIZE - 2 or one that begins with '$', whatever the
+ * management server checks first.
+ */
+int runUserNameLimits(NDBT_Context *ctx, NDBT_Step *step) {
+  DictDatabaseClient dict(&GETNDB(step)->get_ndb_cluster_connection());
+  char longest[MAX_DB_NAME_SIZE];
+  std::memset(longest, 'u', MAX_DB_NAME_SIZE - 2);
+  longest[MAX_DB_NAME_SIZE - 2] = 0;
+  char too_long[MAX_DB_NAME_SIZE];
+  std::memset(too_long, 'u', MAX_DB_NAME_SIZE - 1);
+  too_long[MAX_DB_NAME_SIZE - 1] = 0;
+
+  DICTDB_ONE(dict.createDatabase(longest, true, 1000), 0);
+  DICTDB_CHECK(dict.getDatabase(longest, true), 0);
+  DICTDB_ONE(dict.createAlias(too_long, longest),
+             CreateTableRef::InvalidFormat);
+  DICTDB_ONE(dict.createAlias("rl_alias", too_long),
+             CreateTableRef::InvalidFormat);
+  DICTDB_ONE(dict.createAlias("rl_alias", longest), 0);
+  DICTDB_ONE(dict.dropAlias("rl_alias"), 0);
+  DICTDB_ONE(dict.dropDatabase(longest, true), 0);
+
+  DICTDB_ONE(dict.createDatabase(too_long, true, 1000),
+             CreateTableRef::InvalidFormat);
+  DICTDB_ONE(dict.createDatabase("$rl_user", true, 1000),
+             CreateTableRef::InvalidFormat);
+  DICTDB_ONE(dict.createAlias("$rl_alias", longest),
+             CreateTableRef::InvalidFormat);
+  return NDBT_OK;
+}
+
 NDBT_TESTSUITE(testDict);
 TESTCASE("testDropDDObjects",
          "* 1. start cluster\n"
@@ -12136,6 +12170,11 @@ TESTCASE("UserAliasPendingOps",
          "RONDB-1158: an alias create and its target's drop in one schema "
          "transaction are refused in both orders and abort cleanly") {
   INITIALIZER(runUserAliasPendingOps);
+}
+TESTCASE("UserNameLimits",
+         "RONDB-1158: DBDICT refuses user and alias names longer than 126 "
+         "bytes or beginning with '$'") {
+  INITIALIZER(runUserNameLimits);
 }
 NDBT_TESTSUITE_END(testDict)
 

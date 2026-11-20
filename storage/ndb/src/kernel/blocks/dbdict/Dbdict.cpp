@@ -33198,6 +33198,34 @@ Dbdict::aliasCreatePendingFor(SchemaTransPtr trans_ptr,
   return false;
 }
 
+/* The objects a GET or LIST with this QueryDatabaseFilter returns. */
+bool
+Dbdict::matchesDatabaseFilter(DatabasePtr db_ptr, Uint32 filter) {
+  const bool is_user = (filter & QueryDatabaseFilter::UserKind) != 0;
+  if (db_ptr.p->m_is_user != is_user) {
+    return false;
+  }
+  if ((filter & QueryDatabaseFilter::AliasOnly) && !db_ptr.p->m_is_alias) {
+    return false;
+  }
+  if ((filter & QueryDatabaseFilter::ExcludeAlias) && db_ptr.p->m_is_alias) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Copies an alias's stored target name into buf, NUL-terminated and
+ * zero-padded to whole words for a section, and returns its length.
+ */
+Uint32
+Dbdict::copyAliasTarget(DatabasePtr db_ptr, Uint32 *buf, Uint32 buf_bytes) {
+  memset(buf, 0, buf_bytes);
+  LcConstRope target(db_ptr.p->m_alias_target);
+  target.copy((char *)buf, buf_bytes);
+  return Uint32(strnlen((const char *)buf, buf_bytes));
+}
+
 void
 Dbdict::packDatabaseIntoPages(SimpleProperties::Writer & w,
                               DatabasePtr db_ptr) {
@@ -33283,6 +33311,23 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
    * recreates databases from packed pages where IsUser is stored.
    */
   bool is_user = db.IsUser;
+
+  if (is_user && master) {
+    /**
+     * The master parses the client's name, which gets its '$' below and
+     * must then fit MAX_DB_NAME_SIZE with the NUL; a name that already
+     * begins with '$' would be taken for the stored form. Participants
+     * and restarts parse the stored form the master packed.
+     */
+    const Uint32 name_len = Uint32(strnlen(db.DatabaseName, MAX_DB_NAME_SIZE));
+    if (name_len == 0 ||
+        name_len > MAX_DB_NAME_SIZE - 2 ||
+        db.DatabaseName[0] == '$') {
+      jam();
+      setError(error, CreateTableRef::InvalidFormat, __LINE__);
+      return;
+    }
+  }
 
   Uint32 available_rate_limit =
     m_allocated_create_rate_limit - m_current_allocated_rate;
@@ -35595,7 +35640,8 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
   const GetDatabaseReq req_copy =
     *(const GetDatabaseReq*)signal->getDataPtr();
   const GetDatabaseReq* req = &req_copy;
-  bool is_user = req->requestInfo & 1;
+  const Uint32 filter = req->requestInfo;
+  bool is_user = filter & QueryDatabaseFilter::UserKind;
 
   Uint32 error = 0;
   Uint32 errorLine = 0;
@@ -35659,7 +35705,7 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
       errorLine = __LINE__;
       break;
     }
-    if (db_ptr.p->m_is_user != is_user) {
+    if (!matchesDatabaseFilter(db_ptr, filter)) {
       jam();
       error = GetTabInfoRef::TableNotDefined;
       errorLine = __LINE__;
@@ -35695,6 +35741,18 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
     db_ptr.p->m_max_parallel_transactions;
   conf->MaxParallelComplexQueries =
     db_ptr.p->m_max_parallel_complex_queries;
+  if (filter & QueryDatabaseFilter::AliasOnly) {
+    jam();
+    /* The stored name, also while no USER of that name exists. */
+    Uint32 target[MAX_DB_NAME_SIZE / 4 + 1];
+    Uint32 target_len = copyAliasTarget(db_ptr, target, sizeof(target));
+    LinearSectionPtr lsPtr[3];
+    lsPtr[GetDatabaseConf::ALIAS_TARGET].p = &target[0];
+    lsPtr[GetDatabaseConf::ALIAS_TARGET].sz = (target_len + 4) / 4;
+    sendSignal(req->senderRef, GSN_GET_DATABASE_CONF, signal,
+               GetDatabaseConf::SignalLength, JBB, lsPtr, 1);
+    return;
+  }
   sendSignal(req->senderRef, GSN_GET_DATABASE_CONF, signal,
              GetDatabaseConf::SignalLength, JBB);
 }
@@ -35706,7 +35764,8 @@ void Dbdict::execLIST_DATABASE_REQ(Signal *signal) {
     *(const ListDatabaseReq*)signal->getDataPtr();
   const ListDatabaseReq* req = &req_copy;
 
-  bool is_user = req->requestInfo & 1;
+  const Uint32 filter = req->requestInfo;
+  bool is_user = filter & QueryDatabaseFilter::UserKind;
 
   DatabasePtr db_ptr;
   bool found = false;
@@ -35714,7 +35773,7 @@ void Dbdict::execLIST_DATABASE_REQ(Signal *signal) {
   Uint32 loop_count = 0;
   for (; dbId < c_noOfMetaTables; dbId++) {
     bool ok = find_object(db_ptr, dbId);
-    if (ok && db_ptr.p->m_is_user == is_user) {
+    if (ok && matchesDatabaseFilter(db_ptr, filter)) {
       found = true;
       break;
     }
@@ -35764,6 +35823,17 @@ void Dbdict::execLIST_DATABASE_REQ(Signal *signal) {
     db_ptr.p->m_max_parallel_transactions;
   conf->MaxParallelComplexQueries =
     db_ptr.p->m_max_parallel_complex_queries;
+  if (filter & QueryDatabaseFilter::AliasOnly) {
+    jam();
+    /* The stored name, also while no USER of that name exists. */
+    Uint32 target[MAX_DB_NAME_SIZE / 4 + 1];
+    Uint32 target_len = copyAliasTarget(db_ptr, target, sizeof(target));
+    lsPtr[ListDatabaseConf::ALIAS_TARGET].p = &target[0];
+    lsPtr[ListDatabaseConf::ALIAS_TARGET].sz = (target_len + 4) / 4;
+    sendSignal(req->senderRef, GSN_LIST_DATABASE_CONF, signal,
+               ListDatabaseConf::SignalLength, JBB, lsPtr, 2);
+    return;
+  }
   sendSignal(req->senderRef, GSN_LIST_DATABASE_CONF, signal,
              ListDatabaseConf::SignalLength, JBB, lsPtr, 1);
 }

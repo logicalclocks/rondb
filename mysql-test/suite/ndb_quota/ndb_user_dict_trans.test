@@ -20,6 +20,8 @@
 # UserAliasPendingOps: an alias create and its target's drop in one schema
 # transaction are refused in either order, and the abort leaves no alias
 # and no count behind.
+# UserNameLimits: DBDICT itself refuses user and alias names longer than
+# 126 bytes or beginning with '$'.
 #
 # The test program creates no tables, so no TEST_DB is needed; T1 is only
 # the table argument every testDict run takes.
@@ -38,4 +40,7 @@ let NDBAPITEST_ARGS=-n UserAliasDanglingTarget T1;
 --source suite/ndb/include/run_ndbapitest.inc
 
 let NDBAPITEST_ARGS=-n UserAliasPendingOps T1;
+--source suite/ndb/include/run_ndbapitest.inc
+
+let NDBAPITEST_ARGS=-n UserNameLimits T1;
 --source suite/ndb/include/run_ndbapitest.inc

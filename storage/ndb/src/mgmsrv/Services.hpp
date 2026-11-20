@@ -101,6 +101,11 @@ class MgmApiSession : public SocketServer::Session {
   void getUser(Parser_t::Context &ctx, const class Properties &args);
   void listUsers(Parser_t::Context &ctx, const class Properties &args);
   void backupUsers(Parser_t::Context &ctx, const class Properties &args);
+  void setUserAlias(Parser_t::Context &ctx, const class Properties &args);
+  void dropUserAlias(Parser_t::Context &ctx, const class Properties &args);
+  void getUserAlias(Parser_t::Context &ctx, const class Properties &args);
+  void listUserAliases(Parser_t::Context &ctx, const class Properties &args);
+  void userAliasReply(const char *reply, int error_code);
 
   void getConfig(Parser_t::Context &ctx, const class Properties &args, bool v2);
   void getConfig_v1(Parser_t::Context &ctx, const class Properties &args);

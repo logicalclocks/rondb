@@ -52,8 +52,10 @@
 #include <signaldata/DictTabInfo.hpp>
 #include <signaldata/AlterDatabase.hpp>
 #include <signaldata/CreateDatabase.hpp>
+#include <signaldata/CreateTable.hpp>
 #include <signaldata/DropDatabase.hpp>
 #include <signaldata/DropTable.hpp>
+#include <signaldata/GetTabInfo.hpp>
 #include <signaldata/QueryDatabase.hpp>
 #include <signaldata/AllocNodeId.hpp>
 #include <signaldata/ApiVersion.hpp>
@@ -6015,6 +6017,23 @@ void MgmtSrvr::tls_stat_decrement(unsigned int idx) {
   if (idx < sizeof(m_tls_stats)) m_tls_stats[idx]--;
 }
 
+/**
+ * USER and USER ALIAS names are stored as "$name" in a MAX_DB_NAME_SIZE
+ * buffer with its NUL, so a name holds at most MAX_DB_NAME_SIZE - 2 bytes,
+ * and a name that begins with '$' would be taken for the stored form.
+ * Returns 0 or the error code.
+ */
+static Uint32 check_user_name(const char *name) {
+  const size_t len = strnlen(name, MAX_DB_NAME_SIZE);
+  if (len > MAX_DB_NAME_SIZE - 2) {
+    return DropDatabaseRef::DatabaseNameTooLong;
+  }
+  if (len == 0 || name[0] == '$') {
+    return CreateTableRef::InvalidFormat;
+  }
+  return 0;
+}
+
 int MgmtSrvr::check_quota_version(bool is_user) {
   Uint32 min_version = theFacade->getMinDbNodeVersion();
   if (!ndbd_rate_limit_supported(min_version))
@@ -6074,11 +6093,16 @@ MgmtSrvr::set_quotas(const char *database_name,
   db_obj.init();
 
   Uint32 db_name_len = strnlen(database_name, MAX_DB_NAME_SIZE + 1);
-  if (db_name_len > MAX_DB_NAME_SIZE) {
-    Uint32 err = DropDatabaseRef::DatabaseNameTooLong;
+  Uint32 name_err = 0;
+  if (is_user) {
+    name_err = check_user_name(database_name);
+  } else if (db_name_len > MAX_DB_NAME_SIZE) {
+    name_err = DropDatabaseRef::DatabaseNameTooLong;
+  }
+  if (name_err) {
     endSchemaTrans(ss, nodeId, transId, transKey,
                    SchemaTransEndReq::SchemaTransAbort);
-    return err;
+    return name_err;
   }
   memcpy(&db_obj.DatabaseName[0], database_name, db_name_len);
   db_obj.DatabaseType = DictTabInfo::Database;
@@ -6206,11 +6230,16 @@ MgmtSrvr::alter_quotas(const char *database_name,
   db_obj.init();
 
   Uint32 db_name_len = strnlen(database_name, MAX_DB_NAME_SIZE + 1);
-  if (db_name_len > MAX_DB_NAME_SIZE) {
-    Uint32 err = DropDatabaseRef::DatabaseNameTooLong;
+  Uint32 name_err = 0;
+  if (is_user) {
+    name_err = check_user_name(database_name);
+  } else if (db_name_len > MAX_DB_NAME_SIZE) {
+    name_err = DropDatabaseRef::DatabaseNameTooLong;
+  }
+  if (name_err) {
     endSchemaTrans(ss, nodeId, transId, transKey,
                    SchemaTransEndReq::SchemaTransAbort);
-    return err;
+    return name_err;
   }
   memcpy(&db_obj.DatabaseName[0], database_name, db_name_len);
   db_obj.DatabaseType = DictTabInfo::Database;
@@ -6329,11 +6358,16 @@ int MgmtSrvr::drop_quotas(const char *database_name, bool is_user, NdbOut& out) 
   db_obj.init();
 
   Uint32 db_name_len = strnlen(database_name, MAX_DB_NAME_SIZE + 1);
-  if (db_name_len > MAX_DB_NAME_SIZE) {
-    Uint32 err = DropDatabaseRef::DatabaseNameTooLong;
+  Uint32 name_err = 0;
+  if (is_user) {
+    name_err = check_user_name(database_name);
+  } else if (db_name_len > MAX_DB_NAME_SIZE) {
+    name_err = DropDatabaseRef::DatabaseNameTooLong;
+  }
+  if (name_err) {
     endSchemaTrans(ss, nodeId, transId, transKey,
                    SchemaTransEndReq::SchemaTransAbort);
-    return err;
+    return name_err;
   }
   memcpy(&db_obj.DatabaseName[0], database_name, db_name_len);
   db_obj.DatabaseType = DictTabInfo::Database;
@@ -6433,17 +6467,20 @@ void MgmtSrvr::get_quotas(const char *database_name, bool is_user, NdbOut& out) 
   GetDatabaseReq* req =
     CAST_PTR(GetDatabaseReq, ssig.getDataPtrSend());
 
-  req->requestInfo = is_user;
+  /* USER GET leaves out aliases; USER ALIAS GET is its own command. */
+  req->requestInfo = is_user ?
+    (QueryDatabaseFilter::UserKind | QueryDatabaseFilter::ExcludeAlias) : 0;
   req->senderData = 81;
   req->senderRef = ss.getOwnRef();
 
   Uint32 databaseName[MAX_DB_NAME_SIZE/4 + 1];
   char *databaseNamePtr = (char*)&databaseName[0];
   Uint32 db_name_len = strnlen(database_name, MAX_DB_NAME_SIZE + 1);
-  if (db_name_len > MAX_DB_NAME_SIZE) {
+  if (is_user ? check_user_name(database_name) != 0
+              : db_name_len > MAX_DB_NAME_SIZE) {
     if (is_user) {
-      Uint32 err = DropDatabaseRef::DatabaseNameTooLong;
-      out << "result: User name too long" << endl;
+      Uint32 err = check_user_name(database_name);
+      out << "result: Invalid user name" << endl;
       out << "error_code: " << err << endl;
       out << endl;
     } else {
@@ -6592,7 +6629,9 @@ void MgmtSrvr::list_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out) {
   ListDatabaseReq* req =
     CAST_PTR(ListDatabaseReq, ssig.getDataPtrSend());
 
-  req->requestInfo = is_user;
+  /* USER LIST and USER BACKUP leave out aliases. */
+  req->requestInfo = is_user ?
+    (QueryDatabaseFilter::UserKind | QueryDatabaseFilter::ExcludeAlias) : 0;
   req->senderData = 82;
   req->senderRef = ss.getOwnRef();
   req->nextDatabaseId = nextDatabaseId;
@@ -6748,7 +6787,9 @@ void MgmtSrvr::backup_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out) {
   ListDatabaseReq* req =
     CAST_PTR(ListDatabaseReq, ssig.getDataPtrSend());
 
-  req->requestInfo = is_user;
+  /* USER LIST and USER BACKUP leave out aliases. */
+  req->requestInfo = is_user ?
+    (QueryDatabaseFilter::UserKind | QueryDatabaseFilter::ExcludeAlias) : 0;
   req->senderData = 83;
   req->senderRef = ss.getOwnRef();
   req->nextDatabaseId = nextDatabaseId;
@@ -6852,6 +6893,419 @@ void MgmtSrvr::backup_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out) {
           else
             out << "result: List users failed due to node failure";
           out << endl;
+          out << "error_code: 1" << endl;
+          out << endl;
+          return;
+        }
+        break;
+      }
+      case GSN_API_REGCONF:
+      case GSN_TAKE_OVERTCCONF:
+      case GSN_CONNECT_REP:
+        break;
+      default:
+        report_unknown_signal(signal);
+        out << "result: Send or Receive failed" << endl;
+        out << "error_code: " << SEND_OR_RECEIVE_FAILED << endl;
+        out << endl;
+        return;
+    }
+  }
+}
+
+/**
+ * USER ALIAS commands (RONDB-1158). An alias is a user object with no
+ * budget and one target USER, named by alias_name and target_name; the
+ * target name travels without the '$' users are stored under. Each command
+ * is one schema operation in its own schema transaction.
+ */
+int MgmtSrvr::user_alias_schema_op(Uint32 req_gsn,
+                                   const char *alias_name,
+                                   const char *target_name) {
+  int res;
+  SignalSender ss(theFacade);
+  ss.lock();
+
+  Uint32 transId = rand();
+  Uint32 transKey;
+  NodeId nodeId;
+
+  if ((res = startSchemaTrans(ss, nodeId, transId, transKey))) {
+    return res;
+  }
+
+  SimpleSignal ssig;
+  ssig.header.m_noOfSections = 1;
+
+  /* CREATE orders its words differently from ALTER and DROP. */
+  Uint32 conf_gsn, ref_gsn;
+  switch (req_gsn) {
+    case GSN_CREATE_DATABASE_REQ: {
+      CreateDatabaseReq *req =
+        CAST_PTR(CreateDatabaseReq, ssig.getDataPtrSend());
+      req->transId = transId;
+      req->transKey = transKey;
+      req->requestInfo = 1;
+      req->requestType = DictTabInfo::Database;
+      req->databaseId = 0;
+      req->databaseVersion = 0;
+      req->senderData = 84;
+      req->senderRef = ss.getOwnRef();
+      conf_gsn = GSN_CREATE_DATABASE_CONF;
+      ref_gsn = GSN_CREATE_DATABASE_REF;
+      break;
+    }
+    case GSN_ALTER_DATABASE_REQ: {
+      AlterDatabaseReq *req =
+        CAST_PTR(AlterDatabaseReq, ssig.getDataPtrSend());
+      req->transId = transId;
+      req->transKey = transKey;
+      req->requestInfo = 1;
+      req->requestType = DictTabInfo::Database;
+      req->databaseId = 0;
+      req->databaseVersion = 0;
+      req->senderData = 85;
+      req->senderRef = ss.getOwnRef();
+      conf_gsn = GSN_ALTER_DATABASE_CONF;
+      ref_gsn = GSN_ALTER_DATABASE_REF;
+      break;
+    }
+    case GSN_DROP_DATABASE_REQ: {
+      DropDatabaseReq *req =
+        CAST_PTR(DropDatabaseReq, ssig.getDataPtrSend());
+      req->transId = transId;
+      req->transKey = transKey;
+      req->requestInfo = 1;
+      req->requestType = DictTabInfo::Database;
+      req->databaseId = 0;
+      req->databaseVersion = 0;
+      req->senderData = 86;
+      req->senderRef = ss.getOwnRef();
+      conf_gsn = GSN_DROP_DATABASE_CONF;
+      ref_gsn = GSN_DROP_DATABASE_REF;
+      break;
+    }
+    default:
+      require(false);
+      return SEND_OR_RECEIVE_FAILED;
+  }
+
+  DictDatabaseInfo::Database db_obj;
+  db_obj.init();
+  strcpy(db_obj.DatabaseName, alias_name);
+  db_obj.DatabaseType = DictTabInfo::Database;
+  /* The kind travels in the packed properties, see set_quotas. */
+  db_obj.IsUser = true;
+  db_obj.IsAlias = 1;
+  strcpy(db_obj.AliasTarget, target_name);
+  if (req_gsn == GSN_ALTER_DATABASE_REQ) {
+    /* An alias has no budget; RNIL keeps every quota field unchanged. */
+    db_obj.InMemorySize = RNIL;
+    db_obj.DiskSpaceSize = RNIL;
+    db_obj.RatePerSec = RNIL;
+    db_obj.MaxTransactionSize = RNIL;
+    db_obj.MaxParallelTransactions = RNIL;
+    db_obj.MaxParallelComplexQueries = RNIL;
+  }
+
+  UtilBuffer util_buffer;
+  UtilBufferWriter w(util_buffer);
+  SimpleProperties::UnpackStatus s;
+  s = SimpleProperties::pack(w,
+                             &db_obj,
+                             DictDatabaseInfo::Mapping,
+                             DictDatabaseInfo::MappingSize);
+  require(s == SimpleProperties::Eof);
+
+  ssig.ptr[0].p = (const Uint32*)util_buffer.get_data();
+  ssig.ptr[0].sz = util_buffer.length() / 4;
+
+  if (ss.sendFragmentedSignal(nodeId,
+                              ssig,
+                              DBDICT,
+                              req_gsn,
+                              CreateDatabaseReq::SignalLength) != SEND_OK) {
+    return SEND_OR_RECEIVE_FAILED;
+  }
+
+  while (true) {
+    SimpleSignal *signal = ss.waitFor();
+    int gsn = signal->readSignalNumber();
+    if (gsn == (int)conf_gsn) {
+      break;
+    }
+    if (gsn == (int)ref_gsn) {
+      /* The three REFs keep errorCode at the same word. */
+      Uint32 err =
+        CAST_CONSTPTR(CreateDatabaseRef, signal->getDataPtr())->errorCode;
+      endSchemaTrans(ss, nodeId, transId, transKey,
+                     SchemaTransEndReq::SchemaTransAbort);
+      return err;
+    }
+    switch (gsn) {
+      case GSN_NF_COMPLETEREP:
+        break;
+      case GSN_NODE_FAILREP: {
+        if (node_failrep_has_node(signal, nodeId)) {
+          return SchemaTransBeginRef::Nodefailure;
+        }
+        break;
+      }
+      case GSN_API_REGCONF:
+      case GSN_TAKE_OVERTCCONF:
+      case GSN_CONNECT_REP:
+        break;
+      default:
+        report_unknown_signal(signal);
+        return SEND_OR_RECEIVE_FAILED;
+    }
+  }
+  return endSchemaTrans(ss, nodeId, transId, transKey, 0);
+}
+
+int MgmtSrvr::set_user_alias(const char *alias_name,
+                             const char *target_name) {
+  if (check_quota_version(true)) {
+    return QUOTAS_NOT_SUPPORTED;
+  }
+  Uint32 err;
+  if ((err = check_user_name(alias_name)) ||
+      (err = check_user_name(target_name))) {
+    return err;
+  }
+  /**
+   * SET creates the alias, or confirms it when it exists: DBDICT answers a
+   * repeated create with 721, and the ALTER then succeeds for the same
+   * target and refuses another one (1247). A USER with the alias name
+   * fails that ALTER with the kind mismatch, which is the refusal wanted.
+   */
+  int res = user_alias_schema_op(GSN_CREATE_DATABASE_REQ, alias_name,
+                                 target_name);
+  if (res == (int)CreateTableRef::TableAlreadyExist) {
+    res = user_alias_schema_op(GSN_ALTER_DATABASE_REQ, alias_name,
+                               target_name);
+  }
+  return res;
+}
+
+int MgmtSrvr::drop_user_alias(const char *alias_name) {
+  if (check_quota_version(true)) {
+    return QUOTAS_NOT_SUPPORTED;
+  }
+  Uint32 err;
+  if ((err = check_user_name(alias_name))) {
+    return err;
+  }
+  return user_alias_schema_op(GSN_DROP_DATABASE_REQ, alias_name, "");
+}
+
+void MgmtSrvr::get_user_alias(const char *alias_name, NdbOut& out) {
+  SignalSender ss(theFacade);
+  ss.lock();
+
+  if (check_quota_version(true)) {
+    out << "result: Quotas not supported in this cluster, requires 24.10.18"
+        << endl;
+    out << "error_code: " << QUOTAS_NOT_SUPPORTED << endl;
+    out << endl;
+    return;
+  }
+  Uint32 err = check_user_name(alias_name);
+  if (err) {
+    out << "result: Invalid user alias name" << endl;
+    out << "error_code: " << err << endl;
+    out << endl;
+    return;
+  }
+  NodeId nodeId = ss.get_an_alive_node();
+
+  SimpleSignal ssig;
+  ssig.header.m_noOfSections = 1;
+
+  GetDatabaseReq* req =
+    CAST_PTR(GetDatabaseReq, ssig.getDataPtrSend());
+  req->requestInfo =
+    QueryDatabaseFilter::UserKind | QueryDatabaseFilter::AliasOnly;
+  req->senderData = 87;
+  req->senderRef = ss.getOwnRef();
+
+  Uint32 aliasName[MAX_DB_NAME_SIZE/4 + 1];
+  const Uint32 name_len = Uint32(strlen(alias_name));
+  memset(aliasName, 0, sizeof(aliasName));
+  memcpy(aliasName, alias_name, name_len);
+  ssig.ptr[0].p = &aliasName[0];
+  ssig.ptr[0].sz = (name_len + 4) / 4;
+
+  if (ss.sendFragmentedSignal(nodeId,
+                              ssig,
+                              DBDICT,
+                              GSN_GET_DATABASE_REQ,
+                              GetDatabaseReq::SignalLength) != SEND_OK) {
+    out << "result: Send or Receive failed" << endl;
+    out << "error_code: " << SEND_OR_RECEIVE_FAILED << endl;
+    out << endl;
+    return;
+  }
+
+  while (true) {
+    SimpleSignal *signal = ss.waitFor();
+    int gsn = signal->readSignalNumber();
+    switch (gsn) {
+      case GSN_GET_DATABASE_CONF:
+      {
+        const GetDatabaseConf * conf =
+          CAST_CONSTPTR(GetDatabaseConf, signal->getDataPtr());
+        if (signal->header.m_noOfSections != 1) {
+          out << "result: Wrong number of sections returned from data node"
+              << endl;
+          out << "error_code: 1" << endl;
+          out << endl;
+          return;
+        }
+        /* num_rows must match the rows printed, see get_quotas. */
+        out << "result: Ok" << endl;
+        out << "num_rows: 3" << endl;
+        out << endl;
+        out << "User alias " << alias_name << endl;
+        out << "aliasId = " << conf->databaseId << endl;
+        out << "target = " << (const char*)signal->ptr[0].p << endl;
+        return;
+      }
+      case GSN_GET_DATABASE_REF:
+      {
+        const GetDatabaseRef * ref =
+          CAST_CONSTPTR(GetDatabaseRef, signal->getDataPtr());
+        Uint32 err = ref->errorCode;
+        if (err == DropTableRef::NoSuchTable) {
+          out << "result: No such user alias exists" << endl;
+        } else if (err == GetTabInfoRef::TableNotDefined) {
+          /* The name exists, but as a user: the kinds share one namespace. */
+          out << "result: The name belongs to a user, not a user alias"
+              << endl;
+        } else {
+          out << "result: Get user alias failed with error" << endl;
+        }
+        out << "error_code: " << err << endl;
+        out << endl;
+        return;
+      }
+      case GSN_NF_COMPLETEREP:
+        break;
+      case GSN_NODE_FAILREP:
+      {
+        if (node_failrep_has_node(signal, nodeId)) {
+          out << "result: Get user alias failed due to node failure" << endl;
+          out << "error_code: 1" << endl;
+          out << endl;
+          return;
+        }
+        break;
+      }
+      case GSN_API_REGCONF:
+      case GSN_TAKE_OVERTCCONF:
+      case GSN_CONNECT_REP:
+        break;
+      default:
+        report_unknown_signal(signal);
+        out << "result: Send or Receive failed" << endl;
+        out << "error_code: " << SEND_OR_RECEIVE_FAILED << endl;
+        out << endl;
+        return;
+    }
+  }
+}
+
+void MgmtSrvr::list_user_aliases(Uint32 nextAliasId, NdbOut& out) {
+  SignalSender ss(theFacade);
+  ss.lock();
+
+  if (check_quota_version(true)) {
+    out << "result: Quotas not supported in this cluster, requires 24.10.18"
+        << endl;
+    out << "error_code: " << QUOTAS_NOT_SUPPORTED << endl;
+    out << endl;
+    return;
+  }
+  NodeId nodeId = ss.get_an_alive_node();
+
+  SimpleSignal ssig;
+  ssig.header.m_noOfSections = 0;
+
+  ListDatabaseReq* req =
+    CAST_PTR(ListDatabaseReq, ssig.getDataPtrSend());
+  req->requestInfo =
+    QueryDatabaseFilter::UserKind | QueryDatabaseFilter::AliasOnly;
+  req->senderData = 88;
+  req->senderRef = ss.getOwnRef();
+  req->nextDatabaseId = nextAliasId;
+
+  if (ss.sendSignal(nodeId,
+                    ssig,
+                    DBDICT,
+                    GSN_LIST_DATABASE_REQ,
+                    ListDatabaseReq::SignalLength) != SEND_OK) {
+    out << "result: Send or Receive failed" << endl;
+    out << "error_code: " << SEND_OR_RECEIVE_FAILED << endl;
+    out << endl;
+    return;
+  }
+
+  while (true) {
+    SimpleSignal *signal = ss.waitFor();
+    int gsn = signal->readSignalNumber();
+    switch (gsn) {
+      case GSN_LIST_DATABASE_CONF:
+      {
+        const ListDatabaseConf * conf =
+          CAST_CONSTPTR(ListDatabaseConf, signal->getDataPtr());
+        if (conf->databaseId == RNIL) {
+          if (signal->header.m_noOfSections != 0) {
+            out << "result: Not expecting sections in final signal in"
+                << " list user aliases" << endl;
+            out << "error_code: 1" << endl;
+            out << endl;
+            return;
+          }
+          out << "result: Ok" << endl;
+          out << "num_rows: 0" << endl;
+          out << endl;
+          return;
+        }
+        if (signal->header.m_noOfSections != 2) {
+          out << "result: Wrong number of sections returned from data node"
+              << endl;
+          out << "error_code: 1" << endl;
+          out << endl;
+          return;
+        }
+        /* num_rows must match the rows printed, see list_quotas. */
+        nextAliasId = conf->databaseId + 1;
+        out << "result: Ok" << endl;
+        out << "num_rows: 4" << endl;
+        out << "nextAliasId: " << nextAliasId << endl;
+        out << endl;
+        out << "User alias " << (const char*)signal->ptr[0].p << endl;
+        out << "  aliasId = " << conf->databaseId << endl;
+        out << "  target = " << (const char*)signal->ptr[1].p << endl;
+        out << endl;
+        return;
+      }
+      case GSN_LIST_DATABASE_REF:
+      {
+        const ListDatabaseRef * ref =
+          CAST_CONSTPTR(ListDatabaseRef, signal->getDataPtr());
+        out << "result: List user aliases failed with error" << endl;
+        out << "error_code: " << ref->errorCode << endl;
+        out << endl;
+        return;
+      }
+      case GSN_NF_COMPLETEREP:
+        break;
+      case GSN_NODE_FAILREP:
+      {
+        if (node_failrep_has_node(signal, nodeId)) {
+          out << "result: List user aliases failed due to node failure"
+              << endl;
           out << "error_code: 1" << endl;
           out << endl;
           return;

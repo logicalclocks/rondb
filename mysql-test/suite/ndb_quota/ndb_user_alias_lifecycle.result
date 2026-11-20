@@ -1,0 +1,126 @@
+USER SET successfully executed
+USER SET successfully executed
+USER ALIAS SET successfully executed
+# A repeated SET with the same target succeeds, another target fails.
+USER ALIAS SET successfully executed
+USER ALIAS SET command failed: Error:
+*  1247: Error
+*        User Alias failed, the alias exists with another target: Permanent error: Application error
+User alias rl_mary
+aliasId = <id>
+target = rl_group
+# The target USER cannot be dropped while the alias points at it.
+USER DROP command failed: Error:
+*  1248: Error
+*        Drop User failed, user aliases point at the user, drop them first
+# An alias may be set before its target; GET shows the stored name.
+USER ALIAS SET successfully executed
+User alias rl_bob
+aliasId = <id>
+target = rl_late
+# Creating the target binds the alias: now the target cannot be dropped.
+USER SET successfully executed
+USER DROP command failed: Error:
+*  1248: Error
+*        Drop User failed, user aliases point at the user, drop them first
+# LIST shows every alias in id order; USER LIST leaves aliases out.
+User alias rl_mary
+  aliasId = <id>
+  target = rl_group
+
+User alias rl_bob
+  aliasId = <id>
+  target = rl_late
+
+User Alias List command completed
+User rate limits for rl_group
+  userId = <id>
+  userVersion = <id>
+  RatePerSec = 1000
+  MaxTransactionSize = 0
+  MaxParallelTransactions = 0
+  MaxParallelComplexQueries = 0
+
+User rate limits for rl_other
+  userId = <id>
+  userVersion = <id>
+  RatePerSec = 1000
+  MaxTransactionSize = 0
+  MaxParallelTransactions = 0
+  MaxParallelComplexQueries = 0
+
+User rate limits for rl_late
+  userId = <id>
+  userVersion = <id>
+  RatePerSec = 1000
+  MaxTransactionSize = 0
+  MaxParallelTransactions = 0
+  MaxParallelComplexQueries = 0
+
+User List command completed
+# USER commands do not act on aliases, alias commands not on users.
+USER GET command failed: Error:
+*   723: Error
+*        Get user failed with error
+USER ALTER command failed: Error:
+*   723: Error
+*        Alter User failed
+USER DROP command failed: Error:
+*   723: Error
+*        Drop User failed
+USER SET command failed: Error:
+*   721: Error
+*        Create User failed
+USER ALIAS GET command failed: Error:
+*   723: Error
+*        The name belongs to a user, not a user alias
+USER ALIAS DROP command failed: Error:
+*   723: Error
+*        The name belongs to a user, not a user alias
+USER ALIAS SET command failed: Error:
+*   723: Error
+*        The name belongs to a user, not a user alias
+# The target must be a user, not an alias.
+USER ALIAS SET command failed: Error:
+*  1246: Error
+*        User Alias failed, the target is not a user: Permanent error: Application error
+# User and alias names, and targets, hold at most 126 bytes.
+USER SET successfully executed
+USER ALIAS SET successfully executed
+USER ALIAS DROP successfully executed
+# The 126-byte user name is taken: no alias may have it.
+USER ALIAS SET command failed: Error:
+*   723: Error
+*        The name belongs to a user, not a user alias
+USER ALIAS SET successfully executed
+USER ALIAS SET command failed: Error:
+*   942: Error
+*        Database name too long: Permanent error: Application error
+USER ALIAS SET command failed: Error:
+*   942: Error
+*        Database name too long: Permanent error: Application error
+USER SET command failed: Error:
+*   942: Error
+*        Create User failed
+USER GET command failed: Error:
+*   942: Error
+*        Invalid user name
+USER ALIAS DROP successfully executed
+USER DROP successfully executed
+# Client argument checks.
+Expected USER ALIAS SET <alias> --target=<user>
+Expected USER ALIAS SET <alias> --target=<user>
+USER ALIAS DROP takes only an alias name
+USER ALIAS GET expects an alias name
+USER ALIAS LIST takes no parameters
+Expected USER ALIAS SET, DROP, GET or LIST
+# Dropping the aliases releases the users.
+USER ALIAS DROP successfully executed
+USER ALIAS DROP successfully executed
+USER DROP successfully executed
+USER DROP successfully executed
+USER DROP successfully executed
+User Alias List command completed
+USER ALIAS GET command failed: Error:
+*   709: Error
+*        No such user alias exists

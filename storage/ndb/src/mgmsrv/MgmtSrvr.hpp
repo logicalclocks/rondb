@@ -618,6 +618,16 @@ private:
   void list_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out);
   void backup_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out);
 
+  /* The error a quota or user command returns on a too old cluster. */
+  static constexpr int QUOTAS_NOT_SUPPORTED = 4572;
+  int set_user_alias(const char *alias_name, const char *target_name);
+  int drop_user_alias(const char *alias_name);
+  void get_user_alias(const char *alias_name, NdbOut& out);
+  void list_user_aliases(Uint32 nextAliasId, NdbOut& out);
+  int user_alias_schema_op(Uint32 req_gsn,
+                           const char *alias_name,
+                           const char *target_name);
+
   void release_local_nodeid_reservation(NodeId nodeid);
   void release_failed_nodeid_reservation(NodeId nodeid);
   struct PossibleNode {

@@ -1,0 +1,89 @@
+--source include/have_ndb.inc
+
+# RONDB-1158: the management-protocol text of the USER and USER ALIAS
+# commands, as the Hopsworks installer reads it over the mgmd socket. A
+# raw client sends each command and prints the request (">>> ") and the
+# complete reply (`<<< `, the blank line that ends the header included)
+# exactly as mgmd wrote them, so the result file doubles as the reference
+# fixture for client-side parsers. Ids depend on what earlier tests left
+# in the dictionary and are masked as <id>.
+
+--perl
+use strict;
+use IO::Socket::INET;
+
+my $cs = $ENV{'NDB_CONNECTSTRING'} or die "NDB_CONNECTSTRING not set";
+my ($host, $port) = split(/:/, (split(/[;,]/, $cs))[0]);
+my $sock = IO::Socket::INET->new(PeerAddr => $host, PeerPort => $port,
+                                 Proto => 'tcp')
+  or die "Cannot connect to $host:$port: $!";
+
+sub show {
+  my ($dir, $line) = @_;
+  $line =~ s/((?:alias|user)Id|userVersion|nextAliasId|nextUserId)( = |: )\d+/$1$2<id>/g;
+  print "$dir $line\n";
+}
+
+# Sends one command and prints the reply: the header up to its blank
+# line, then the num_rows rows that follow it. Returns the header fields.
+sub mgm {
+  my ($cmd, @args) = @_;
+  show('>>>', $cmd);
+  print $sock "$cmd\n";
+  while (@args) {
+    my ($k, $v) = splice(@args, 0, 2);
+    show('>>>', "$k: $v");
+    print $sock "$k: $v\n";
+  }
+  print $sock "\n";
+  my %header;
+  while (defined(my $line = <$sock>)) {
+    chomp $line;
+    show('<<<', $line);
+    last if $line eq '';
+    $header{$1} = $2 if $line =~ /^(\w+): (.*)$/;
+  }
+  my $rows = $header{'num_rows'} || 0;
+  for (my $i = 0; $i < $rows; $i++) {
+    my $line = <$sock>;
+    die "Reply ended after $i of $rows rows" unless defined($line);
+    chomp $line;
+    show('<<<', $line);
+  }
+  return %header;
+}
+
+# Pages through a LIST command until the terminal page (num_rows: 0).
+sub list_all {
+  my ($cmd, $key) = @_;
+  my $next = 0;
+  while (1) {
+    my %header = mgm($cmd, $key, $next);
+    last if !$header{'num_rows'};
+    $next = $header{$key};
+  }
+}
+
+mgm('set user', 'username', 'rl_group', 'rate_per_sec', 1000,
+    'max_transaction_size', 0, 'max_parallel_transactions', 0,
+    'max_parallel_complex_queries', 0);
+mgm('set user alias', 'aliasname', 'rl_mary', 'target', 'rl_group');
+mgm('set user alias', 'aliasname', 'rl_mary', 'target', 'rl_group');
+mgm('set user alias', 'aliasname', 'rl_mary', 'target', 'rl_other');
+mgm('set user alias', 'aliasname', 'rl_group', 'target', 'rl_late');
+mgm('set user alias', 'aliasname', 'rl_bob', 'target', 'rl_late');
+mgm('get user alias', 'aliasname', 'rl_mary');
+mgm('get user alias', 'aliasname', 'rl_bob');
+mgm('get user alias', 'aliasname', 'rl_nobody');
+mgm('get user alias', 'aliasname', 'rl_group');
+list_all('list user alias', 'nextAliasId');
+mgm('drop user', 'username', 'rl_group');
+list_all('list user', 'nextUserId');
+mgm('drop user alias', 'aliasname', 'rl_mary');
+mgm('drop user alias', 'aliasname', 'rl_bob');
+mgm('drop user alias', 'aliasname', 'rl_nobody');
+list_all('list user alias', 'nextAliasId');
+mgm('drop user', 'username', 'rl_group');
+close($sock);
+EOF
+--echo # end of the protocol transcript

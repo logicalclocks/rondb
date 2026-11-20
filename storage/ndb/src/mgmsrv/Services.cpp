@@ -47,6 +47,9 @@
 
 #include <ndb_base64.h>
 #include <ndberror.h>
+#include <signaldata/CreateTable.hpp>
+#include <signaldata/DropTable.hpp>
+#include <signaldata/GetTabInfo.hpp>
 #include "portlib/NdbTCP.h"
 #include "portlib/ndb_sockaddr.h"
 #include "util/ndb_openssl3_compat.h"
@@ -153,6 +156,19 @@ const ParserRow<MgmApiSession> commands[] = {
 
     MGM_CMD("backup user", &MgmApiSession::backupUsers, "", &Basic),
     MGM_ARG("nextUserId", Int, Mandatory, "next User Id"),
+
+    MGM_CMD("set user alias", &MgmApiSession::setUserAlias, "", &Basic),
+    MGM_ARG("aliasname", String, Mandatory, "User alias name"),
+    MGM_ARG("target", String, Mandatory, "Name of the target user"),
+
+    MGM_CMD("drop user alias", &MgmApiSession::dropUserAlias, "", &Basic),
+    MGM_ARG("aliasname", String, Mandatory, "User alias name"),
+
+    MGM_CMD("get user alias", &MgmApiSession::getUserAlias, "", &Basic),
+    MGM_ARG("aliasname", String, Mandatory, "User alias name"),
+
+    MGM_CMD("list user alias", &MgmApiSession::listUserAliases, "", &Basic),
+    MGM_ARG("nextAliasId", Int, Mandatory, "next User Alias Id"),
 
     MGM_CMD("set quotas", &MgmApiSession::setQuotas, "", &Basic),
     MGM_ARG("database", String, Mandatory, "Database name"),
@@ -1113,7 +1129,12 @@ MgmApiSession::dropUser(Parser_t::Context &,
   if ((error_code = m_mgmsrv.drop_quotas(user_name, true, socket_out))) {
     if (error_code == -1) return;
     m_output->println("drop user reply");
-    m_output->println("result: %s", "Drop User failed");
+    if (error_code == CreateTableRef::UserHasAliases) {
+      m_output->println("result: %s", "Drop User failed, user aliases point"
+                        " at the user, drop them first");
+    } else {
+      m_output->println("result: %s", "Drop User failed");
+    }
     m_output->println("error_code: %d", error_code);
     m_output->println("%s", "");
     return;
@@ -1153,6 +1174,73 @@ MgmApiSession::backupUsers(Parser_t::Context &,
   m_output->println("backup user reply");
   NdbOut socket_out(*m_output);
   m_mgmsrv.backup_quotas(nextUserId, true, socket_out);
+}
+
+/**
+ * Prints the reply of a USER ALIAS write command. A failure carries the
+ * NDB error text as its result, so the operator learns, for instance,
+ * that an alias exists with another target.
+ */
+void
+MgmApiSession::userAliasReply(const char *reply, int error_code) {
+  m_output->println("%s", reply);
+  if (error_code) {
+    char text[256];
+    const char *result;
+    if (error_code == DropTableRef::NoSuchTable) {
+      result = "No such user alias exists";
+    } else if (error_code == GetTabInfoRef::TableNotDefined) {
+      /* The name exists, but as a user: the kinds share one namespace. */
+      result = "The name belongs to a user, not a user alias";
+    } else {
+      result = m_mgmsrv.getErrorText(error_code, text, sizeof(text));
+    }
+    m_output->println("result: %s", result);
+    m_output->println("error_code: %d", error_code);
+  } else {
+    m_output->println("result: Ok");
+  }
+  m_output->println("%s", "");
+}
+
+void
+MgmApiSession::setUserAlias(Parser_t::Context &,
+                            const class Properties &args) {
+  const char *alias_name = nullptr;
+  const char *target_name = nullptr;
+  args.get("aliasname", &alias_name);
+  args.get("target", &target_name);
+  userAliasReply("set user alias reply",
+                 m_mgmsrv.set_user_alias(alias_name, target_name));
+}
+
+void
+MgmApiSession::dropUserAlias(Parser_t::Context &,
+                             const class Properties &args) {
+  const char *alias_name = nullptr;
+  args.get("aliasname", &alias_name);
+  userAliasReply("drop user alias reply",
+                 m_mgmsrv.drop_user_alias(alias_name));
+}
+
+void
+MgmApiSession::getUserAlias(Parser_t::Context &,
+                            const class Properties &args) {
+  const char *alias_name = nullptr;
+  args.get("aliasname", &alias_name);
+  m_output->println("get user alias reply");
+  NdbOut socket_out(*m_output);
+  m_mgmsrv.get_user_alias(alias_name, socket_out);
+}
+
+void
+MgmApiSession::listUserAliases(Parser_t::Context &,
+                               const class Properties &args) {
+  Uint32 nextAliasId = 0;
+  args.get("nextAliasId", &nextAliasId);
+  m_output->println("list user alias reply");
+  NdbOut socket_out(*m_output);
+  m_mgmsrv.list_user_aliases(nextAliasId, socket_out);
 }
 
 void MgmApiSession::getConfig_v1(Parser_t::Context &ctx,

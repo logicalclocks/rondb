@@ -1,0 +1,154 @@
+>>> set user
+>>> username: rl_group
+>>> rate_per_sec: 1000
+>>> max_transaction_size: 0
+>>> max_parallel_transactions: 0
+>>> max_parallel_complex_queries: 0
+<<< set user reply
+<<< result: Ok
+<<< 
+>>> set user alias
+>>> aliasname: rl_mary
+>>> target: rl_group
+<<< set user alias reply
+<<< result: Ok
+<<< 
+>>> set user alias
+>>> aliasname: rl_mary
+>>> target: rl_group
+<<< set user alias reply
+<<< result: Ok
+<<< 
+>>> set user alias
+>>> aliasname: rl_mary
+>>> target: rl_other
+<<< set user alias reply
+<<< result: User Alias failed, the alias exists with another target: Permanent error: Application error
+<<< error_code: 1247
+<<< 
+>>> set user alias
+>>> aliasname: rl_group
+>>> target: rl_late
+<<< set user alias reply
+<<< result: The name belongs to a user, not a user alias
+<<< error_code: 723
+<<< 
+>>> set user alias
+>>> aliasname: rl_bob
+>>> target: rl_late
+<<< set user alias reply
+<<< result: Ok
+<<< 
+>>> get user alias
+>>> aliasname: rl_mary
+<<< get user alias reply
+<<< result: Ok
+<<< num_rows: 3
+<<< 
+<<< User alias rl_mary
+<<< aliasId = <id>
+<<< target = rl_group
+>>> get user alias
+>>> aliasname: rl_bob
+<<< get user alias reply
+<<< result: Ok
+<<< num_rows: 3
+<<< 
+<<< User alias rl_bob
+<<< aliasId = <id>
+<<< target = rl_late
+>>> get user alias
+>>> aliasname: rl_nobody
+<<< get user alias reply
+<<< result: No such user alias exists
+<<< error_code: 709
+<<< 
+>>> get user alias
+>>> aliasname: rl_group
+<<< get user alias reply
+<<< result: The name belongs to a user, not a user alias
+<<< error_code: 723
+<<< 
+>>> list user alias
+>>> nextAliasId: <id>
+<<< list user alias reply
+<<< result: Ok
+<<< num_rows: 4
+<<< nextAliasId: <id>
+<<< 
+<<< User alias rl_mary
+<<<   aliasId = <id>
+<<<   target = rl_group
+<<< 
+>>> list user alias
+>>> nextAliasId: <id>
+<<< list user alias reply
+<<< result: Ok
+<<< num_rows: 4
+<<< nextAliasId: <id>
+<<< 
+<<< User alias rl_bob
+<<<   aliasId = <id>
+<<<   target = rl_late
+<<< 
+>>> list user alias
+>>> nextAliasId: <id>
+<<< list user alias reply
+<<< result: Ok
+<<< num_rows: 0
+<<< 
+>>> drop user
+>>> username: rl_group
+<<< drop user reply
+<<< result: Drop User failed, user aliases point at the user, drop them first
+<<< error_code: 1248
+<<< 
+>>> list user
+>>> nextUserId: <id>
+<<< list user reply
+<<< result: Ok
+<<< num_rows: 8
+<<< nextUserId: <id>
+<<< 
+<<< User rate limits for rl_group
+<<<   userId = <id>
+<<<   userVersion = <id>
+<<<   RatePerSec = 1000
+<<<   MaxTransactionSize = 0
+<<<   MaxParallelTransactions = 0
+<<<   MaxParallelComplexQueries = 0
+<<< 
+>>> list user
+>>> nextUserId: <id>
+<<< list user reply
+<<< result: Ok
+<<< num_rows: 0
+<<< 
+>>> drop user alias
+>>> aliasname: rl_mary
+<<< drop user alias reply
+<<< result: Ok
+<<< 
+>>> drop user alias
+>>> aliasname: rl_bob
+<<< drop user alias reply
+<<< result: Ok
+<<< 
+>>> drop user alias
+>>> aliasname: rl_nobody
+<<< drop user alias reply
+<<< result: No such user alias exists
+<<< error_code: 709
+<<< 
+>>> list user alias
+>>> nextAliasId: <id>
+<<< list user alias reply
+<<< result: Ok
+<<< num_rows: 0
+<<< 
+>>> drop user
+>>> username: rl_group
+<<< drop user reply
+<<< result: Ok
+<<< 
+# end of the protocol transcript

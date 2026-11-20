@@ -2037,6 +2037,52 @@ int ndb_mgm_get_tls_stats(NdbMgmHandle handle,
                         const char *user_name);
 
   /**
+   * Set a user alias: traffic tagged with alias_name is charged to the
+   * user target_name. Setting an existing alias to the same target
+   * succeeds, setting it to another target fails.
+   *
+   * @param   handle        Management handle.
+   * @param   alias_name    User alias name
+   * @param   target_name   Name of the user the alias charges
+   */
+  int ndb_mgm_set_user_alias(NdbMgmHandle handle,
+                             const char *alias_name,
+                             const char *target_name);
+
+  /**
+   * Drop a user alias.
+   *
+   * @param   handle        Management handle.
+   * @param   alias_name    User alias name
+   */
+  int ndb_mgm_drop_user_alias(NdbMgmHandle handle,
+                              const char *alias_name);
+
+  /**
+   * Get a user alias and the name of its target.
+   *
+   * @param   handle        Management handle.
+   * @param   alias_name    User alias name
+   * @param   result_buf    The result rows, free with delete[]
+   */
+  int ndb_mgm_get_user_alias(NdbMgmHandle handle,
+                             const char *alias_name,
+                             char **result_buf);
+
+  /**
+   * List user aliases, one per call.
+   *
+   * @param   handle        Management handle.
+   * @param   nextAliasId   Next alias id to start searching from
+   *                         Both input parameter and output, RNIL when
+   *                         the list is complete
+   * @param   result_buf    The result rows, free with delete[]
+   */
+  int ndb_mgm_list_user_aliases(NdbMgmHandle handle,
+                                Uint32 *nextAliasId,
+                                char **result_buf);
+
+  /**
    * Error printer
    */
   void ndb_mgm_print_error(NdbMgmHandle handle);
