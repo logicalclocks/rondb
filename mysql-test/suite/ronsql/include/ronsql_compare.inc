@@ -38,6 +38,13 @@
 # with a top-level ORDER BY, for an ORDER BY whose keys leave ties (rows
 # that mysqld and RonSQL may give in either order).  Both reset at the end
 # like $QUERY.
+#
+# Optional (T-23, used by ronsql_check.inc), each reset at the end like
+# $QUERY: $expect_rows — RDRS's x-ronsql-phases must say rows=<this>;
+# $expect_fetched_max — its fetched= must be at most this;
+# $_ronsql_keep_mysql_out — keep mysqld's output, as compared (sorted
+# unless the query has a top-level ORDER BY), in
+# $MYSQL_TMP_DIR/ronsql-check-mysql.out for the caller.
 --source include/have_util_sed.inc
 --source include/have_util_curl.inc
 if ($RONSQL_PREFIX!='')
@@ -237,6 +244,32 @@ if ($allow_retry=='')
 {
 --exec grep -qiE '^x-ronsql-phases:.*,attempts=1,' $MYSQL_TMP_DIR/ronsql-rdrs.hdr || (echo "RDRS did not run the statement exactly once (attempts=1); set allow_retry for a comparison that may be retried. Response status and RonSQL headers:"; grep -iE '^(HTTP/|x-ronsql-)' $MYSQL_TMP_DIR/ronsql-rdrs.hdr | tr -d '\r'; exit 1)
 }
+if ($expect_rows!='')
+{
+--exec grep -qiE '^x-ronsql-phases:.*,rows=$expect_rows,' $MYSQL_TMP_DIR/ronsql-rdrs.hdr || (echo "RDRS did not return rows=$expect_rows. RonSQL headers:"; grep -iE '^x-ronsql-' $MYSQL_TMP_DIR/ronsql-rdrs.hdr | tr -d '\r'; exit 1)
+}
+if ($expect_fetched_max!='')
+{
+--let RONSQL_COMPARE_FETCHED_MAX = $expect_fetched_max
+--perl
+use strict;
+use warnings;
+my $dir = $ENV{MYSQL_TMP_DIR};
+my $max = $ENV{RONSQL_COMPARE_FETCHED_MAX};
+open(my $in, '<', "$dir/ronsql-rdrs.hdr") or die "ronsql_compare.inc: ronsql-rdrs.hdr: $!\n";
+my $fetched;
+while (my $line = <$in>) {
+  $fetched = $1 if $line =~ /^x-ronsql-phases:.*,fetched=(\d+),/i;
+}
+close($in);
+die "ronsql_compare.inc: no fetched= in x-ronsql-phases\n" unless defined $fetched;
+die "ronsql_compare.inc: RDRS fetched $fetched rows, more than $max\n" if $fetched > $max;
+EOF
+}
+if ($_ronsql_keep_mysql_out!='')
+{
+--copy_file $MYSQL_TMP_DIR/mysql.out.sorted $MYSQL_TMP_DIR/ronsql-check-mysql.out
+}
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs.hdr
 --remove_file $MYSQL_TMP_DIR/ronsql-query.sql
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
@@ -268,3 +301,6 @@ if ($QUERY=='')
 --let $force_sort=
 --let $known_diff=
 --let $allow_retry=
+--let $expect_rows=
+--let $expect_fetched_max=
+--let $_ronsql_keep_mysql_out=

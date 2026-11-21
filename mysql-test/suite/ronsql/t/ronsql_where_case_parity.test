@@ -33,6 +33,7 @@
 #   wc-r2  VARCHAR against INT through ronsql_cli
 # No JIT mirror (ronsql_mirrors.cfg): the scan-filter JIT does not compile
 # register instructions, and each compile attempt counts as a fallback.
+# Each case gives its query once, to ronsql_check.inc (T-23).
 
 --source include/have_ndb.inc
 --source include/have_util_curl.inc
@@ -77,170 +78,107 @@ INSERT INTO wk VALUES (1, 1), (2, 0), (3, 1), (4, 0), (5, 1), (6, 0), (7, 1), (8
 --echo
 --echo === wc-1: WHERE i < bi ===
 --let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE i < bi;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT COUNT(*) AS n FROM wc WHERE i < bi;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-1: CASE WHEN i < bi ===
 --let $QUERY=SELECT SUM(CASE WHEN i < bi THEN 1 ELSE 0 END) AS n FROM wc;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT SUM(CASE WHEN i < bi THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-2: WHERE i = si ===
 --let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE i = si;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT COUNT(*) AS n FROM wc WHERE i = si;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-2: CASE WHEN i = si ===
 --let $QUERY=SELECT SUM(CASE WHEN i = si THEN 1 ELSE 0 END) AS n FROM wc;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT SUM(CASE WHEN i = si THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-3: WHERE bi >= bu ===
 --let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE bi >= bu;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT COUNT(*) AS n FROM wc WHERE bi >= bu;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-3: CASE WHEN bi >= bu ===
 --let $QUERY=SELECT SUM(CASE WHEN bi >= bu THEN 1 ELSE 0 END) AS n FROM wc;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT SUM(CASE WHEN bi >= bu THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-4: WHERE ti <> i ===
 --let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE ti <> i;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT COUNT(*) AS n FROM wc WHERE ti <> i;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-4: CASE WHEN ti <> i ===
 --let $QUERY=SELECT SUM(CASE WHEN ti <> i THEN 1 ELSE 0 END) AS n FROM wc;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT SUM(CASE WHEN ti <> i THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-5: WHERE f < d ===
 --let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE f < d;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT COUNT(*) AS n FROM wc WHERE f < d;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-5: CASE WHEN f < d ===
 --let $QUERY=SELECT SUM(CASE WHEN f < d THEN 1 ELSE 0 END) AS n FROM wc;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT SUM(CASE WHEN f < d THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-6: WHERE f = d ===
 --let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE f = d;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT COUNT(*) AS n FROM wc WHERE f = d;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-6: CASE WHEN f = d ===
 --let $QUERY=SELECT SUM(CASE WHEN f = d THEN 1 ELSE 0 END) AS n FROM wc;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT SUM(CASE WHEN f = d THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-7: WHERE i <= d ===
 --let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE i <= d;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT COUNT(*) AS n FROM wc WHERE i <= d;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-7: CASE WHEN i <= d ===
 --let $QUERY=SELECT SUM(CASE WHEN i <= d THEN 1 ELSE 0 END) AS n FROM wc;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT SUM(CASE WHEN i <= d THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-8: WHERE bu > d ===
 --let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE bu > d;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT COUNT(*) AS n FROM wc WHERE bu > d;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-8: CASE WHEN bu > d ===
 --let $QUERY=SELECT SUM(CASE WHEN bu > d THEN 1 ELSE 0 END) AS n FROM wc;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT SUM(CASE WHEN bu > d THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-9: WHERE si > ti ===
 --let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE si > ti;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT COUNT(*) AS n FROM wc WHERE si > ti;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-9: CASE WHEN si > ti ===
 --let $QUERY=SELECT SUM(CASE WHEN si > ti THEN 1 ELSE 0 END) AS n FROM wc;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT SUM(CASE WHEN si > ti THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-10: WHERE i < bi OR f = d ===
 --let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE i < bi OR f = d;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT COUNT(*) AS n FROM wc WHERE i < bi OR f = d;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-10: CASE WHEN i < bi OR f = d ===
 --let $QUERY=SELECT SUM(CASE WHEN i < bi OR f = d THEN 1 ELSE 0 END) AS n FROM wc;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT SUM(CASE WHEN i < bi OR f = d THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-11: WHERE NOT (i < bi) ===
 --let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE NOT (i < bi);
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT COUNT(*) AS n FROM wc WHERE NOT (i < bi);
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-11: CASE WHEN NOT (i < bi), refused ===
@@ -250,10 +188,7 @@ SELECT COUNT(*) AS n FROM wc WHERE NOT (i < bi);
 --echo
 --echo === wc-12: WHERE NOT (i < bi OR ti <> i) ===
 --let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE NOT (i < bi OR ti <> i);
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT COUNT(*) AS n FROM wc WHERE NOT (i < bi OR ti <> i);
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-12: CASE WHEN NOT (i < bi OR ti <> i), refused ===
@@ -263,26 +198,22 @@ SELECT COUNT(*) AS n FROM wc WHERE NOT (i < bi OR ti <> i);
 --echo
 --echo === wc-13: a CTE body WHERE f < d OR bi >= bu ===
 --let $QUERY=WITH c AS (SELECT id AS k, COUNT(*) AS n FROM wc WHERE f < d OR bi >= bu GROUP BY id) SELECT COUNT(*) AS g, SUM(c.n) AS n FROM c;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-WITH c AS (SELECT id AS k, COUNT(*) AS n FROM wc WHERE f < d OR bi >= bu GROUP BY id) SELECT COUNT(*) AS g, SUM(c.n) AS n FROM c;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-14: the filter of a joined table read by its key ===
+# The plan, checked by ronsql_check.inc: wc is read by its key below a
+# scan of wk.
+let $explain_greps=
+Root access: scanTable
+[INNER] PK_LOOKUP wc AS w;
 --let $QUERY=SELECT k.g, COUNT(*) AS n FROM wk AS k JOIN wc AS w ON w.id = k.id WHERE w.i <= w.d GROUP BY k.g;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT k.g, COUNT(*) AS n FROM wk AS k JOIN wc AS w ON w.id = k.id WHERE w.i <= w.d GROUP BY k.g;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-15: the residual filter of key reads ===
 --let $QUERY=SELECT id, i, bi FROM wc WHERE id IN (3, 4, 9) AND i < bi;
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT id, i, bi FROM wc WHERE id IN (3, 4, 9) AND i < bi;
+--source suite/ronsql/include/ronsql_check.inc
 
 --echo
 --echo === wc-r1: INT against DECIMAL through RDRS, refused as unsupported ===
