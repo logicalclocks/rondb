@@ -1,0 +1,191 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== j8-1: a range on d; the body root scans j8_o_d ===
+== Explain Query ==
+body root: scanIndex on j8_o_d, 1 bound
+== Query ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.d >= 60
+GROUP BY o.k)
+SELECT COUNT(*) AS g, SUM(c.n) AS sn, SUM(c.s) AS ss FROM c;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.d >= 60
+GROUP BY o.k)
+SELECT COUNT(*) AS g, SUM(c.n) AS sn, SUM(c.s) AS ss FROM c|
+g	sn	ss
+4	63	4410
+
+=== j8-2: bounds, a residual conjunct on the root and one on the child ===
+== Explain Query ==
+body root: scanIndex on j8_o_d, 2 bounds and 1 filter
+== Query ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.d >= 30 AND o.d <= 90 AND o.id <> 20 AND l.x > 50
+GROUP BY o.k)
+SELECT c.k, c.n, c.s FROM c;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.d >= 30 AND o.d <= 90 AND o.id <> 20 AND l.x > 50
+GROUP BY o.k)
+SELECT c.k, c.n, c.s FROM c|
+k	n	s
+0	8	640
+1	10	810
+2	11	910
+3	10	790
+
+=== j8-3: k = 2 AND d >= 30; j8_o_kd takes both ===
+== Explain Query ==
+body root: scanIndex on j8_o_kd, 2 bounds
+== Query ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.k = 2 AND o.d >= 30
+GROUP BY o.k)
+SELECT c.k, c.n, c.s FROM c;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.k = 2 AND o.d >= 30
+GROUP BY o.k)
+SELECT c.k, c.n, c.s FROM c|
+k	n	s
+2	24	1536
+
+=== j8-4: the same with FORCE INDEX (j8_o_d) ===
+== Explain Query ==
+body root: scanIndex on j8_o_d, 1 bound and 1 filter
+== Query ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o FORCE INDEX (j8_o_d) JOIN j8_l AS l ON l.ok = o.id
+WHERE o.k = 2 AND o.d >= 30
+GROUP BY o.k)
+SELECT c.k, c.n, c.s FROM c;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o FORCE INDEX (j8_o_d) JOIN j8_l AS l ON l.ok = o.id
+WHERE o.k = 2 AND o.d >= 30
+GROUP BY o.k)
+SELECT c.k, c.n, c.s FROM c|
+k	n	s
+2	24	1536
+
+=== j8-5: IGNORE INDEX (j8_o_d) and a range on d; a table scan ===
+== Explain Query ==
+body root: scanTable
+== Query ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o IGNORE INDEX (j8_o_d) JOIN j8_l AS l ON l.ok = o.id
+WHERE o.d >= 60
+GROUP BY o.k)
+SELECT COUNT(*) AS g, SUM(c.n) AS sn, SUM(c.s) AS ss FROM c;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o IGNORE INDEX (j8_o_d) JOIN j8_l AS l ON l.ok = o.id
+WHERE o.d >= 60
+GROUP BY o.k)
+SELECT COUNT(*) AS g, SUM(c.n) AS sn, SUM(c.s) AS ss FROM c|
+g	sn	ss
+4	63	4410
+
+=== j8-6: the whole primary key bound; a table scan, as before ===
+== Explain Query ==
+body root: scanTable
+== Query ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.id = 7
+GROUP BY o.k)
+SELECT c.k, c.n, c.s FROM c;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.id = 7
+GROUP BY o.k)
+SELECT c.k, c.n, c.s FROM c|
+k	n	s
+3	3	141
+
+=== j8-7: an IN list on d; one range per distinct value ===
+== Explain Query ==
+body root: scanIndex on j8_o_d, 3 ranges
+== Query ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.d IN (30, 60, 90, 60)
+GROUP BY o.k)
+SELECT COUNT(*) AS g, SUM(c.n) AS sn, SUM(c.s) AS ss FROM c;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.d IN (30, 60, 90, 60)
+GROUP BY o.k)
+SELECT COUNT(*) AS g, SUM(c.n) AS sn, SUM(c.s) AS ss FROM c|
+g	sn	ss
+2	9	540
+
+=== j8-8: FORCE INDEX (j8_o_kd) with no bound on k is refused ===
+Error handling: RPE
+ronsql_cli caught exception: FORCE INDEX 'j8_o_kd' cannot be used: no WHERE condition matches its leading column.

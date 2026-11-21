@@ -1,0 +1,231 @@
+# RONDB-1124 J-8: the root of a CTE body that joins tables reads through
+# an ordered index when the body's WHERE bounds one of its columns.
+#
+# A body of one table always had this (select_root_scan_config over the
+# body's WHERE); a body that joins tables did not: its root was a table
+# scan with the WHERE as its filter, and an index hint on it was ignored.
+# Now such a body offers the WHERE conjuncts on its root, as the main
+# query of a join does: an index scan with the bounds it can take and the
+# rest as its filter, the index hint applied.  A WHERE that binds the
+# root's whole primary key keeps its access (decide_root_access).
+#
+# Tables: j8_o (40 rows; id, k = id % 4, d = 3 * id; hash primary key;
+# ordered indexes j8_o_d (d) and j8_o_kd (k, d)) and j8_l (120 rows, three
+# for each j8_o row: ok = j8_o.id, x = id; ordered index j8_l_ok (ok)).
+# Each body joins j8_o (the root) with j8_l, an index scan on j8_l_ok.
+#
+#   j8-1  a range on d: the root scans j8_o_d
+#   j8-2  a closed range on d, a residual conjunct on the root and one on
+#         the child: 2 bounds and 1 filter on the root
+#   j8-3  k = 2 AND d >= 30: j8_o_kd takes both, j8_o_d only one
+#   j8-4  the same with FORCE INDEX (j8_o_d): the hint is applied
+#   j8-5  IGNORE INDEX (j8_o_d) and a range on d: a table scan
+#   j8-6  the whole primary key bound: a table scan, as before (there is
+#         no ordered index on the hash primary key)
+#   j8-7  an IN list on d: one range per distinct value
+#   j8-8  FORCE INDEX (j8_o_kd) with no bound on k: refused, where before
+#         the hint was ignored
+# Each case checks the plan in EXPLAIN and compares the result of
+# RDRS and ronsql_cli with mysqld.
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE j8_o (
+  id INT NOT NULL,
+  k  INT NOT NULL,
+  d  INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX j8_o_d (d),
+  INDEX j8_o_kd (k, d)
+) ENGINE=NDB;
+INSERT INTO j8_o
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 40)
+  SELECT n, n % 4, 3 * n FROM seq;
+CREATE TABLE j8_l (
+  id INT NOT NULL,
+  ok INT NOT NULL,
+  x  INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX j8_l_ok (ok)
+) ENGINE=NDB;
+INSERT INTO j8_l
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 120)
+  SELECT n, ((n - 1) % 40) + 1, n FROM seq;
+--enable_warnings
+--enable_query_log
+
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/j8_explain.out
+
+DELIMITER |;
+
+--echo
+--echo === j8-1: a range on d; the body root scans j8_o_d ===
+let $QUERY=
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.d >= 60
+GROUP BY o.k)
+SELECT COUNT(*) AS g, SUM(c.n) AS sn, SUM(c.s) AS ss FROM c;|
+--let $j8_query=$QUERY
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using j8_o_d' $EXPLAIN_FILE && grep -qF 'Root access: scanIndex on j8_o_d' $EXPLAIN_FILE && grep -qF 'CONDITIONS (1 bound):' $EXPLAIN_FILE && echo "body root: scanIndex on j8_o_d, 1 bound" || echo "UNEXPECTED: the body root does not scan j8_o_d with 1 bound"
+--remove_file $EXPLAIN_FILE
+--let $QUERY=$j8_query
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.d >= 60
+GROUP BY o.k)
+SELECT COUNT(*) AS g, SUM(c.n) AS sn, SUM(c.s) AS ss FROM c|
+
+--echo
+--echo === j8-2: bounds, a residual conjunct on the root and one on the child ===
+let $QUERY=
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.d >= 30 AND o.d <= 90 AND o.id <> 20 AND l.x > 50
+GROUP BY o.k)
+SELECT c.k, c.n, c.s FROM c;|
+--let $j8_query=$QUERY
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using j8_o_d' $EXPLAIN_FILE && grep -qF 'Root access: scanIndex on j8_o_d' $EXPLAIN_FILE && grep -qF 'CONDITIONS (2 bounds and 1 filter):' $EXPLAIN_FILE && echo "body root: scanIndex on j8_o_d, 2 bounds and 1 filter" || echo "UNEXPECTED: the body root does not scan j8_o_d with 2 bounds and 1 filter"
+--remove_file $EXPLAIN_FILE
+--let $QUERY=$j8_query
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.d >= 30 AND o.d <= 90 AND o.id <> 20 AND l.x > 50
+GROUP BY o.k)
+SELECT c.k, c.n, c.s FROM c|
+
+--echo
+--echo === j8-3: k = 2 AND d >= 30; j8_o_kd takes both ===
+let $QUERY=
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.k = 2 AND o.d >= 30
+GROUP BY o.k)
+SELECT c.k, c.n, c.s FROM c;|
+--let $j8_query=$QUERY
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using j8_o_kd' $EXPLAIN_FILE && grep -qF 'Root access: scanIndex on j8_o_kd' $EXPLAIN_FILE && grep -qF 'CONDITIONS (2 bounds):' $EXPLAIN_FILE && echo "body root: scanIndex on j8_o_kd, 2 bounds" || echo "UNEXPECTED: the body root does not scan j8_o_kd with 2 bounds"
+--remove_file $EXPLAIN_FILE
+--let $QUERY=$j8_query
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.k = 2 AND o.d >= 30
+GROUP BY o.k)
+SELECT c.k, c.n, c.s FROM c|
+
+--echo
+--echo === j8-4: the same with FORCE INDEX (j8_o_d) ===
+let $QUERY=
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o FORCE INDEX (j8_o_d) JOIN j8_l AS l ON l.ok = o.id
+WHERE o.k = 2 AND o.d >= 30
+GROUP BY o.k)
+SELECT c.k, c.n, c.s FROM c;|
+--let $j8_query=$QUERY
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using j8_o_d' $EXPLAIN_FILE && grep -qF 'Root access: scanIndex on j8_o_d' $EXPLAIN_FILE && grep -qF 'CONDITIONS (1 bound and 1 filter):' $EXPLAIN_FILE && echo "body root: scanIndex on j8_o_d, 1 bound and 1 filter" || echo "UNEXPECTED: the body root does not scan j8_o_d with 1 bound and 1 filter"
+--remove_file $EXPLAIN_FILE
+--let $QUERY=$j8_query
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o FORCE INDEX (j8_o_d) JOIN j8_l AS l ON l.ok = o.id
+WHERE o.k = 2 AND o.d >= 30
+GROUP BY o.k)
+SELECT c.k, c.n, c.s FROM c|
+
+--echo
+--echo === j8-5: IGNORE INDEX (j8_o_d) and a range on d; a table scan ===
+let $QUERY=
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o IGNORE INDEX (j8_o_d) JOIN j8_l AS l ON l.ok = o.id
+WHERE o.d >= 60
+GROUP BY o.k)
+SELECT COUNT(*) AS g, SUM(c.n) AS sn, SUM(c.s) AS ss FROM c;|
+--let $j8_query=$QUERY
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: TABLE_SCAN' $EXPLAIN_FILE && grep -qF 'Root access: scanTable' $EXPLAIN_FILE && echo "body root: scanTable" || echo "UNEXPECTED: the body root is not a table scan"
+--remove_file $EXPLAIN_FILE
+--let $QUERY=$j8_query
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o IGNORE INDEX (j8_o_d) JOIN j8_l AS l ON l.ok = o.id
+WHERE o.d >= 60
+GROUP BY o.k)
+SELECT COUNT(*) AS g, SUM(c.n) AS sn, SUM(c.s) AS ss FROM c|
+
+--echo
+--echo === j8-6: the whole primary key bound; a table scan, as before ===
+let $QUERY=
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.id = 7
+GROUP BY o.k)
+SELECT c.k, c.n, c.s FROM c;|
+--let $j8_query=$QUERY
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: TABLE_SCAN' $EXPLAIN_FILE && grep -qF 'Root access: scanTable' $EXPLAIN_FILE && echo "body root: scanTable" || echo "UNEXPECTED: the body root is not a table scan"
+--remove_file $EXPLAIN_FILE
+--let $QUERY=$j8_query
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.id = 7
+GROUP BY o.k)
+SELECT c.k, c.n, c.s FROM c|
+
+--echo
+--echo === j8-7: an IN list on d; one range per distinct value ===
+let $QUERY=
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.d IN (30, 60, 90, 60)
+GROUP BY o.k)
+SELECT COUNT(*) AS g, SUM(c.n) AS sn, SUM(c.s) AS ss FROM c;|
+--let $j8_query=$QUERY
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using j8_o_d, 3 ranges' $EXPLAIN_FILE && grep -qF 'Root access: scanIndex on j8_o_d' $EXPLAIN_FILE && echo "body root: scanIndex on j8_o_d, 3 ranges" || echo "UNEXPECTED: the body root does not scan 3 ranges of j8_o_d"
+--remove_file $EXPLAIN_FILE
+--let $QUERY=$j8_query
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s
+FROM j8_o AS o JOIN j8_l AS l ON l.ok = o.id
+WHERE o.d IN (30, 60, 90, 60)
+GROUP BY o.k)
+SELECT COUNT(*) AS g, SUM(c.n) AS sn, SUM(c.s) AS ss FROM c|
+
+DELIMITER ;|
+
+--echo
+--echo === j8-8: FORCE INDEX (j8_o_kd) with no bound on k is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c AS (SELECT o.k AS k, COUNT(*) AS n, SUM(l.x) AS s FROM j8_o AS o FORCE INDEX (j8_o_kd) JOIN j8_l AS l ON l.ok = o.id WHERE o.d >= 60 GROUP BY o.k) SELECT COUNT(*) AS g, SUM(c.n) AS sn, SUM(c.s) AS ss FROM c;' 2>&1
+
+--let $QUERY=
+--let $j8_query=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE j8_l;
+DROP TABLE j8_o;
+--enable_warnings
+--enable_query_log

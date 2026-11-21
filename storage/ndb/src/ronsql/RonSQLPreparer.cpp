@@ -8180,14 +8180,36 @@ RonSQLPreparer::build_cte_scopes()
     reject_index_hints_on_joins(cte->stmt->joins);
     // Phase I.9: try to convert this CTE body's root scan into an
     // ordered index scan when the body's WHERE has bounds on an
-    // indexed column.  Operates only on single-op real-table bodies
-    // (the whole body WHERE belongs to the root op then); chained
-    // CTEs (CTE_SCAN root) and multi-table bodies fall through
-    // unchanged.  The root table's index hint (if any) constrains
-    // index selection.
+    // indexed column.  A single-op real-table body offers its whole
+    // WHERE (all of it belongs to the root op).  J-8: a multi-op body
+    // offers the root-classified conjuncts (join_where_ce[0]), as the
+    // main scope of a join query does, and is skipped when they bind
+    // the root's whole primary key unless FORCE INDEX demands an index
+    // scan (decide_root_access serves that with an equality-bound scan
+    // on an ordered primary-key index).  Before, a multi-op body root
+    // was always a table scan with the WHERE as its filter, and its
+    // index hint was ignored.  A chained CTE (CTE_SCAN root) falls
+    // through unchanged.  The root table's index hint (if any)
+    // constrains index selection.
     if (scope->join_plan.num_ops == 1)
+    {
       select_root_scan_config(*scope, cte->stmt->where_expression,
                               cte->stmt->root_table);
+    }
+    else
+    {
+      const TableRef* body_root_ref = cte->stmt->root_table;
+      const bool body_hint_force =
+          (body_root_ref != NULL &&
+           body_root_ref->hint_kind == TableRef::HintKind::HINT_FORCE);
+      if (scope->join_plan.ops[0].type == JoinOp::TABLE_SCAN &&
+          scope->join_plan.ops[0].table != NULL &&
+          (body_hint_force || !root_pk_equality_covered(*scope)))
+      {
+        select_root_scan_config(*scope, scope->join_where_ce[0],
+                                body_root_ref);
+      }
+    }
     // Phase I.10: scalar MIN/MAX over a NOT NULL indexed column can
     // materialise through a full ordered index scan with maxRows=1.
     select_cte_body_minmax_index(*scope, cte);
