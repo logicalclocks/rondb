@@ -861,6 +861,7 @@ SELECT c.c_id, SUM(sums.t)
 FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
 WHERE sums.t IS NULL
 GROUP BY c.c_id;|
+--source suite/ronsql_cte/include/root_access.inc
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
@@ -885,6 +886,7 @@ SELECT c.c_id, SUM(sums.t)
 FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
 WHERE sums.k IS NULL
 GROUP BY c.c_id;|
+--source suite/ronsql_cte/include/root_access.inc
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
@@ -909,6 +911,7 @@ SELECT c.c_id, SUM(sums.t)
 FROM cte_customer AS c LEFT JOIN sums ON sums.k = c.c_id
 WHERE sums.t IS NULL AND sums.k IS NULL
 GROUP BY c.c_id;|
+--source suite/ronsql_cte/include/root_access.inc
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==

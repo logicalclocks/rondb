@@ -73,6 +73,7 @@ FROM f19_src GROUP BY grp)
 SELECT o.cat, SUM(t.n) AS n
 FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
 WHERE o.id = 5 GROUP BY o.cat;|
+--source suite/ronsql_cte/include/root_access.inc
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
@@ -109,6 +110,7 @@ FROM f19_src GROUP BY grp)
 SELECT h.cat, SUM(t.n) AS n
 FROM f19_hash AS h LEFT JOIN t ON t.k = h.id
 WHERE h.id = 4 GROUP BY h.cat;|
+--source suite/ronsql_cte/include/root_access.inc
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
@@ -145,6 +147,7 @@ FROM f19_src GROUP BY grp)
 SELECT o.cat, COUNT(*) AS c
 FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
 WHERE o.id = 5 AND t.k IS NULL GROUP BY o.cat;|
+--source suite/ronsql_cte/include/root_access.inc
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
@@ -163,6 +166,7 @@ b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat)
 SELECT a.k, SUM(b.m) AS m
 FROM a LEFT JOIN b ON b.k = a.k
 WHERE a.k = 3 GROUP BY a.k;|
+--source suite/ronsql_cte/include/root_access.inc
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
@@ -181,6 +185,7 @@ WHERE grp = 3 GROUP BY grp),
 b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat)
 SELECT COUNT(*) AS c, SUM(b.m) AS m
 FROM a LEFT JOIN b ON b.k = a.k;|
+--source suite/ronsql_cte/include/root_access.inc
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
@@ -197,6 +202,61 @@ DELIMITER ;|
 --echo === f19-8: filtered scalar CTE root LEFT JOIN cte — permanent rejection ===
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH s AS (SELECT MAX(grp) AS mx FROM f19_src), b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat) SELECT COUNT(*) AS c, SUM(b.m) AS m FROM s LEFT JOIN b ON b.k = s.mx WHERE s.mx > 0;' 2>&1
+
+--echo
+--echo === f19-8e: EXPLAIN of f19-8 shows the refusal ===
+DELIMITER |;
+let $QUERY=
+WITH s AS (SELECT MAX(grp) AS mx FROM f19_src),
+b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat)
+SELECT COUNT(*) AS c, SUM(b.m) AS m
+FROM s LEFT JOIN b ON b.k = s.mx WHERE s.mx > 0;|
+--source suite/ronsql_cte/include/root_access.inc
+
+# J-9: the roots of f19-1, f19-6, f19-7 and f19-8 with an inner join in
+# place of the outer one.  Nothing needs a scan root, so each takes its
+# lookup: readTuple, lookupCte on the key the WHERE binds, lookupCte on
+# the key the single-group body binds (G4), the scalar CTE's lookupCte.
+--echo
+--echo === f19-c1: f19-1 with an inner join: readTuple root ===
+let $QUERY=
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, SUM(t.n) AS n
+FROM f19_ord AS o JOIN t ON t.k = o.id
+WHERE o.id = 5 GROUP BY o.cat;|
+--source suite/ronsql_cte/include/root_access.inc
+
+--echo
+--echo === f19-c2: f19-6 with an inner join: lookupCte root ===
+let $QUERY=
+WITH a AS (SELECT grp AS k, COUNT(*) AS n FROM f19_src GROUP BY grp),
+b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat)
+SELECT a.k, SUM(b.m) AS m
+FROM a JOIN b ON b.k = a.k
+WHERE a.k = 3 GROUP BY a.k;|
+--source suite/ronsql_cte/include/root_access.inc
+
+--echo
+--echo === f19-c3: f19-7 with an inner join: single-group lookupCte root (G4) ===
+let $QUERY=
+WITH a AS (SELECT grp AS k, COUNT(*) AS n FROM f19_src
+WHERE grp = 3 GROUP BY grp),
+b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat)
+SELECT COUNT(*) AS c, SUM(b.m) AS m
+FROM a JOIN b ON b.k = a.k;|
+--source suite/ronsql_cte/include/root_access.inc
+
+--echo
+--echo === f19-c4: f19-8 with an inner join: scalar lookupCte root ===
+let $QUERY=
+WITH s AS (SELECT MAX(grp) AS mx FROM f19_src),
+b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat)
+SELECT COUNT(*) AS c, SUM(b.m) AS m
+FROM s JOIN b ON b.k = s.mx WHERE s.mx > 0;|
+--source suite/ronsql_cte/include/root_access.inc
+DELIMITER ;|
+--let $QUERY=
 
 --echo
 --echo === Cleanup ===

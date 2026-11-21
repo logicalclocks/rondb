@@ -2,6 +2,9 @@ call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 
 === rpr-1: agg join, readTuple root, residual accepts the row ===
+== Explain Query ==
+Root access: scanTable; filter: WHERE (no lookup: an aggregate query without a CTE needs a scan root; no ordered index on the primary key)
+Aggregation leaf
 == Query ==
 SELECT COUNT(*) AS c, SUM(cu.c_nationkey) AS s
 FROM orders AS o JOIN customer AS cu ON cu.c_custkey = o.o_custkey
@@ -42,6 +45,9 @@ c	s
 0	NULL
 
 === rpr-3: ordered-PK root + INDEX_SCAN child, residual accepts ===
+== Explain Query ==
+Root access: scanIndex on PRIMARY, equal on the primary key; filter: rest of WHERE (no lookup: a child is a scan, which a lookup root cannot have)
+Aggregation leaf
 == Query ==
 SELECT COUNT(*) AS c, SUM(o.o_shippriority) AS s
 FROM acct AS a JOIN orders AS o ON o.o_custkey = a.a_grp
@@ -82,6 +88,8 @@ c	s
 0	NULL
 
 === rpr-5: passthrough, full-key CTE root, residual accepts ===
+== Explain Query ==
+Root access: lookupCte on the CTE key; filter: rest of WHERE
 == Query ==
 WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
 FROM orders GROUP BY o_custkey)
@@ -121,6 +129,8 @@ SELECT cf.k, cf.n FROM cf WHERE cf.k = 7 AND cf.n > 100000|
 k	n
 
 === rpr-7: passthrough chain, PK-covered real root, residual accepts ===
+== Explain Query ==
+Root access: readTuple on the primary key; filter: rest of WHERE
 == Query ==
 WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
 FROM orders GROUP BY o_custkey)
@@ -211,6 +221,8 @@ WHERE cu.c_custkey = 42 AND cu.c_custkey = 43|
 c_custkey	n
 
 === rpr-11: over-cap residual, lookup-eligible hash-PK root (table-scan fallback) ===
+== Explain Query ==
+Root access: scanTable; filter: WHERE (no lookup: the rest of the WHERE is too large for a lookup; no ordered index on the primary key)
 == Query ==
 WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
 FROM orders GROUP BY o_custkey)
@@ -263,6 +275,8 @@ c_custkey	n
 42	5
 
 === rpr-12: over-cap residual, lookup-eligible ordered-PK root (PK-index-scan fallback) ===
+== Explain Query ==
+Root access: scanIndex on PRIMARY, equal on the primary key; filter: rest of WHERE (no lookup: the rest of the WHERE is too large for a lookup)
 == Query ==
 WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
 FROM orders GROUP BY o_custkey)
@@ -315,6 +329,9 @@ a_id	a_val	n
 7	21	5
 
 === rpr-13: agg + CTE, readTuple root, residual accepts ===
+== Explain Query ==
+Root access: readTuple on the primary key; filter: rest of WHERE
+Aggregation leaf
 == Query ==
 WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
 FROM orders GROUP BY o_custkey)
@@ -366,6 +383,9 @@ GROUP BY cu.c_custkey|
 ck	sn
 
 === rpr-15: agg + CTE, over-cap residual (table-scan fallback) ===
+== Explain Query ==
+Root access: scanTable; filter: WHERE (no lookup: the rest of the WHERE is too large for a lookup; no ordered index on the primary key)
+Aggregation leaf
 == Query ==
 WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
 FROM orders GROUP BY o_custkey)

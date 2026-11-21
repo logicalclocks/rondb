@@ -14630,18 +14630,16 @@ const NdbQueryOperationDef*
 RonSQLPreparer::emit_pk_equality_index_scan_root(
     NdbQueryBuilder* qb, QueryScope& scope,
     const NdbDictionary::Table* root_table,
+    const NdbDictionary::Index* pk_ordered_idx,
     ConditionalExpression* const pk_const[], int nkeys,
     ConditionalExpression* residual,
     NdbQueryOptions& rootOpts)
 {
+  ronsql_require_bug(pk_ordered_idx != NULL,
+                     "A primary key index scan root has no index.");
   const char* pk_col_names[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
   for (int k = 0; k < nkeys; k++)
     pk_col_names[k] = root_table->getPrimaryKey(k);
-  const NdbDictionary::Index* pk_ordered_idx =
-      QueryPlanner::findOrderedIndex(
-          m_dict, root_table, pk_col_names, (Uint32)nkeys);
-  if (pk_ordered_idx == NULL)
-    return NULL;
   /*
    * findOrderedIndex accepts an index whose first nkeys columns are the
    * primary key columns in any order, and the bound gives its k:th
@@ -14702,20 +14700,47 @@ plan_has_outer_child(const JoinPlan& plan)
   return false;
 }
 
-// Emit the root scan/lookup/index-scan for the scope's plan. Chooses PK
-// lookup when WHERE fully covers the PK and no child is a scan; ordered
-// index scan with equality bounds when PK-covered with a scan child;
-// scan-config-selected index scan with WHERE bounds when
-// select_root_scan_config flipped ops[0] to INDEX_SCAN;
-// table scan with WHERE filter otherwise.
-void
-RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
-                              const NdbQueryOperationDef** opDefs,
-                              NdbAggregator* singleAgg,
-                              NdbDictionary::Table** cteVirtualTables)
+// J-9: why decide_root_access did not take a lookup root although the
+// WHERE binds the whole key.  EXPLAIN prints them.
+static const char* const ROOT_REASON_SCAN_CHILD =
+    "a child is a scan, which a lookup root cannot have";
+static const char* const ROOT_REASON_CTE_BODY =
+    "a CTE body aggregates on a scan root";
+static const char* const ROOT_REASON_AGG_NO_CTE =
+    "an aggregate query without a CTE needs a scan root";
+static const char* const ROOT_REASON_OUTER_AGG =
+    "an outer-joined child of an aggregation needs a scan root (F19)";
+static const char* const ROOT_REASON_FILTER_TOO_LARGE =
+    "the rest of the WHERE is too large for a lookup";
+static const char* const ROOT_REASON_TOO_MANY_CONJUNCTS =
+    "the WHERE has too many conjuncts to take the key out of it";
+
+bool
+RonSQLPreparer::scope_aggregates(const QueryScope& scope) const
 {
-  JoinPlan& plan = scope.join_plan;
-  NdbQueryOptions rootOpts;
+  // emit_root_op's test: a CTE body is emitted with its aggregator, the
+  // main query with one when it is an aggregate query.
+  return &scope != &m_main_scope || m_is_aggregate_query ||
+         scope.agg != NULL;
+}
+
+// J-9: the root access of the scope's plan.  Chooses a PK lookup when
+// WHERE fully covers the PK and no child is a scan; an ordered index
+// scan with equality bounds when PK-covered with a scan child; the
+// scan-config-selected index scan with WHERE bounds when
+// select_root_scan_config flipped ops[0] to INDEX_SCAN; a table scan
+// with the WHERE as its filter otherwise.  A CTE root is a lookupCte
+// when its key is bound, else a scanCte.  emit_root_op builds the
+// choice and EXPLAIN prints it (print_root_access); nothing here builds
+// an operation.
+void
+RonSQLPreparer::decide_root_access(QueryScope& scope, bool aggregating,
+                                   const NdbDictionary::Table* cte_vt,
+                                   NdbInterpretedCode* residual_code,
+                                   RootAccess& ra)
+{
+  const JoinPlan& plan = scope.join_plan;
+  ra = RootAccess();
 
   // F19: an aggregating scope with an outer-joined child needs a SCAN
   // root.  DBSPJ builds the NULL-extended row for a miss from the parent
@@ -14730,34 +14755,13 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
   // the scan roots below cost a PK-bound index scan (or a filtered scan)
   // in place of the single-row lookup.
   const bool outer_agg_needs_scan_root =
-      (singleAgg != NULL || scope.agg != NULL) &&
-      plan_has_outer_child(plan);
+      aggregating && plan_has_outer_child(plan);
+  const bool where_never_true =
+      (&scope == &m_main_scope && m_where_never_true);
 
-  // Statement-level FRAGS_PER_WORKER hint: bundle N root fragments per
-  // SPJ worker for aggregate pushed queries.  Applied to the main-query
-  // root options only (rootOpts is shared with emit_index_scan_root);
-  // CTE-body emission is deliberately untouched — the value is
-  // query-global, carried in SCAN_TABREQ.  The NDB API normalizes
-  // (power of two, cap 8), clamps to the per-node fragment count, and
-  // ignores it for non-aggregate queries, ordered/pruned scans and
-  // scanCte-containing queries (see frags_per_worker_plan.md).
-  if (m_context.ast_root.frags_per_worker > 0)
-  {
-    rootOpts.setFragsPerWorker((Uint32)m_context.ast_root.frags_per_worker);
-  }
-
-  // Dispatch CTE_SCAN root before the real-table logic. Reuses the
-  // CTE_LOOKUP filter helper (same opcode family — verified by
-  // testCteNdbApiFilter::testCteScanFilterRoot) and attaches the main
-  // aggregator on the root when the agg leaf IS the root.
   if (plan.ops[0].type == JoinOp::CTE_SCAN)
   {
-    require_run(cteVirtualTables != NULL && cteVirtualTables[0] != NULL,
-                "CTE_SCAN root requires a virtual table.");
-    Uint32 numResultCols = 0;
-    for (const Outputs* o = plan.ops[0].cte_def->stmt->outputs;
-         o != NULL; o = o->next) numResultCols++;
-
+    require_run(cte_vt != NULL, "CTE_SCAN root requires a virtual table.");
     // Single-row CTEs (cte_single_row_kernel_plan.md) also have no
     // GROUP BY but are NOT scalar: as a FROM root they take the
     // scanCte path below (WHERE as a jump-table filter).  The scalar
@@ -14771,8 +14775,6 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
         (plan.ops[0].cte_def != NULL &&
          plan.ops[0].cte_def->stmt->groupby_columns == NULL &&
          !root_cte_is_single_row);
-    const bool where_never_true =
-        (&scope == &m_main_scope && m_where_never_true);
 
     if (where_never_true && !root_cte_is_scalar)
     {
@@ -14783,105 +14785,65 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
       // root with a filter has.  A data node without the K-2 fix also
       // hangs a filtered scalar scanCte whose row is rejected: it counts
       // the row as sent, and the API waits for it.
-      NdbInterpretedCode code(cteVirtualTables[0]);
-      NdbScanFilter filter(&code);
-      apply_reject_all_filter(&filter);
-      require_run(rootOpts.setInterpretedCode(code) == 0,
-                  "Failed to set interpreted code on CTE_SCAN root.");
-      if (singleAgg != NULL && plan.agg_leaf_idx == 0 &&
-          plan.num_agg_leaves == 0 && scope.agg != NULL)
-      {
-        require_run(rootOpts.setAggregation(*singleAgg) == 0,
-                    "Failed to set aggregation on CTE_SCAN root.");
-      }
-      opDefs[0] = qb->scanCte(plan.ops[0].cte_def_idx, numResultCols,
-                              cteVirtualTables[0], &rootOpts);
-      require_qb(qb, opDefs[0] != NULL, "Failed to create scanCte root.");
+      ra.kind = RootAccess::Kind::CTE_SCAN;
+      ra.passes_no_row = true;
+      return;
+    }
+
+    // F19: the filtered scalar root below has only the lookupCte form,
+    // which would drop the misses of an outer-joined child (see
+    // outer_agg_needs_scan_root); refuse the shape instead.  A WHERE
+    // that is never TRUE (X-3) passes no root row, so there is no miss
+    // to NULL-extend and the lookupCte gives the result of no rows.
+    if (root_cte_is_scalar && scope.join_where_ce[0] != NULL &&
+        outer_agg_needs_scan_root && !where_never_true)
+    {
+      ra.kind = RootAccess::Kind::REFUSED;
+      ra.refusal =
+          "Outer join below a filtered scalar CTE root not supported.";
+      return;
+    }
+    if (root_cte_is_scalar &&
+        (scope.join_where_ce[0] != NULL || where_never_true))
+    {
+      // X-3: a WHERE that is never TRUE rejects the one row; the WHERE
+      // may hold the NULL.
+      ra.kind = RootAccess::Kind::CTE_SCALAR_LOOKUP;
+      ra.passes_no_row = where_never_true;
+      ra.filter = where_never_true ? NULL : scope.join_where_ce[0];
       return;
     }
 
     // Phase I.7: when the WHERE clause supplies equality predicates
     // on every virt-table PK column (i.e. every GROUP BY column of
     // the CTE body), convert the scan to a single-row lookupCte
-    // root.  Mirrors the real-table readTuple optimisation just
-    // below.  testCteNdbApi.cpp Test 11 demonstrates the working
-    // NDB API setup: `qb->lookupCte(cteId, numCols, virtTab,
-    // const_keys, opts)` with no parent.
+    // root.  Mirrors the real-table readTuple optimisation below.
+    // testCteNdbApi.cpp Test 11 demonstrates the working NDB API
+    // setup: `qb->lookupCte(cteId, numCols, virtTab, const_keys,
+    // opts)` with no parent.
     bool root_pk_covered = false;
+    bool key_from_body = false;
+    bool flatten_overflow = false;
     int root_nkeys = 0;
-    ConditionalExpression* root_pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
     ConditionalExpression* root_pk_eq[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
     ConditionalExpression* root_residual = NULL;
-    bool root_has_scan_child = false;
-    // F19: the filtered scalar root below has only the lookupCte form,
-    // which would drop the misses of an outer-joined child (see
-    // outer_agg_needs_scan_root); reject the shape instead.  A WHERE
-    // that is never TRUE (X-3) passes no root row, so there is no miss
-    // to NULL-extend and the lookupCte gives the result of no rows.
-    if (root_cte_is_scalar && scope.join_where_ce[0] != NULL &&
-        outer_agg_needs_scan_root && !where_never_true)
-    {
-      ndbrequire(m_conf.err_stream != NULL);  // X-14: kept, see configure()
-      *m_conf.err_stream
-          << "An outer join below a scalar CTE root with a WHERE clause"
-             " is not supported in an aggregate query: the root is a"
-             " single-row CTE lookup, which cannot NULL-extend the"
-             " outer join's misses.\n";
-      throw RonSQLPermanentError(
-          "Outer join below a filtered scalar CTE root not supported.");
-    }
-    if (root_cte_is_scalar &&
-        (scope.join_where_ce[0] != NULL || where_never_true))
-    {
-      NdbInterpretedCode code(cteVirtualTables[0]);
-      if (where_never_true)
-      {
-        // X-3: reject the one row; the WHERE may hold the NULL.
-        NdbScanFilter filter(&code);
-        apply_reject_all_filter(&filter);
-      }
-      else
-      {
-        emit_cte_lookup_filter(code, scope, /*op_idx=*/0,
-                               cteVirtualTables[0],
-                               scope.join_where_ce[0]);
-      }
-      require_run(rootOpts.setInterpretedCode(code) == 0,
-                  "Failed to set interpreted code on scalar CTE root.");
-      if (singleAgg != NULL && plan.agg_leaf_idx == 0 &&
-          plan.num_agg_leaves == 0 && scope.agg != NULL)
-      {
-        require_run(rootOpts.setAggregation(*singleAgg) == 0,
-                    "Failed to set aggregation on scalar CTE root.");
-      }
-      const NdbQueryOperand* scalar_keys[2];
-      scalar_keys[0] = scalar_cte_dummy_key(qb, cteVirtualTables[0]);
-      scalar_keys[1] = nullptr;
-      opDefs[0] = qb->lookupCte(plan.ops[0].cte_def_idx, numResultCols,
-                                cteVirtualTables[0], scalar_keys,
-                                &rootOpts);
-      require_qb(qb, opDefs[0] != NULL,
-                 "Failed to create scalar lookupCte root.");
-      return;
-    }
     if (scope.join_where_ce[0] != NULL && !root_cte_is_scalar &&
         !root_cte_is_single_row)
     {
       ConditionalExpression* w = simplify_ce(scope.join_where_ce[0], -1);
-      root_nkeys = cteVirtualTables[0]->getNoOfPrimaryKeys();
+      root_nkeys = cte_vt->getNoOfPrimaryKeys();
       for (int k = 0; k < root_nkeys; k++)
       {
-        root_pk_const[k] = NULL;
+        ra.key_const[k] = NULL;
         root_pk_eq[k] = NULL;
       }
       if (root_nkeys > 0)
       {
-        collect_pk_equalities(w, cteVirtualTables[0], root_pk_const,
-                              root_pk_eq);
+        collect_pk_equalities(w, cte_vt, ra.key_const, root_pk_eq);
         root_pk_covered = true;
         for (int k = 0; k < root_nkeys; k++)
         {
-          if (root_pk_const[k] == NULL) { root_pk_covered = false; break; }
+          if (ra.key_const[k] == NULL) { root_pk_covered = false; break; }
         }
       }
       // Phase 0a: conjuncts not consumed as virt-PK equalities must be
@@ -14892,6 +14854,7 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
           !build_root_residual(w, root_pk_eq, root_nkeys, &root_residual))
       {
         root_pk_covered = false;
+        flatten_overflow = true;
       }
     }
 
@@ -14901,8 +14864,8 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     // scanCte becomes ONE keyed probe to the constant owner.  Any main
     // WHERE that did not supply the keys itself rides as the residual
     // jump-table filter, unchanged.  Constants are restricted to the
-    // literal kinds the typed key builder below handles; anything else
-    // falls back to scanCte (no regression).
+    // literal kinds the typed key builder in emit_root_op handles;
+    // anything else falls back to scanCte (no regression).
     if (!root_pk_covered && !root_cte_is_scalar && !root_cte_is_single_row &&
         plan.ops[0].cte_def != NULL &&
         plan.ops[0].cte_def_idx < m_cte_scopes.size() &&
@@ -14913,12 +14876,12 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
       QueryScope& body_scope = *m_cte_scopes[plan.ops[0].cte_def_idx];
       const SelectStatement* body = plan.ops[0].cte_def->stmt;
       ConditionalExpression* bw = simplify_ce(body->where_expression, -1);
-      root_nkeys = cteVirtualTables[0]->getNoOfPrimaryKeys();
+      root_nkeys = cte_vt->getNoOfPrimaryKeys();
       bool body_pk_covered = (root_nkeys > 0);
       for (int k = 0; k < root_nkeys && body_pk_covered; k++)
       {
-        root_pk_const[k] = NULL;
-        const char* pk_name = cteVirtualTables[0]->getPrimaryKey(k);
+        ra.key_const[k] = NULL;
+        const char* pk_name = cte_vt->getPrimaryKey(k);
         // The virt PK column is a GROUP BY column exposed as a body
         // output; its bound constant lives in the BODY's WHERE and is
         // found by the same resolved-identity walk the classification
@@ -14951,8 +14914,7 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
         // Pre-validate constant kind vs column type against the typed
         // key builder's expectations — a mismatch must fall back to
         // scanCte, never turn a previously-working query into an error.
-        const NdbDictionary::Column* pk_col =
-            cteVirtualTables[0]->getColumn(pk_name);
+        const NdbDictionary::Column* pk_col = cte_vt->getColumn(pk_name);
         bool kind_ok = false;
         if (pk_col != NULL)
         {
@@ -14983,11 +14945,12 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
           body_pk_covered = false;
           break;
         }
-        root_pk_const[k] = c;
+        ra.key_const[k] = c;
       }
       if (body_pk_covered)
       {
         root_pk_covered = true;
+        key_from_body = true;
         // The whole main WHERE (if any) becomes the residual filter.
         root_residual = (scope.join_where_ce[0] != NULL)
                             ? simplify_ce(scope.join_where_ce[0], -1)
@@ -14995,6 +14958,7 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
       }
     }
 
+    bool root_has_scan_child = false;
     if (root_pk_covered)
     {
       for (Uint32 ci = 1; ci < plan.num_ops; ci++)
@@ -15014,139 +14978,35 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     if (root_pk_covered && !root_has_scan_child &&
         !outer_agg_needs_scan_root)
     {
-      const NdbQueryOperand* lookup_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
-      for (int k = 0; k < root_nkeys; k++)
-      {
-        const char* pk_name = cteVirtualTables[0]->getPrimaryKey(k);
-        const NdbDictionary::Column* pk_col =
-            cteVirtualTables[0]->getColumn(pk_name);
-        ronsql_require_bug(pk_col != NULL,
-                           "A key column of a CTE virtual table is missing.");
-        const ConditionalExpression* ce_const = root_pk_const[k];
-        switch (pk_col->getType()) {
-        case NdbDictionary::Column::Tinyint:
-        case NdbDictionary::Column::Smallint:
-        case NdbDictionary::Column::Mediumint:
-        case NdbDictionary::Column::Int:
-        case NdbDictionary::Column::Bigint:
-        case NdbDictionary::Column::Tinyunsigned:
-        case NdbDictionary::Column::Smallunsigned:
-        case NdbDictionary::Column::Mediumunsigned:
-        case NdbDictionary::Column::Unsigned:
-        case NdbDictionary::Column::Bigunsigned:
-          require_prm(ce_const->op == T_INT,
-                      "Expected integer constant for CTE root lookup key.");
-          // Encoded as on the real-table root, which refuses a literal
-          // outside the column type's domain with a permanent error
-          // (build_cte_virtual_tables sizes the virtual column as the
-          // dictionary would, so the byte-buffer operand binds).  The
-          // typed constValue overloads took the literal cast to Int32,
-          // Uint32 or Uint64, which wrapped it into another key (J-3:
-          // INT 4294967297 probed key 1), and sent a MEDIUMINT key as 4
-          // bytes where the materialized group key has 3.
-          {
-            raw_value rv = encode_constant(
-                const_cast<ConditionalExpression*>(ce_const), pk_col);
-            lookup_keys[k] = query_const_value(qb, rv, pk_col);
-          }
-          break;
-        case NdbDictionary::Column::Float:
-        case NdbDictionary::Column::Double:
-          if (ce_const->op == T_FLOAT) {
-            lookup_keys[k] = qb->constValue(ce_const->constant_float.dbl);
-          } else if (ce_const->op == T_INT) {
-            lookup_keys[k] =
-                qb->constValue((double) ce_const->constant_integer);
-          } else {
-            throw RonSQLPermanentError(
-                "Expected numeric constant for CTE root lookup key.");
-          }
-          break;
-        default:
-          // CHAR / VARCHAR / DECIMAL etc.: fall through to the
-          // byte-buffer variant.  May still fail validation on
-          // synthetic virt-table columns; users hitting this can
-          // fall back to scanCte by removing the equality from
-          // WHERE or expressing the constant as a different type.
-          {
-            raw_value rv = encode_constant(
-                const_cast<ConditionalExpression*>(ce_const), pk_col);
-            lookup_keys[k] = query_const_value(qb, rv, pk_col);
-          }
-          break;
-        }
-        require_qb(qb, lookup_keys[k] != NULL,
-                   "Failed to create const value for CTE root lookup.");
-      }
-      lookup_keys[root_nkeys] = nullptr;
-      if (root_residual != NULL)
-      {
-        // Phase 0a: residual conjuncts ride the same CTE_LOOKUP
-        // jump-table filter the scalar and scanCte branches already
-        // use; emit_cte_lookup_filter finalises the program and throws
-        // a clean error on unsupported atoms (which were silently
-        // dropped before).
-        NdbInterpretedCode residual_code(cteVirtualTables[0]);
-        emit_cte_lookup_filter(residual_code, scope, /*op_idx=*/0,
-                               cteVirtualTables[0], root_residual);
-        require_run(rootOpts.setInterpretedCode(residual_code) == 0,
-                    "Failed to set interpreted code on CTE_LOOKUP root.");
-      }
-      if (singleAgg != NULL && plan.agg_leaf_idx == 0 &&
-          plan.num_agg_leaves == 0 && scope.agg != NULL)
-      {
-        require_run(rootOpts.setAggregation(*singleAgg) == 0,
-                    "Failed to set aggregation on CTE_LOOKUP root.");
-      }
-      opDefs[0] = qb->lookupCte(plan.ops[0].cte_def_idx, numResultCols,
-                                 cteVirtualTables[0], lookup_keys,
-                                 &rootOpts);
-      require_qb(qb, opDefs[0] != NULL,
-                 "Failed to create lookupCte root.");
+      ra.kind = key_from_body ? RootAccess::Kind::CTE_GROUP_PROBE
+                              : RootAccess::Kind::CTE_LOOKUP;
+      ra.nkeys = root_nkeys;
+      ra.filter = root_residual;
       return;
     }
-
-    NdbInterpretedCode code(cteVirtualTables[0]);
-    if (scope.join_where_ce[0] != NULL)
+    ra.kind = RootAccess::Kind::CTE_SCAN;
+    ra.filter = scope.join_where_ce[0];
+    if (root_pk_covered)
     {
-      // emit_cte_lookup_filter already finalises the program
-      // (line ~5406 in this file).  Don't double-finalise.
-      emit_cte_lookup_filter(code, scope, /*op_idx=*/0,
-                             cteVirtualTables[0],
-                             scope.join_where_ce[0]);
-      require_run(rootOpts.setInterpretedCode(code) == 0,
-                  "Failed to set interpreted code on CTE_SCAN root.");
+      ra.reason = root_has_scan_child ? ROOT_REASON_SCAN_CHILD
+                                      : ROOT_REASON_OUTER_AGG;
     }
-    // scope.agg is the per-scope aggregator (main scope OR per-CTE
-    // body scope), so this gate fires correctly whether emit_root_op
-    // is called for the main query (Phase E.1) or for a chained CTE
-    // body (Phase E.2).
-    if (singleAgg != NULL && plan.agg_leaf_idx == 0 &&
-        plan.num_agg_leaves == 0 && scope.agg != NULL)
+    else if (flatten_overflow)
     {
-      require_run(rootOpts.setAggregation(*singleAgg) == 0,
-                  "Failed to set aggregation on CTE_SCAN root.");
+      ra.reason = ROOT_REASON_TOO_MANY_CONJUNCTS;
     }
-    opDefs[0] = qb->scanCte(plan.ops[0].cte_def_idx, numResultCols,
-                            cteVirtualTables[0], &rootOpts);
-    require_qb(qb, opDefs[0] != NULL, "Failed to create scanCte root.");
     return;
   }
 
   const NdbDictionary::Table* root_table = plan.ops[0].table;
 
-  if (&scope == &m_main_scope && m_where_never_true)
+  if (where_never_true)
   {
     // X-3: the WHERE is TRUE for no row, and its key or index bounds may
     // hold the NULL.  Scan the table and pass no row; the rest of the
     // tree still returns the result of no rows.
-    NdbInterpretedCode code(root_table);
-    NdbScanFilter filter(&code);
-    apply_reject_all_filter(&filter);
-    require_run(rootOpts.setInterpretedCode(code) == 0,
-                "Failed to set interpreted code on root scan.");
-    opDefs[0] = qb->scanTable(root_table, &rootOpts);
-    require_qb(qb, opDefs[0] != NULL, "Failed to create root scan.");
+    ra.kind = RootAccess::Kind::TABLE_SCAN;
+    ra.passes_no_row = true;
     return;
   }
 
@@ -15157,22 +15017,22 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
   // serve.  Those branches keep priority by construction: the selector
   // skips fully-PK-equality-covered roots unless FORCE INDEX overrides.
   // Bounds come from condition_handling_map; residual conjuncts go to
-  // the interpreted filter inside the helper, so join_where_ce[0] must
-  // NOT also be applied wholesale (no scanTable fallthrough).
+  // the interpreted filter inside emit_index_scan_root, so
+  // join_where_ce[0] must NOT also be applied wholesale.
   if (plan.ops[0].type == JoinOp::INDEX_SCAN &&
       scope.body_scan_config != NULL &&
       scope.body_scan_config->index == plan.ops[0].index)
   {
-    opDefs[0] = emit_index_scan_root(qb, scope, root_table,
-                                     plan.ops[0].index, rootOpts);
+    ra.kind = RootAccess::Kind::INDEX_SCAN;
+    ra.index = plan.ops[0].index;
     return;
   }
 
   ConditionalExpression* where_ce = NULL;
   bool pk_covered = false;
   bool has_scan_child = false;
+  bool flatten_overflow = false;
   int nkeys = 0;
-  ConditionalExpression* pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
   ConditionalExpression* pk_eq_ce[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
   ConditionalExpression* root_residual = NULL;
 
@@ -15183,14 +15043,14 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     nkeys = root_table->getNoOfPrimaryKeys();
     for (int k = 0; k < nkeys; k++)
     {
-      pk_const[k] = NULL;
+      ra.key_const[k] = NULL;
       pk_eq_ce[k] = NULL;
     }
-    collect_pk_equalities(where_ce, root_table, pk_const, pk_eq_ce);
+    collect_pk_equalities(where_ce, root_table, ra.key_const, pk_eq_ce);
     pk_covered = true;
     for (int k = 0; k < nkeys; k++)
     {
-      if (pk_const[k] == NULL) { pk_covered = false; break; }
+      if (ra.key_const[k] == NULL) { pk_covered = false; break; }
     }
 
     // Phase 0a: conjuncts not consumed as PK equalities must be applied
@@ -15201,6 +15061,7 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
         !build_root_residual(where_ce, pk_eq_ce, nkeys, &root_residual))
     {
       pk_covered = false;
+      flatten_overflow = true;
     }
 
     if (pk_covered)
@@ -15222,98 +15083,369 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
   // on the scan path — an aggregate LookupQuery reaches DBSPJ with an
   // empty m_aggNodes and fails lookup_send's ndbrequire (node failure;
   // also rejected at prepare time by NdbQueryDefImpl since Phase 0a).
-  // Emit the readTuple root only when nothing aggregates here
+  // Take the readTuple root only when nothing aggregates here
   // (pass-through main query), or when this is the main scope of a
   // CTE-containing query — the CTE materialisation scan makes the
   // compound query scan-rooted (the proven fpw-6 shape) — unless an
   // outer-joined child needs a scan root (F19, outer_agg_needs_scan_root).
   // CTE-body scopes always aggregate and may themselves be op[0], so
   // they always take the scan fallbacks.
-  bool lookup_root_supported = (singleAgg == NULL && scope.agg == NULL);
-  if (!lookup_root_supported && &scope == &m_main_scope &&
-      !outer_agg_needs_scan_root)
+  const char* no_lookup_reason = NULL;
+  if (aggregating)
   {
+    bool plan_has_cte_op = false;
     for (Uint32 ci = 0; ci < plan.num_ops; ci++)
     {
       if (plan.ops[ci].type == JoinOp::CTE_LOOKUP ||
           plan.ops[ci].type == JoinOp::CTE_SCAN)
       {
-        lookup_root_supported = true;
+        plan_has_cte_op = true;
         break;
       }
     }
+    if (&scope != &m_main_scope)
+      no_lookup_reason = ROOT_REASON_CTE_BODY;
+    else if (!plan_has_cte_op)
+      no_lookup_reason = ROOT_REASON_AGG_NO_CTE;
+    else if (outer_agg_needs_scan_root)
+      no_lookup_reason = ROOT_REASON_OUTER_AGG;
   }
 
-  if (pk_covered && !has_scan_child && lookup_root_supported)
+  const char* reason = NULL;
+  if (pk_covered && !has_scan_child && no_lookup_reason == NULL)
   {
     // An over-cap residual falls through to the ordered-PK-index scan /
     // table-scan branches below (scan programs travel in SCAN_FRAGREQ
     // sections instead of LQHKEYREQ; cap rationale at the shared
-    // LOOKUP_FILTER_MAX_WORDS definition).
-    NdbInterpretedCode residual_code(root_table);
+    // LOOKUP_FILTER_MAX_WORDS definition).  emit_root_op attaches the
+    // program built here.
+    NdbInterpretedCode local_code(root_table);
+    NdbInterpretedCode& code =
+        (residual_code != NULL) ? *residual_code : local_code;
     bool residual_fits = true;
     if (root_residual != NULL)
     {
-      build_where_filter(residual_code, scope, root_residual,
+      build_where_filter(code, scope, root_residual,
                          "Failed to build the WHERE filter of the root PK "
                          "lookup.");
-      residual_fits =
-          (residual_code.getWordsUsed() <= LOOKUP_FILTER_MAX_WORDS);
+      residual_fits = (code.getWordsUsed() <= LOOKUP_FILTER_MAX_WORDS);
     }
     if (residual_fits)
     {
-      const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
-      for (int k = 0; k < nkeys; k++)
-      {
-        const char* pk_name = root_table->getPrimaryKey(k);
-        const NdbDictionary::Column* pk_col =
-            root_table->getColumn(pk_name);
-        ronsql_require_bug(pk_col != NULL,
-                           "A primary key column of the table is missing.");
-        raw_value rv = encode_constant(pk_const[k], pk_col);
-        pk_keys[k] = query_const_value(qb, rv, pk_col);
-        require_qb(qb, pk_keys[k] != NULL,
-                   "Failed to create const value for PK lookup.");
-      }
-      pk_keys[nkeys] = nullptr;
-      if (root_residual != NULL)
-      {
-        require_run(rootOpts.setInterpretedCode(residual_code) == 0,
-                    "Failed to set interpreted code on root PK lookup.");
-      }
-      opDefs[0] = qb->readTuple(root_table, pk_keys, &rootOpts);
-      require_qb(qb, opDefs[0] != NULL, "Failed to create root PK lookup.");
+      ra.kind = RootAccess::Kind::PK_LOOKUP;
+      ra.nkeys = nkeys;
+      ra.filter = root_residual;
       return;
     }
+    reason = ROOT_REASON_FILTER_TOO_LARGE;
+  }
+  else if (pk_covered)
+  {
+    reason = has_scan_child ? ROOT_REASON_SCAN_CHILD : no_lookup_reason;
   }
 
   if (pk_covered)
   {
     // Reached with a scan child (a readTuple root cannot have scan
-    // children — NDB API restriction) or with a residual filter too
-    // large for a lookup op.
-    const NdbQueryOperationDef* def =
-        emit_pk_equality_index_scan_root(qb, scope, root_table,
-                                         pk_const, nkeys, root_residual,
-                                         rootOpts);
-    if (def != NULL)
+    // children — NDB API restriction), in an aggregating scope that
+    // cannot have a lookup root, or with a residual filter too large
+    // for a lookup op.
+    const char* pk_col_names[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+    for (int k = 0; k < nkeys; k++)
+      pk_col_names[k] = root_table->getPrimaryKey(k);
+    const NdbDictionary::Index* pk_ordered_idx =
+        QueryPlanner::findOrderedIndex(
+            m_dict, root_table, pk_col_names, (Uint32)nkeys);
+    if (pk_ordered_idx != NULL)
     {
-      opDefs[0] = def;
+      ra.kind = RootAccess::Kind::PK_INDEX_SCAN;
+      ra.index = pk_ordered_idx;
+      ra.nkeys = nkeys;
+      ra.filter = root_residual;
+      ra.reason = reason;
       return;
     }
     // No ordered index on PK — fall through to table scan with filter
+    ra.no_pk_index = true;
   }
 
-  NdbInterpretedCode code(root_table);
-  if (where_ce != NULL)
+  ra.kind = RootAccess::Kind::TABLE_SCAN;
+  ra.filter = where_ce;
+  ra.reason = flatten_overflow ? ROOT_REASON_TOO_MANY_CONJUNCTS : reason;
+}
+
+// Emit the root scan/lookup/index-scan for the scope's plan, as
+// decide_root_access chose it.
+void
+RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
+                              const NdbQueryOperationDef** opDefs,
+                              NdbAggregator* singleAgg,
+                              NdbDictionary::Table** cteVirtualTables)
+{
+  JoinPlan& plan = scope.join_plan;
+  NdbQueryOptions rootOpts;
+
+  // Statement-level FRAGS_PER_WORKER hint: bundle N root fragments per
+  // SPJ worker for aggregate pushed queries.  Applied to the main-query
+  // root options only (rootOpts is shared with emit_index_scan_root);
+  // CTE-body emission is deliberately untouched — the value is
+  // query-global, carried in SCAN_TABREQ.  The NDB API normalizes
+  // (power of two, cap 8), clamps to the per-node fragment count, and
+  // ignores it for non-aggregate queries, ordered/pruned scans and
+  // scanCte-containing queries (see frags_per_worker_plan.md).
+  if (m_context.ast_root.frags_per_worker > 0)
   {
-    build_where_filter(code, scope, where_ce,
-                       "Failed to build the WHERE filter of the root scan.");
-    set_where_filter(rootOpts, code,
-                     "Failed to set interpreted code on root scan.");
+    rootOpts.setFragsPerWorker((Uint32)m_context.ast_root.frags_per_worker);
   }
-  opDefs[0] = qb->scanTable(root_table, &rootOpts);
-  require_qb(qb, opDefs[0] != NULL, "Failed to create root scan.");
+
+  NdbDictionary::Table* cte_vt = NULL;
+  if (plan.ops[0].type == JoinOp::CTE_SCAN && cteVirtualTables != NULL)
+    cte_vt = cteVirtualTables[0];
+  const NdbDictionary::Table* root_table = plan.ops[0].table;
+  // A PK_LOOKUP's filter, built by decide_root_access.
+  NdbInterpretedCode lookup_residual_code(root_table);
+  RootAccess ra;
+  decide_root_access(scope, singleAgg != NULL || scope.agg != NULL, cte_vt,
+                     &lookup_residual_code, ra);
+
+  // The aggregator goes on the root when the root is the aggregation
+  // leaf.  scope.agg is the per-scope aggregator (main scope OR per-CTE
+  // body scope), so this gate fires correctly whether emit_root_op is
+  // called for the main query (Phase E.1) or for a chained CTE body
+  // (Phase E.2).
+  const bool agg_on_root =
+      (singleAgg != NULL && plan.agg_leaf_idx == 0 &&
+       plan.num_agg_leaves == 0 && scope.agg != NULL);
+  Uint32 numResultCols = 0;
+  if (plan.ops[0].type == JoinOp::CTE_SCAN)
+  {
+    for (const Outputs* o = plan.ops[0].cte_def->stmt->outputs;
+         o != NULL; o = o->next) numResultCols++;
+  }
+
+  switch (ra.kind)
+  {
+  case RootAccess::Kind::REFUSED:
+    ndbrequire(m_conf.err_stream != NULL);  // X-14: kept, see configure()
+    *m_conf.err_stream
+        << "An outer join below a scalar CTE root with a WHERE clause"
+           " is not supported in an aggregate query: the root is a"
+           " single-row CTE lookup, which cannot NULL-extend the"
+           " outer join's misses.\n";
+    throw RonSQLPermanentError(ra.refusal);
+
+  case RootAccess::Kind::CTE_SCAN:
+  {
+    // Reuses the CTE_LOOKUP filter helper (same opcode family —
+    // verified by testCteNdbApiFilter::testCteScanFilterRoot).
+    NdbInterpretedCode code(cte_vt);
+    if (ra.passes_no_row)
+    {
+      NdbScanFilter filter(&code);
+      apply_reject_all_filter(&filter);
+      require_run(rootOpts.setInterpretedCode(code) == 0,
+                  "Failed to set interpreted code on CTE_SCAN root.");
+    }
+    else if (ra.filter != NULL)
+    {
+      // emit_cte_lookup_filter finalises the program.
+      emit_cte_lookup_filter(code, scope, /*op_idx=*/0, cte_vt, ra.filter);
+      require_run(rootOpts.setInterpretedCode(code) == 0,
+                  "Failed to set interpreted code on CTE_SCAN root.");
+    }
+    if (agg_on_root)
+    {
+      require_run(rootOpts.setAggregation(*singleAgg) == 0,
+                  "Failed to set aggregation on CTE_SCAN root.");
+    }
+    opDefs[0] = qb->scanCte(plan.ops[0].cte_def_idx, numResultCols,
+                            cte_vt, &rootOpts);
+    require_qb(qb, opDefs[0] != NULL, "Failed to create scanCte root.");
+    return;
+  }
+
+  case RootAccess::Kind::CTE_SCALAR_LOOKUP:
+  {
+    NdbInterpretedCode code(cte_vt);
+    if (ra.passes_no_row)
+    {
+      NdbScanFilter filter(&code);
+      apply_reject_all_filter(&filter);
+    }
+    else
+    {
+      emit_cte_lookup_filter(code, scope, /*op_idx=*/0, cte_vt, ra.filter);
+    }
+    require_run(rootOpts.setInterpretedCode(code) == 0,
+                "Failed to set interpreted code on scalar CTE root.");
+    if (agg_on_root)
+    {
+      require_run(rootOpts.setAggregation(*singleAgg) == 0,
+                  "Failed to set aggregation on scalar CTE root.");
+    }
+    const NdbQueryOperand* scalar_keys[2];
+    scalar_keys[0] = scalar_cte_dummy_key(qb, cte_vt);
+    scalar_keys[1] = nullptr;
+    opDefs[0] = qb->lookupCte(plan.ops[0].cte_def_idx, numResultCols,
+                              cte_vt, scalar_keys, &rootOpts);
+    require_qb(qb, opDefs[0] != NULL,
+               "Failed to create scalar lookupCte root.");
+    return;
+  }
+
+  case RootAccess::Kind::CTE_LOOKUP:
+  case RootAccess::Kind::CTE_GROUP_PROBE:
+  {
+    const NdbQueryOperand* lookup_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+    for (int k = 0; k < ra.nkeys; k++)
+    {
+      const char* pk_name = cte_vt->getPrimaryKey(k);
+      const NdbDictionary::Column* pk_col = cte_vt->getColumn(pk_name);
+      ronsql_require_bug(pk_col != NULL,
+                         "A key column of a CTE virtual table is missing.");
+      const ConditionalExpression* ce_const = ra.key_const[k];
+      switch (pk_col->getType()) {
+      case NdbDictionary::Column::Tinyint:
+      case NdbDictionary::Column::Smallint:
+      case NdbDictionary::Column::Mediumint:
+      case NdbDictionary::Column::Int:
+      case NdbDictionary::Column::Bigint:
+      case NdbDictionary::Column::Tinyunsigned:
+      case NdbDictionary::Column::Smallunsigned:
+      case NdbDictionary::Column::Mediumunsigned:
+      case NdbDictionary::Column::Unsigned:
+      case NdbDictionary::Column::Bigunsigned:
+        require_prm(ce_const->op == T_INT,
+                    "Expected integer constant for CTE root lookup key.");
+        // Encoded as on the real-table root, which refuses a literal
+        // outside the column type's domain with a permanent error
+        // (build_cte_virtual_tables sizes the virtual column as the
+        // dictionary would, so the byte-buffer operand binds).  The
+        // typed constValue overloads took the literal cast to Int32,
+        // Uint32 or Uint64, which wrapped it into another key (J-3:
+        // INT 4294967297 probed key 1), and sent a MEDIUMINT key as 4
+        // bytes where the materialized group key has 3.
+        {
+          raw_value rv = encode_constant(
+              const_cast<ConditionalExpression*>(ce_const), pk_col);
+          lookup_keys[k] = query_const_value(qb, rv, pk_col);
+        }
+        break;
+      case NdbDictionary::Column::Float:
+      case NdbDictionary::Column::Double:
+        if (ce_const->op == T_FLOAT) {
+          lookup_keys[k] = qb->constValue(ce_const->constant_float.dbl);
+        } else if (ce_const->op == T_INT) {
+          lookup_keys[k] =
+              qb->constValue((double) ce_const->constant_integer);
+        } else {
+          throw RonSQLPermanentError(
+              "Expected numeric constant for CTE root lookup key.");
+        }
+        break;
+      default:
+        // CHAR / VARCHAR / DECIMAL etc.: fall through to the
+        // byte-buffer variant.  May still fail validation on
+        // synthetic virt-table columns; users hitting this can
+        // fall back to scanCte by removing the equality from
+        // WHERE or expressing the constant as a different type.
+        {
+          raw_value rv = encode_constant(
+              const_cast<ConditionalExpression*>(ce_const), pk_col);
+          lookup_keys[k] = query_const_value(qb, rv, pk_col);
+        }
+        break;
+      }
+      require_qb(qb, lookup_keys[k] != NULL,
+                 "Failed to create const value for CTE root lookup.");
+    }
+    lookup_keys[ra.nkeys] = nullptr;
+    if (ra.filter != NULL)
+    {
+      // Phase 0a: residual conjuncts ride the same CTE_LOOKUP
+      // jump-table filter the scalar and scanCte branches already
+      // use; emit_cte_lookup_filter finalises the program and throws
+      // a clean error on unsupported atoms (which were silently
+      // dropped before).
+      NdbInterpretedCode residual_code(cte_vt);
+      emit_cte_lookup_filter(residual_code, scope, /*op_idx=*/0, cte_vt,
+                             ra.filter);
+      require_run(rootOpts.setInterpretedCode(residual_code) == 0,
+                  "Failed to set interpreted code on CTE_LOOKUP root.");
+    }
+    if (agg_on_root)
+    {
+      require_run(rootOpts.setAggregation(*singleAgg) == 0,
+                  "Failed to set aggregation on CTE_LOOKUP root.");
+    }
+    opDefs[0] = qb->lookupCte(plan.ops[0].cte_def_idx, numResultCols,
+                              cte_vt, lookup_keys, &rootOpts);
+    require_qb(qb, opDefs[0] != NULL, "Failed to create lookupCte root.");
+    return;
+  }
+
+  case RootAccess::Kind::INDEX_SCAN:
+    opDefs[0] = emit_index_scan_root(qb, scope, root_table, ra.index,
+                                     rootOpts);
+    return;
+
+  case RootAccess::Kind::PK_LOOKUP:
+  {
+    const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+    for (int k = 0; k < ra.nkeys; k++)
+    {
+      const char* pk_name = root_table->getPrimaryKey(k);
+      const NdbDictionary::Column* pk_col = root_table->getColumn(pk_name);
+      ronsql_require_bug(pk_col != NULL,
+                         "A primary key column of the table is missing.");
+      raw_value rv = encode_constant(ra.key_const[k], pk_col);
+      pk_keys[k] = query_const_value(qb, rv, pk_col);
+      require_qb(qb, pk_keys[k] != NULL,
+                 "Failed to create const value for PK lookup.");
+    }
+    pk_keys[ra.nkeys] = nullptr;
+    if (ra.filter != NULL)
+    {
+      require_run(rootOpts.setInterpretedCode(lookup_residual_code) == 0,
+                  "Failed to set interpreted code on root PK lookup.");
+    }
+    opDefs[0] = qb->readTuple(root_table, pk_keys, &rootOpts);
+    require_qb(qb, opDefs[0] != NULL, "Failed to create root PK lookup.");
+    return;
+  }
+
+  case RootAccess::Kind::PK_INDEX_SCAN:
+    opDefs[0] = emit_pk_equality_index_scan_root(
+        qb, scope, root_table, ra.index, ra.key_const, ra.nkeys, ra.filter,
+        rootOpts);
+    return;
+
+  case RootAccess::Kind::TABLE_SCAN:
+  {
+    NdbInterpretedCode code(root_table);
+    if (ra.passes_no_row)
+    {
+      NdbScanFilter filter(&code);
+      apply_reject_all_filter(&filter);
+      require_run(rootOpts.setInterpretedCode(code) == 0,
+                  "Failed to set interpreted code on root scan.");
+    }
+    else if (ra.filter != NULL)
+    {
+      build_where_filter(code, scope, ra.filter,
+                         "Failed to build the WHERE filter of the root scan.");
+      set_where_filter(rootOpts, code,
+                       "Failed to set interpreted code on root scan.");
+    }
+    opDefs[0] = qb->scanTable(root_table, &rootOpts);
+    require_qb(qb, opDefs[0] != NULL, "Failed to create root scan.");
+    return;
+  }
+
+  case RootAccess::Kind::NOT_DECIDED:
+    break;
+  }
+  ronsql_bug("The root access of a join plan was not decided.");
 }
 
 // Recursively resolve the (Type, length, charset) tuple for a column
@@ -22861,11 +22993,12 @@ RonSQLPreparer::print_join_plan_ops(QueryScope& scope, const char* line_prefix)
     }
     if (op.alias.len > 0) out << " AS " << op.alias.c_str();
     // Phase 3 (W2): show the topology — a star and a chain used to
-    // print identically.  No recorded baseline contains this print
-    // (it goes to ronsql_explain.inc's $EXPLAIN_FILE), so the
-    // annotation is baseline-safe.
+    // print identically.  J-9: the parent in the SPJ tree, which
+    // emit_child_ops sets with setParent; for chained sibling
+    // CTE_LOOKUPs it is the previous CTE_LOOKUP, not the key source,
+    // which the Key line shows.
     if (!op.is_root) {
-      out << "  <- " << jp.ops[op.parent_op_idx].alias.c_str();
+      out << "  <- " << jp.ops[op.tree_parent_op_idx].alias.c_str();
     }
     out << '\n';
     char indent[64];
@@ -22889,6 +23022,9 @@ RonSQLPreparer::print_join_plan_ops(QueryScope& scope, const char* line_prefix)
         out << op.index->getColumn(c)->getName();
       }
       out << ")\n";
+    }
+    if (op.is_root) {
+      print_root_access(scope, indent);
     }
     // Root scan-config conditions (join_root_index_scan_plan.md):
     // show bound-vs-filter routing for a scan-config-selected
@@ -23011,7 +23147,11 @@ RonSQLPreparer::print_join_plan_ops(QueryScope& scope, const char* line_prefix)
         scope.join_where_ce[i] != NULL) {
       out << indent << "  Residual filter: yes\n";
     }
-    if (jp.num_agg_leaves > 0) {
+    // J-9: only where the scope aggregates; the planner sets
+    // agg_leaf_idx for a pass-through join too.
+    if (!scope_aggregates(scope)) {
+      // no aggregation leaf
+    } else if (jp.num_agg_leaves > 0) {
       for (Uint32 a = 0; a < jp.num_agg_leaves; a++) {
         if (jp.agg_leaf_indices[a] == i) {
           out << indent << "  ** Aggregation leaf **\n";
@@ -23022,6 +23162,91 @@ RonSQLPreparer::print_join_plan_ops(QueryScope& scope, const char* line_prefix)
       out << indent << "  ** Aggregation leaf **\n";
     }
   }
+}
+
+/**
+ * J-9: the root access that decide_root_access chooses, the one
+ * emit_root_op builds: the NDB API operation, its filter, and why a
+ * lookup was not taken where the WHERE binds the whole key.  A CTE root
+ * needs its virtual table, built here as execute_join builds it.
+ * EXPLAIN runs no subquery, so a root WHERE that holds one is decided
+ * at execution.
+ */
+void
+RonSQLPreparer::print_root_access(QueryScope& scope, const char* indent)
+{
+  if (m_conf.ndb == NULL) return;
+  std::basic_ostream<char>& out = *m_conf.out_stream;
+  const JoinPlan& plan = scope.join_plan;
+  if (ce_has_subquery(scope.join_where_ce[0])) {
+    out << indent
+        << "  Root access: decided at execution, after the subqueries run\n";
+    return;
+  }
+  NdbDictionary::Table* vts[MAX_SPJ_TREE_NODES] = {};
+  NdbAggregator* no_aggs[MAX_SPJ_TREE_NODES] = {};
+  JoinQueryObjects objs(vts, no_aggs);
+  if (plan.ops[0].type == JoinOp::CTE_SCAN) {
+    build_cte_virtual_tables(plan, vts);
+  }
+  // Decided before anything is printed: an error leaves no half line.
+  RootAccess ra;
+  decide_root_access(scope, scope_aggregates(scope), vts[0], NULL, ra);
+  out << indent << "  Root access: ";
+  bool filter_is_rest = false;
+  switch (ra.kind) {
+  case RootAccess::Kind::NOT_DECIDED:
+    out << "not decided";
+    break;
+  case RootAccess::Kind::REFUSED:
+    out << "refused: " << ra.refusal;
+    break;
+  case RootAccess::Kind::TABLE_SCAN:
+    out << "scanTable";
+    break;
+  case RootAccess::Kind::INDEX_SCAN:
+    out << "scanIndex on " << ra.index->getName();
+    break;
+  case RootAccess::Kind::PK_LOOKUP:
+    out << "readTuple on the primary key";
+    filter_is_rest = true;
+    break;
+  case RootAccess::Kind::PK_INDEX_SCAN:
+    out << "scanIndex on " << ra.index->getName()
+        << ", equal on the primary key";
+    filter_is_rest = true;
+    break;
+  case RootAccess::Kind::CTE_SCAN:
+    out << "scanCte";
+    break;
+  case RootAccess::Kind::CTE_LOOKUP:
+    out << "lookupCte on the CTE key";
+    filter_is_rest = true;
+    break;
+  case RootAccess::Kind::CTE_GROUP_PROBE:
+    out << "lookupCte on the CTE key its body binds (single group)";
+    break;
+  case RootAccess::Kind::CTE_SCALAR_LOOKUP:
+    out << "lookupCte of a scalar CTE";
+    break;
+  }
+  if (ra.passes_no_row) {
+    out << "; filter: passes no row";
+  } else if (ra.filter != NULL) {
+    out << "; filter: " << (filter_is_rest ? "rest of WHERE" : "WHERE");
+  }
+  if (ra.reason != NULL || ra.no_pk_index) {
+    out << " (no lookup: ";
+    if (ra.reason != NULL) {
+      out << ra.reason;
+      if (ra.no_pk_index) out << "; ";
+    }
+    if (ra.no_pk_index) {
+      out << "no ordered index on the primary key";
+    }
+    out << ")";
+  }
+  out << '\n';
 }
 
 void
@@ -23174,10 +23399,15 @@ RonSQLPreparer::print()
     out << '\n';
   }
 
-  // Print join plan at the top for multi-table queries
-  if (m_conf.ndb != NULL && m_scan_config == NULL && m_main_scope.join_plan.num_ops > 1) {
+  // Print join plan at the top for multi-table queries, and (J-9) for
+  // a query on one CTE, to show its root access.
+  if (m_conf.ndb != NULL && m_scan_config == NULL &&
+      (m_main_scope.join_plan.num_ops > 1 ||
+       (m_main_scope.join_plan.num_ops == 1 && is_join_query()))) {
     out << "Join plan (" << m_main_scope.join_plan.num_ops
-        << " operations):\n";
+        << (m_main_scope.join_plan.num_ops == 1 ? " operation"
+                                                : " operations")
+        << "):\n";
     print_join_plan_ops(m_main_scope, "");
     out << '\n';
   }

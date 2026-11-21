@@ -1287,6 +1287,53 @@ private:
   // (which forces QueryPlanner to produce a CTE_SCAN root op and the
   // emit/execute path to use the multi-op infrastructure).
   bool is_join_query() const;
+  /* J-9: how the root operation of a join plan reads its rows.
+   * decide_root_access() makes the choice; emit_root_op() builds what it
+   * decided and EXPLAIN prints it, so the two cannot disagree. */
+  struct RootAccess {
+    enum class Kind : uint8_t {
+      NOT_DECIDED = 0,    // EXPLAIN only: the root's WHERE holds a subquery
+      REFUSED,            // the shape is refused; refusal says why
+      TABLE_SCAN,         // scanTable, filter = the whole WHERE
+      INDEX_SCAN,         // scan-config index scan: bounds and filter
+      PK_LOOKUP,          // readTuple on the primary key
+      PK_INDEX_SCAN,      // scanIndex on an ordered index of the PK
+      CTE_SCAN,           // scanCte, filter = the whole WHERE
+      CTE_LOOKUP,         // lookupCte on the full virtual-table key
+      CTE_GROUP_PROBE,    // G4: lookupCte, key from the CTE body's WHERE
+      CTE_SCALAR_LOOKUP   // lookupCte of a scalar CTE, dummy key
+    };
+    Kind kind = Kind::NOT_DECIDED;
+    // X-3: the WHERE is never TRUE; the root passes no row.
+    bool passes_no_row = false;
+    // The filter on the root's rows, NULL for none: the whole WHERE for
+    // a scan, the conjuncts left after the key for a lookup.
+    struct ConditionalExpression* filter = NULL;
+    // PK_LOOKUP, PK_INDEX_SCAN, CTE_LOOKUP, CTE_GROUP_PROBE: the
+    // constant of each key column, in key order.
+    int nkeys = 0;
+    struct ConditionalExpression* key_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+    // INDEX_SCAN, PK_INDEX_SCAN
+    const NdbDictionary::Index* index = NULL;
+    // Why a lookup was not taken where the WHERE binds the whole key;
+    // NULL when it was, or when the WHERE does not bind the key.
+    const char* reason = NULL;
+    // TABLE_SCAN: the WHERE binds the whole key, but the table has no
+    // ordered index on its primary key for a PK_INDEX_SCAN.
+    bool no_pk_index = false;
+    // REFUSED: the error message.
+    const char* refusal = NULL;
+  };
+  // Whether the scope aggregates: a CTE body always does, the main query
+  // when it is an aggregate query.
+  bool scope_aggregates(const QueryScope& scope) const;
+  // cte_vt: the root's virtual table when the root is a CTE_SCAN.
+  // residual_code: when not NULL, a PK_LOOKUP's filter is built into it
+  // (the decision needs its size); emit_root_op uses it.
+  void decide_root_access(QueryScope& scope, bool aggregating,
+                          const NdbDictionary::Table* cte_vt,
+                          NdbInterpretedCode* residual_code,
+                          RootAccess& ra);
   void emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
                     const NdbQueryOperationDef** opDefs,
                     NdbAggregator* singleAgg = nullptr,
@@ -1359,12 +1406,12 @@ private:
   // fully covers the PK by equality but a readTuple root is unavailable
   // (a scan child exists, or the residual filter exceeds the lookup-op
   // program cap).  Attaches the residual conjuncts as an InterpretedCode
-  // filter.  Returns NULL when the table has no ordered index on the PK
-  // columns; the caller then falls back to a table scan with the full
-  // WHERE filter.
+  // filter.  pk_ordered_idx is the ordered index on the PK columns that
+  // decide_root_access found.
   const NdbQueryOperationDef* emit_pk_equality_index_scan_root(
       NdbQueryBuilder* qb, QueryScope& scope,
       const NdbDictionary::Table* root_table,
+      const NdbDictionary::Index* pk_ordered_idx,
       struct ConditionalExpression* const pk_const[], int nkeys,
       struct ConditionalExpression* residual,
       NdbQueryOptions& rootOpts);
@@ -1547,6 +1594,8 @@ private:
   void print_result_json(NdbAggregator* aggregator);
   void print();
   void print_join_plan_ops(QueryScope& scope, const char* line_prefix);
+  // J-9: the "Root access:" line of a join plan's root.
+  void print_root_access(QueryScope& scope, const char* indent);
   void print(struct ConditionalExpression* ce,
              LexString prefix);
   // E-1: the arguments of GREATEST / LEAST, and a subquery by its table.
