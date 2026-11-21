@@ -11662,9 +11662,9 @@ void
 RonSQLPreparer::execute()
 {
   DEB_TRACE();
-  require_prm(m_status != Status::FAILED,
-              "Attempting RonSQLPreparer::execute while in failed state.");
-  DEB_TRACE();
+  // T-20: a preparer is never in state FAILED here: both constructors set
+  // it only in their catch (...), whose handle_ronsql_exception always
+  // throws, so no caller holds a preparer that failed.
   ronsql_require_bug(m_status == Status::PREPARED,
                      "RonSQLPreparer::execute() needs a prepared statement.");
   DEB_TRACE();
@@ -18075,10 +18075,6 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
     JoinOp& op = plan.ops[i];
     NdbQueryOptions opts;
     switch (op.match_type) {
-    case JoinOp::SEMI_JOIN:
-      opts.setMatchType(NdbQueryOptions::MatchNonNull);
-      opts.setMatchType(NdbQueryOptions::MatchFirst);
-      break;
     case JoinOp::ANTI_JOIN:
       opts.setMatchType(NdbQueryOptions::MatchNullOnly);
       break;
@@ -18390,24 +18386,10 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
       break;
     }
     case JoinOp::CTE_SCAN:
-    {
-      // scanCte takes (cteId, numCols, virtTab, options) — no keys[].
-      // If the planner picked CTE_SCAN as a non-root child WITH linked
-      // keys, that's a shape scanCte doesn't support — reject cleanly
-      // rather than emit incorrect code.  The parent->child join must
-      // express its dependency via aggregator linked-loads instead.
-      require_run(op.num_key_cols == 0,
-                  "CTE_SCAN as join child with linked keys is not "
-                  "supported (use CTE_LOOKUP for keyed access).");
-      require_run(cteVirtualTables != NULL && cteVirtualTables[i] != NULL,
-                  "CTE_SCAN as join child requires a virtual table.");
-      Uint32 numResultCols = 0;
-      for (const Outputs* o = op.cte_def->stmt->outputs; o; o = o->next)
-        numResultCols++;
-      opDefs[i] = qb->scanCte(op.cte_def_idx, numResultCols,
-                               cteVirtualTables[i], &opts);
-      break;
-    }
+      // T-20: QueryPlanner::plan makes a CTE a CTE_SCAN only as the root
+      // of a plan; below the root it is a CTE_LOOKUP.  The emit of a
+      // CTE_SCAN child (scanCte with no keys) was never reached.
+      ronsql_bug("A CTE scan below the root of a join plan.");
     default:
       ronsql_bug("A join operation has an unknown type.");
     }
@@ -23163,7 +23145,6 @@ RonSQLPreparer::print_join_plan_ops(QueryScope& scope, const char* line_prefix)
       switch (op.match_type) {
       case JoinOp::INNER:      out << "[INNER] ";      break;
       case JoinOp::LEFT_OUTER: out << "[LEFT JOIN] ";   break;
-      case JoinOp::SEMI_JOIN:  out << "[SEMI] ";        break;
       case JoinOp::ANTI_JOIN:  out << "[ANTI] ";        break;
       }
     }
