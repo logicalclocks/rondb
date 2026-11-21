@@ -83,7 +83,31 @@ call mtr.add_suppression("Participant timeout");
 # first dumps take less than 200 ms: DUMP 2560 used to find the scan still
 # RUNNING with setupOutstanding=2.  Let the REFs arrive before the leak
 # dumps; a scan the round does not release is still caught.
---sleep 1
+# T-19: instead of a fixed second, which a loaded machine can outlast,
+# wait until DBTC holds no open transaction (ndbinfo.cluster_transactions
+# lists every transaction record that is not idle), for at most 30 s; a
+# transaction still open then is left to the dumps.  If none was seen
+# open, the REFs may still be on their way: wait the second as before.
+--let $cps_seen_open = 0
+--let $cps_polls = 300
+while ($cps_polls)
+{
+  --let $cps_open = `SELECT COUNT(*) FROM ndbinfo.cluster_transactions`
+  if ($cps_open)
+  {
+    --let $cps_seen_open = 1
+    --sleep 0.1
+    --dec $cps_polls
+  }
+  if (!$cps_open)
+  {
+    --let $cps_polls = 0
+  }
+}
+if (!$cps_seen_open)
+{
+  --sleep 1
+}
 
 --echo
 --echo === cps-3: leak checks (each dump crashes its node on a leak) ===

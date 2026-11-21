@@ -55,6 +55,16 @@ if ($orders_frags < 1)
   --die No fragments found for test/def/orders in ndbinfo.memory_per_fragment
 }
 
+# T-19: the truncating LIMITs without ORDER BY below (pl-1, pl-5) project
+# cf.n, the order count of a customer, and are deterministic only because
+# every customer has exactly 5 orders (cte_data.inc).  Fail at once if the
+# data loses that property, instead of comparing a nondeterministic cut.
+--let $pl_uniform = `SELECT MIN(n) = 5 AND MAX(n) = 5 FROM (SELECT COUNT(*) AS n FROM orders GROUP BY o_custkey) AS t`
+if (!$pl_uniform)
+{
+  --die body_passthrough_limit.inc: every customer must have exactly 5 orders
+}
+
 DELIMITER |;
 
 # ============================================================

@@ -62,6 +62,16 @@ call mtr.add_suppression("Participant timeout");
 --source suite/ronsql_cte/include/cte_schema.inc
 --source suite/ronsql_cte/include/cte_data.inc
 
+# T-19: the streaming LIMIT 3 without ORDER BY in section B prints
+# COUNT(*) per nationkey of the customers with orders, deterministic only
+# because every nation has 12 customers and every customer has orders
+# (cte_data.inc).  Fail at once if the data loses that property.
+--let $ob_uniform = `SELECT MIN(c) = 12 AND MAX(c) = 12 FROM (SELECT COUNT(*) AS c FROM customer AS cu WHERE EXISTS (SELECT 1 FROM orders AS o WHERE o.o_custkey = cu.c_custkey) GROUP BY cu.c_nationkey) AS t`
+if (!$ob_uniform)
+{
+  --die body_orderby_limit.inc: every nation must have 12 customers with orders
+}
+
 DELIMITER |;
 
 # ============================================================
