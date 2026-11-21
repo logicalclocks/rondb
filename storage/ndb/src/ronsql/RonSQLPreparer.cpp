@@ -6277,25 +6277,76 @@ check_no_nested_exists(const ConditionalExpression* ce)
 }
 
 /*
+ * F-13: whether a column is one READ_ATTR_INTO_REG loads into a typed
+ * register that the register compare compares as SQL does: the integer
+ * types and FLOAT and DOUBLE.  A CASE condition compares two such columns
+ * in registers (generate_embedded_condition), and so does a WHERE filter
+ * since F-13 (NdbScanFilter::cmp_typed, the same type set).
+ */
+static bool
+numeric_register_column(const NdbDictionary::Column* c)
+{
+  switch (c->getType()) {
+  case NdbDictionary::Column::Tinyint:
+  case NdbDictionary::Column::Tinyunsigned:
+  case NdbDictionary::Column::Smallint:
+  case NdbDictionary::Column::Smallunsigned:
+  case NdbDictionary::Column::Mediumint:
+  case NdbDictionary::Column::Mediumunsigned:
+  case NdbDictionary::Column::Int:
+  case NdbDictionary::Column::Unsigned:
+  case NdbDictionary::Column::Bigint:
+  case NdbDictionary::Column::Bigunsigned:
+  case NdbDictionary::Column::Float:
+  case NdbDictionary::Column::Double:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/*
+ * F-13: whether a WHERE filter can compare these two columns of one
+ * table: the same type (isBindable: type, precision, length, scale and
+ * character set, BLOB/TEXT excluded; NdbScanFilter::cmp,
+ * BRANCH_ATTR_OP_ATTR), or two numeric ones in any mix
+ * (NdbScanFilter::cmp_typed).  apply_filter_cmp emits by the same test,
+ * and check_cte_body_col_vs_col refuses the rest at prepare time.
+ */
+static bool
+filter_can_compare_columns(const NdbDictionary::Column* a,
+                           const NdbDictionary::Column* b)
+{
+  return a->isBindable(*b) == 0 ||
+         (numeric_register_column(a) && numeric_register_column(b));
+}
+
+static const char* const FILTER_COLUMN_PAIR_UNSUPPORTED =
+    "A comparison of two columns in a WHERE clause is not supported for "
+    "these types: the columns must have the same type, precision, length, "
+    "scale and character set (BLOB/TEXT excluded), or both be integer, "
+    "FLOAT or DOUBLE columns. Compare a column to a constant instead.";
+
+/*
  * F-colvscol W2 (cte_body_colvscol_plan.md): walk a CTE-body WHERE tree
  * and validate every comparison predicate that compares two columns
  * (column-vs-column).
  *
- * Tier (a): a col-vs-col comparison is accepted when both operands are
- * stored columns of the body's root op and the pair passes
- * NdbDictionary::Column::isBindable — identical type, precision, length,
- * scale and character set, BLOB/TEXT excluded.  The emit is
- * apply_filter_cmp's attr-vs-attr arm (NdbScanFilter::cmp(cond, attrId1,
- * attrId2) -> BRANCH_ATTR_OP_ATTR), whose API-side validation is the
- * same isBindable call — sharing the predicate keeps gate and emit from
- * drifting (an emit-time 4557 would surface as a retryable
- * RonSQLMaybeStaleSchema and turn into a client retry storm).
+ * A col-vs-col comparison is accepted when both operands are stored
+ * columns of the body's root op and filter_can_compare_columns takes
+ * the pair: the same type (tier (a), NdbScanFilter::cmp ->
+ * BRANCH_ATTR_OP_ATTR), or since F-13 two numeric columns of any types
+ * (tier (b), NdbScanFilter::cmp_typed -> typed registers).
+ * apply_filter_cmp emits by the same test — sharing the predicate keeps
+ * gate and emit from drifting (an emit-time 4557 would surface as a
+ * retryable RonSQLMaybeStaleSchema and turn into a client retry storm).
  *
- * Everything else throws a permanent error: mixed-type pairs (tier (b),
- * deferred until a typed leaf-local register load exists) and pairs not
- * both on the body's root op (child-op and cross-table compares in join
- * bodies).  Column-vs-constant predicates are unaffected.  Main-query
- * col-vs-col does not flow through build_cte_scopes and is unaffected.
+ * Everything else throws a permanent error: other mixed-type pairs
+ * (DECIMAL, strings, temporal types) and pairs not both on the body's
+ * root op (child-op and cross-table compares in join bodies).
+ * Column-vs-constant predicates are unaffected.  Main-query col-vs-col
+ * does not flow through build_cte_scopes; apply_filter_cmp refuses its
+ * unsupported pairs when it builds the filter.
  */
 void
 RonSQLPreparer::check_cte_body_col_vs_col(
@@ -6335,13 +6386,11 @@ RonSQLPreparer::check_cte_body_col_vs_col(
       require_run(left_ref.dict_column != NULL &&
                       right_ref.dict_column != NULL,
                   "CTE-body col-vs-col check: missing column descriptors.");
-      if (left_ref.dict_column->isBindable(*right_ref.dict_column) != 0)
+      if (!filter_can_compare_columns(left_ref.dict_column,
+                                      right_ref.dict_column))
       {
-        throw RonSQLPermanentError(
-            "Column-vs-column comparison in a CTE body WHERE clause "
-            "requires columns of identical type, precision, length, scale "
-            "and character set (BLOB/TEXT excluded) — cast one side or "
-            "compare against a constant.");
+        throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
+                                   FILTER_COLUMN_PAIR_UNSUPPORTED);
       }
     }
     // A comparison's operands are scalar expressions, not boolean
@@ -19410,9 +19459,30 @@ RonSQLPreparer::apply_filter_cmp(NdbScanFilter* filter,
         right_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
         "WHERE filter column-vs-column comparison requires stored-table "
         "columns.");
-    require_sch(DBG(filter->cmp(DBG(cond),
-                                DBG(left_ref.attr_id),
-                                DBG(right_ref.attr_id))) >= 0,
+    require_prm(left_ref.dict_column != NULL && right_ref.dict_column != NULL,
+                "WHERE filter comparison has no source column descriptor.");
+    // F-13: two columns of the same type compare in the kernel's column
+    // compare; two numeric columns of other types in typed registers, as
+    // a CASE condition compares them.  Any other pair failed here with
+    // "Failed to apply filter." (4557), which as a stale schema was
+    // retried until the retries ran out; it is refused now.
+    if (left_ref.dict_column->isBindable(*right_ref.dict_column) == 0)
+    {
+      require_sch(DBG(filter->cmp(DBG(cond),
+                                  DBG(left_ref.attr_id),
+                                  DBG(right_ref.attr_id))) >= 0,
+                  filter_fail);
+      return;
+    }
+    if (!filter_can_compare_columns(left_ref.dict_column,
+                                    right_ref.dict_column))
+    {
+      throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
+                                 FILTER_COLUMN_PAIR_UNSUPPORTED);
+    }
+    require_sch(DBG(filter->cmp_typed(DBG(cond),
+                                      DBG(left_ref.attr_id),
+                                      DBG(right_ref.attr_id))) >= 0,
                 filter_fail);
     return;
   }
@@ -22682,34 +22752,14 @@ RonSQLPreparer::generate_embedded_condition(
       // Register-based path supports every NDB integer width.  Leaf
       // operands use READ_ATTR_INTO_REG (DBTUP's type-aware loader);
       // linked operands use READ_LINKED_COLUMN_TO_REG (Phase I.5 v5)
-      // which decodes by NDB type with correct sign extension.
-      auto can_load_typed_reg =
-          [](const NdbDictionary::Column* c)
-      {
-        switch (c->getType()) {
-        case NdbDictionary::Column::Tinyint:
-        case NdbDictionary::Column::Tinyunsigned:
-        case NdbDictionary::Column::Smallint:
-        case NdbDictionary::Column::Smallunsigned:
-        case NdbDictionary::Column::Mediumint:
-        case NdbDictionary::Column::Mediumunsigned:
-        case NdbDictionary::Column::Int:
-        case NdbDictionary::Column::Unsigned:
-        case NdbDictionary::Column::Bigint:
-        case NdbDictionary::Column::Bigunsigned:
-        case NdbDictionary::Column::Float:
-        case NdbDictionary::Column::Double:
-          return true;
-        default:
-          return false;
-        }
-      };
+      // which decodes by NDB type with correct sign extension.  The
+      // type set is the WHERE filter's (numeric_register_column, F-13).
       require_prm(info.lhs.kind != SideKind::InlineLinked &&
                   info.rhs.kind != SideKind::InlineLinked,
                   "CASE condition with two CTE-leaf columns is not yet "
                   "supported.");
-      require_unsupported(can_load_typed_reg(info.lhs.col) &&
-                  can_load_typed_reg(info.rhs.col),
+      require_unsupported(numeric_register_column(info.lhs.col) &&
+                  numeric_register_column(info.rhs.col),
                   "Column-vs-column CASE / GREATEST / LEAST currently "
                   "supports integer and FLOAT / DOUBLE operands only; "
                   "VARCHAR and DECIMAL operands are not supported.");

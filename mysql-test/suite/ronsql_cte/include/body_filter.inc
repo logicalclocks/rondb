@@ -963,8 +963,12 @@ GROUP BY sums.k|
 # cte_body_colvscol_plan.md).  Extends the Group 4 INT cases across the
 # accepted identical-type envelope (nullable INT, CHAR, DATE, DECIMAL),
 # operators (=, <>, <, <=, >), OR/DNF, and a scalar-body residual; the
-# filter-P* probes pin the two refined rejections (mixed-type pair /
-# pair not on the body root op).
+# filter-P* probes pin the two refined rejections (a mixed-type pair that
+# is not two numeric columns / pair not on the body root op).  Since
+# RONDB-1124 F-13 two numeric columns of different types (INT vs
+# SMALLINT UNSIGNED, FLOAT vs DOUBLE: the former filter-P1 and P2)
+# compare in typed registers; ronsql.ronsql_where_case_parity covers
+# them in a CTE body and elsewhere.
 #
 # Local table cvc: identical-type CHAR/DATE/DECIMAL column PAIRS the
 # shared TPC-H-lite schema lacks (each shared table has at most one
@@ -1164,16 +1168,6 @@ WITH f AS (
 SELECT f.g, f.n FROM f|
 
 # --- Rejection probes: the two refined permanent errors. ---
-
---echo
---echo === filter-P1 (rejection): mixed INT vs SMALLINT UNSIGNED ===
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH sums AS (SELECT o_custkey AS k, COUNT(*) AS n FROM orders WHERE o_custkey < o_shippriority GROUP BY o_custkey) SELECT sums.k, SUM(sums.n) FROM customer AS c JOIN sums ON sums.k = c.c_custkey GROUP BY sums.k;' 2>&1
-
---echo
---echo === filter-P2 (rejection): mixed FLOAT vs DOUBLE ===
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH liq AS (SELECT l_orderkey AS k, COUNT(*) AS n FROM lineitem WHERE l_discount < l_tax GROUP BY l_orderkey) SELECT o.o_custkey, SUM(liq.n) FROM orders AS o JOIN liq ON liq.k = o.o_orderkey GROUP BY o.o_custkey;' 2>&1
 
 --echo
 --echo === filter-P3 (rejection): DECIMAL precision/scale mismatch (12,2 vs 8,0) ===

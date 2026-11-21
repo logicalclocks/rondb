@@ -1,0 +1,309 @@
+# RONDB-1124 F-13: WHERE and CASE compare two columns of different
+# numeric types alike, and as MySQL does.
+#
+# A CASE condition compared two integer, FLOAT or DOUBLE columns of any
+# types in typed registers; a WHERE filter only two columns of the same
+# type (NdbScanFilter::cmp, BRANCH_ATTR_OP_ATTR), and any other pair failed
+# when the filter was built with "Failed to apply filter." (4557), which as
+# a stale schema was retried until the retries ran out.  Now a WHERE
+# filter compares two numeric columns of different types in typed
+# registers too (NdbScanFilter::cmp_typed: READ_ATTR_INTO_REG, the NULL
+# guards of the group's SQL semantics, BRANCH_*_REG_REG), and refuses
+# any other mixed pair at once as unsupported.
+#
+# wc has a column of each numeric kind (INT, SMALLINT UNSIGNED, BIGINT,
+# BIGINT UNSIGNED above 2^63, TINYINT, FLOAT, DOUBLE), a DECIMAL and a
+# VARCHAR, with negative values, a FLOAT 0.1 that is not the DOUBLE 0.1,
+# and NULLs.  For each predicate P below,
+#   SELECT COUNT(*) AS n FROM wc WHERE P
+#   SELECT SUM(CASE WHEN P THEN 1 ELSE 0 END) AS n FROM wc
+# are compared with mysqld (each P holds for the same rows in both):
+#   wc-1..wc-9   one comparison of two columns of different types
+#   wc-10        an OR of two (in the filter, an unknown goes on to the
+#                next term)
+#   wc-11, 12    NOT over one, and over an OR (a NOT is refused in a CASE
+#                condition: the remaining part of F-13)
+# Then the typed compare in the other filter placements, compared with
+# mysqld:
+#   wc-13  a CTE body's WHERE (check_cte_body_col_vs_col takes the pair)
+#   wc-14  the filter of a joined table read by its key
+#   wc-15  the residual filter of key reads (an IN list on the key)
+# And the pairs that stay refused, at once and as unsupported:
+#   wc-r1  INT against DECIMAL through RDRS: HTTP 400, class unsupported
+#   wc-r2  VARCHAR against INT through ronsql_cli
+# No JIT mirror (ronsql_mirrors.cfg): the scan-filter JIT does not compile
+# register instructions, and each compile attempt counts as a fallback.
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE wc (
+  id INT NOT NULL PRIMARY KEY,
+  i  INT NULL,
+  si SMALLINT UNSIGNED NULL,
+  bi BIGINT NULL,
+  bu BIGINT UNSIGNED NULL,
+  ti TINYINT NULL,
+  f  FLOAT NULL,
+  d  DOUBLE NULL,
+  m  DECIMAL(10,2) NULL,
+  s  VARCHAR(10) NULL
+) ENGINE=NDB;
+INSERT INTO wc VALUES
+  (1, 5, 5, 6, 6, 5, 0.5, 0.5, 1.00, 'a'),
+  (2, -3, 0, -3, 0, -3, -1.5, -1.25, 2.00, 'b'),
+  (3, 100, 100, 99, 100, 100, 0.1, 0.1, 3.00, 'c'),
+  (4, 7, 70, 7000000000, 9223372036854775813, 7, 7.0, 7.0, 4.00, 'd'),
+  (5, NULL, 3, 4, 4, NULL, NULL, 2.5, NULL, NULL),
+  (6, 2, NULL, NULL, 2, 2, 2.0, NULL, 6.00, 'f'),
+  (7, -1, 1, -2, 1, -1, 3.25, 3.25, 7.00, 'g'),
+  (8, 0, 0, 0, 0, 0, 0, 0, 0.00, 'h'),
+  (9, 2147483647, 65535, 2147483648, 18446744073709551615, 127, 1e10, 1e10, 9.00, 'i'),
+  (10, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+CREATE TABLE wk (
+  id INT NOT NULL PRIMARY KEY,
+  g  INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO wk VALUES (1, 1), (2, 0), (3, 1), (4, 0), (5, 1), (6, 0), (7, 1), (8, 0), (9, 1), (10, 0);
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === wc-1: WHERE i < bi ===
+--let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE i < bi;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM wc WHERE i < bi;
+
+--echo
+--echo === wc-1: CASE WHEN i < bi ===
+--let $QUERY=SELECT SUM(CASE WHEN i < bi THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(CASE WHEN i < bi THEN 1 ELSE 0 END) AS n FROM wc;
+
+--echo
+--echo === wc-2: WHERE i = si ===
+--let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE i = si;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM wc WHERE i = si;
+
+--echo
+--echo === wc-2: CASE WHEN i = si ===
+--let $QUERY=SELECT SUM(CASE WHEN i = si THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(CASE WHEN i = si THEN 1 ELSE 0 END) AS n FROM wc;
+
+--echo
+--echo === wc-3: WHERE bi >= bu ===
+--let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE bi >= bu;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM wc WHERE bi >= bu;
+
+--echo
+--echo === wc-3: CASE WHEN bi >= bu ===
+--let $QUERY=SELECT SUM(CASE WHEN bi >= bu THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(CASE WHEN bi >= bu THEN 1 ELSE 0 END) AS n FROM wc;
+
+--echo
+--echo === wc-4: WHERE ti <> i ===
+--let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE ti <> i;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM wc WHERE ti <> i;
+
+--echo
+--echo === wc-4: CASE WHEN ti <> i ===
+--let $QUERY=SELECT SUM(CASE WHEN ti <> i THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(CASE WHEN ti <> i THEN 1 ELSE 0 END) AS n FROM wc;
+
+--echo
+--echo === wc-5: WHERE f < d ===
+--let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE f < d;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM wc WHERE f < d;
+
+--echo
+--echo === wc-5: CASE WHEN f < d ===
+--let $QUERY=SELECT SUM(CASE WHEN f < d THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(CASE WHEN f < d THEN 1 ELSE 0 END) AS n FROM wc;
+
+--echo
+--echo === wc-6: WHERE f = d ===
+--let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE f = d;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM wc WHERE f = d;
+
+--echo
+--echo === wc-6: CASE WHEN f = d ===
+--let $QUERY=SELECT SUM(CASE WHEN f = d THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(CASE WHEN f = d THEN 1 ELSE 0 END) AS n FROM wc;
+
+--echo
+--echo === wc-7: WHERE i <= d ===
+--let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE i <= d;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM wc WHERE i <= d;
+
+--echo
+--echo === wc-7: CASE WHEN i <= d ===
+--let $QUERY=SELECT SUM(CASE WHEN i <= d THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(CASE WHEN i <= d THEN 1 ELSE 0 END) AS n FROM wc;
+
+--echo
+--echo === wc-8: WHERE bu > d ===
+--let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE bu > d;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM wc WHERE bu > d;
+
+--echo
+--echo === wc-8: CASE WHEN bu > d ===
+--let $QUERY=SELECT SUM(CASE WHEN bu > d THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(CASE WHEN bu > d THEN 1 ELSE 0 END) AS n FROM wc;
+
+--echo
+--echo === wc-9: WHERE si > ti ===
+--let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE si > ti;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM wc WHERE si > ti;
+
+--echo
+--echo === wc-9: CASE WHEN si > ti ===
+--let $QUERY=SELECT SUM(CASE WHEN si > ti THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(CASE WHEN si > ti THEN 1 ELSE 0 END) AS n FROM wc;
+
+--echo
+--echo === wc-10: WHERE i < bi OR f = d ===
+--let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE i < bi OR f = d;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM wc WHERE i < bi OR f = d;
+
+--echo
+--echo === wc-10: CASE WHEN i < bi OR f = d ===
+--let $QUERY=SELECT SUM(CASE WHEN i < bi OR f = d THEN 1 ELSE 0 END) AS n FROM wc;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(CASE WHEN i < bi OR f = d THEN 1 ELSE 0 END) AS n FROM wc;
+
+--echo
+--echo === wc-11: WHERE NOT (i < bi) ===
+--let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE NOT (i < bi);
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM wc WHERE NOT (i < bi);
+
+--echo
+--echo === wc-11: CASE WHEN NOT (i < bi), refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(CASE WHEN NOT (i < bi) THEN 1 ELSE 0 END) AS n FROM wc;' 2>&1
+
+--echo
+--echo === wc-12: WHERE NOT (i < bi OR ti <> i) ===
+--let $QUERY=SELECT COUNT(*) AS n FROM wc WHERE NOT (i < bi OR ti <> i);
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM wc WHERE NOT (i < bi OR ti <> i);
+
+--echo
+--echo === wc-12: CASE WHEN NOT (i < bi OR ti <> i), refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(CASE WHEN NOT (i < bi OR ti <> i) THEN 1 ELSE 0 END) AS n FROM wc;' 2>&1
+
+--echo
+--echo === wc-13: a CTE body WHERE f < d OR bi >= bu ===
+--let $QUERY=WITH c AS (SELECT id AS k, COUNT(*) AS n FROM wc WHERE f < d OR bi >= bu GROUP BY id) SELECT COUNT(*) AS g, SUM(c.n) AS n FROM c;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT id AS k, COUNT(*) AS n FROM wc WHERE f < d OR bi >= bu GROUP BY id) SELECT COUNT(*) AS g, SUM(c.n) AS n FROM c;
+
+--echo
+--echo === wc-14: the filter of a joined table read by its key ===
+--let $QUERY=SELECT k.g, COUNT(*) AS n FROM wk AS k JOIN wc AS w ON w.id = k.id WHERE w.i <= w.d GROUP BY k.g;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT k.g, COUNT(*) AS n FROM wk AS k JOIN wc AS w ON w.id = k.id WHERE w.i <= w.d GROUP BY k.g;
+
+--echo
+--echo === wc-15: the residual filter of key reads ===
+--let $QUERY=SELECT id, i, bi FROM wc WHERE id IN (3, 4, 9) AND i < bi;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, i, bi FROM wc WHERE id IN (3, 4, 9) AND i < bi;
+
+--echo
+--echo === wc-r1: INT against DECIMAL through RDRS, refused as unsupported ===
+--exec printf '{"query":"SELECT COUNT(*) AS n FROM wc WHERE i < m;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/wc-body
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/wc-hdrs -o $MYSQL_TMP_DIR/wc-out -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/wc-body
+--exec grep -i '^x-ronsql-error-class:' $MYSQL_TMP_DIR/wc-hdrs | tr -d '\r' | tr 'A-Z' 'a-z'
+--remove_file $MYSQL_TMP_DIR/wc-body
+--remove_file $MYSQL_TMP_DIR/wc-hdrs
+--remove_file $MYSQL_TMP_DIR/wc-out
+
+--echo
+--echo === wc-r2: VARCHAR against INT through ronsql_cli, refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM wc WHERE s < i;' 2>&1
+
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE wk;
+DROP TABLE wc;
+--enable_warnings
+--enable_query_log

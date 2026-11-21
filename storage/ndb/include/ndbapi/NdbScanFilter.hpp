@@ -175,6 +175,24 @@ class NdbScanFilter {
   int cmp_param(BinaryCondition cond, int ColId, int ParamId);
 
   /**
+   * RonDB: compare two numeric columns by value, as SQL compares them,
+   * in any mix of types: TINYINT, SMALLINT, MEDIUMINT, INT and BIGINT,
+   * signed or unsigned, FLOAT and DOUBLE (cmp(cond, ColId1, ColId2) needs
+   * two columns of the exact same type).  Both columns are read into
+   * registers typed by their column, and the type-aware register compare
+   * decides: two integers as integers (a negative signed value is below
+   * every unsigned one), a FLOAT or DOUBLE on either side as doubles.
+   *
+   * Only EQ, NE, LT, LE, GT and GE, and only with setSqlCmpSemantics(): a
+   * NULL on either side makes the comparison unknown, which is handled as
+   * cmp(cond, ColId1, ColId2) handles it.  The comparison uses registers
+   * 6 and 7.
+   *
+   * @return  0 if successful, -1 otherwise
+   */
+  int cmp_typed(BinaryCondition cond, int ColId1, int ColId2);
+
+  /**
    * @name Integer Comparators
    * @{
    */
