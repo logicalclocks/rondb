@@ -10376,6 +10376,32 @@ RonSQLPreparer::has_binary_output()
   return false;
 }
 
+/*
+ * X-15: a subquery runs as a statement of its own, with its own error log.
+ * When it fails on an NDB error, that log holds the trace and the NDB
+ * error text, which the exception does not carry.  It goes to the outer
+ * statement's log, each line marked "Subquery: ", so that RDRS and
+ * ronsql_cli report it.  A subquery error without an NDB error (a
+ * refusal, too many rows) is the exception's message alone, as before.
+ */
+static void
+forward_subquery_error_log(const std::ostringstream& ess,
+                           std::basic_ostream<char>* err)
+{
+  if (err == NULL) return;
+  const std::string text = ess.str();
+  size_t start = 0;
+  while (start < text.size())
+  {
+    size_t end = text.find('\n', start);
+    if (end == std::string::npos) end = text.size();
+    *err << "Subquery: ";
+    err->write(text.data() + start, (std::streamsize)(end - start));
+    *err << '\n';
+    start = end + 1;
+  }
+}
+
 void
 RonSQLPreparer::execute_subqueries()
 {
@@ -10460,6 +10486,15 @@ RonSQLPreparer::execute_subqueries()
       // rate limits like the main query's.
       inner_params.rate_limit_identity = m_conf.rate_limit_identity;
       inner_params.rate_limit_identity_len = m_conf.rate_limit_identity_len;
+      // X-15: the subquery takes its index lists from the schema cache, as
+      // the outer statement does, instead of listing them through DICT,
+      // and invalidates a stale entry there.  The allocation test hook
+      // counts and fails the subquery's allocations too (X-36).  The
+      // phase statistics stay the outer statement's: the inner
+      // statement's phases would overwrite them, and subquery_us times
+      // the subqueries.
+      inner_params.schema_cache = m_conf.schema_cache;
+      inner_params.allocation_test_hook = m_conf.allocation_test_hook;
 
       // Create and execute inner preparer
       {
@@ -10499,17 +10534,23 @@ RonSQLPreparer::execute_subqueries()
                                              : obuf.value(0, 0);
       }
     }
-    catch (const RonSQLPermanentError&)
+    catch (const RonSQLPermanentError& e)
     {
+      if (e.ndb_error_code() != 0)
+        forward_subquery_error_log(ess, m_conf.err_stream);
       throw;
     }
-    catch (const RonSQLRetryableError&)
+    catch (const RonSQLRetryableError& e)
     {
+      if (e.ndb_error_code() != 0)
+        forward_subquery_error_log(ess, m_conf.err_stream);
       throw;
     }
-    catch (const RonSQLRateLimitError&)
+    catch (const RonSQLRateLimitError& e)
     {
       // The subquery was throttled: the whole query is (HTTP 429).
+      if (e.get_ndb_error_code() != 0)
+        forward_subquery_error_log(ess, m_conf.err_stream);
       throw;
     }
     catch (const std::bad_alloc&)
@@ -10522,6 +10563,7 @@ RonSQLPreparer::execute_subqueries()
     }
     catch (const std::exception& e)
     {
+      forward_subquery_error_log(ess, m_conf.err_stream);
       std::string msg = "Subquery execution failed: ";
       msg += e.what();
       throw RonSQLPermanentError(msg);

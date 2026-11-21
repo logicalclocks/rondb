@@ -91,6 +91,9 @@ DELIMITER ;|
 --exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
 --exec cat $MYSQL_TMP_DIR/sr-cli.out
 --exec grep -qx 'Error handling: RRE' $MYSQL_TMP_DIR/sr-cli.err && echo "retried" || echo "UNEXPECTED: not retried"
+# X-15: the subquery's own error log, with the NDB error that failed it,
+# reaches the outer statement's.
+--exec grep -qE '^Subquery: Error handling: SRE.*->RRE$' $MYSQL_TMP_DIR/sr-cli.err && echo "subquery error log forwarded" || echo "UNEXPECTED: no subquery error log"
 
 --remove_file $MYSQL_TMP_DIR/sr-body
 --remove_file $MYSQL_TMP_DIR/sr-hdrs
