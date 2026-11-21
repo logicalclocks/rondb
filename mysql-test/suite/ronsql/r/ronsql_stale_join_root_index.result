@@ -1,0 +1,59 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== jr-1: control; the root reads through jr_ix ===
+== Explain Query ==
+Root access: scanIndex on jr_ix, equal on the primary key (no lookup: an aggregate query without a CTE needs a scan root)
+Aggregation leaf
+== Query ==
+SELECT COUNT(*) AS n, SUM(c.x) AS s, MAX(r.g) AS m FROM jr_r AS r JOIN jr_c AS c ON c.rid = r.id WHERE r.id = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(c.x) AS s, MAX(r.g) AS m FROM jr_r AS r JOIN jr_c AS c ON c.rid = r.id WHERE r.id = 2|
+n	s	m
+1	200	20
+
+=== jr-2: DROP INDEX through mysqld, the query through RDRS at once ===
+DROP INDEX jr_ix ON jr_r;
+HTTP 200
+== Diff with mysqld ==
+== At most one retry (must be 1) ==
+1
+== Explain Query ==
+Root access: scanTable; filter: WHERE (no lookup: an aggregate query without a CTE needs a scan root; no ordered index on the primary key)
+Aggregation leaf
+
+=== jr-3: CREATE INDEX through mysqld, the query through RDRS at once ===
+CREATE INDEX jr_ix ON jr_r (id);
+HTTP 200
+== Diff with mysqld ==
+== At most one retry (must be 1) ==
+1
+== Explain Query ==
+Root access: scanIndex on jr_ix, equal on the primary key (no lookup: an aggregate query without a CTE needs a scan root)
+Aggregation leaf
+
+=== jr-4: DROP INDEX and CREATE INDEX of the same name through mysqld, the query through RDRS at once ===
+DROP INDEX jr_ix ON jr_r;
+CREATE INDEX jr_ix ON jr_r (id);
+HTTP 200
+== Diff with mysqld ==
+== At most one retry (must be 1) ==
+1
+
+=== jr-5: ndb_drop_index, the query through RDRS at once ===
+HTTP 200
+== Diff with mysqld ==
+== At most one retry (must be 1) ==
+1
+== Explain Query ==
+Root access: scanTable; filter: WHERE (no lookup: an aggregate query without a CTE needs a scan root; no ordered index on the primary key)
+Aggregation leaf
+== ronsql_cli, which lists the indexes itself ==

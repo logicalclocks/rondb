@@ -15153,9 +15153,14 @@ RonSQLPreparer::decide_root_access(QueryScope& scope, bool aggregating,
     const char* pk_col_names[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
     for (int k = 0; k < nkeys; k++)
       pk_col_names[k] = root_table->getPrimaryKey(k);
+    // J-7: from the schema cache, as every other index choice; without it
+    // each execution and each EXPLAIN listed the table's indexes through
+    // DICT.
+    const char* db = m_conf.ndb ? m_conf.ndb->getDatabaseName() : nullptr;
     const NdbDictionary::Index* pk_ordered_idx =
         QueryPlanner::findOrderedIndex(
-            m_dict, root_table, pk_col_names, (Uint32)nkeys);
+            m_dict, root_table, pk_col_names, (Uint32)nkeys,
+            m_conf.schema_cache, db);
     if (pk_ordered_idx != NULL)
     {
       ra.kind = RootAccess::Kind::PK_INDEX_SCAN;
