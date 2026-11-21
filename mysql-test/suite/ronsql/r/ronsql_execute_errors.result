@@ -1,0 +1,62 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== ee-1: a DECIMAL(10,2) compared to an integer literal it cannot hold (F-12: MySQL finds no row) ===
+Error handling: RPE
+ronsql_cli caught exception: Decimal type column compared to a literal that does not fit the column.
+
+=== ee-2: a DECIMAL(10,2) compared to a fractional literal it cannot hold ===
+Error handling: RPE
+ronsql_cli caught exception: Decimal type column compared to a literal that does not fit the column.
+
+=== ee-3: DATE_ADD of a column ===
+Error handling: RPE
+ronsql_cli caught exception: The first argument to DATE_ADD and DATE_SUB must be a string literal or another call to DATE_ADD or DATE_SUB
+
+=== ee-4: DATE_ADD with a second argument that is not an INTERVAL ===
+Error handling: RPE
+ronsql_cli caught exception: The second argument to DATE_ADD and DATE_SUB must be an INTERVAL literal
+
+=== ee-5: INTERVAL with a string amount that is not an integer ===
+Error handling: RPE
+ronsql_cli caught exception: Failed to convert INTERVAL string literal amount to an integer
+
+=== ee-6: INTERVAL with a fractional amount ===
+Error handling: RPE
+ronsql_cli caught exception: INTERVAL literal requires an amount in the form of an integer literal or a string literal representing an integer
+
+=== ee-7: INTERVAL of a compound unit ===
+Error handling: RPE
+ronsql_cli caught exception: INTERVAL literals support only interval types MICROSECOND, SECOND, MINUTE, HOUR, DAY, WEEK, MONTH, QUARTER, and YEAR
+
+=== ee-8: DATE_ADD past 9999-12-31 (MySQL gives NULL with a warning) ===
+Error handling: RPE
+ronsql_cli caught exception: DATE_ADD or DATE_SUB failed
+
+=== ee-9: GREATEST compared to a column ===
+Error handling: RPE
+ronsql_cli caught exception: GREATEST/LEAST in a WHERE clause must be compared to a constant value.
+
+=== ee-10: GREATEST with a fractional constant argument ===
+Error handling: RPE
+ronsql_cli caught exception: GREATEST/LEAST in a WHERE clause supports only column and integer constant arguments.
+
+=== ee-11: a CASE condition comparing two DECIMAL columns ===
+Error handling: RPE
+ronsql_cli caught exception: Column-vs-column CASE / GREATEST / LEAST currently supports integer and FLOAT / DOUBLE operands only; VARCHAR and DECIMAL operands are not supported.
+
+=== ee-12: a filter on a CTE output with 17 OR terms (the limit is 16) ===
+Error handling: RPE
+ronsql_cli caught exception: CTE_LOOKUP filter: too many top-level OR disjuncts.
+
+=== ee-13: a filter on an expression of a CTE output ===
+Error handling: RPE
+ronsql_cli caught exception: CTE_LOOKUP filter supports only column-vs-constant and same-CTE column-vs-column comparisons; expressions on either side are not supported.
+
+=== ee-14: AVRO() through ronsql_cli ===
+Error handling: RPE
+ronsql_cli caught exception: AVRO() is only supported by the RDRS /ronsql endpoint.
+
+=== ee-15: AVRO() in an aggregate query ===
+Error handling: RPE
+ronsql_cli caught exception: AVRO() is only supported in queries without aggregation.

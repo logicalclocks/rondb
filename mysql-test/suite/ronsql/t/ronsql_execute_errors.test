@@ -1,0 +1,134 @@
+# RONDB-1124 T-9: user errors raised while a statement is planned or its
+# programs are built, which no test reached.  Each case runs through
+# ronsql_cli and records the refusal: a permanent error, before any data
+# node runs a program, with the message that names the shape.
+#
+#   ee-1, ee-2    a DECIMAL compared to a literal it cannot hold
+#   ee-3..ee-8    DATE_ADD: a column argument, no INTERVAL, an INTERVAL
+#                 amount that is not an integer, a compound unit, a date
+#                 past 9999-12-31
+#   ee-9, ee-10   GREATEST / LEAST in a WHERE: a column comparand, a
+#                 fractional argument
+#   ee-11         a CASE condition comparing two DECIMAL columns
+#   ee-12, ee-13  a filter on CTE outputs: more than 16 OR terms, an
+#                 expression of an output
+#   ee-14, ee-15  AVRO(): through ronsql_cli, in an aggregate query
+#
+# The others the review listed have tests: EXPLAIN under JSON
+# (ronsql_json_paths), the subquery limits and a string scalar subquery
+# result (ronsql_subquery*, ronsql_subquery_as_condition), the client-side
+# sort cap (ronsql_large_passthrough_sort_cap), the CASE and CTE_LOOKUP
+# filter shapes (ronsql_null_logic_paths), and SUM / AVG / MIN / MAX over
+# a scale-zero DECIMAL wider than 64 bits in a CTE (ronsql_cte_decimal).
+# IS NULL on a column of a LEFT-joined CTE is refused before its filter is
+# built (F32, "WHERE on a LEFT JOIN's right side that holds for NULL").
+# No mirror: no case runs a program on the data nodes.
+
+--source include/have_ndb.inc
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE ee (
+  id INT NOT NULL PRIMARY KEY,
+  g  INT NOT NULL,
+  i  INT NULL,
+  m  DECIMAL(10,2) NULL,
+  m2 DECIMAL(12,4) NULL,
+  d  DATE NULL,
+  vb VARBINARY(16) NULL
+) ENGINE=NDB;
+INSERT INTO ee VALUES (1, 1, 5, 1.50, 2.2500, '2020-01-01', 0x0102),
+                      (2, 2, 7, 3.25, 1.0000, '2021-06-30', NULL);
+CREATE TABLE eg (
+  g INT NOT NULL PRIMARY KEY
+) ENGINE=NDB;
+INSERT INTO eg VALUES (1), (2);
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === ee-1: a DECIMAL(10,2) compared to an integer literal it cannot hold (F-12: MySQL finds no row) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM ee WHERE m = 100000000000;' 2>&1
+
+--echo
+--echo === ee-2: a DECIMAL(10,2) compared to a fractional literal it cannot hold ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM ee WHERE m = 123456789012.5;' 2>&1
+
+--echo
+--echo === ee-3: DATE_ADD of a column ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM ee WHERE d > DATE_ADD(d, INTERVAL 1 DAY);' 2>&1
+
+--echo
+--echo === ee-4: DATE_ADD with a second argument that is not an INTERVAL ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT COUNT(*) AS n FROM ee WHERE d > DATE_ADD('2020-01-01', 5);" 2>&1
+
+--echo
+--echo === ee-5: INTERVAL with a string amount that is not an integer ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT COUNT(*) AS n FROM ee WHERE d > DATE_ADD('2020-01-01', INTERVAL 'abc' DAY);" 2>&1
+
+--echo
+--echo === ee-6: INTERVAL with a fractional amount ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT COUNT(*) AS n FROM ee WHERE d > DATE_ADD('2020-01-01', INTERVAL 1.5 DAY);" 2>&1
+
+--echo
+--echo === ee-7: INTERVAL of a compound unit ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT COUNT(*) AS n FROM ee WHERE d > DATE_ADD('2020-01-01', INTERVAL 1 YEAR_MONTH);" 2>&1
+
+--echo
+--echo === ee-8: DATE_ADD past 9999-12-31 (MySQL gives NULL with a warning) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT COUNT(*) AS n FROM ee WHERE d > DATE_ADD('9999-12-31', INTERVAL 1 DAY);" 2>&1
+
+--echo
+--echo === ee-9: GREATEST compared to a column ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM ee WHERE GREATEST(i, g) > id;' 2>&1
+
+--echo
+--echo === ee-10: GREATEST with a fractional constant argument ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM ee WHERE GREATEST(i, 1.5) > 3;' 2>&1
+
+--echo
+--echo === ee-11: a CASE condition comparing two DECIMAL columns ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(CASE WHEN m < m2 THEN 1 ELSE 0 END) AS n FROM ee;' 2>&1
+
+--echo
+--echo === ee-12: a filter on a CTE output with 17 OR terms (the limit is 16) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH f AS (SELECT g AS k, COUNT(*) AS n FROM ee GROUP BY g) SELECT COUNT(*) AS c FROM eg AS r JOIN f ON f.k = r.g WHERE (f.n = 1 OR f.n = 2 OR f.n = 3 OR f.n = 4 OR f.n = 5 OR f.n = 6 OR f.n = 7 OR f.n = 8 OR f.n = 9 OR f.n = 10 OR f.n = 11 OR f.n = 12 OR f.n = 13 OR f.n = 14 OR f.n = 15 OR f.n = 16 OR f.n = 17);' 2>&1
+
+--echo
+--echo === ee-13: a filter on an expression of a CTE output ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH f AS (SELECT g AS k, COUNT(*) AS n FROM ee GROUP BY g) SELECT COUNT(*) AS c FROM eg AS r JOIN f ON f.k = r.g WHERE f.n + 1 > 3;' 2>&1
+
+--echo
+--echo === ee-14: AVRO() through ronsql_cli ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id, AVRO(vb) AS a FROM ee WHERE id = 1;' 2>&1
+
+--echo
+--echo === ee-15: AVRO() in an aggregate query ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT AVRO(vb) AS a, COUNT(*) AS n FROM ee GROUP BY vb;' 2>&1
+
+
+--disable_query_log
+--disable_warnings
+DROP TABLE eg;
+DROP TABLE ee;
+--enable_warnings
+--enable_query_log

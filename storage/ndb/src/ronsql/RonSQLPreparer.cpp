@@ -20154,7 +20154,11 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
         throw RonSQLPermanentError("Failed converting float literal to DECIMAL");
       case E_DEC_OVERFLOW: [[fallthrough]];
       case E_DEC_TRUNCATED:
-        throw RonSQLPermanentError("Failed converting float literal to DECIMAL");
+        // T-9: an integer literal lands here too; the message named only
+        // a float literal.
+        throw RonSQLPermanentError("Decimal type column compared to a"
+                                   " literal that does not fit the"
+                                   " column.");
       default:
         ronsql_bug("Converting a float literal to DECIMAL gave an unknown "
                    "error.");

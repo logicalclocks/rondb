@@ -167,6 +167,16 @@ Error handling: RPE
 ronsql_cli caught exception: MIN/MAX over scale-zero DECIMAL wider than the 64-bit integer range is not yet supported.  Full DECIMAL precision preservation requires a wider aggregate-result representation.
 
 
+=== Test 10b: DECIMAL(19,0) signed SUM rejected (T-9) ===
+Error handling: RPE
+ronsql_cli caught exception: SUM over scale-zero DECIMAL wider than the 64-bit integer range is not yet supported.
+
+
+=== Test 10c: DECIMAL(19,0) signed AVG rejected (T-9) ===
+Error handling: RPE
+ronsql_cli caught exception: AVG over scale-zero DECIMAL wider than the 64-bit integer range is not yet supported.
+
+
 === Test 11: chained CTE with MIN(MAX(decimal_col)) ===
 == Query ==
 WITH a AS (SELECT o_grp AS k, MAX(o_amt0) AS hi

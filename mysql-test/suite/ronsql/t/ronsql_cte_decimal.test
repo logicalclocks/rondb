@@ -255,6 +255,20 @@ DELIMITER ;|
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT grp AS k, MAX(v) AS hi FROM dec_signed_bad GROUP BY grp), b AS (SELECT MIN(a.hi) AS m FROM a) SELECT m FROM b;' 2>&1
 
+--echo
+--echo
+--echo === Test 10b: DECIMAL(19,0) signed SUM rejected (T-9) ===
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH stats AS (SELECT grp AS k, SUM(v) AS s FROM dec_signed_bad GROUP BY grp) SELECT k, s FROM stats;' 2>&1
+
+--echo
+--echo
+--echo === Test 10c: DECIMAL(19,0) signed AVG rejected (T-9) ===
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH stats AS (SELECT grp AS k, AVG(v) AS a FROM dec_signed_bad GROUP BY grp) SELECT k, a FROM stats;' 2>&1
+
 DELIMITER |;
 
 --echo
