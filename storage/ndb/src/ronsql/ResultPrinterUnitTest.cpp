@@ -861,6 +861,23 @@ test_having_compare()
   }
 }
 
+// O-12: the pass-through sort cap counts each buffered value as the arena
+// bytes PassthroughValue::copy() takes for it: a 16-byte header and the
+// data, at least 8 bytes and rounded up to 8.  A 4-byte INT takes 24
+// (and its row slot 8 more), where the cap counted 4 before.
+static void
+test_passthrough_arena_bytes()
+{
+  CHECK(sizeof(PassthroughValue) == 16);
+  CHECK(PassthroughValue::arena_bytes(0) == 24);  // a NULL value
+  CHECK(PassthroughValue::arena_bytes(1) == 24);
+  CHECK(PassthroughValue::arena_bytes(4) == 24);
+  CHECK(PassthroughValue::arena_bytes(8) == 24);
+  CHECK(PassthroughValue::arena_bytes(9) == 32);
+  CHECK(PassthroughValue::arena_bytes(16) == 32);
+  CHECK(PassthroughValue::arena_bytes(257) == 16 + 264);
+}
+
 int
 main()
 {
@@ -876,6 +893,7 @@ main()
   test_having_arithmetic();
   test_having_negate();
   test_having_compare();
+  test_passthrough_arena_bytes();
   if (g_failures != 0)
   {
     printf("FAIL: %d checks failed\n", g_failures);

@@ -12554,6 +12554,7 @@ struct PassthroughSortKey {
 struct PassthroughSortBuffer {
   DynamicArray<const PassthroughValue**> rows;
   Uint32 num_stored;
+  // O-12: the arena bytes the buffered rows take (buffer_passthrough_row).
   Uint64 bytes = 0;
   PassthroughSortBuffer(ArenaMalloc* am, Uint32 n)
     : rows(am), num_stored(n) {}
@@ -12620,6 +12621,13 @@ buffer_passthrough_row(PassthroughSortBuffer& buf, ArenaMalloc* amalloc,
   }
   Uint32 n = buf.num_stored;
   const PassthroughValue** row = amalloc->alloc_exc<const PassthroughValue*>(n);
+  // O-12: the cap counts what the rows take in the arena, not only their
+  // values' bytes, which undercounted a 4-byte INT 8 times (it takes 32
+  // bytes) and a NULL as nothing: the row's slot array, its pointer in
+  // buf.rows and in the array the sort copies them to, and each value's
+  // copy.
+  buf.bytes += (Uint64)n * sizeof(const PassthroughValue*) +
+               2 * sizeof(const PassthroughValue**);
   for (Uint32 c = 0; c < n; c++) {
     const NdbRecAttr* src = attrs[c];
     if (src == NULL || (ops != NULL && ops[c] != NULL && ops[c]->isRowNULL()))
@@ -12628,7 +12636,7 @@ buffer_passthrough_row(PassthroughSortBuffer& buf, ArenaMalloc* amalloc,
       continue;
     }
     row[c] = PassthroughValue::copy(src, amalloc);
-    buf.bytes += row[c]->get_size_in_bytes();
+    buf.bytes += PassthroughValue::arena_bytes(row[c]->get_size_in_bytes());
   }
   buf.rows.push(row);
 }

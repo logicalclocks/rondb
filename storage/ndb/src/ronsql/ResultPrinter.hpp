@@ -52,6 +52,9 @@ public:
   // src holds no value (isNULL() == -1).
   static const PassthroughValue* copy(const NdbRecAttr* src,
                                       ArenaMalloc* amalloc);
+  // O-12: the arena bytes copy() takes for a value of `size` bytes: the
+  // header and the data, at least 8 bytes and rounded up to 8.
+  static size_t arena_bytes(Uint32 size);
   const NdbDictionary::Column* getColumn() const { return m_column; }
   NdbDictionary::Column::Type getType() const { return m_column->getType(); }
   int isNULL() const { return m_size == 0 ? 1 : 0; }

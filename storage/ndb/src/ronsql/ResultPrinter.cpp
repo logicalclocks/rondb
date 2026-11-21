@@ -1904,9 +1904,9 @@ PassthroughValue::copy(const NdbRecAttr* src, ArenaMalloc* amalloc)
     throw std::runtime_error(
         "Pass-through sort: failed to clone a row value.");
   const Uint32 size = src->get_size_in_bytes();
-  const size_t data_len = (size_t(size < 8 ? 8 : size) + 7) & ~size_t(7);
-  void* mem = amalloc->alloc_bytes(sizeof(PassthroughValue) + data_len,
-                                   alignof(Uint64));
+  const size_t total = arena_bytes(size);
+  const size_t data_len = total - sizeof(PassthroughValue);
+  void* mem = amalloc->alloc_bytes(total, alignof(Uint64));
   if (unlikely(mem == NULL)) throw std::bad_alloc();
   PassthroughValue* v = new (mem) PassthroughValue;
   v->m_column = src->getColumn();
@@ -1915,6 +1915,13 @@ PassthroughValue::copy(const NdbRecAttr* src, ArenaMalloc* amalloc)
   if (size > 0) memcpy(data, src->aRef(), size);
   memset(data + size, 0, data_len - size);
   return v;
+}
+
+size_t
+PassthroughValue::arena_bytes(Uint32 size)
+{
+  return sizeof(PassthroughValue) +
+         ((size_t(size < 8 ? 8 : size) + 7) & ~size_t(7));
 }
 
 Int32

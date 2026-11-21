@@ -1,0 +1,15 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+SELECT COUNT(*) AS sc_rows FROM sc;
+sc_rows
+50000
+
+=== sc-1: 30000 rows of 201 columns, sorted in the API ===
+lines, including the header:
+30001
+id of the first and the last row:
+1
+30000
+
+=== sc-2: 50000 rows of 201 columns, refused at the cap ===
+refused: Pass-through ORDER BY result too large.
