@@ -58,8 +58,6 @@ call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
 
---let $suppress_ronsql_cli=yes
-
 --echo === Create and load the feature-store data set ===
 --source suite/ronsql_fs/include/fs_schema.inc
 --source suite/ronsql_fs/include/fs_data.inc
