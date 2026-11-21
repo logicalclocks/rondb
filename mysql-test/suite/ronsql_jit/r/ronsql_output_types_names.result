@@ -250,22 +250,22 @@ Error handling: RPE
 
 === ot-a1: MIN over a BIT column ===
 Failed writing aggregation program when attempting to load column `bt`
-Error handling: RMS->RPE
+Error handling: RPE
 ronsql_cli caught exception: Aggregation over a column of this type is not supported.
 
 === ot-a2: COUNT over a BIT column ===
 Failed writing aggregation program when attempting to load column `bt`
-Error handling: RMS->RPE
+Error handling: RPE
 ronsql_cli caught exception: Aggregation over a column of this type is not supported.
 
 === ot-a3: MAX over a VARBINARY column ===
 Failed writing aggregation program when attempting to load column `vb`
-Error handling: RMS->RPE
+Error handling: RPE
 ronsql_cli caught exception: Aggregation over a column of this type is not supported.
 
 === ot-a4: COUNT over a BLOB column ===
 Failed writing aggregation program when attempting to load column `bl`
-Error handling: RMS->RPE
+Error handling: RPE
 ronsql_cli caught exception: Aggregation over a column of this type is not supported.
 
 === on-1: duplicate names under TEXT, join pass-through ===

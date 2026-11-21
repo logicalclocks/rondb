@@ -833,39 +833,11 @@ GROUP BY s.s_name|
 
 DELIMITER ;|
 
---echo
---echo
---echo === Test 44: Group eviction with ERROR_INSERT 5126 ===
-
-# ERROR_INSERT 5126 forces maxGroups=3 in the data node so the query path
-# exercises the eviction + merge code. In production builds ERROR_INSERT
-# is compiled out — the "ALL ERROR 5126" command is silently a no-op — so
-# the query runs on the normal (non-evicting) path. The logical query
-# result is identical in both cases, so the test runs unconditionally and
-# the recorded .result matches.
-# In production ndb_mgm rejects "ALL ERROR …" with non-zero exit; accept
-# either success or failure so the test keeps running on both builds.
---error 0,1,255
---exec $NDB_MGM -e "ALL ERROR 5126" > /dev/null 2>&1
-
-DELIMITER |;
-
-let $QUERY=
-SELECT o.o_id, SUM(l.l_quantity)
-FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
-GROUP BY o.o_id;|
---source suite/ronsql/include/ronsql_compare.inc
-
---echo == Expected result ==
---sorted_result
-SELECT o.o_id, SUM(l.l_quantity)
-FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
-GROUP BY o.o_id|
-
-DELIMITER ;|
-
---error 0,1,255
---exec $NDB_MGM -e "ALL ERROR 0" > /dev/null 2>&1
+# Test 44 (group eviction with ERROR_INSERT 5126) is gone (RONDB-1124
+# T-18): it ran with "--error 0,1,255" so that builds without error
+# inserts, where ndb_mgm refuses ALL ERROR, would pass, and nothing showed
+# that the eviction path ran.  ronsql_large_mem_leak_errors e5126 and
+# e5126c arm 5126 on debug data nodes and check the results.
 
 --echo
 --echo

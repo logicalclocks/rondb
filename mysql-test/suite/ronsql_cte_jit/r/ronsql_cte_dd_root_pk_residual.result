@@ -483,12 +483,12 @@ k	n
 Error handling: RPE
 ronsql_cli caught exception: Integer type column compared to an integer literal out of range.
 
-=== rpr-P3 (rejection): join-path RMS resolves in ONE attempt ===
-Error handling: RMS->RPE
+=== rpr-P3 (rejection): a join-path type mismatch fails in ONE attempt ===
+Error handling: RPE
 ronsql_cli caught exception: Integer type column compared to an incompatible value. Only integer literals are supported.
 
-=== rpr-P4 (rejection): CTE-root RMS still resolves RMS->RPE ===
-Error handling: RMS->RPE
+=== rpr-P4 (rejection): a type mismatch under a CTE root fails in ONE attempt ===
+Error handling: RPE
 ronsql_cli caught exception: Integer type column compared to an incompatible value. Only integer literals are supported.
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_dd_root_pk_residual_jit_fallback_delta;

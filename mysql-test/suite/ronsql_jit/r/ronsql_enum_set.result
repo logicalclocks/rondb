@@ -247,16 +247,16 @@ ronsql_cli caught exception: The SELECT output `bt` has type BIT, which RonSQL c
 
 === bt-e2: MAX of a BIT ===
 Failed writing aggregation program when attempting to load column `bt`
-Error handling: RMS->RPE
+Error handling: RPE
 ronsql_cli caught exception: Aggregation over a column of this type is not supported.
 
 === bt-e3: COUNT of a BIT ===
 Failed writing aggregation program when attempting to load column `bt`
-Error handling: RMS->RPE
+Error handling: RPE
 ronsql_cli caught exception: Aggregation over a column of this type is not supported.
 
 === bt-e4: BIT = a number ===
-Error handling: RMS->RPE
+Error handling: RPE
 ronsql_cli caught exception: Unsupported column type in comparison condition. Supported types are integer types, FLOAT, DOUBLE, DECIMAL, CHAR, VARCHAR, DATE, DATETIME and TIMESTAMP.
 
 === bt-e5: a join on a BIT (no index) ===
@@ -289,7 +289,7 @@ Error handling: RPE
 === bt-r2: bt-e4 through RDRS ===
 HTTP 400
 x-ronsql-error-class: unsupported
-Error handling: RMS->RPE
+Error handling: RPE
 [unsupported] Caught exception: Unsupported column type in comparison condition. Supported types are integer types, FLOAT, DOUBLE, DECIMAL, CHAR, VARCHAR, DATE, DATETIME and TIMESTAMP.
 
 === Cleanup ===

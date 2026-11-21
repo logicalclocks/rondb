@@ -479,7 +479,9 @@ WHERE o_orderkey = 77 AND (o_clerk = 1 OR o_clerk = 2 OR o_clerk = 3
 # TIME(3) constants are outside the filter emit's type envelope: the
 # detection-time trial build catches the throw and falls back to the
 # scan path (EXPLAIN keeps working), and execution fails exactly as the
-# scan path always has for this residual.
+# scan path always has for this residual.  Since RONDB-1124 T-18 the
+# refusal is permanent at once (RPE); as a possibly stale schema (RMS)
+# it reloaded every table and index the query held first.
 --let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_st_20.out
 --let QUERY_FILE=$MYSQL_TMP_DIR/q_st20.sql
 --write_file $QUERY_FILE

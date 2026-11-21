@@ -19558,17 +19558,17 @@ rondb_str_to_mysql_time(MYSQL_TIME *mt, LexString str) {
   MYSQL_TIME_STATUS status;
   bool err = str_to_datetime(str.str, str.len, mt, flags, &status);
   if (unlikely(err)) {
-    throw RonSQLMaybeStaleSchema("Failed to interpret string literal as a date"
-                                 " or timestamp");
+    throw RonSQLPermanentError("Failed to interpret string literal as a date"
+                               " or timestamp");
   }
   if (status.warnings) {
-    throw RonSQLMaybeStaleSchema("String literal interpreted as date or"
-                                 " timestamp with warnings");
+    throw RonSQLPermanentError("String literal interpreted as date or"
+                               " timestamp with warnings");
   }
   if (status.m_deprecation.m_kind !=
       MYSQL_TIME_STATUS::DEPRECATION::DEPR_KIND::DP_NONE) {
-    throw RonSQLMaybeStaleSchema("String literal interpreted as date or"
-                                 " timestamp with weird delimiters or spaces");
+    throw RonSQLPermanentError("String literal interpreted as date or"
+                               " timestamp with weird delimiters or spaces");
   }
   // todo test nanosecond rounding, see status->nanoseconds
 }
@@ -19952,6 +19952,16 @@ RonSQLPreparer::scalar_cte_dummy_key(NdbQueryBuilder* qb,
   return key;
 }
 
+/*
+ * T-18: every refusal here is a RonSQLPermanentError.  A column of a type
+ * RonSQL does not compare, or a literal its type cannot take, is the query
+ * text against the declared schema.  As RonSQLMaybeStaleSchema each such
+ * query went through unload_schema, which invalidates every table and
+ * index the statement holds, in the NDB dictionary cache and in RDRS's
+ * schema cache, for every other statement too, and reloads them, only to
+ * find nothing changed (RMS->RPE).  A table that ALTER TABLE changed is
+ * marked invalid by ALTER_TABLE_REP and loaded anew by the next statement.
+ */
 raw_value
 RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
                                 const NdbDictionary::Column* col) {
@@ -20017,10 +20027,10 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
   case NdbDictionary::Column::Type::Timestamp2:
     tk = TIME; binlen = 7; timetype = MYSQL_TIMESTAMP_DATETIME; break;
   default:
-    throw RonSQLMaybeStaleSchema("Unsupported column type in comparison"
-                                 " condition. Supported types are integer"
-                                 " types, FLOAT, DOUBLE, DECIMAL, CHAR,"
-                                 " VARCHAR, DATE, DATETIME and TIMESTAMP.");
+    throw RonSQLPermanentError("Unsupported column type in comparison"
+                               " condition. Supported types are integer"
+                               " types, FLOAT, DOUBLE, DECIMAL, CHAR,"
+                               " VARCHAR, DATE, DATETIME and TIMESTAMP.");
   }
   if (op == T_INT && tk == INT) {
     if (ce->constant_integer < min || ce->constant_integer > max) {
@@ -20030,7 +20040,9 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       // retryable burned 10 doomed attempts per query (and the join-path
       // unload_schema comparison misreports "schema changed" whenever
       // the root table has an ordered index, so the RMS disambiguation
-      // never converged — see non_aggregate_phase_0.md).
+      // never converged — see non_aggregate_phase_0.md).  T-18: so is
+      // every other refusal here, a type RonSQL does not compare or a
+      // literal the type cannot take.
       throw RonSQLPermanentError("Integer type column compared to an integer"
                                  " literal out of range.");
     }
@@ -20069,9 +20081,9 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     return raw_value{ val, static_cast<Uint32>(bytes) };
   }
   if (tk == INT) {
-    throw RonSQLMaybeStaleSchema("Integer type column compared to an"
-                                 " incompatible value. Only integer literals"
-                                 " are supported.");
+    throw RonSQLPermanentError("Integer type column compared to an"
+                               " incompatible value. Only integer literals"
+                               " are supported.");
   }
   if (tk == FLOAT) {
     if (op == T_INT && bytes == 4) {
@@ -20091,9 +20103,9 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       *val = ce->constant_float.dbl;
       return raw_value{ val, static_cast<Uint32>(bytes) };
     } else {
-      throw RonSQLMaybeStaleSchema("Floating point type column compared to an"
-                                   " incompatible value. Only integer and float"
-                                   " literals are supported.");
+      throw RonSQLPermanentError("Floating point type column compared to an"
+                                 " incompatible value. Only integer and float"
+                                 " literals are supported.");
     }
   }
   if (tk == DECIMAL) {
@@ -20147,9 +20159,9 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       }
       err = decimal_str2bin(ls.str, ls.len, prec, scale, bin, bin_len);
     } else {
-      throw RonSQLMaybeStaleSchema("Floating point type column compared to an"
-                                   " incompatible value. Only integer and float"
-                                   " literals are supported.");
+      throw RonSQLPermanentError("Floating point type column compared to an"
+                                 " incompatible value. Only integer and float"
+                                 " literals are supported.");
     }
     if (unlikely(err != E_DEC_OK)) {
       switch (err) {
@@ -20160,7 +20172,7 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
         throw RonSQLPermanentError("Failed converting float literal to DECIMAL");
       case E_DEC_OVERFLOW: [[fallthrough]];
       case E_DEC_TRUNCATED:
-        throw RonSQLMaybeStaleSchema("Failed converting float literal to DECIMAL");
+        throw RonSQLPermanentError("Failed converting float literal to DECIMAL");
       default:
         ronsql_bug("Converting a float literal to DECIMAL gave an unknown "
                    "error.");
@@ -20169,9 +20181,9 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     return raw_value{ bin, bin_len };
   }
   if (op == T_INT) {
-    throw RonSQLMaybeStaleSchema("Integer literal compared to an incompatible"
-                                 " column. Only integer and float type columns"
-                                 " are supported.");
+    throw RonSQLPermanentError("Integer literal compared to an incompatible"
+                               " column. Only integer and float type columns"
+                               " are supported.");
   }
   if (op == T_STRING && tk == STR) {
     // The bytes of the literal in the column's character set.
@@ -20180,8 +20192,8 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       // CHAR: fixed-length, right-padded with spaces, no length prefix
       Uint32 col_len = col->getLength();
       if (lit.len > static_cast<size_t>(col_len)) {
-        throw RonSQLMaybeStaleSchema("CHAR column compared to a string literal"
-                                     " that is too long.");
+        throw RonSQLPermanentError("CHAR column compared to a string literal"
+                                   " that is too long.");
       }
       Uint8* val = m_amalloc->alloc_exc<Uint8>(col_len);
       memcpy(val, lit.str, lit.len);
@@ -20197,11 +20209,11 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       return raw_value{ val, col_len };
     }
     if (lit.len > static_cast<size_t>(maxlen)) {
-      throw RonSQLMaybeStaleSchema("VARCHAR column compared to a string literal"
-                                   " that is too long. Note that if the column"
-                                   " length is less than 256, then the length"
-                                   " of the string literal must also be less"
-                                   " than 256.");
+      throw RonSQLPermanentError("VARCHAR column compared to a string literal"
+                                 " that is too long. Note that if the column"
+                                 " length is less than 256, then the length"
+                                 " of the string literal must also be less"
+                                 " than 256.");
     }
     Uint8* val = m_amalloc->alloc_exc<Uint8>(lenbytes + lit.len);
     memcpy(val, &lit.len, lenbytes);
@@ -20209,9 +20221,9 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     return raw_value{ val, static_cast<Uint32>(lenbytes + lit.len) };
   }
   if (tk == STR) {
-    throw RonSQLMaybeStaleSchema("CHAR/VARCHAR column compared to an"
-                                 " incompatible value. Only string literals"
-                                 " are supported.");
+    throw RonSQLPermanentError("CHAR/VARCHAR column compared to an"
+                               " incompatible value. Only string literals"
+                               " are supported.");
   }
   if (tk == TIME) {
     MYSQL_TIME mt;
@@ -20220,10 +20232,10 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     } else if (op == I_MYSQL_TIME) {
       mt = ce->mysql_time;
     } else {
-      throw RonSQLMaybeStaleSchema("DATE/DATETIME/TIMESTAMP column compared to"
-                                   " an incompatible value. Only string"
-                                   " literals and calls to DATE_ADD and"
-                                   " DATE_SUB are supported.");
+      throw RonSQLPermanentError("DATE/DATETIME/TIMESTAMP column compared to"
+                                 " an incompatible value. Only string"
+                                 " literals and calls to DATE_ADD and"
+                                 " DATE_SUB are supported.");
     }
     // The buffer has the widest size (DATETIME(6) / TIMESTAMP(6)) and is
     // zeroed: NdbInterpretedCode::branch_col reads the column's own size
@@ -20247,10 +20259,10 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     require_run(retlen <= binlen, "Temporal precision out of range.");
     int warnings = 0;
     if (unlikely(mt.time_type != timetype)) {
-      throw RonSQLMaybeStaleSchema("DATE/DATETIME/TIMESTAMP column compared to"
-                                   " a valid date/time constant of the wrong"
-                                   " type. Note that presence/absence of the"
-                                   " time part must match.");
+      throw RonSQLPermanentError("DATE/DATETIME/TIMESTAMP column compared to"
+                                 " a valid date/time constant of the wrong"
+                                 " type. Note that presence/absence of the"
+                                 " time part must match.");
     }
     switch (type) {
     case NdbDictionary::Column::Type::Date: {
@@ -20261,8 +20273,8 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       my_datetime_adjust_frac(&mt, precision, &warnings, true);
       if (unlikely(warnings != 0)) {
         // Actually won't ever happen when truncate argument is set
-        throw RonSQLMaybeStaleSchema("Perhaps an invalid DATETIME constant."
-                                     " Please report a bug.");
+        throw RonSQLPermanentError("Perhaps an invalid DATETIME constant."
+                                   " Please report a bug.");
       }
       longlong numericDateTime = TIME_to_longlong_datetime_packed(mt);
       my_datetime_packed_to_binary(numericDateTime, bindate, precision);
@@ -20284,16 +20296,16 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       time_info.tm_isdst = -1; // Daylight saving t
       epoch = timegm(&time_info);
       if (unlikely(epoch <= 0 || epoch > 2147483647)) {
-        throw RonSQLMaybeStaleSchema("TIMESTAMP column compared to a constant"
-                                     " out of range (valid range is '1970-01-01"
-                                     " 00:00:01' UTC to '2038-01-19 03:14:07'"
-                                     " UTC)");
+        throw RonSQLPermanentError("TIMESTAMP column compared to a constant"
+                                   " out of range (valid range is '1970-01-01"
+                                   " 00:00:01' UTC to '2038-01-19 03:14:07'"
+                                   " UTC)");
       }
       my_datetime_adjust_frac(&mt, precision, &warnings, true);
       if (unlikely(warnings != 0)) {
         // Actually won't ever happen when truncate argument is set
-        throw RonSQLMaybeStaleSchema("Perhaps an invalid TIMESTAMP constant."
-                                     " Please report a bug.");
+        throw RonSQLPermanentError("Perhaps an invalid TIMESTAMP constant."
+                                   " Please report a bug.");
       }
       // On Mac timeval.tv_usec is Int32 and on linux it is Int64.
       // Inorder to be compatible we cast l_time.second_part to Int32
@@ -20984,9 +20996,11 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
             << quoted_identifier(m_columns[src]) << endl;
         // F16: a type the aggregation interpreter cannot load (BINARY,
         // BLOB, BIT, the old temporal formats) is unsupported, not a bug.
-        // Still MaybeStaleSchema: a reload may find the type changed.
+        // T-18: and permanent, as encode_constant's type refusals: as a
+        // MaybeStaleSchema each such query reloaded the schema of every
+        // table it held, for nothing.
         if (aggregator->GetError().errno_ == kErrUnSupportedColumn)
-          throw RonSQLMaybeStaleSchema(
+          throw RonSQLPermanentError(
               "Aggregation over a column of this type is not supported.");
         throw RonSQLMaybeStaleSchema("Failed writing aggregation program");
       }
@@ -21969,9 +21983,9 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
           err << "Failed writing aggregation program "
                  "when attempting to load column "
               << quoted_identifier(m_columns[src]) << endl;
-          // F16: see programAggregator's Load arm.
+          // F16, T-18: see programAggregator's Load arm.
           if (aggregator->GetError().errno_ == kErrUnSupportedColumn)
-            throw RonSQLMaybeStaleSchema(
+            throw RonSQLPermanentError(
                 "Aggregation over a column of this type is not supported.");
           throw RonSQLMaybeStaleSchema(
               "Failed writing aggregation program");
