@@ -1,0 +1,18 @@
+--source include/have_ndb.inc
+# RONDB-1124: DBTC accounts every request of a transaction to the rate limit
+# user that the request starting the transaction named, or to none, and keeps
+# it in the transaction record. A request that names no user is accounted to
+# it. A request that names another user, also in a transaction started without
+# one, aborts the transaction with 2207, and a scan in the transaction that
+# names another user is refused with 2207. Before, an operation without a user
+# id that the rate queue re-sent after a dirty read of its transaction had
+# completed had no database record, and DBTC crashed. The NDB API test case
+# switches the user of transactions with NdbTransaction::setUserId between
+# batches, through NdbRecord and NdbOperation operations and a scan.
+--exec $NDB_MGM -e "USER SET rl_user_a --rate-per-sec=1000000" > /dev/null
+--exec $NDB_MGM -e "USER SET rl_user_b --rate-per-sec=1000000" > /dev/null
+let NDBAPITEST_NAME=testNdbApi;
+let NDBAPITEST_ARGS=-n RateLimitUserPerTransaction T1;
+--source suite/ndb/include/run_ndbapitest.inc
+--exec $NDB_MGM -e "USER DROP rl_user_a" > /dev/null
+--exec $NDB_MGM -e "USER DROP rl_user_b" > /dev/null

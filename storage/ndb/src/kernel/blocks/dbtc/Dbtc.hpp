@@ -173,6 +173,8 @@
 #define ZSCAN_CONTINOUS_SCAN_LOCK_ERROR 2202
 /* Not 2203, that is TcKeyRef::ReadRateOverflowError */
 #define ZSCAN_PRUNE_PARTITION_HASH_ERROR 2204
+/* A request named another rate limit user than its transaction's. */
+#define ZRATE_LIMIT_USER_MISMATCH 2207
 
 // ----------------------------------------
 // Error Codes for transactions
@@ -1306,6 +1308,20 @@ class Dbtc : public SimulatedBlock {
     Uint64 m_parallel_transactions_db;
     QueueRecord *m_first_queued_req;
     QueueRecord *m_last_queued_req;
+
+    /**
+     * The rate limit user of the transaction: the user id and version that
+     * the request starting the transaction named, m_user_id RNIL when it
+     * named none.  See set_trans_user.  Every request of the transaction
+     * is accounted to this user, also one that names none, and one that
+     * names another user aborts the transaction.
+     * m_queuedDatabasePtrI cannot stand in for it: releaseDirtyRead
+     * releases it when a dirty read completes with nothing else
+     * outstanding, while later operations of the transaction may still
+     * wait in the rate queue.
+     */
+    Uint32 m_user_id;
+    Uint32 m_user_id_version;
 
     /**
      * ExecTriggersGuard
@@ -3464,6 +3480,10 @@ class Dbtc : public SimulatedBlock {
   void dump_scan_state(ApiConnectRecordPtr scanTransPtr);
   bool hasOp(ApiConnectRecordPtr transPtr, Uint32 op);
   bool is_transaction_to_start(ApiConnectRecord*, Uint32);
+  bool set_trans_user(ApiConnectRecord *regApiPtr,
+                      bool to_start,
+                      Uint32 user_id,
+                      Uint32 user_id_version);
   bool check_tckey_queueing(Signal *signal,
                             DatabaseRecordPtr &databaserRecordPtr,
                             SectionHandle &handle,
