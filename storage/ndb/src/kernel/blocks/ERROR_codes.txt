@@ -59,7 +59,8 @@ Next DBTUP 4047 (4060-4064 reserved for the RONDB-1056 JIT above)
       with the temporary 1870 / 20008
 5120: RONDB-1056 JIT strict compile for the join-agg path (DblqhProxy): a
       per-leaf compile failure at JOIN_AGG_SETUP is fatal (suite-wide strict
-      arming, paired with DBTUP 4064)
+      arming, paired with DBTUP 4064); a single-row CTE program (zero
+      aggregate slots, no bytecode) has nothing to compile and is exempt
 5127: RONDB-1056 JIT: dump program + translation at JOIN_AGG_SETUP compile
       (DblqhProxy; DEBUG_JIT builds only). Was 5119 until the TTL replica-
       rowid work took 5119.

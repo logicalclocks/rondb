@@ -3670,6 +3670,18 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
             abort();
           }
         }
+      } else if (lp.m_n_agg_results == 0) {
+        /* A single-row CTE projection program (NdbAggregator::
+         * SetSingleRowMode, cte_single_row_kernel_plan.md) declares its
+         * outputs as GROUP BY columns and has zero aggregate slots, so
+         * no instructions follow the header: there is nothing to
+         * compile and the interpreter runs none per row.  That is not
+         * a compile failure, so 5120 does not apply. */
+        jam();
+        DEB_JIT_IF(log_jit_decision,
+                   ("[RONDB-1056] JIT not needed key=%u leaf %u "
+                    "(no aggregate slots, no bytecode)",
+                    key, jit_leaf));
       } else if (fatal_compile_failure) {
         g_eventLogger->error(
             "ERROR_INSERT 5120: JIT setup found no aggregation bytecode "
