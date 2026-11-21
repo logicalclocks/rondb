@@ -11617,7 +11617,8 @@ RonSQLPreparer::execute()
       return;
     }
 
-    start_transaction();
+    // X-16: the IN-list key reads of execute_pk_lookup_aggregate.
+    start_transaction(m_pk_lookup && !m_where_never_true);
     // Since ndb exists, m_main_scope.table should have been initialized in load()
     ronsql_require_bug(m_main_scope.table != NULL,
                        "An aggregate query has no table.");
@@ -12643,7 +12644,8 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
    * aggregation program loads, and each row that would be printed goes
    * to api_rows instead; nothing is printed here.
    */
-  start_transaction();
+  // X-16: the key reads of the PK-lookup arm below.
+  start_transaction(m_pk_lookup && !m_where_never_true);
   ronsql_require_bug(m_main_scope.table != NULL,
                      "A pass-through query has no table.");
 
@@ -13140,12 +13142,61 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
   }
 }
 
+/*
+ * X-16: the transaction of the single-table key reads starts on a node
+ * that holds a replica of the first key (the primary replica, or with
+ * READ_BACKUP any replica: NdbImpl::select_node), as RDRS pk-read starts
+ * its own, so the first read needs no hop from the TC to the data.  An IN
+ * list's other keys can be anywhere, so they gain nothing and lose
+ * nothing.  Without a hash for the key (a table with user-defined
+ * partitioning, or a key the hash refuses) the transaction starts with no
+ * hint, as before.
+ */
+NdbTransaction*
+RonSQLPreparer::start_pk_hinted(Ndb* ndb)
+{
+  const NdbDictionary::Table* tab = m_main_scope.table;
+  ronsql_require_bug(tab != NULL, "A key lookup has no table.");
+  ronsql_require_bug(m_pk_lookup_const != NULL,
+                     "A key lookup has no key.");
+  ronsql_require_bug(m_pk_lookup_in_col < 0 || m_pk_lookup_in_count >= 1,
+                     "A key lookup has an empty IN list.");
+  const NdbRecord* rec = tab->getDefaultRecord();
+  if (rec == NULL) return ndb->startTransaction();
+  const Uint32 rowlen = NdbDictionary::getRecordRowLength(rec);
+  char* key_row = m_amalloc->alloc_exc<char>(rowlen);
+  memset(key_row, 0, rowlen);
+  const int nkeys = tab->getNoOfPrimaryKeys();
+  for (int k = 0; k < nkeys; k++)
+  {
+    const NdbDictionary::Column* pk_col =
+        tab->getColumn(tab->getPrimaryKey(k));
+    ronsql_require_bug(pk_col != NULL,
+                       "A primary key column of the table is missing.");
+    ConditionalExpression* key = (k == m_pk_lookup_in_col)
+                                     ? m_pk_lookup_in_values[0]
+                                     : m_pk_lookup_const[k];
+    // The column's NdbRecord byte format, as the lookup arms write it.
+    raw_value rv = encode_constant(key, pk_col);
+    char* dst = NdbDictionary::getValuePtr(rec, key_row, pk_col->getAttrId());
+    if (dst == NULL) return ndb->startTransaction();
+    memcpy(dst, rv.val, rv.len);
+  }
+  // As RDRS pk-read: room for the key normalized by its character sets.
+  Uint32 xfrm_buf[MAX_KEY_SIZE_IN_WORDS * MAX_XFRM_MULTIPLY];
+  Uint32 hash = 0;
+  if (Ndb::computeHash(&hash, rec, key_row, xfrm_buf, sizeof(xfrm_buf)) != 0)
+    return ndb->startTransaction();
+  return ndb->startTransaction(tab, tab->getPartitionId(hash));
+}
+
 void
-RonSQLPreparer::start_transaction() {
+RonSQLPreparer::start_transaction(bool hint_pk_lookup) {
   Ndb* ndb = m_conf.ndb;
   ronsql_require_bug(m_trans == NULL,
                      "A transaction was started while another is open.");
-  m_trans = DBG(ndb->startTransaction());
+  m_trans = hint_pk_lookup ? DBG(start_pk_hinted(ndb))
+                           : DBG(ndb->startTransaction());
   if (m_trans == NULL) {
     // X-9: startTransaction() clears the Ndb object's error and leaves its
     // own there, so this is the error of the call that failed (4009 and

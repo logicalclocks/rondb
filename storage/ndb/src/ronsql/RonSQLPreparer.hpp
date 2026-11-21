@@ -1224,8 +1224,12 @@ public:
   bool has_binary_output();
 private:
   // Start m_trans, tagged with the rate limit identity if there is one.
-  // Every transaction of a query is started here.
-  void start_transaction();
+  // Every transaction of a query is started here.  X-16: with
+  // hint_pk_lookup, the key reads of the single-table lookup arms
+  // (m_pk_lookup) follow, and the transaction starts on a node that
+  // holds a replica of the first key (start_pk_hinted).
+  void start_transaction(bool hint_pk_lookup = false);
+  NdbTransaction* start_pk_hinted(Ndb* ndb);
   void cleanup_trans();
   void execute_subqueries();
   void substitute_subquery_results();

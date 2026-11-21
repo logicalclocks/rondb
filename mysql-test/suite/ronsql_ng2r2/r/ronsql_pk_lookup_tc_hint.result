@@ -1,0 +1,26 @@
+SELECT COUNT(*) AS data_nodes FROM ndbinfo.nodes;
+data_nodes
+4
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Each arm is a key read ===
+== Explain Query ==
+pt: a key read
+== Explain Query ==
+ptr: a key read with a filter
+== Explain Query ==
+agg: one aggregating key read
+== Explain Query ==
+ci: a key read
+
+=== 64 key reads, each on its TC's own node ===
+pt:
+10 20 30 40 50 60 70 80 90 100 110 120 130 140 150 160
+ptr:
+10 20 30 40 50 60 70 80 90 100 110 120 130 140 150 160
+agg:
+1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+ci:
+1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16
+Every key read ran on its TC's own node.
