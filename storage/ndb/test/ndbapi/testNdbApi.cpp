@@ -7653,6 +7653,121 @@ int runRateQueueAbortKeepsExecFlag(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+static const char *rateLimitUserA = "rl_user_a";
+static const char *rateLimitUserB = "rl_user_b";
+
+static int setRateLimitUser(NdbTransaction *trans, const char *user) {
+  return trans->setUserId(user, Uint32(strlen(user)));
+}
+
+/* Reads row 0 in a batch of its own, committing the transaction if commit. */
+static int readRowZeroBatch(NdbTransaction *trans, const NdbRecord *rowRec,
+                            Uint8 *row, bool commit) {
+  if (trans->readTuple(rowRec, (const char *)row, rowRec, (char *)row,
+                       NdbOperation::LM_CommittedRead) == nullptr) {
+    return -1;
+  }
+  return trans->execute(commit ? NdbTransaction::Commit
+                               : NdbTransaction::NoCommit);
+}
+
+int runRateLimitUserPerTransaction(NDBT_Context *ctx, NDBT_Step *step) {
+  // RONDB-1124: DBTC accounts every request of a transaction to the rate
+  // limit user that the request starting the transaction named, or to none,
+  // and keeps that user in the transaction record. A request that names no
+  // user is accounted to it; a request that names another user, also in a
+  // transaction started without one, aborts the transaction with 2207, and
+  // a scan in the transaction that names another user is refused with
+  // 2207. Before, each request was accounted to the user it named, or to
+  // its table's database, and an operation without a user id that the rate
+  // queue re-sent after a dirty read of the transaction had completed
+  // crashed DBTC. The MTR wrapper creates the USER entities rl_user_a and
+  // rl_user_b. NdbTransaction::setUserId between batches makes the API send
+  // another user.
+  const NdbDictionary::Table *tab = ctx->getTab();
+  Ndb *ndb = GETNDB(step);
+  const NdbRecord *rowRec = tab->getDefaultRecord();
+  const Uint32 len = NdbDictionary::getRecordRowLength(rowRec);
+  HugoCalculator calc(*tab);
+  std::unique_ptr<Uint8[]> row(new Uint8[len]());
+  calc.equalForRow(row.get(), rowRec, 0);
+
+  // 1. One user from the first batch to the commit.
+  {
+    NdbTransaction *trans = ndb->startTransaction();
+    CHECKE(trans != nullptr, (*ndb));
+    CHECKE(setRateLimitUser(trans, rateLimitUserA) == 0, (*trans));
+    CHECKE(readRowZeroBatch(trans, rowRec, row.get(), false) == 0, (*trans));
+    CHECKE(readRowZeroBatch(trans, rowRec, row.get(), true) == 0, (*trans));
+    ndb->closeTransaction(trans);
+  }
+  // 2. Another user in the second batch: the transaction is aborted.
+  {
+    NdbTransaction *trans = ndb->startTransaction();
+    CHECKE(trans != nullptr, (*ndb));
+    CHECKE(setRateLimitUser(trans, rateLimitUserA) == 0, (*trans));
+    CHECKE(readRowZeroBatch(trans, rowRec, row.get(), false) == 0, (*trans));
+    CHECKE(setRateLimitUser(trans, rateLimitUserB) == 0, (*trans));
+    CHECK(readRowZeroBatch(trans, rowRec, row.get(), true) == -1);
+    g_info << "Second user: error " << trans->getNdbError().code << endl;
+    CHECK(trans->getNdbError().code == 2207);
+    ndb->closeTransaction(trans);
+  }
+  // 3. No user in the first batch, a user in the second: aborted.
+  {
+    NdbTransaction *trans = ndb->startTransaction();
+    CHECKE(trans != nullptr, (*ndb));
+    CHECKE(readRowZeroBatch(trans, rowRec, row.get(), false) == 0, (*trans));
+    CHECKE(setRateLimitUser(trans, rateLimitUserA) == 0, (*trans));
+    CHECK(readRowZeroBatch(trans, rowRec, row.get(), true) == -1);
+    g_info << "User after none: error " << trans->getNdbError().code << endl;
+    CHECK(trans->getNdbError().code == 2207);
+    ndb->closeTransaction(trans);
+  }
+  // 4. As 2, through operations defined with getNdbOperation() rather than
+  // an NdbRecord (HugoOperations), which carried no user id before.
+  {
+    HugoOperations hugoOps(*tab);
+    CHECK(hugoOps.startTransaction(ndb) == 0);
+    CHECK(setRateLimitUser(hugoOps.getTransaction(), rateLimitUserA) == 0);
+    CHECK(hugoOps.pkReadRecord(ndb, 0, 1, NdbOperation::LM_CommittedRead) ==
+          0);
+    CHECK(hugoOps.execute_NoCommit(ndb) == 0);
+    CHECK(setRateLimitUser(hugoOps.getTransaction(), rateLimitUserB) == 0);
+    CHECK(hugoOps.pkReadRecord(ndb, 0, 1, NdbOperation::LM_CommittedRead) ==
+          0);
+    const int code = hugoOps.execute_Commit(ndb);
+    g_info << "Second user, NdbOperation: error " << code << endl;
+    CHECK(code == 2207);
+    CHECK(hugoOps.closeTransaction(ndb) == 0);
+  }
+  // 5. A scan in the transaction that names another user is refused.
+  {
+    NdbTransaction *trans = ndb->startTransaction();
+    CHECKE(trans != nullptr, (*ndb));
+    CHECKE(setRateLimitUser(trans, rateLimitUserA) == 0, (*trans));
+    CHECKE(readRowZeroBatch(trans, rowRec, row.get(), false) == 0, (*trans));
+    CHECKE(setRateLimitUser(trans, rateLimitUserB) == 0, (*trans));
+    NdbScanOperation *scanOp =
+        trans->scanTable(rowRec, NdbOperation::LM_CommittedRead);
+    CHECKE(scanOp != nullptr, (*trans));
+    int rc = trans->execute(NdbTransaction::NoCommit);
+    if (rc == 0) {
+      const char *out = nullptr;
+      rc = scanOp->nextResult(&out, true, false);
+    }
+    CHECK(rc == -1);
+    int code = scanOp->getNdbError().code;
+    if (code == 0) {
+      code = trans->getNdbError().code;
+    }
+    g_info << "Scan of a second user: error " << code << endl;
+    CHECK(code == 2207);
+    ndb->closeTransaction(trans);
+  }
+  return NDBT_OK;
+}
+
 int runDatabaseAndSchemaName(NDBT_Context *ctx, NDBT_Step *) {
   Ndb_cluster_connection *con = &ctx->m_cluster_connection;
 
@@ -8330,6 +8445,15 @@ TESTCASE("RateQueueAbortKeepsExecFlag",
   INITIALIZER(runSetRateQueueAbortErrorInsert);
   STEP(runRateQueueAbortKeepsExecFlag);
   FINALIZER(runClearErrorInsert);
+  FINALIZER(runClearTable);
+}
+TESTCASE("RateLimitUserPerTransaction",
+         "Check that every request of a transaction is accounted to the rate "
+         "limit user that started it and that a request or scan naming "
+         "another user fails with 2207 (needs the USER entities rl_user_a "
+         "and rl_user_b)") {
+  INITIALIZER(runWriteRecord);
+  STEP(runRateLimitUserPerTransaction);
   FINALIZER(runClearTable);
 }
 TESTCASE("DatabaseAndSchemaName",
