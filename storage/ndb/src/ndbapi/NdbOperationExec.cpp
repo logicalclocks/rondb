@@ -540,7 +540,20 @@ int NdbOperation::prepareSend(Uint32 aTC_ConnectPtr, Uint64 aTransId,
   Uint32 *tOptionalDataPtr = &tcKeyReq->userId;
   Uint32 var_index = 0;
   Uint32 user_id = theNdbCon->m_user_id;
-  if (user_id != RNIL && tcKeyReq->getStartFlag(tReqInfo)) {
+  /*
+   * Every operation carries the rate limit user id, as in the NdbRecord
+   * path (fillTcKeyReqHdr).  This sent it only with the start flag, tested
+   * in tReqInfo, which is cleared above and gets the start flag only in
+   * setRequestInfoTCKEYREQ, so no key operation defined through
+   * NdbOperation (not NdbRecord) carried it or was rate limited.  Sending
+   * it with the first operation only is not enough: DBTC releases the
+   * transaction's user (release_api_ref) when a dirty read completes with
+   * no other request outstanding, and an operation of the transaction
+   * still in its rate queue comes back without a user to account it to.
+   * DBTC reads the id only from a long TCKEYREQ, so a forced short one
+   * goes without it.
+   */
+  if (user_id != RNIL && !theNdb->theImpl->forceShortRequests) {
     tcKeyReq->setUserIdFlag(tReqInfo, 1);
     tOptionalDataPtr[0] = user_id;
     tOptionalDataPtr[1] = theNdbCon->m_user_id_version;
