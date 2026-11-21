@@ -33,6 +33,8 @@
 #include "LexString.hpp"
 #include "RonSQLCommon.hpp"
 
+#include <algorithm>
+
 class NdbRecAttr;
 
 /*
@@ -87,6 +89,26 @@ private:
 };
 static_assert(sizeof(PassthroughValue) % 8 == 0,
               "PassthroughValue data must stay 8-byte aligned");
+
+/*
+ * O-16: order the first min(limit, n) elements of arr[0..n) by `less` and
+ * return how many that is (limit < 0: no limit).  Under a LIMIT below n
+ * only those are ordered, by std::partial_sort (O(n log limit)); otherwise
+ * all, by std::sort.  The aggregate ORDER BY (print_result_ordered) and
+ * the pass-through one (for_each_sorted_passthrough_row) sort with it.
+ */
+template <typename T, typename Less>
+inline Uint32
+ronsql_sort_top_n(T* arr, Uint32 n, Int64 limit, Less less)
+{
+  Uint32 count = n;
+  if (limit >= 0 && (Int64)n > limit) count = (Uint32)limit;
+  if (count < n)
+    std::partial_sort(arr, arr + count, arr + n, less);
+  else
+    std::sort(arr, arr + n, less);
+  return count;
+}
 
 // O-8: one HAVING operand, typed as MySQL types it
 // (ResultPrinterInternal.hpp).
@@ -263,6 +285,13 @@ private:
                    std::ostream* out);
   StoredRow store_record(NdbAggregator::ResultRecord& record);
   void print_stored_record(StoredRow& row, std::ostream& out);
+  // The print phase of the program, over the registers that the store
+  // phase filled (run_program, or print_stored_record from a stored row).
+  void print_registers(std::ostream& out);
+  // Whether the group in the registers is a result row: the HAVING holds,
+  // and the sentinel of a cross-table filter shows a row passed it.
+  bool group_passes();
+  void print_tsv_header(std::ostream& out);
   int compare_rows(StoredRow& a, StoredRow& b);
   void set_avg_keys(StoredRow& row);
   double avg_sort_key(NdbAggregator::Result sum,
@@ -270,6 +299,8 @@ private:
                       int scale);
   void print_result_ordered(NdbAggregator* aggregator,
                             std::basic_ostream<char>* out_stream);
+  void print_result_filtered(NdbAggregator* aggregator,
+                             std::basic_ostream<char>* out_stream);
   void print_float_or_double(std::ostream& out, double value,
                               bool float_display = false);
   // A DECIMAL result carried as a double, at its scale, the way mysqld

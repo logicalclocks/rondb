@@ -878,6 +878,44 @@ test_passthrough_arena_bytes()
   CHECK(PassthroughValue::arena_bytes(257) == 16 + 264);
 }
 
+static bool
+int_less(int a, int b)
+{
+  return a < b;
+}
+
+// O-16: ronsql_sort_top_n orders the first min(limit, n) elements and
+// returns how many; limit < 0 is no limit.
+static void
+test_sort_top_n()
+{
+  {
+    int a[] = {5, 3, 9, 1, 7, 3};
+    CHECK(ronsql_sort_top_n(a, 6, 2, int_less) == 2);
+    CHECK(a[0] == 1 && a[1] == 3);
+  }
+  {
+    int a[] = {5, 3, 9, 1, 7, 3};
+    CHECK(ronsql_sort_top_n(a, 6, -1, int_less) == 6);
+    CHECK(a[0] == 1 && a[1] == 3 && a[2] == 3 && a[3] == 5 && a[4] == 7 &&
+          a[5] == 9);
+  }
+  {
+    int a[] = {5, 3, 9};
+    CHECK(ronsql_sort_top_n(a, 3, 10, int_less) == 3);
+    CHECK(a[0] == 3 && a[1] == 5 && a[2] == 9);
+  }
+  {
+    int a[] = {5, 3, 9};
+    CHECK(ronsql_sort_top_n(a, 3, 3, int_less) == 3);
+    CHECK(a[0] == 3 && a[1] == 5 && a[2] == 9);
+  }
+  {
+    int a[] = {5, 3, 9};
+    CHECK(ronsql_sort_top_n(a, 3, 0, int_less) == 0);
+  }
+}
+
 int
 main()
 {
@@ -894,6 +932,7 @@ main()
   test_having_negate();
   test_having_compare();
   test_passthrough_arena_bytes();
+  test_sort_top_n();
   if (g_failures != 0)
   {
     printf("FAIL: %d checks failed\n", g_failures);

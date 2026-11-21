@@ -1,0 +1,138 @@
+# RONDB-1124 O-16: the aggregate printer sorts only what it prints, and
+# does not buffer the groups for a HAVING or a cross-table filter alone.
+#
+# ResultPrinter::print_result_ordered buffered every group and sorted
+# them all with std::sort, also under a LIMIT, where the pass-through
+# sort used std::partial_sort.  A HAVING, or the sentinel of a
+# cross-table filter (which drops a group no row passed the filter for),
+# took the same path without an ORDER BY: every group stored, "sorted"
+# with no key, and printed after the last.  Now both sorts take the
+# first LIMIT rows with ronsql_sort_top_n, and a HAVING or a sentinel
+# without an ORDER BY goes to print_result_filtered, which tests each
+# group as it is read and prints it at once, and stops at the LIMIT.
+#
+# hs has 20 groups (g = id % 20, id 1..150 but the multiples of 7), with
+# 6 or 7 rows each; hs2 gives each id a w for the cross-table filter.
+#
+#   hs-1  HAVING, no ORDER BY
+#   hs-2  HAVING and LIMIT 3, no ORDER BY: 3 groups, each through the
+#         HAVING (which 3 is not defined)
+#   hs-3  HAVING drops every group
+#   hs-4  ORDER BY an aggregate, LIMIT 5 of 20 groups
+#   hs-5  HAVING, ORDER BY and LIMIT
+#   hs-6  ORDER BY with a LIMIT above the group count
+#   hs-7  a cross-table filter, no ORDER BY: 13 of the 20 groups have no
+#         row through it and are dropped
+#   hs-8  a cross-table filter and a HAVING
+#   hs-9  a cross-table filter and LIMIT 2, no ORDER BY: 2 of the 7
+#         groups with a row through it
+# Each result is compared with mysqld (hs-2 and hs-9 by their rows'
+# properties).
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE hs (
+  id INT NOT NULL PRIMARY KEY,
+  g  INT NOT NULL,
+  v  INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO hs
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 150)
+  SELECT n, n % 20, n FROM seq WHERE n % 7 <> 0;
+CREATE TABLE hs2 (
+  id INT NOT NULL PRIMARY KEY,
+  w  INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO hs2
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 150)
+  SELECT n, (n * 37) % 100 FROM seq;
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === hs-1: HAVING, no ORDER BY: each group tested and printed at once ===
+--let $QUERY=SELECT g, COUNT(*) AS n, SUM(v) AS s FROM hs GROUP BY g HAVING COUNT(*) >= 7;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, COUNT(*) AS n, SUM(v) AS s FROM hs GROUP BY g HAVING COUNT(*) >= 7;
+
+--echo
+--echo === hs-2: HAVING and LIMIT 3, no ORDER BY ===
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT g, COUNT(*) AS n FROM hs GROUP BY g HAVING COUNT(*) >= 7 LIMIT 3;' > $MYSQL_TMP_DIR/hs.out
+--echo lines, including the header:
+--exec wc -l < $MYSQL_TMP_DIR/hs.out | tr -d ' '
+--echo the least n:
+--exec tail -n +2 $MYSQL_TMP_DIR/hs.out | cut -f2 | sort -n | head -n 1
+--remove_file $MYSQL_TMP_DIR/hs.out
+
+--echo
+--echo === hs-3: HAVING drops every group ===
+--let $QUERY=SELECT g, COUNT(*) AS n FROM hs GROUP BY g HAVING COUNT(*) > 1000;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, COUNT(*) AS n FROM hs GROUP BY g HAVING COUNT(*) > 1000;
+
+--echo
+--echo === hs-4: ORDER BY an aggregate with LIMIT: only the first 5 of 20 groups ordered ===
+--let $QUERY=SELECT g, SUM(v) AS s FROM hs GROUP BY g ORDER BY s DESC LIMIT 5;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT g, SUM(v) AS s FROM hs GROUP BY g ORDER BY s DESC LIMIT 5;
+
+--echo
+--echo === hs-5: HAVING, ORDER BY and LIMIT ===
+--let $QUERY=SELECT g, SUM(v) AS s FROM hs GROUP BY g HAVING SUM(v) > 520 ORDER BY g LIMIT 4;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT g, SUM(v) AS s FROM hs GROUP BY g HAVING SUM(v) > 520 ORDER BY g LIMIT 4;
+
+--echo
+--echo === hs-6: ORDER BY with a LIMIT above the group count: every group ordered ===
+--let $QUERY=SELECT g, SUM(v) AS s FROM hs GROUP BY g ORDER BY s, g LIMIT 50;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT g, SUM(v) AS s FROM hs GROUP BY g ORDER BY s, g LIMIT 50;
+
+--echo
+--echo === hs-7: a cross-table filter without ORDER BY: groups with no row through it dropped ===
+--let $QUERY=SELECT a.g, COUNT(*) AS n, SUM(a.v) AS s FROM hs AS a JOIN hs2 AS b ON b.id = a.id WHERE a.id < 40 AND a.v > b.w GROUP BY a.g;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.g, COUNT(*) AS n, SUM(a.v) AS s FROM hs AS a JOIN hs2 AS b ON b.id = a.id WHERE a.id < 40 AND a.v > b.w GROUP BY a.g;
+
+--echo
+--echo === hs-8: a cross-table filter and a HAVING ===
+--let $QUERY=SELECT a.g, COUNT(*) AS n, SUM(a.v) AS s FROM hs AS a JOIN hs2 AS b ON b.id = a.id WHERE a.id < 40 AND a.v > b.w GROUP BY a.g HAVING SUM(a.v) > 20;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.g, COUNT(*) AS n, SUM(a.v) AS s FROM hs AS a JOIN hs2 AS b ON b.id = a.id WHERE a.id < 40 AND a.v > b.w GROUP BY a.g HAVING SUM(a.v) > 20;
+
+--echo
+--echo === hs-9: a cross-table filter and LIMIT 2, no ORDER BY ===
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT a.g, COUNT(*) AS n FROM hs AS a JOIN hs2 AS b ON b.id = a.id WHERE a.id < 40 AND a.v > b.w GROUP BY a.g LIMIT 2;' > $MYSQL_TMP_DIR/hs.out
+--echo lines, including the header:
+--exec wc -l < $MYSQL_TMP_DIR/hs.out | tr -d ' '
+--echo groups without a row through the filter:
+--exec tail -n +2 $MYSQL_TMP_DIR/hs.out | cut -f1 | grep -c -v -x -E '2|10|11|13|16|18|19' || true
+--remove_file $MYSQL_TMP_DIR/hs.out
+
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE hs2;
+DROP TABLE hs;
+--enable_warnings
+--enable_query_log

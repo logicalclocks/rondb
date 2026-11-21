@@ -12657,16 +12657,13 @@ for_each_sorted_passthrough_row(PassthroughSortBuffer& buf,
   const PassthroughValue*** arr =
       amalloc->alloc_exc<const PassthroughValue**>(n);
   for (Uint32 i = 0; i < n; i++) arr[i] = buf.rows[i];
-  auto less = [keys, nkeys](const PassthroughValue** ra,
-                            const PassthroughValue** rb) {
-    return compare_passthrough_rows(ra, rb, keys, nkeys) < 0;
-  };
-  Uint32 print_count = n;
-  if (limit >= 0 && (Int64)n > limit) print_count = (Uint32)limit;
-  if (print_count < n)
-    std::partial_sort(arr, arr + print_count, arr + n, less);
-  else
-    std::sort(arr, arr + n, less);
+  // O-16: the top-N sort the aggregate ORDER BY shares.
+  const Uint32 print_count = ronsql_sort_top_n(
+      arr, n, limit,
+      [keys, nkeys](const PassthroughValue** ra,
+                    const PassthroughValue** rb) -> bool {
+        return compare_passthrough_rows(ra, rb, keys, nkeys) < 0;
+      });
   for (Uint32 i = 0; i < print_count; i++) {
     row_fn(const_cast<const PassthroughValue* const*>(arr[i]), i);
   }

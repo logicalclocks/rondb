@@ -549,7 +549,7 @@ SELECT grp, COUNT(*) AS antal FROM jp GROUP BY grp ORDER BY grp LIMIT 0;
 RDRS JSON: 0 row(s), as mysqld
 RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
 
-=== jp-19: HAVING drops every group, buffered aggregate printer ===
+=== jp-19: HAVING drops every group, filtered aggregate printer ===
 == Query ==
 SELECT grp, COUNT(*) AS antal FROM jp GROUP BY grp HAVING COUNT(*) > 5;
 == ronsql_cli JSON ==
@@ -577,6 +577,45 @@ SELECT grp, COUNT(*) AS antal FROM jp GROUP BY grp HAVING COUNT(*) > 5;
 == Rows of the RDRS bodies vs mysqld ==
 RDRS JSON: 0 row(s), as mysqld
 RDRS JSON_ASCII: 0 row(s), as mysqld, ASCII only
+
+=== jp-19b: HAVING keeps two groups, filtered aggregate printer ===
+== Query ==
+SELECT grp, COUNT(*) AS antal, SUM(v) AS summa_€ FROM jp GROUP BY grp HAVING COUNT(*) >= 2;
+== ronsql_cli JSON ==
+[{"grp":1,"antal":2,"summa_€":30}
+,{"grp":2,"antal":2,"summa_€":70}
+]
+[{"antal":2,"grp":1,"summa_€":30},{"antal":2,"grp":2,"summa_€":70}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"grp":1,"antal":2,"summa_€":30}
+,{"grp":2,"antal":2,"summa_€":70}
+]
+}
+{"data":[{"antal":2,"grp":1,"summa_€":30},{"antal":2,"grp":2,"summa_€":70}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"grp":1,"antal":2,"summa_€":30}
+,{"grp":2,"antal":2,"summa_€":70}
+]
+}
+{"data":[{"antal":2,"grp":1,"summa_€":30},{"antal":2,"grp":2,"summa_€":70}]}
+
+== ronsql_cli JSON_ASCII ==
+[{"grp":1,"antal":2,"summa_\u20ac":30}
+,{"grp":2,"antal":2,"summa_\u20ac":70}
+]
+[{"antal":2,"grp":1,"summa_€":30},{"antal":2,"grp":2,"summa_€":70}]
+== RDRS JSON_ASCII ==
+{"data":
+[{"grp":1,"antal":2,"summa_\u20ac":30}
+,{"grp":2,"antal":2,"summa_\u20ac":70}
+]
+}
+{"data":[{"antal":2,"grp":1,"summa_€":30},{"antal":2,"grp":2,"summa_€":70}]}
+== Rows of the RDRS bodies vs mysqld ==
+RDRS JSON: 2 row(s), as mysqld
+RDRS JSON_ASCII: 2 row(s), as mysqld, ASCII only
 
 === jp-20: no GROUP BY, no row passes the WHERE ===
 == Query ==

@@ -772,6 +772,12 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
          m_num_groupby_cols * sizeof(NdbAggregator::Column));
   memcpy(m_regs_a, row.results,
          m_num_aggregates * sizeof(NdbAggregator::Result));
+  print_registers(out);
+}
+
+void
+ResultPrinter::print_registers(std::ostream& out)
+{
   // Run print phase of the program
   for (Uint32 cmd_index = m_print_start_idx;
        cmd_index < m_program.size(); cmd_index++)
@@ -1247,23 +1253,7 @@ ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
   {
     DEB_TRACE();
     StoredRow row = store_record(record);
-    // Cross-table filter semantics: suppress groups where no rows passed
-    // the filter (sentinel COUNT == 0). The kernel creates a group before
-    // the filter stops the row, so such a group exists only because of
-    // rows the WHERE rejected. Without GROUP BY the one row is the
-    // aggregate over the whole WHERE result, which SQL returns also when
-    // no row passed (COUNT 0, the others NULL), so it is never
-    // suppressed (F-6).
-    if (m_query->sentinel_agg_slot >= 0 && m_num_groupby_cols > 0) {
-      NdbAggregator::Result sentinel =
-          row.results[m_query->sentinel_agg_slot];
-      if (sentinel.data_int64() == 0) continue;
-    }
-    if (m_query->having_expression != NULL &&
-        evaluate_having(m_query->having_expression) != HAVING_TRUE)
-    {
-      continue;
-    }
+    if (!group_passes()) continue;
     if (m_num_avg_keys > 0)
       set_avg_keys(row);
     rows.push(row);
@@ -1285,17 +1275,13 @@ ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
   {
     sort_array[i] = rows[i];
   }
-  // Sort using ORDER BY comparator
-  std::sort(sort_array, sort_array + num_rows,
-    [this](StoredRow& a, StoredRow& b) -> bool {
-      return compare_rows(a, b) < 0;
-    });
-  // Apply LIMIT
-  Uint32 print_count = num_rows;
-  if (m_query->limit >= 0 && (Int64)print_count > m_query->limit)
-  {
-    print_count = (Uint32)m_query->limit;
-  }
+  // Sort using ORDER BY comparator; under a LIMIT only the rows printed
+  // (O-16: before, every group was sorted).
+  const Uint32 print_count = ronsql_sort_top_n(
+      sort_array, num_rows, m_query->limit,
+      [this](StoredRow& a, StoredRow& b) -> bool {
+        return compare_rows(a, b) < 0;
+      });
   // Print results
   if (m_json_output)
   {
@@ -1314,16 +1300,9 @@ ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
     // The mysql client prints nothing at all for an empty result set —
     // including LIMIT 0 — so suppress the header when no row will be
     // printed (matches the num_rows == 0 early return above).
-    if (m_tsv_headers && print_count > 0)
+    if (print_count > 0)
     {
-      bool first_column = true;
-      for (Uint32 i = 0; i < m_outputs.size(); i++)
-      {
-        Outputs* o = m_outputs[i];
-        if (first_column) first_column = false; else out << '\t';
-        out << o->output_name;
-      }
-      out << '\n';
+      print_tsv_header(out);
     }
     for (Uint32 i = 0; i < print_count; i++)
     {
@@ -1334,6 +1313,93 @@ ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
   {
     DEB_TRACE();
     ronsql_bug("The result printer has neither JSON nor TSV output.");
+  }
+}
+
+bool
+ResultPrinter::group_passes()
+{
+  // Cross-table filter semantics: suppress groups where no rows passed
+  // the filter (sentinel COUNT == 0). The kernel creates a group before
+  // the filter stops the row, so such a group exists only because of
+  // rows the WHERE rejected. Without GROUP BY the one row is the
+  // aggregate over the whole WHERE result, which SQL returns also when
+  // no row passed (COUNT 0, the others NULL), so it is never
+  // suppressed (F-6).
+  if (m_query->sentinel_agg_slot >= 0 && m_num_groupby_cols > 0 &&
+      m_regs_a[m_query->sentinel_agg_slot].data_int64() == 0)
+  {
+    return false;
+  }
+  return m_query->having_expression == NULL ||
+         evaluate_having(m_query->having_expression) == HAVING_TRUE;
+}
+
+// The TSV header line: the output names, unless the format has none.
+void
+ResultPrinter::print_tsv_header(std::ostream& out)
+{
+  if (!m_tsv_headers) return;
+  bool first_column = true;
+  for (Uint32 i = 0; i < m_outputs.size(); i++)
+  {
+    Outputs* o = m_outputs[i];
+    if (first_column) first_column = false; else out << '\t';
+    out << o->output_name;
+  }
+  out << '\n';
+}
+
+/*
+ * O-16: a HAVING, or the sentinel of a cross-table filter, without an
+ * ORDER BY.  Each group is decided alone, so it is loaded into the
+ * registers, tested and printed at once; before, every group was stored
+ * and sorted with no key first, and printed after the last.  A LIMIT
+ * stops the fetch as on the streaming path.  The framing is the one of
+ * print_result_ordered: JSON "[]" for no row, and in TSV the header only
+ * before a first row.
+ */
+void
+ResultPrinter::print_result_filtered(NdbAggregator* aggregator,
+                                     std::basic_ostream<char>* out_stream)
+{
+  DEB_TRACE();
+  assert(out_stream != NULL);
+  std::ostream& out = *out_stream;
+  if (!m_json_output && !m_tsv_output)
+  {
+    ronsql_bug("The result printer has neither JSON nor TSV output.");
+  }
+  if (m_json_output)
+  {
+    out << '[';
+  }
+  Int64 row_count = 0;
+  for (NdbAggregator::ResultRecord record = aggregator->FetchResultRecord();
+       !record.end();
+       record = aggregator->FetchResultRecord())
+  {
+    DEB_TRACE();
+    if (m_query->limit >= 0 && row_count >= m_query->limit)
+    {
+      break;
+    }
+    run_program(0, m_print_start_idx, &record, NULL);
+    if (!group_passes()) continue;
+    if (m_json_output)
+    {
+      if (row_count > 0) out << ',';
+    }
+    else if (row_count == 0)
+    {
+      print_tsv_header(out);
+    }
+    print_registers(out);
+    row_count++;
+  }
+  if (m_json_output)
+  {
+    out << "]\n";
   }
 }
 
@@ -2011,11 +2077,18 @@ ResultPrinter::print_result(NdbAggregator* aggregator,
 {
   DEB_TRACE();
   assert(out_stream != NULL);
-  // Force buffered path when sentinel filtering is needed (cross-table
-  // BranchReg filters) because streaming can't skip already-started records.
-  if (m_has_orderby || m_query->sentinel_agg_slot >= 0)
+  // O-16: only an ORDER BY needs every group before the first is printed.
+  // A HAVING, or the sentinel of a cross-table filter (BranchReg filters),
+  // decides on each group alone, which print_record cannot: it prints
+  // while it reads the record.
+  if (m_orderby_specs.size() > 0)
   {
     print_result_ordered(aggregator, out_stream);
+    return;
+  }
+  if (m_query->having_expression != NULL || m_query->sentinel_agg_slot >= 0)
+  {
+    print_result_filtered(aggregator, out_stream);
     return;
   }
   std::ostream& out = *out_stream;
@@ -2064,18 +2137,10 @@ ResultPrinter::print_result(NdbAggregator* aggregator,
       {
         break;
       }
-      if (!headers_printed && m_tsv_headers)
+      if (!headers_printed)
       {
         DEB_TRACE();
-        // Print the column names.
-        bool first_column = true;
-        for (Uint32 i = 0; i < m_outputs.size(); i++)
-        {
-          Outputs* o = m_outputs[i];
-          if (first_column) first_column = false; else out << '\t';
-          out << o->output_name;
-        }
-        out << '\n';
+        print_tsv_header(out);
         headers_printed = true;
       }
       print_record(record, out);
