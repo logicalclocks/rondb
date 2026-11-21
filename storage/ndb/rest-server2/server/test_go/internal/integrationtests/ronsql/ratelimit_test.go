@@ -76,6 +76,48 @@ func TestRateLimitSubquery(t *testing.T) {
 		"WHERE val_1 IN (SELECT MAX(val_1) FROM big_tbl);")
 }
 
+// RONDB-1124 T-5: the other executor paths.  A key read classifies its
+// NDB error in throw_classified_ndb_error / throw_key_read_error, not in
+// handle_ronsql_exception, so the rate limit has to reach 429 there too.
+
+// TestRateLimitPkLookupAggregate: an aggregate over the key reads of an IN
+// list (execute_pk_lookup_aggregate).
+func TestRateLimitPkLookupAggregate(t *testing.T) {
+	runRateLimitTest(t, "SELECT SUM(val_1) AS s FROM tiny_tbl "+
+		"WHERE pk IN (1, 2, 3);")
+}
+
+// TestRateLimitPkLookup: a pass-through key read.
+func TestRateLimitPkLookup(t *testing.T) {
+	runRateLimitTest(t, "SELECT pk, val_1 FROM tiny_tbl WHERE pk = 1;")
+}
+
+// TestRateLimitPkLookupInList: pass-through key reads of an IN list.
+func TestRateLimitPkLookupInList(t *testing.T) {
+	runRateLimitTest(t, "SELECT pk, val_1 FROM tiny_tbl WHERE pk IN (1, 2);")
+}
+
+// TestRateLimitCountStar: the COUNT(*) shortcut, which reads the
+// fragments' row counts instead of the rows.
+func TestRateLimitCountStar(t *testing.T) {
+	runRateLimitTest(t, "SELECT COUNT(*) AS n FROM tiny_tbl;")
+}
+
+// TestRateLimitCteJoin: a join of a table with an aggregating CTE.
+func TestRateLimitCteJoin(t *testing.T) {
+	runRateLimitTest(t, "WITH c AS (SELECT pk AS k, SUM(val_1) AS s "+
+		"FROM big_tbl GROUP BY pk) SELECT SUM(c.s) AS s FROM tiny_tbl AS t "+
+		"JOIN c ON c.k = t.pk;")
+}
+
+// TestRateLimitLastN: the last N rows of a table aggregated in RonSQL
+// (the API-side aggregate over a pass-through scan).
+func TestRateLimitLastN(t *testing.T) {
+	runRateLimitTest(t, "WITH t AS (SELECT pk, val_1 FROM tiny_tbl "+
+		"ORDER BY pk DESC LIMIT 5) SELECT COUNT(*) AS n, SUM(val_1) AS s "+
+		"FROM t;")
+}
+
 // runRateLimitTest runs the shared endpoint rate limit test with query over
 // db029: a low limit must give some 429s and nothing but 200 and 429.
 func runRateLimitTest(t *testing.T, query string) {
