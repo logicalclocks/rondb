@@ -8,12 +8,13 @@ digraph newtables {
 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#8aa5a3">
  <TR><TD COLSPAN="2" BGCOLOR="#566574"><FONT COLOR="white"><B>users</B> (existing)</FONT></TD></TR>
  <TR><TD BGCOLOR="#f1f3f5"><B>email</B></TD><TD BGCOLOR="#f1f3f5"><B>uid</B></TD></TR>
- <TR><TD>mary@acme.io</TD><TD PORT="u1001">1001</TD></TR>
- <TR><TD>mike@acme.io</TD><TD PORT="u1002">1002</TD></TR>
+ <TR><TD>mary@acme.io</TD><TD>1001</TD></TR>
+ <TR><TD>mike@acme.io</TD><TD>1002</TD></TR>
  <TR><TD>sam@acme.io</TD><TD>1003</TD></TR>
  <TR><TD>alice@acme.io</TD><TD>1004</TD></TR>
  <TR><TD>ava@acme.io</TD><TD>1005</TD></TR>
  <TR><TD>rosa@acme.io</TD><TD>1006</TD></TR>
+ <TR><TD COLSPAN="2" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#566574">not referenced by the who table; the installer<BR ALIGN="LEFT"/>reaches it through project_team</FONT></TD></TR>
 </TABLE>>];
 
   project [label=<
@@ -24,17 +25,17 @@ digraph newtables {
  <TR><TD>Sales</TD><TD>12</TD></TR>
  <TR><TD>Recommender</TD><TD PORT="p13">13</TD></TR>
  <TR><TD>Recommender2</TD><TD PORT="p14">14</TD></TR>
+ <TR><TD>Backfill</TD><TD PORT="p15">15</TD></TR>
 </TABLE>>];
 
   bucket_user [label=<
 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#8aa5a3">
- <TR><TD COLSPAN="4" BGCOLOR="#096b67"><FONT COLOR="white"><B>rate_limit_group_user</B> (new) — who</FONT></TD></TR>
- <TR><TD BGCOLOR="#edf4f4"><B>uid</B></TD><TD BGCOLOR="#edf4f4"><B>project_id</B></TD><TD BORDER="0" BGCOLOR="white" ALIGN="LEFT"><FONT COLOR="#566574"><I>resolves to</I></FONT><BR ALIGN="LEFT"/><FONT POINT-SIZE="8" COLOR="#8a97a0"><I>not a column, explanation only</I></FONT></TD><TD BGCOLOR="#edf4f4"><B>group_id</B></TD></TR>
- <TR><TD>NULL</TD><TD PORT="bp13">13</TD><TD BORDER="0" ALIGN="LEFT"><FONT COLOR="#566574"><I>every project_team row with project_id 13, any role<BR ALIGN="LEFT"/>today: alice@ → 1004, ava@ → 1005; service users excluded</I></FONT></TD><TD PORT="b1">1</TD></TR>
- <TR><TD PORT="bu1001">1001</TD><TD>NULL</TD><TD BORDER="0" ALIGN="LEFT"><FONT COLOR="#566574"><I>uid 1001 (Mary) directly</I></FONT></TD><TD PORT="b2a">2</TD></TR>
- <TR><TD PORT="bu1002">1002</TD><TD>NULL</TD><TD BORDER="0" ALIGN="LEFT"><FONT COLOR="#566574"><I>uid 1002 (Mike) directly</I></FONT></TD><TD PORT="b2b">2</TD></TR>
- <TR><TD>NULL</TD><TD PORT="bp14">14</TD><TD BORDER="0" ALIGN="LEFT"><FONT COLOR="#566574"><I>every project_team row with project_id 14, any role<BR ALIGN="LEFT"/>today: rosa@ → 1006; service users excluded</I></FONT></TD><TD PORT="b3">3</TD></TR>
- <TR><TD COLSPAN="4" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#566574">uid or project_id, never both. A project row is expanded by the installer from project_team; nothing is copied here.<BR ALIGN="LEFT"/>A covered person gets an alias for every account they hold, on each targeted cluster.</FONT></TD></TR>
+ <TR><TD COLSPAN="3" BGCOLOR="#096b67"><FONT COLOR="white"><B>rate_limit_group_project</B> (new): who</FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4"><B>project_id</B></TD><TD BORDER="0" BGCOLOR="white" ALIGN="LEFT"><FONT COLOR="#566574"><I>resolves to</I></FONT><BR ALIGN="LEFT"/><FONT POINT-SIZE="8" COLOR="#8a97a0"><I>not a column, explanation only</I></FONT></TD><TD BGCOLOR="#edf4f4"><B>group_id</B></TD></TR>
+ <TR><TD PORT="bp13">13</TD><TD BORDER="0" ALIGN="LEFT"><FONT COLOR="#566574"><I>every project_team row with project_id 13, any role<BR ALIGN="LEFT"/>today: alice@ → 1004, ava@ → 1005; service users excluded</I></FONT></TD><TD PORT="b1">1</TD></TR>
+ <TR><TD PORT="bp15">15</TD><TD BORDER="0" ALIGN="LEFT"><FONT COLOR="#566574"><I>every project_team row with project_id 15, any role<BR ALIGN="LEFT"/>today: mary@ → 1001, mike@ → 1002; service users excluded</I></FONT></TD><TD PORT="b2">2</TD></TR>
+ <TR><TD PORT="bp14">14</TD><TD BORDER="0" ALIGN="LEFT"><FONT COLOR="#566574"><I>every project_team row with project_id 14, any role<BR ALIGN="LEFT"/>today: rosa@ → 1006; service users excluded</I></FONT></TD><TD PORT="b3">3</TD></TR>
+ <TR><TD COLSPAN="3" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#566574">UNIQUE (group_id, project_id). A row is expanded by the installer from project_team; nothing is copied here.<BR ALIGN="LEFT"/>Each member gets an alias for their account in that project only, on each targeted cluster.</FONT></TD></TR>
 </TABLE>>];
 
   group [label=<
@@ -42,18 +43,16 @@ digraph newtables {
  <TR><TD COLSPAN="4" BGCOLOR="#096b67"><FONT COLOR="white"><B>rate_limit_group</B> (new)</FONT></TD></TR>
  <TR><TD BGCOLOR="#edf4f4"><B>id</B></TD><TD BGCOLOR="#edf4f4"><B>name</B> (= RonDB USER)</TD><TD BGCOLOR="#edf4f4"><B>budget_percent</B></TD><TD BGCOLOR="#edf4f4"><B>cluster</B></TD></TR>
  <TR><TD PORT="id1">1</TD><TD><FONT FACE="Menlo" POINT-SIZE="9">recommender_team_rl</FONT></TD><TD>20.00</TD><TD>NULL</TD></TR>
- <TR><TD PORT="id2">2</TD><TD><FONT FACE="Menlo" POINT-SIZE="9">mary_mike_rl</FONT></TD><TD>2.00</TD><TD>NULL</TD></TR>
+ <TR><TD PORT="id2">2</TD><TD><FONT FACE="Menlo" POINT-SIZE="9">backfill_rl</FONT></TD><TD>2.00</TD><TD>NULL</TD></TR>
  <TR><TD PORT="id3">3</TD><TD><FONT FACE="Menlo" POINT-SIZE="9">recommender2_rl</FONT></TD><TD>5.00</TD><TD>NULL</TD></TR>
  <TR><TD COLSPAN="4" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#566574">cluster NULL = every cluster; or one cluster's name = its Kubernetes namespace (section 11)</FONT></TD></TR>
 </TABLE>>];
 
-  users:u1001:e   -> bucket_user:bu1001 [dir=back];
-  users:u1002:e   -> bucket_user:bu1002 [dir=back];
   project:p13:e   -> bucket_user:bp13   [dir=back, label="project_id → id"];
+  project:p15:e   -> bucket_user:bp15   [dir=back];
   project:p14:e   -> bucket_user:bp14   [dir=back];
   bucket_user:b1:e  -> group:id1:w [label="group_id → id"];
-  bucket_user:b2a:e -> group:id2:w;
-  bucket_user:b2b:e -> group:id2:w;
+  bucket_user:b2:e  -> group:id2:w;
   bucket_user:b3:e  -> group:id3:w;
 
   { rank=same; users; project; }

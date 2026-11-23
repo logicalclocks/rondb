@@ -15,7 +15,7 @@ digraph architecture {
 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
  <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>New tables</B></FONT></TD></TR>
  <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9">rate_limit_group</FONT></TD></TR>
- <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9">rate_limit_group_user</FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9">rate_limit_group_project</FONT></TD></TR>
  <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9">rate_limit_group_cluster_state</FONT></TD></TR>
 </TABLE>>];
     installer [label=<
@@ -23,7 +23,7 @@ digraph architecture {
  <TR><TD BGCOLOR="#096b67" ALIGN="LEFT"><FONT COLOR="white"><B>Installer</B> (new): on save, on membership change, and a primary-gated reconciler</FONT></TD></TR>
  <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">1&nbsp; discover clusters: install namespace + namespaces labeled <FONT FACE="Menlo" POINT-SIZE="9">hopsworks.ai/onlinefs-cluster</FONT></TD></TR>
  <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">2&nbsp; per cluster: groups naming it, plus every-cluster groups</TD></TR>
- <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">3&nbsp; expand Who into account names (all accounts of each covered person)</TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">3&nbsp; expand Who into account names (each member's account in that project)</TD></TR>
  <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">4&nbsp; percent → rate using that cluster's thread count</TD></TR>
  <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">5&nbsp; USER SET / ALTER / DROP per group; USER ALIAS SET / DROP per account</TD></TR>
  <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">6&nbsp; write the state row per (group, cluster)</TD></TR>
@@ -42,8 +42,8 @@ digraph architecture {
     dict [label=<
 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
  <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>Data nodes: Dbdict objects</B></FONT></TD></TR>
- <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><B>USER</B> (budgeted, existing)<BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="9">recommender_team_rl · mary_mike_rl · recommender2_rl</FONT></TD></TR>
- <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><B>USER ALIAS</B> (not budgeted, new, one target each)<BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="9">Recommender_alice4f2 → recommender_team_rl<BR ALIGN="LEFT"/>Marketing_mary01ab → mary_mike_rl<BR ALIGN="LEFT"/>…</FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><B>USER</B> (budgeted, existing)<BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="9">recommender_team_rl · backfill_rl · recommender2_rl</FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><B>USER ALIAS</B> (not budgeted, new, one target each)<BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="9">Recommender_alice4f2 → recommender_team_rl<BR ALIGN="LEFT"/>Backfill_mary01ab → backfill_rl<BR ALIGN="LEFT"/>…</FONT></TD></TR>
 </TABLE>>];
     tc [label=<
 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
@@ -73,7 +73,7 @@ digraph architecture {
 </TABLE>>];
     sql [label=<
 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
- <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT"><B>SQL</B> (MySQL server)<BR ALIGN="LEFT"/>as account <FONT FACE="Menlo" POINT-SIZE="9">Marketing_mary01ab</FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT"><B>SQL</B> (MySQL server)<BR ALIGN="LEFT"/>as account <FONT FACE="Menlo" POINT-SIZE="9">Backfill_mary01ab</FONT></TD></TR>
 </TABLE>>];
     mysqld [label=<
 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">

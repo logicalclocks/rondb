@@ -1,0 +1,88 @@
+digraph existing {
+  rankdir=LR;
+  graph [fontname="Helvetica", fontsize=11, pad=0.3, nodesep=0.45, ranksep=0.8, bgcolor="white"];
+  node  [shape=plaintext, fontname="Helvetica", fontsize=11];
+  edge  [fontname="Helvetica", fontsize=9, color="#096b67", arrowsize=0.7, penwidth=1.1];
+
+  users [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#8aa5a3">
+ <TR><TD COLSPAN="3" BGCOLOR="#096b67"><FONT COLOR="white"><B>users</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4"><B>uid</B></TD><TD BGCOLOR="#edf4f4"><B>username</B></TD><TD BGCOLOR="#edf4f4"><B>email</B></TD></TR>
+ <TR><TD PORT="u1001">1001</TD><TD>mary0001</TD><TD PORT="e1001">mary@acme.io</TD></TR>
+ <TR><TD>1002</TD><TD>mike0002</TD><TD>mike@acme.io</TD></TR>
+ <TR><TD>1003</TD><TD>sam00003</TD><TD>sam@acme.io</TD></TR>
+ <TR><TD PORT="u1004">1004</TD><TD>alice004</TD><TD PORT="e1004">alice@acme.io</TD></TR>
+ <TR><TD>1005</TD><TD>ava00005</TD><TD>ava@acme.io</TD></TR>
+ <TR><TD>1006</TD><TD>rosa0006</TD><TD>rosa@acme.io</TD></TR>
+</TABLE>>];
+
+  api_key [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#8aa5a3">
+ <TR><TD COLSPAN="4" BGCOLOR="#096b67"><FONT COLOR="white"><B>api_key</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4"><B>id</B></TD><TD BGCOLOR="#edf4f4"><B>prefix</B></TD><TD BGCOLOR="#edf4f4"><B>name</B></TD><TD BGCOLOR="#edf4f4"><B>user_id</B></TD></TR>
+ <TR><TD>501</TD><TD><FONT FACE="Menlo" POINT-SIZE="9">Qk3mZx8pL2vN7bRt</FONT></TD><TD>alice-laptop</TD><TD PORT="k501">1004</TD></TR>
+ <TR><TD>502</TD><TD><FONT FACE="Menlo" POINT-SIZE="9">Hc9tWq1yA4eU6oPd</FONT></TD><TD>alice-training-job</TD><TD PORT="k502">1004</TD></TR>
+ <TR><TD>503</TD><TD><FONT FACE="Menlo" POINT-SIZE="9">Zr5nBv2kM8sX1cFj</FONT></TD><TD>ava-notebook</TD><TD>1005</TD></TR>
+ <TR><TD>504</TD><TD><FONT FACE="Menlo" POINT-SIZE="9">Tp7gLw4hE2qK9dYm</FONT></TD><TD>mary</TD><TD>1001</TD></TR>
+ <TR><TD>505</TD><TD><FONT FACE="Menlo" POINT-SIZE="9">Wd2xRf6jN3uH8aSc</FONT></TD><TD>rosa</TD><TD>1006</TD></TR>
+ <TR><TD COLSPAN="4" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#566574">a key belongs to one user; no project column</FONT></TD></TR>
+</TABLE>>];
+
+  project_team [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#8aa5a3">
+ <TR><TD COLSPAN="2" BGCOLOR="#096b67"><FONT COLOR="white"><B>project_team</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4"><B>project_id</B></TD><TD BGCOLOR="#edf4f4"><B>team_member</B></TD></TR>
+ <TR><TD PORT="p11a">11</TD><TD PORT="m1">mary@acme.io</TD></TR>
+ <TR><TD>11</TD><TD>mike@acme.io</TD></TR>
+ <TR><TD>12</TD><TD>sam@acme.io</TD></TR>
+ <TR><TD PORT="p13">13</TD><TD PORT="m4">alice@acme.io</TD></TR>
+ <TR><TD>13</TD><TD>ava@acme.io</TD></TR>
+ <TR><TD>14</TD><TD>rosa@acme.io</TD></TR>
+ <TR><TD>15</TD><TD>mary@acme.io</TD></TR>
+ <TR><TD>15</TD><TD>mike@acme.io</TD></TR>
+ <TR><TD COLSPAN="2" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#566574">membership is by email</FONT></TD></TR>
+</TABLE>>];
+
+  project [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#8aa5a3">
+ <TR><TD COLSPAN="2" BGCOLOR="#096b67"><FONT COLOR="white"><B>project</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4"><B>id</B></TD><TD BGCOLOR="#edf4f4"><B>projectname</B></TD></TR>
+ <TR><TD PORT="p11">11</TD><TD>Marketing</TD></TR>
+ <TR><TD PORT="p12">12</TD><TD>Sales</TD></TR>
+ <TR><TD PORT="p13">13</TD><TD>Recommender</TD></TR>
+ <TR><TD PORT="p14">14</TD><TD>Recommender2</TD></TR>
+ <TR><TD PORT="p15">15</TD><TD>Backfill</TD></TR>
+</TABLE>>];
+
+  feature_store [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#8aa5a3">
+ <TR><TD COLSPAN="3" BGCOLOR="#096b67"><FONT COLOR="white"><B>feature_store</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4"><B>id</B></TD><TD BGCOLOR="#edf4f4"><B>name</B> (= project name, lower case = online database)</TD><TD BGCOLOR="#edf4f4"><B>project_id</B></TD></TR>
+ <TR><TD PORT="fs21">21</TD><TD>marketing</TD><TD PORT="fsp11">11</TD></TR>
+ <TR><TD PORT="fs22">22</TD><TD>sales</TD><TD>12</TD></TR>
+ <TR><TD PORT="fs23">23</TD><TD>recommender</TD><TD>13</TD></TR>
+ <TR><TD PORT="fs24">24</TD><TD>recommender2</TD><TD>14</TD></TR>
+ <TR><TD PORT="fs25">25</TD><TD>backfill</TD><TD>15</TD></TR>
+</TABLE>>];
+
+  feature_group [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#8aa5a3">
+ <TR><TD COLSPAN="5" BGCOLOR="#096b67"><FONT COLOR="white"><B>feature_group</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4"><B>id</B></TD><TD BGCOLOR="#edf4f4"><B>name</B></TD><TD BGCOLOR="#edf4f4"><B>version</B></TD><TD BORDER="0" BGCOLOR="white" ALIGN="LEFT"><FONT COLOR="#566574"><I>online table</I></FONT><BR ALIGN="LEFT"/><FONT POINT-SIZE="8" COLOR="#8a97a0"><I>not a column, explanation only</I></FONT></TD><TD BGCOLOR="#edf4f4"><B>feature_store_id</B></TD></TR>
+ <TR><TD>31</TD><TD>marketing_clicks</TD><TD>1</TD><TD BORDER="0" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9" COLOR="#566574">marketing_clicks_1</FONT></TD><TD PORT="fg31">21</TD></TR>
+ <TR><TD>32</TD><TD>marketing_campaigns</TD><TD>1</TD><TD BORDER="0" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9" COLOR="#566574">marketing_campaigns_1</FONT></TD><TD>21</TD></TR>
+ <TR><TD>33</TD><TD>sales_orders</TD><TD>1</TD><TD BORDER="0" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9" COLOR="#566574">sales_orders_1</FONT></TD><TD PORT="fg33">22</TD></TR>
+ <TR><TD>34</TD><TD>recommender_features</TD><TD>1</TD><TD BORDER="0" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9" COLOR="#566574">recommender_features_1</FONT></TD><TD>23</TD></TR>
+ <TR><TD>35</TD><TD>recommender2_features</TD><TD>1</TD><TD BORDER="0" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9" COLOR="#566574">recommender2_features_1</FONT></TD><TD>24</TD></TR>
+</TABLE>>];
+
+  api_key:k501:e -> users:u1004:w [label="user_id → uid"];
+  project_team:m4:w -> users:e1004:e [label="team_member → email"];
+  project_team:p13:e -> project:p13:w [label="project_id → id"];
+  feature_store:fsp11:e -> project:p11:w [label="project_id → id"];
+  feature_group:fg31:w -> feature_store:fs21:e [label="feature_store_id → id"];
+
+  { rank=same; api_key; project_team; }
+  { rank=same; users; project; }
+  { rank=same; feature_store; }
+}

@@ -47,9 +47,9 @@
   <text x="690" y="213" class="ok">● installed</text>
   <line x1="52" y1="228" x2="774" y2="228" stroke="#e6ecef"/>
   <!-- row 2 -->
-  <text x="64" y="258" class="mono">mary_mike_rl</text>
+  <text x="64" y="258" class="mono">backfill_rl</text>
   <text x="276" y="258" class="t">2%</text>
-  <text x="336" y="258" class="t" font-size="13">Mary, Mike</text>
+  <text x="336" y="258" class="t" font-size="13">Project Backfill</text>
   <text x="540" y="258" class="t" font-size="13" font-style="italic">Every cluster</text>
   <text x="690" y="258" class="ok">● installed</text>
   <line x1="52" y1="273" x2="774" y2="273" stroke="#e6ecef"/>
@@ -95,12 +95,12 @@
 
   <!-- Who -->
   <text x="850" y="394" class="h">Who shares this budget</text>
-  <text x="850" y="414" class="m">Login users and/or whole projects. A project means its current members.</text>
+  <text x="850" y="414" class="m">One or more projects. A project means its current members, in that project.</text>
   <rect x="850" y="424" width="552" height="52" rx="6" class="input"/>
   <rect x="860" y="434" width="236" height="32" rx="16" class="chip"/>
   <text x="876" y="455" class="t">Project · Recommender2</text>
   <text x="1082" y="456" class="m">×</text>
-  <text x="1110" y="455" class="m">+ add user or project</text>
+  <text x="1110" y="455" class="m">+ add project</text>
 
   <!-- Cluster -->
   <text x="850" y="520" class="h">Where it applies</text>

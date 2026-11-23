@@ -182,17 +182,17 @@
 <p>A <strong>rate limit group</strong> is a named ceiling on how much of a RonDB cluster
 a set of people may use. It has four properties: a <strong>name</strong> (the identity
 RonDB meters), a <strong>budget</strong> as a percentage of a data node&rsquo;s
-database-work capacity, a <strong>Who</strong> list (named login users and/or whole
-projects), and a <strong>cluster</strong> (one by name, or every cluster). The budget
-covers everything those people do on that cluster: every entry point (REST, SQL,
-ClusterJ and, from phase 2, OnlineFS ingestion), every account they hold, own
-data and data shared with them alike.</p>
-<figure class="erd"><img src="img/v2/group-concept.png" alt="Two rate limit groups: recommender_team_rl, 20% on every cluster, shared by project Recommender; and mary_mike_rl, 2%, shared by Mary and Mike."><figcaption>The concept. A group is a name, a budget, a Who list and a cluster. The first group covers everything its members do, on every cluster; the second caps two named people.</figcaption></figure>
+database-work capacity, a <strong>Who</strong> list (one or more whole projects), and a
+<strong>cluster</strong> (one by name, or every cluster). The budget
+covers everything the members of those projects do on that cluster, in those
+projects: every entry point (REST, SQL, ClusterJ and, from phase 2, OnlineFS
+ingestion), own data and data shared with them alike.</p>
+<figure class="erd"><img src="img/v2/group-concept.png" alt="Two rate limit groups: recommender_team_rl, 20% on every cluster, shared by project Recommender; and backfill_rl, 2%, shared by project Backfill."><figcaption>The concept. A group is a name, a budget, a Who list and a cluster. The first group covers everything its members do, on every cluster; the second caps a small project whose members run backfills.</figcaption></figure>
 <p>What a group deliberately is <em>not</em> bounds the whole design. It is not a
 permission: listing someone in a group does not let them read anything new. It is not a
 reservation: 20% is a ceiling, not guaranteed capacity. And it has no data dimension: a
 group never names a feature group or a feature store, so there is no per-table state
-anywhere, and a person is in at most one group per cluster, so there is never a choice
+anywhere, and an account is in at most one group per cluster, so there is never a choice
 of which budget to charge. (Version 1.0 had the data dimension; the header note records
 why it is gone.)</p>
 </section>
@@ -224,13 +224,13 @@ update path: every later change re-enters the install flow at step &#9314; and t
 converges each targeted cluster to the tables. A changed budget re-converts the
 percentage and alters the group&rsquo;s existing <code>USER</code> in place; no alias moves.
 A changed Who list or cluster field becomes alias commands computed from the difference:
-<code>USER ALIAS SET</code> for each person now covered, <code>USER ALIAS DROP</code>
-for each person no longer covered, and a person moving between groups gets a DROP then a
+<code>USER ALIAS SET</code> for each account now covered, <code>USER ALIAS DROP</code>
+for each account no longer covered, and an account moving between groups gets a DROP then a
 SET, because the kernel refuses pointing an existing alias at a different target (13.3).
 Deleting a group removes its Who rows, marks the group row deleted and runs the pass:
 the installer drops the members&rsquo;
 aliases, then the group&rsquo;s <code>USER</code>, and each member&rsquo;s traffic falls back to
-whichever other group still covers them, or to unmetered
+whichever other group still lists their project, or to unmetered
 (<a href="#rules">section 11</a>). The deleted row stays, so every later pass
 drops whatever of the group a cluster still holds (section 10).</p>
 <p><strong>Implicit changes travel the same way, without an administrator.</strong> A
@@ -238,16 +238,19 @@ project Who row is a rule, &ldquo;everyone in this project&rdquo;, and membershi
 after the group is saved. Suppose a group gives everyone in project Recommender 2% of a
 cluster, and Bob later joins the project. Hopsworks creates his MySQL account exactly as
 it does today (5.3), and the operation-log callback that creates the account also
-enqueues a recompute of Bob&rsquo;s coverage. The installer&rsquo;s writer runs it: it reads the
-current alias of each of Bob&rsquo;s accounts, sees that a group covers the project, and
+enqueues a recompute of that one account. The installer&rsquo;s writer runs it: it reads the
+current alias of Bob&rsquo;s Recommender account, sees that a group lists the project, and
 issues
 <code>USER ALIAS SET Recommender_bob91cd --target=recommender_team_rl</code> on each
 targeted cluster, with the framework&rsquo;s retries. One alias appears; the budget and every
-other alias are untouched, and Bob&rsquo;s REST keys and SQL logins are metered from that
-moment. When Mary is removed from a covered project, the same callback enqueues her
-recompute, which issues <code>USER ALIAS DROP</code> for that account on the affected
-clusters; her remaining traffic is unmetered again, or keeps charging whichever other
-group still covers her. A missed callback, for example across a Hopsworks restart, is
+other alias are untouched, and Bob&rsquo;s REST keys and SQL logins in Recommender are metered
+from that moment. When Mary is removed from a covered project, the same callback enqueues
+the recompute of that account, which issues <code>USER ALIAS DROP</code> for it on the
+affected clusters; her accounts in other projects are untouched, since each follows its
+own project&rsquo;s group. No tie check and no cap check run on a membership change: an
+account belongs to exactly one project, so the change can never make two groups claim it,
+and which groups need budget on a cluster depends only on the group definitions, never on
+who is in the projects. A missed callback, for example across a Hopsworks restart, is
 repaired by the periodic reconciler, which replays the full pass and converges every
 cluster back to the tables (<a href="#install">section 10</a>). The asymmetry is
 deliberate: an alias arriving late only delays metering, while a limit outliving its
@@ -256,7 +259,7 @@ second.</p>
 <p><strong>The request flow (&#9318;&ndash;&#9322;).</strong> A request is authenticated
 and authorized exactly as today (&#9318;). RDRS, the MySQL server and ClusterJ
 applications tag the transaction with the caller&rsquo;s account name, once per
-transaction (&#9319;); the same person is the same string on every entry point, and from
+transaction (&#9319;); the same account is the same string on every entry point, and from
 phase 2 an OnlineFS ingestion write carries the account of the user who produced it
 (13.4). Dbtc resolves the tagged name at admission, and when
 the name is an alias, swaps it for the group&rsquo;s <code>USER</code>, one pointer
@@ -309,7 +312,7 @@ section&rsquo;s header shows the total the edit would reach, the section turning
 it would exceed that cluster&rsquo;s cap, so the administrator sees <em>which</em>
 cluster refuses before RonDB does. Deleting a group removes its Who rows and its state
 rows and marks the group row deleted, and the immediate pass drops the group&rsquo;s <code>USER</code> and its members&rsquo; aliases on every
-targeted cluster; a member another group still covers is repointed there, and one no
+targeted cluster; an account another group still covers is repointed there, and one no
 group covers runs unmetered afterwards (<a href="#rules">section 11</a>).
 Delete group first opens a confirmation naming the aliases and the <code>USER</code> it
 drops and whose work goes unmetered; once confirmed, the group leaves the list at once,
@@ -429,11 +432,15 @@ always connects as their own project&rsquo;s account.</p>
     <tr><td>Alice (1004)</td><td><code>alice4f2</code></td><td>Recommender (13)</td><td><code>Recommender_alice4f2</code></td><td>ALL on <code>recommender.*</code>; SELECT on <code>marketing.*</code>; SELECT on <code>sales.sales_orders_1</code></td></tr>
     <tr><td>Ava (1005)</td><td><code>ava3b7c0</code></td><td>Recommender (13)</td><td><code>Recommender_ava3b7c0</code></td><td>same as Alice</td></tr>
     <tr><td>Rosa (1006)</td><td><code>rosa9e1f</code></td><td>Recommender2 (14)</td><td><code>Recommender2_rosa9e1f</code></td><td>ALL on <code>recommender2.*</code>; SELECT on <code>marketing.*</code></td></tr>
+    <tr><td>Mary (1001)</td><td><code>mary01ab</code></td><td>Backfill (15)</td><td><code>Backfill_mary01ab</code></td><td>ALL on <code>backfill.*</code>; SELECT on <code>marketing.*</code></td></tr>
+    <tr><td>Mike (1002)</td><td><code>mike7c3d</code></td><td>Backfill (15)</td><td><code>Backfill_mike7c3d</code></td><td>same as Mary</td></tr>
   </tbody>
 </table></div>
 <p><strong>The account name is the same string RDRS&rsquo;s username mode produces</strong>
-(it builds it with the same clip, byte for byte), so one person
-is one name on both entry points. <strong>It also decodes back to (project, user) without a
+(it builds it with the same clip, byte for byte), so one project member
+is one name on both entry points. A person who is a member of two projects has two
+accounts, one per project: Mary is <code>Marketing_mary01ab</code> and
+<code>Backfill_mary01ab</code>. <strong>It also decodes back to (project, user) without a
 lookup table:</strong> project names are at most 25 characters from
 <code>[A-Za-z0-9_]</code> with no double underscore
 (<code>FolderNameValidator.java:57-67</code>, length at <code>:105-107</code>) and unique
@@ -533,22 +540,24 @@ account, which is never metered.</p>
 other projects. In RonDB a feature store is one database named after the project in lower
 case (<code>marketing</code>), and each online feature group is a table in it named
 <code>&lt;name&gt;_&lt;version&gt;</code> (<code>marketing_clicks_1</code>).</p>
-<p>The example has four projects on one RonDB cluster. Marketing has shared its feature
-store with Recommender and with Recommender2. Sales has shared <code>sales_orders</code>
+<p>The example has five projects on one RonDB cluster. Marketing has shared its feature
+store with Recommender, with Recommender2 and with Backfill, the project from which Mary
+and Mike run their backfills. Sales has shared <code>sales_orders</code>
 with Recommender.</p>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col">Project</th><th scope="col">Members</th><th scope="col">Feature groups it owns</th><th scope="col">Shared with</th></tr></thead>
   <tbody>
-    <tr><td>Marketing</td><td>Mary, Mike</td><td><code>marketing_clicks</code>, <code>marketing_campaigns</code></td><td>Recommender, Recommender2 (whole store)</td></tr>
+    <tr><td>Marketing</td><td>Mary, Mike</td><td><code>marketing_clicks</code>, <code>marketing_campaigns</code></td><td>Recommender, Recommender2, Backfill (whole store)</td></tr>
     <tr><td>Sales</td><td>Sam</td><td><code>sales_orders</code></td><td>Recommender (that one feature group)</td></tr>
     <tr><td>Recommender</td><td>Alice, Ava</td><td><code>recommender_features</code></td><td>nobody</td></tr>
     <tr><td>Recommender2</td><td>Rosa</td><td><code>recommender2_features</code></td><td>nobody</td></tr>
+    <tr><td>Backfill</td><td>Mary, Mike</td><td>none</td><td>nobody</td></tr>
   </tbody>
 </table></div>
-<p>The group tables refer to people and projects by the ids Hopsworks already has.
+<p>The group tables refer to projects by the ids Hopsworks already has.
 Here are the existing rows the examples will point at:</p>
-<figure class="erd"><img src="img/design/existing-tables.png" alt="The existing Hopsworks rows the examples point at, with their foreign keys: api_key, users, project_team, project, feature_group, feature_store."><figcaption>Existing rows with their foreign keys. Ids are illustrative; only the columns that matter are shown. Grey italic text is explanation, not a column. The feature-store and feature-group rows locate data; groups no longer reference them, but the sharing walk-throughs do.</figcaption></figure>
-<p>The shares are in <code>shared_feature_store</code> (store 21 &rarr; projects 13 and 14)
+<figure class="erd"><img src="img/v2/existing-tables.png" alt="The existing Hopsworks rows the examples point at, with their foreign keys: api_key, users, project_team, project, feature_group, feature_store."><figcaption>Existing rows with their foreign keys. Ids are illustrative; only the columns that matter are shown. Grey italic text is explanation, not a column. The feature-store and feature-group rows locate data; groups no longer reference them, but the sharing walk-throughs do.</figcaption></figure>
+<p>The shares are in <code>shared_feature_store</code> (store 21 &rarr; projects 13, 14 and 15)
 and <code>shared_feature_group</code> (feature group 33 &rarr; project 13). RDRS already reads
 all of these tables to authenticate a key and to decide whether a read is allowed.
 Nothing in them changes.</p>
@@ -559,7 +568,7 @@ it is named after.</p>
   <thead><tr><th scope="col">Requirement</th><th scope="col">Group</th><th scope="col">Who</th><th scope="col">Cluster</th><th scope="col">Budget</th></tr></thead>
   <tbody>
     <tr><td>&ldquo;Recommender gets 20% of the cluster, whatever its members do.&rdquo;</td><td><code>recommender_team_rl</code></td><td>project 13</td><td>every cluster</td><td>20%</td></tr>
-    <tr><td>&ldquo;Mary and Mike together may use at most 2%, so their backfills cannot disturb production serving.&rdquo;</td><td><code>mary_mike_rl</code></td><td>uids 1001, 1002</td><td>every cluster</td><td>2%</td></tr>
+    <tr><td>&ldquo;The members of project Backfill together may use at most 2%, so their backfills cannot disturb production serving.&rdquo;</td><td><code>backfill_rl</code></td><td>project 15</td><td>every cluster</td><td>2%</td></tr>
     <tr><td>&ldquo;Recommender2 may use at most 5%.&rdquo;</td><td><code>recommender2_rl</code></td><td>project 14</td><td>every cluster</td><td>5%</td></tr>
   </tbody>
 </table></div>
@@ -580,12 +589,12 @@ existing rows above by id and change nothing in the existing tables. Column defi
   <thead><tr><th scope="col">Table</th><th scope="col">Answers the question</th><th scope="col">One row is</th></tr></thead>
   <tbody>
     <tr><td><code>rate_limit_group</code></td><td>Which groups exist, how big is each, and on which cluster?</td><td>One group: a name, a percentage, and a cluster (one by name, or NULL for every cluster).</td></tr>
-    <tr><td><code>rate_limit_group_user</code></td><td>Who shares the group?</td><td>One person (<code>users.uid</code>) <em>or</em> one whole project (<code>project.id</code>).</td></tr>
+    <tr><td><code>rate_limit_group_project</code></td><td>Who shares the group?</td><td>One whole project (<code>project.id</code>).</td></tr>
     <tr><td><code>rate_limit_group_cluster_state</code></td><td>Is it live?</td><td>One (group, cluster) install state, written by the installer, read by the admin page.</td></tr>
   </tbody>
 </table></div>
 <p>Here is every row written for the three requirements:</p>
-<figure class="erd"><img src="img/v2/new-tables.png" alt="Every row written for the three requirements (teal headers) and the existing rows they reference (grey headers), with arrows from each foreign key to the row it names."><figcaption>Seven rows. Teal headers are new rows, grey headers existing rows. Arrows point from a foreign key to the row it names. <code>cluster</code> NULL means every cluster. The three budgets add up to 27%, under the default 50% cap.</figcaption></figure>
+<figure class="erd"><img src="img/v2/new-tables.png" alt="Every row written for the three requirements (teal headers) and the existing rows they reference (grey headers), with arrows from each foreign key to the row it names."><figcaption>Six rows. Teal headers are new rows, grey headers existing rows. Arrows point from a foreign key to the row it names. <code>cluster</code> NULL means every cluster. The three budgets add up to 27%, under the default 50% cap.</figcaption></figure>
 
 <h3>7.1 <code>rate_limit_group</code></h3>
 <ul>
@@ -608,11 +617,9 @@ existing rows above by id and change nothing in the existing tables. Column defi
   a group can be created before its cluster.</li>
 </ul>
 
-<h3>7.2 <code>rate_limit_group_user</code></h3>
-<p>A row sets <code>uid</code> or <code>project_id</code>, never both.</p>
+<h3>7.2 <code>rate_limit_group_project</code></h3>
+<p>A row names one whole project. A group lists one or more projects, each at most once.</p>
 <ul>
-  <li>A <strong>uid row</strong> names exactly one login user. Nothing is interpreted.
-  Row (1001, NULL) is Mary and nobody else.</li>
   <li>A <strong>project row is a rule, not a list.</strong> It means &ldquo;every user who has a
   <code>project_team</code> row for this project at the moment the installer runs&rdquo;
   (<code>team_member</code> holds an email, not a uid; every role counts;
@@ -626,16 +633,22 @@ existing rows above by id and change nothing in the existing tables. Column defi
   write nothing here: when Bob joins Recommender he is covered after the next install
   pass, and when Ava leaves she drops out the same way (section 10).</li>
 </ul>
-<p><strong>A group covers people, and a person is covered with every account they
-hold.</strong> Alice in a group means: her account in every project she is a member of
-(<code>Recommender_alice4f2</code> today, more if she joins other projects), because her
-work charges her team&rsquo;s budget whichever of her accounts it arrives under, on either
-entry point. <strong>Why people and not API keys?</strong> A key has a
-<code>user_id</code> and no project. RDRS already turns a key into its owner, so &ldquo;is this
-key in a group?&rdquo; becomes &ldquo;is Alice in a group?&rdquo;, and the answer is the same for key 501,
-key 502 and the key Alice creates tomorrow. Keys never appear in the new tables.
-<strong>Why people and not accounts?</strong> The account is derived from (project, user)
-and is recomputed by the installer; storing it would be a second copy that drifts.</p>
+<p><strong>A group covers accounts: the account of every member of each listed project,
+in that project only.</strong> Project Recommender in a group means the Recommender
+account of each of its members (<code>Recommender_alice4f2</code> and
+<code>Recommender_ava3b7c0</code> today, Bob&rsquo;s once he joins), because an account
+belongs to exactly one project. A person who is a member of two projects has two
+accounts, and each follows its own project&rsquo;s group: Mary&rsquo;s
+<code>Backfill_mary01ab</code> charges <code>backfill_rl</code>, her
+<code>Marketing_mary01ab</code> charges nothing, since Marketing is in no group. The
+same account is one name on either entry point (5.3). <strong>Why projects and not API
+keys?</strong> A key has a <code>user_id</code> and no project. RDRS already turns a key
+into its owner and tags the owner&rsquo;s account in the project it acts under (section
+8), so &ldquo;is this key in a group?&rdquo; becomes &ldquo;is that account in a group?&rdquo;, and the
+answer is the same for key 501, key 502 and the key Alice creates tomorrow. Keys never
+appear in the new tables. <strong>Why projects and not accounts?</strong> The account is
+derived from (project, user) and is recomputed by the installer; storing it would be a
+second copy that drifts.</p>
 
 <h3>7.3 <code>rate_limit_group_cluster_state</code></h3>
 <p>One row per (group, cluster) the installer has acted on: <em>pending</em>,
@@ -654,18 +667,19 @@ ordinary JPA row.</p>
   <thead><tr><th scope="col">Who reads what</th><th scope="col">Charged to</th><th scope="col">Why</th></tr></thead>
   <tbody>
     <tr><td>Alice reads <code>recommender_features_1</code></td><td><code>recommender_team_rl</code></td><td>Alice is in project 13; everything she does draws from the team budget.</td></tr>
-    <tr><td>Alice reads <code>marketing_clicks_1</code></td><td><code>recommender_team_rl</code></td><td>Same. Borrowed data is no different: the budget follows the person.</td></tr>
+    <tr><td>Alice reads <code>marketing_clicks_1</code></td><td><code>recommender_team_rl</code></td><td>Same. Borrowed data is no different: the budget follows the account.</td></tr>
     <tr><td>Ava reads <code>sales_orders_1</code></td><td><code>recommender_team_rl</code></td><td>Same group; Alice and Ava share the 20%.</td></tr>
-    <tr><td>Mary reads <code>marketing_clicks_1</code></td><td><code>mary_mike_rl</code></td><td>Mary (1001) is listed; all her work draws from the 2%.</td></tr>
-    <tr><td>Mary reads <code>marketing_campaigns_1</code></td><td><code>mary_mike_rl</code></td><td>Same: the cap is on Mary, not on a table.</td></tr>
+    <tr><td>Mary, from Backfill, reads <code>marketing_clicks_1</code></td><td><code>backfill_rl</code></td><td>Project 15 is listed; everything its members do in it draws from the 2%.</td></tr>
+    <tr><td>Mary, from Backfill, reads <code>marketing_campaigns_1</code></td><td><code>backfill_rl</code></td><td>Same: the cap is on the project&rsquo;s accounts, not on a table.</td></tr>
+    <tr><td>Mary, from Marketing, reads <code>marketing_clicks_1</code></td><td>none</td><td>Marketing is in no group, and <code>Marketing_mary01ab</code> is a different account from <code>Backfill_mary01ab</code>; each follows its own project.</td></tr>
     <tr><td>Rosa reads <code>marketing_clicks_1</code></td><td><code>recommender2_rl</code></td><td>Rosa is in project 14.</td></tr>
     <tr><td>Rosa reads <code>sales_orders_1</code></td><td>rejected</td><td>Sales never shared with Recommender2. Authorization fails before any group is considered.</td></tr>
     <tr><td>Sam reads <code>sales_orders_1</code></td><td>none</td><td>Sam is not in any group, so his reads are not limited.</td></tr>
   </tbody>
 </table></div>
-<p><strong>One person, one group per cluster.</strong> Mary draws from
-<code>mary_mike_rl</code> for everything; if Marketing also wanted a project-wide group
-containing Mary, the two would tie and Hopsworks refuses the save (section 11). The only
+<p><strong>One project, one group per cluster.</strong> Backfill&rsquo;s accounts draw from
+<code>backfill_rl</code> for everything; if a second every-cluster group also listed
+Backfill, the two would tie and Hopsworks refuses the save (section 11). The only
 sanctioned overlap is across clusters: a group that names a cluster beats a group that
 covers every cluster, <em>on that cluster only</em>, which is how &ldquo;20% everywhere but
 30% on cluster M&rdquo; is written (section 12). The precedence is resolved by the installer
@@ -699,9 +713,10 @@ X-API-KEY: Qk3mZx8pL2vN7bRt.&lt;64-character secret&gt;</code></pre>
 <p>The other keys of the cast walk the same way: keys 501 and 502 both belong to Alice
 and land on the same alias, as will a third key she creates tomorrow. Where one person&rsquo;s
 store share is received into several of their projects, the username branch tags the
-lowest recipient project id; since every one of the person&rsquo;s accounts carries an alias
-to the same group (7.2), whichever account is tagged lands on the same budget, and the
-v1.0 open decision about that interaction disappears.</p>
+lowest recipient project id, so the request charges that project&rsquo;s group (7.2);
+which of the person&rsquo;s accounts a shared read through a key charges is RDRS&rsquo;s
+choice, the same for every key the person holds, and the v1.0 open decision about that
+interaction disappears.</p>
 <p>Version 1.0 carried an alternative here: RDRS reads the group tables, builds
 person-to-group and data-to-group maps, and picks the group per request. It was rejected
 on 2026-11-13 (one mechanism must cover both entry points) and is gone from this
@@ -731,19 +746,19 @@ every admission point. So the one place a &ldquo;this person&rsquo;s work charge
 mapping covers REST, SQL and ClusterJ at once is the dictionary itself: an object under
 the person&rsquo;s account name whose only job is to point at the group&rsquo;s <code>USER</code>.
 That is the <strong>alias</strong>, specified in <a href="#kernel">section 13</a>.</p>
-<figure class="erd"><img src="img/v2/kernel-resolution.png" alt="Dbtc resolves the tagged account name Marketing_mary01ab through its alias to the USER mary_mike_rl; a second example resolves Recommender_alice4f2 to recommender_team_rl."><figcaption>What the data node does with Mary&rsquo;s tag and with Alice&rsquo;s. An alias names one target <code>USER</code>; the work is charged there. A plain <code>USER</code> has no alias step and is charged directly.</figcaption></figure>
+<figure class="erd"><img src="img/v2/kernel-resolution.png" alt="Dbtc resolves the tagged account name Backfill_mary01ab through its alias to the USER backfill_rl; a second example resolves Recommender_alice4f2 to recommender_team_rl."><figcaption>What the data node does with Mary&rsquo;s tag and with Alice&rsquo;s. An alias names one target <code>USER</code>; the work is charged there. A plain <code>USER</code> has no alias step and is charged directly.</figcaption></figure>
 
 <h3>9.3 Mary&rsquo;s statement, step by step</h3>
-<pre><code>mysql -u Marketing_mary01ab -p &hellip;
+<pre><code>mysql -u Backfill_mary01ab -p &hellip;
 mysql&gt; SELECT * FROM marketing.marketing_clicks_1 WHERE click_id = 42;</code></pre>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col">Step</th><th scope="col">What happens</th><th scope="col">Result</th><th scope="col">Status</th></tr></thead>
   <tbody>
-    <tr><td>1</td><td>Mary logs in; the server&rsquo;s security context holds <code>Marketing_mary01ab</code>.</td><td>account known</td><td>exists</td></tr>
-    <tr><td>2</td><td>The handler starts an NDB transaction and calls <code>setUserId("Marketing_mary01ab")</code>.</td><td>tagged</td><td>exists</td></tr>
+    <tr><td>1</td><td>Mary logs in with her Backfill account; the server&rsquo;s security context holds <code>Backfill_mary01ab</code>.</td><td>account known</td><td>exists</td></tr>
+    <tr><td>2</td><td>The handler starts an NDB transaction and calls <code>setUserId("Backfill_mary01ab")</code>.</td><td>tagged</td><td>exists</td></tr>
     <tr><td>3</td><td>The NDB API&rsquo;s name cache maps the name to a dictionary object id. Today only <code>USER</code> objects are in that cache; aliases join it.</td><td>id of the alias</td><td>exists; aliases listed</td></tr>
     <tr><td>4</td><td><code>TCKEYREQ</code> arrives at Dbtc with that id.</td><td>id</td><td>exists</td></tr>
-    <tr><td>5</td><td>The object is an alias. Its target is the <code>USER mary_mike_rl</code>.</td><td><code>USER mary_mike_rl</code></td><td>new</td></tr>
+    <tr><td>5</td><td>The object is an alias. Its target is the <code>USER backfill_rl</code>.</td><td><code>USER backfill_rl</code></td><td>new</td></tr>
     <tr><td>6</td><td>Dbtc records that <code>USER</code> as the transaction&rsquo;s sticky record (<code>ApiConnectRecord::m_queuedDatabasePtrI</code>) and forwards it to Dblqh, which charges 1.25 &micro;s plus data read.</td><td>charged</td><td>exists</td></tr>
   </tbody>
 </table></div>
@@ -753,7 +768,8 @@ other sessions:</p>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col">Session</th><th scope="col">Tag</th><th scope="col">Alias target</th><th scope="col">Charged to</th></tr></thead>
   <tbody>
-    <tr><td>Mary, SQL, any table she may read</td><td><code>Marketing_mary01ab</code></td><td><code>mary_mike_rl</code></td><td><code>mary_mike_rl</code></td></tr>
+    <tr><td>Mary, SQL from Backfill, any table she may read</td><td><code>Backfill_mary01ab</code></td><td><code>backfill_rl</code></td><td><code>backfill_rl</code></td></tr>
+    <tr><td>Mary, SQL from Marketing</td><td><code>Marketing_mary01ab</code></td><td>no alias</td><td>unmetered: Marketing is in no group</td></tr>
     <tr><td>Alice, SQL</td><td><code>Recommender_alice4f2</code></td><td><code>recommender_team_rl</code></td><td><code>recommender_team_rl</code></td></tr>
     <tr><td>Alice, REST, RDRS in username mode</td><td><code>Recommender_alice4f2</code></td><td>the same alias as her SQL session</td><td><code>recommender_team_rl</code></td></tr>
     <tr><td>Rosa, SQL</td><td><code>Recommender2_rosa9e1f</code></td><td><code>recommender2_rl</code></td><td><code>recommender2_rl</code></td></tr>
@@ -834,9 +850,9 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     recognizable by name (section 10). The failover test saves a group, fails over
     before it replicates, and asserts the objects are reported.</li>
     <li><strong>Pick this cluster&rsquo;s groups.</strong> Groups whose <code>cluster</code>
-    is NULL or equal to this cluster&rsquo;s name. Where one person is covered by both a
+    is NULL or equal to this cluster&rsquo;s name. Where one project is listed by both a
     named-cluster group and an every-cluster group, the named one wins in that cluster&rsquo;s RonDB
-    (7.4): the person&rsquo;s aliases here point at it. A group&rsquo;s <code>USER</code>
+    (7.4): the project&rsquo;s accounts&rsquo; aliases here point at it. A group&rsquo;s <code>USER</code>
     is desired on a cluster only where the group covers someone there: a named group on
     its cluster, and an every-cluster group on every cluster where at least one of its
     accounts is <em>not</em> overridden. A fully overridden every-cluster group therefore
@@ -846,11 +862,11 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     <code>USER</code> for the uncovered members. When an edit or a membership change
     makes a <code>USER</code> undesired on a cluster, the pass drops it there in the
     release phase of the command order (below), freeing its rate.</li>
-    <li><strong>Expand Who into account names.</strong> A uid row becomes every account
-    that user holds, <code>clip31(projectname + "_" + username)</code> for each of their
-    <code>project_team</code> rows; a project row becomes the same for every member,
-    excluding Hopsworks&rsquo; service users, <code>onlinefs</code>,
-    <code>srvmanager</code> and the configured Airflow user (7.2).</li>
+    <li><strong>Expand Who into account names.</strong> A project row becomes one
+    account per member, <code>clip31(projectname + "_" + username)</code> for each of
+    the project&rsquo;s <code>project_team</code> rows, excluding Hopsworks&rsquo; service
+    users, <code>onlinefs</code>, <code>srvmanager</code> and the configured Airflow user
+    (7.2). A member&rsquo;s accounts in other projects are not touched.</li>
     <li><strong>Convert each percentage</strong> using this cluster&rsquo;s data-node thread
     count: with 20 threads, 20% &rarr; 4,000,000 (section 14). The thread count, the
     configured cap percent and the allocated total are read
@@ -902,17 +918,17 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     refusal is deterministic: <code>USER LIST</code> and <code>USER ALIAS LIST</code>,
     then
     <pre><code>USER SET recommender_team_rl --rate-per-sec=4000000
-USER SET mary_mike_rl        --rate-per-sec=400000
+USER SET backfill_rl         --rate-per-sec=400000
 USER SET recommender2_rl     --rate-per-sec=1000000
 USER ALIAS SET Recommender_alice4f2  --target=recommender_team_rl
 USER ALIAS SET Recommender_ava3b7c0  --target=recommender_team_rl
-USER ALIAS SET Marketing_mary01ab    --target=mary_mike_rl
-USER ALIAS SET Marketing_mike7c3d    --target=mary_mike_rl
+USER ALIAS SET Backfill_mary01ab     --target=backfill_rl
+USER ALIAS SET Backfill_mike7c3d     --target=backfill_rl
 USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
     A changed budget becomes <code>USER ALTER</code>; a deleted group (its row marked
     deleted) becomes <code>USER DROP</code> plus <code>USER ALIAS DROP</code> for every
-    alias targeting it; a member
-    who left loses their aliases; a member who moved between groups gets
+    alias targeting it; an account
+    no longer covered loses its alias; an account that moved between groups gets
     <code>USER ALIAS DROP</code> then <code>SET</code> (13.3). A move, or the
     replacement of an operator&rsquo;s alias (below), is withheld while the destination
     group is <em>refused</em> on that cluster (a wrong-kind name collision, the sum rule
@@ -921,10 +937,12 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
     the account keeps the alias it has and stays metered where it is, and its old group
     shows <em>partial</em> with a note naming the reason, so a refused group never
     removes metering an account already has. The diff is per name, and
-    nothing is dropped to be re-added: editing a Who list from {Mary, Mike} to {Mary, Sam}
-    sends one <code>USER ALIAS DROP Marketing_mike7c3d</code> and one
-    <code>USER ALIAS SET Sales_sam00035 --target=mary_mike_rl</code>, and Mary&rsquo;s alias
-    is not touched, so she is metered throughout.
+    nothing is dropped to be re-added: editing a Who list from {Backfill, Sales} to
+    {Backfill, Marketing} sends one <code>USER ALIAS DROP Sales_sam00035</code> and two
+    <code>USER ALIAS SET &hellip; --target=backfill_rl</code>, for
+    <code>Marketing_mary01ab</code> and <code>Marketing_mike7c3d</code>, and the
+    Backfill aliases are not touched, so Mary&rsquo;s and Mike&rsquo;s backfills are metered
+    throughout.
     <strong>Order on each cluster:</strong> alias drops, then <code>USER DROP</code>s, then
     rate-lowering <code>USER ALTER</code>s, then <code>USER SET</code>s and rate-raising
     <code>ALTER</code>s in group-id order, then alias
@@ -978,14 +996,18 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
   seconds, not at the next tick.</li>
   <li><strong>On membership change</strong>: the operation-log handler (5.4) receives the
   member account&rsquo;s create or remove with the account name already computed and
-  enqueues a recompute of that person&rsquo;s coverage, all their accounts, every affected
-  cluster. The enqueue sits in the facade methods that write the membership row, in the
-  same transaction as the row write, so the rollback paths of a failed member add
-  trigger it too, and a crash can never remove a member without the recompute following.
-  The recompute runs through the same primary-gated writer as every other
-  change (below) and issues just the affected <code>USER ALIAS</code> commands, with the
-  framework&rsquo;s retries; a burst of changes coalesces into one recompute per cluster. A
-  group covering the project picks up the new member here, minutes before any periodic
+  enqueues a recompute of that one account, every affected cluster. The enqueue sits in
+  the facade methods that write the membership row, in the same transaction as the row
+  write, which also bumps the revision of every group that lists the project, so the
+  rollback paths of a failed member add trigger it too, and a crash can never remove a
+  member without the recompute following. The recompute runs through the same
+  primary-gated writer as every other change (below) and issues just the affected
+  <code>USER ALIAS</code> commands, with the framework&rsquo;s retries; a burst of changes
+  coalesces into one recompute per cluster. It needs no tie check and no cap check: the
+  account belongs to exactly one project, so no membership change can make two groups
+  claim it, and the set of groups whose <code>USER</code> a cluster needs (step 2)
+  depends only on the group definitions, never on who is in the projects. A group
+  listing the project picks up the new member here, minutes before any periodic
   pass.</li>
   <li><strong>On a timer</strong>: the reconciler (TrinoReconciler pattern, primary-gated
   <code>@Singleton</code>, 5.4) replays the full pass on every cluster, repairing
@@ -1034,8 +1056,8 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
   included.</strong> A <code>USER</code> is the installer&rsquo;s when its name is a
   <code>rate_limit_group.name</code>, of a live or a deleted row; an alias is the
   installer&rsquo;s when its <em>target</em> is. That is what lets an edit drop a removed
-  member: Mike&rsquo;s Who row is gone after the edit, but his alias still points at
-  <code>mary_mike_rl</code>, which is in the table, so the pass drops it. The same test
+  member: Sales&rsquo; Who row is gone after the edit, but Sam&rsquo;s alias still points at
+  <code>backfill_rl</code>, which is in the table, so the pass drops it. The same test
   clears a live group off a cluster it no longer covers: when its cluster field changed,
   when a stale command installed it elsewhere, or when the name was recreated with a
   different cluster while one was unreachable, the pass on the no-longer-covered cluster
@@ -1088,19 +1110,21 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col">Rule checked by Hopsworks on save</th><th scope="col">Example</th></tr></thead>
   <tbody>
-    <tr><td>A Who row names a person or a project, not both; a group has at least one Who row, so an edit that removes every Who row is refused (Delete group removes a group).</td><td>A row with <code>uid = 1001</code> and <code>project_id = 11</code>. Rejected.</td></tr>
-    <tr><td>No ties: two groups with the same cluster scope may not cover the same person. A person is &ldquo;covered&rdquo; by a project row if they have any <code>project_team</code> row for that project. A named-cluster group and an every-cluster group may overlap: the named one wins on its cluster (7.4).</td><td>Group X: {Mary}, every cluster. Group Y: {project 11}, every cluster. Mary is in both. Rejected.<br><br>Group X: {project 13}, every cluster, 20%. Group Z: {project 13}, cluster M, 30%. Allowed: on M the members charge Z, elsewhere X.</td></tr>
+    <tr><td>A Who row names one project; a group lists at least one project, and the same project at most once, so an edit that removes every Who row is refused (Delete group removes a group).</td><td>A group with no project. Rejected.<br><br>A group listing project 15 twice. Rejected.</td></tr>
+    <tr><td>No ties: two groups with the same cluster scope may not list the same project. A project is in at most one every-cluster group and, per named cluster, in at most one group naming that cluster. A named-cluster group and an every-cluster group may overlap: the named one wins on its cluster (7.4).</td><td>Group X: {project 15}, every cluster. Group Y: {project 11, project 15}, every cluster. Project 15 is in both. Rejected.<br><br>Group X: {project 13}, every cluster, 20%. Group Z: {project 13}, cluster M, 30%. Allowed: on M the members charge Z, elsewhere X.</td></tr>
     <tr><td>Budget between 0.01 and the configured cap of every targeted cluster (section 14, default 50%), with at most two decimals, as the table stores it. Zero is refused: RonDB reads a rate of 0 as <em>unlimited</em> (section 14), the opposite of what a zero budget would mean. RonDB will not accept one entry above its cap.</td><td>A group at 60% on a cluster with the default cap. Rejected.<br><br>A group at 0%. Rejected: 0 would run unlimited.</td></tr>
     <tr><td>On every cluster, a save is refused when the budget sum it leaves exceeds both that cluster&rsquo;s configured cap (section 14, default 50%) and the sum before the save, the kernel&rsquo;s own test (section 14), counting exactly the groups whose <code>USER</code> is desired there (section 10 step 2): a named group on its cluster, and an every-cluster group on every cluster where at least one of its accounts is not overridden. A full override (7.4) counts only the named group there; a partial override counts both, because the overridden group&rsquo;s <code>USER</code> must still exist for its uncovered members, and a <code>USER</code> holds its budget while idle. Enforced on save against each cluster whose cap is readable; a cluster whose cap cannot be read does not block the save and is not guessed at, since save validity must not depend on connectivity (section 16 item 1): the group stays <em>pending</em> there as it already would, and the installer re-checks the sum against the real cap before issuing (section 10), recording <em>refused</em> naming the sum rule when it does not fit. So a save Hopsworks accepts either fits each cluster it could see or lowers a sum that was already past the cap (after a lowered cap or a restart onto fewer threads), and every configuration that fits can, under the single cap of section 14, always be reinstalled from scratch.</td><td>Groups at 30% and 25%, both on every cluster, caps at the default. The second save is rejected: 55% on each cluster.<br><br>The three example groups (27%) on a cluster whose cap was lowered to 20%: lowering <code>recommender2_rl</code> from 5% to 3% is accepted (25%, down from 27%); raising any budget is rejected.</td></tr>
     <tr><td>The group name may not equal any account name the group would alias: the <code>USER</code> and that member&rsquo;s alias would collide in RonDB&rsquo;s shared namespace and leave the group permanently <em>partial</em>. Checked over the group&rsquo;s own expansion at save; a collision a later join creates surfaces as <em>partial</em> with the error.</td><td>Group <code>Recommender_alice4f2</code> covering Alice. Rejected: her alias would need the group&rsquo;s own name.</td></tr>
     <tr><td>The cluster name, when set, should name a discovered cluster; a free-text name is accepted but flagged.</td><td>A group on cluster <code>mrketing</code> (typo). Saved, shown <em>pending</em> with a &ldquo;no such cluster&rdquo; hint.</td></tr>
   </tbody>
 </table></div>
-<p>The no-ties check also has to run when someone joins a project, because joining can
-create an overlap that did not exist at save time: a group for project 13 and a group
-for project 11 are both valid until Alice joins Marketing. Hopsworks then has to either
-refuse the membership change with a message naming the two groups, or accept it and mark
-both groups as conflicting on the admin page. Refusing is simpler and is the proposal.
+<p>The no-ties check never runs when someone joins or leaves a project, because a
+membership change cannot create an overlap: an account belongs to exactly one project, so
+a group for project 13 and a group for project 11 stay valid when Alice joins Marketing.
+Her new Marketing account follows Marketing&rsquo;s group and her Recommender account keeps
+following Recommender&rsquo;s. A membership change only creates or drops that one account&rsquo;s
+alias (section 10); it is never refused on the groups&rsquo; account (section 16 item 3,
+decided 2026-11-23).
 Whether all budgets <em>add up</em> under a cluster&rsquo;s cap is enforced by Hopsworks
 at save time (the sum rule above); RonDB&rsquo;s own cap remains the backstop,
 since database quotas and operator-created entries share the same pool, and a backstop
@@ -1111,9 +1135,9 @@ administration, and nothing in the model requires more than one role.</p>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col">Deleted</th><th scope="col">Example</th><th scope="col">Result</th></tr></thead>
   <tbody>
-    <tr><td>A group</td><td>Admin deletes <code>mary_mike_rl</code>.</td><td>Its Who rows and state rows are deleted and its row is marked deleted. The immediate pass runs <code>USER DROP</code> and drops the aliases; later passes repeat the drop on any cluster that still holds them. The pass recomputes the members&rsquo; assignments: a member another group still covers (an every-cluster group, say) gets their alias repointed there; a member no group covers falls back to unmetered.</td></tr>
-    <tr><td>A person or project</td><td>Mike leaves the company: he is removed from his projects, then an administrator deletes user 1002 (a delete is accepted only for a user in no projects).</td><td>Leaving the projects already dropped his aliases through the membership recompute; the user delete cascades his row in group 2 away. The group now covers only Mary. Harmless.</td></tr>
-    <tr><td>The person or project that is a group&rsquo;s only Who row</td><td>The Data Owner deletes project Recommender2, the only Who row of <code>recommender2_rl</code>.</td><td>The group is deleted with it, in the same transaction: its state rows are deleted and its row is marked deleted, exactly as a group delete does, and the delete&rsquo;s immediate pass drops its <code>USER</code> and aliases. The project-delete confirmation names the group beforehand.</td></tr>
+    <tr><td>A group</td><td>Admin deletes <code>backfill_rl</code>.</td><td>Its Who rows and state rows are deleted and its row is marked deleted. The immediate pass runs <code>USER DROP</code> and drops the aliases; later passes repeat the drop on any cluster that still holds them. The pass recomputes the members&rsquo; assignments: an account another group still covers (an every-cluster group listing the project, say) gets its alias repointed there; an account no group covers falls back to unmetered.</td></tr>
+    <tr><td>A user</td><td>Mike leaves the company: he is removed from his projects, then an administrator deletes user 1002 (a delete is accepted only for a user in no projects).</td><td>Leaving the projects already dropped his aliases through the membership recompute. The user delete touches no group row: groups list projects, not users. <code>backfill_rl</code> now covers only Mary&rsquo;s Backfill account. Harmless.</td></tr>
+    <tr><td>The project that is a group&rsquo;s only Who row</td><td>The Data Owner deletes project Recommender2, the only Who row of <code>recommender2_rl</code>.</td><td>The group is deleted with it, in the same transaction: its state rows are deleted and its row is marked deleted, exactly as a group delete does, and the delete&rsquo;s immediate pass drops its <code>USER</code> and aliases. The project-delete confirmation names the group beforehand.</td></tr>
     <tr><td>Nothing, but membership changes</td><td>Bob joins Recommender.</td><td>No group rows change. The operation-log handler sees Bob&rsquo;s new account and enqueues his recompute; the writer, because project 13 is in group 1, issues his <code>USER ALIAS SET</code>; his keys and SQL logins are covered from that moment.</td></tr>
     <tr><td>A cluster</td><td>The satellite namespace for cluster M is torn down.</td><td>Groups naming M show <em>pending</em> (not discovered). Nothing is dropped anywhere else; recreating the namespace reinstalls on the next reconcile.</td></tr>
   </tbody>
@@ -1125,24 +1149,24 @@ its row and its budget, visible on the page, until an administrator edits or del
 lives in the backend, so every caller gets it. A project is deleted by its Data Owner
 through <code>POST /project/{projectId}/delete</code>
 (<code>hopsworks-api/&hellip;/project/ProjectService.java:768-786</code>), from the UI, the
-REST API or the Python client; a user is deleted by an administrator through
-<code>DELETE /admin/users/{id}</code>
-(<code>hopsworks-api/&hellip;/admin/UsersAdminResource.java:357-372</code>), which only
-accepts users without projects. The entry points cannot host the rule: every controller
-on both chains runs without a transaction
+REST API or the Python client. The entry point cannot host the rule: every controller
+on that chain runs without a transaction
 (<code>TransactionAttributeType.NEVER</code>), the project row is removed only after the
 filesystem cleanup succeeds, and each facade call commits on its own. The rule therefore
-lives where the row actually dies, in the final facade transactions:
+lives where the row actually dies, in the final facade transaction:
 <code>ProjectFacade.removeProject</code> (its own short transaction,
-<code>em.remove</code> at <code>:568</code>) and <code>UserFacade.removeByEmail</code>
-(<code>:448-452</code>, the one production path that deletes a <code>users</code> row).
+<code>em.remove</code> at <code>:568</code>).
 Inside that transaction the backend finds the groups whose only Who row the row&rsquo;s
 cascade removes, deletes their state rows, marks them deleted, and then removes the
-project or user row; the FK cascade removes the Who row itself. Placing it there covers
+project row; the FK cascade removes the Who row itself. Placing it there covers
 every route by construction: the owner delete, the admin delete, the admin force
 cleanup, and the removal of a project whose creation failed, all of which end in the
-same facade call. The project-delete and user-delete confirmations in the UI name those
-groups. A group with other Who rows only loses the one row.</p>
+same facade call. The project-delete confirmation in the UI names those
+groups. A group with other Who rows only loses the one row. A user delete, by an
+administrator through <code>DELETE /admin/users/{id}</code>
+(<code>hopsworks-api/&hellip;/admin/UsersAdminResource.java:357-372</code>, accepted only
+for a user in no projects), touches no group row and needs no rule: groups list
+projects, not users, and leaving the projects already dropped the user&rsquo;s aliases.</p>
 <p class="meta">Version 1.0 needed a <code>data_scope</code> column here, to keep a
 cascade from a dropped feature group from silently widening a group to &ldquo;all data&rdquo;.
 With no data rows there is no such cascade and no column: a group&rsquo;s coverage can only
@@ -1162,7 +1186,7 @@ design is the same; this section says what differs.</p>
     <tr><td>Where the <code>hopsworks</code> database lives</td><td>on the main cluster</td><td>on the main cluster only; the group tables live with it, and only Hopsworks reads them</td></tr>
     <tr><td>Where a project&rsquo;s online database lives</td><td>on the main cluster</td><td>on the project&rsquo;s satellite (or on main)</td></tr>
     <tr><td>How a cluster is named</td><td>its namespace; the column can stay NULL</td><td>the labeled namespace (5.4); the admin page&rsquo;s cluster picker lists them</td></tr>
-    <tr><td>Which groups are installed where</td><td>all of them</td><td>per cluster: groups naming it, plus every-cluster groups (minus the per-person overrides of 7.4)</td></tr>
+    <tr><td>Which groups are installed where</td><td>all of them</td><td>per cluster: groups naming it, plus every-cluster groups (minus the per-project overrides of 7.4)</td></tr>
     <tr><td>What a percentage means</td><td>% of this cluster&rsquo;s data nodes</td><td>a named-cluster group: % of that cluster; an every-cluster group: N% of <em>each</em> cluster</td></tr>
     <tr><td>Percent &rarr; rate</td><td>this cluster&rsquo;s thread count</td><td>each cluster&rsquo;s own thread count, read from that cluster (section 10)</td></tr>
     <tr><td>The rate cap (section 14)</td><td>one pool</td><td>one pool per cluster, each with its own configured cap; install in group-id order so a refusal is deterministic; the state table shows the refusal per cluster</td></tr>
@@ -1257,10 +1281,10 @@ review on the <code>RONDB-1158-query-threads</code> branch. Group budgets inheri
 whichever behavior that review lands.</p>
 
 <h3>13.3 Management commands</h3>
-<pre><code>ndb_mgm&gt; USER ALIAS SET  Marketing_mary01ab    --target=mary_mike_rl
+<pre><code>ndb_mgm&gt; USER ALIAS SET  Backfill_mary01ab     --target=backfill_rl
 ndb_mgm&gt; USER ALIAS SET  Recommender_alice4f2  --target=recommender_team_rl
-ndb_mgm&gt; USER ALIAS DROP Marketing_mary01ab
-ndb_mgm&gt; USER ALIAS GET  Marketing_mary01ab
+ndb_mgm&gt; USER ALIAS DROP Backfill_mary01ab
+ndb_mgm&gt; USER ALIAS GET  Backfill_mary01ab
 ndb_mgm&gt; USER ALIAS LIST</code></pre>
 <p>A <code>SET</code> creates the alias or confirms it: repeating a <code>SET</code> with
 the same target is a no-op, and a <code>SET</code> naming a <em>different</em> target for
@@ -1268,7 +1292,7 @@ an existing alias is refused (error 1247, &ldquo;User Alias failed, the alias ex
 another target&rdquo;), so moving an account between groups is an explicit
 <code>DROP</code> followed by a <code>SET</code> (the installer computes that diff).
 The refusal protects against an out-of-order writer: a command that would silently
-repoint a person&rsquo;s budget must instead fail loudly and be reconciled.
+repoint an account&rsquo;s budget must instead fail loudly and be reconciled.
 <code>DROP</code> drops the alias. The management-server side mirrors the existing
 <code>set user</code> family in <code>Services.cpp</code>.</p>
 <p><strong>A <code>USER</code> with aliases cannot be dropped (decided 2026-11-19).</strong>
@@ -1301,8 +1325,8 @@ alias in the RonDB it is run against, in object-id order; there is no filter by 
 reconciles every group of the cluster in one pass and needs the whole set, including
 aliases whose target is no longer wanted and aliases whose stored target name does not
 currently resolve, which <code>LIST</code> and <code>GET</code> show with that stored
-name; a membership recompute (section 10) does not take the full list: it reads just its
-person&rsquo;s accounts, one <code>GET</code> each, and reconciles those observations against
+name; a membership recompute (section 10) does not take the full list: it reads just
+the one account, one <code>GET</code>, and reconciles that observation against
 the desired state under the same ownership, dependency and failure rules as a full pass,
 deferring to the reconciler when a read fails. Over the management API the list is paged
 one alias per round trip (<code>ndb_mgm_list_user_aliases(handle, &amp;nextAliasId,
@@ -1317,9 +1341,9 @@ User alias Recommender_alice4f2
   aliasId = 412
   target = recommender_team_rl
 
-User alias Marketing_mary01ab
+User alias Backfill_mary01ab
   aliasId = 415
-  target = mary_mike_rl
+  target = backfill_rl
 
 User alias Recommender2_rosa9e1f
   aliasId = 418
@@ -1330,10 +1354,10 @@ User Alias List command completed</code></pre>
 <code>result: Ok</code>, <code>num_rows: 4</code>, the next <code>nextAliasId</code>, a
 blank line and that one alias&rsquo;s block; the terminal page replies <code>result: Ok</code>
 and <code>num_rows: 0</code>. <code>GET</code> prints one alias, unindented:</p>
-<pre><code>ndb_mgm&gt; USER ALIAS GET Marketing_mary01ab
-User alias Marketing_mary01ab
+<pre><code>ndb_mgm&gt; USER ALIAS GET Backfill_mary01ab
+User alias Backfill_mary01ab
 aliasId = 415
-target = mary_mike_rl</code></pre>
+target = backfill_rl</code></pre>
 <p><strong><code>USER CAPACITY</code> (decided 2026-11-19).</strong>
 One more command in the same family. Each data node sizes its rate pool from its own
 thread count and keeps its own allocated counter, and with automatic thread
@@ -1675,7 +1699,7 @@ targeted RonDB.</p>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col">Area</th><th scope="col">Status</th><th scope="col">Work, and how</th></tr></thead>
   <tbody>
-    <tr><td>Hopsworks tables</td><td>new</td><td>Flyway migration with the two group tables, the state table and the lock table with its one row (appendix); JPA entities; the save rules of section 11 in the controller; re-check &ldquo;no ties&rdquo; in the facade transaction that writes <code>project_team</code>, under the same lock as the save rules (the <code>rate_limit_group_lock</code> row), because the controllers on that path run under <code>NEVER</code> and a check outside the writing transaction races a concurrent save (the behavior on a tie is section 16 item 3, still open); in the project-delete and user-delete paths, mark deleted every group whose only Who row the delete removes, and name those groups in the two delete confirmations (section 11).</td></tr>
+    <tr><td>Hopsworks tables</td><td>new</td><td>Flyway migration with the two group tables, the state table and the lock table with its one row (appendix); JPA entities (<code>RateLimitGroup</code>, <code>RateLimitGroupProject</code>, the state row); the save rules of section 11 in the controller; in the facade transaction that writes <code>project_team</code>, under the same lock as the save rules (the <code>rate_limit_group_lock</code> row), bump the revision of every group that lists the project and enqueue the one-account recompute (section 10); no tie check there, because an account belongs to one project (section 16 item 3); in the project-delete path, mark deleted every group whose only Who row the delete removes, and name those groups in the project-delete confirmation (section 11).</td></tr>
     <tr><td>Hopsworks installer</td><td>new</td><td>Section 10: extend <code>RonDbManagementClient</code> with the <code>USER</code> / <code>USER ALIAS</code> command family (same framing as its quota commands) and per-cluster endpoints from the namespace discovery; the expansion of Who rows into account names (the clip is <code>OnlineFeaturestoreController.onlineDbUsername</code>&rsquo;s); an <code>OnlinefsOperationHandler</code> implementation for membership churn; a primary-gated reconciler on the <code>TrinoReconciler</code> template; state rows per (group, cluster).</td></tr>
     <tr><td>Hopsworks admin page</td><td>new</td><td>Section 3: the list grouped by cluster with <em>cap · groups · other · free</em> once per section header (from <code>USER CAPACITY</code> and the desired budgets; red would-be totals while editing; capacity unknown for an unreachable cluster) + form, cluster picker from discovery, per-cluster state badges (installed, pending, partial, refused; partial and refused expand to the applied coverage and <code>last_error</code>, section 10), converted rate shown per cluster, the commands a save will run, the delete confirmation.</td></tr>
     <tr><td>RDRS</td><td>exists</td><td>Username mode (merged on the ticket branch): tag the project-user name. <strong>No group code.</strong></td></tr>
@@ -1730,8 +1754,12 @@ targeted RonDB.</p>
   excludes exactly Hopsworks&rsquo; service users, by the existing
   <code>isServiceUser</code> check (<code>OperationHandlerHelper.java:72-76</code>):
   <code>onlinefs</code>, <code>srvmanager</code> and the configured Airflow user.</li>
-  <li><strong>A tie created by a membership change</strong> (section 11): refuse the
-  change, or accept it and mark both groups conflicting. Refusing is the proposal.</li>
+  <li><strong>A tie created by a membership change</strong> (section 11), decided
+  2026-11-23: it cannot happen, because a group lists projects only and an account
+  belongs to exactly one project, so a membership change creates or drops one account&rsquo;s
+  alias and can never make two groups claim one account, nor change which groups need
+  budget on a cluster; no tie check and no cap check run on a membership change
+  (sections 10 and 11).</li>
   <li><strong>Ingestion identity, phase 2</strong> (13.4): the ClusterJ tag is phase 1,
   the OnlineFS change phase 2 (decided 2026-11-18; the writes were untagged and unmetered
   in v1.0). OnlineFS tags each write with the producing user&rsquo;s project-user account;
@@ -1796,9 +1824,7 @@ leading <code>$</code>, and it must survive the management command line unquoted
 save rules of section 11 should restrict it to something like <code>[A-Za-z0-9_]</code>.
 The cluster name is a Kubernetes namespace, at most 63 characters by the DNS label rule;
 a state row&rsquo;s target key may also be the region-qualified form
-<code>region:&lt;region name&gt;</code> (section 10), which is why that column is wider.
-The unique keys over the nullable <code>uid</code> and <code>project_id</code> columns
-work as intended: NDB unique keys allow several NULLs.</p>
+<code>region:&lt;region name&gt;</code> (section 10), which is why that column is wider.</p>
 <pre><code>CREATE TABLE `hopsworks`.`rate_limit_group` (
   `id`             int(11)      NOT NULL AUTO_INCREMENT,
   `name`           varchar(63)  COLLATE latin1_general_cs NOT NULL,
@@ -1814,17 +1840,14 @@ work as intended: NDB unique keys allow several NULLs.</p>
     ON DELETE SET NULL ON UPDATE NO ACTION
 ) ENGINE = ndbcluster;
 
-CREATE TABLE `hopsworks`.`rate_limit_group_user` (
+CREATE TABLE `hopsworks`.`rate_limit_group_project` (
   `id`         int(11) NOT NULL AUTO_INCREMENT,
   `group_id`   int(11) NOT NULL,
-  `uid`        int(11) DEFAULT NULL,       -- a login user, or
-  `project_id` int(11) DEFAULT NULL,       -- a whole project (exactly one is set)
+  `project_id` int(11) NOT NULL,           -- a whole project
   PRIMARY KEY (`id`),
-  UNIQUE KEY `group_uid`     (`group_id`, `uid`),
-  UNIQUE KEY `group_project` (`group_id`, `project_id`),
-  CONSTRAINT `rlgu_group_fk`   FOREIGN KEY (`group_id`)   REFERENCES `rate_limit_group` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `rlgu_uid_fk`     FOREIGN KEY (`uid`)        REFERENCES `users`   (`uid`) ON DELETE CASCADE,
-  CONSTRAINT `rlgu_project_fk` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`)  ON DELETE CASCADE
+  UNIQUE KEY `rlgp_group_project` (`group_id`, `project_id`),
+  CONSTRAINT `rlgp_group_fk`   FOREIGN KEY (`group_id`)   REFERENCES `rate_limit_group` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `rlgp_project_fk` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`)  ON DELETE CASCADE
 ) ENGINE = ndbcluster;
 
 -- Written by the installer (section 10), read by the admin page (section 3).
@@ -1849,8 +1872,9 @@ CREATE TABLE `hopsworks`.`rate_limit_group_lock` (
 ) ENGINE = ndbcluster;
 
 INSERT INTO `hopsworks`.`rate_limit_group_lock` (`id`) VALUES (1);</code></pre>
-<p>The &ldquo;one of two columns is set&rdquo; rule and the &ldquo;no ties&rdquo; rule are enforced in application
-code, as the existing sharing tables do; the unique keys prevent duplicate rows.
+<p>The &ldquo;no ties&rdquo; rule is enforced in application
+code, as the existing sharing tables do; the unique key refuses the same project twice
+in one group.
 A group row is never deleted (section 10): a group delete deletes its Who rows and state
 rows itself and sets <code>deleted</code>, so the one <code>ON DELETE CASCADE</code>
 constraint from <code>rate_limit_group</code>, the Who table&rsquo;s, does not fire on that
@@ -1865,9 +1889,9 @@ still has state rows is refused. The one-row <code>rate_limit_group_lock</code> 
 installer pass snapshot: each takes row 1&rsquo;s lock first. Locking the group rows
 cannot do this, because in RonDB a locking read of a missing key locks nothing, so two
 transactions creating the same new group would not see each other. The
-<code>uid</code> and <code>project_id</code> cascades do fire: a user or project delete
+<code>project_id</code> cascade does fire: a project delete
 removes its Who rows, and a group left with none is marked deleted in the same
-transaction (section 11). The <code>revision</code> column is what lets a pass refuse to
+transaction (section 11); a user delete touches no group row. The <code>revision</code> column is what lets a pass refuse to
 publish stale state (section 10): every transaction that changes the group or its
 coverage bumps it, delete and recreate included, so a state write computed from an older
 revision, a stale primary&rsquo;s or the deleted incarnation&rsquo;s, compares lower and is not

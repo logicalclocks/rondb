@@ -14,7 +14,7 @@ digraph lifecycle {
     s2 [label=<
 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
  <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>&#9313;&nbsp; Hopsworks tables</B></FONT></TD></TR>
- <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9">rate_limit_group</FONT><BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="9">rate_limit_group_user</FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><FONT FACE="Menlo" POINT-SIZE="9">rate_limit_group</FONT><BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="9">rate_limit_group_project</FONT></TD></TR>
 </TABLE>>];
     s3 [label=<
 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
@@ -54,12 +54,12 @@ digraph lifecycle {
     r2 [label=<
 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
  <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>&#9319;&nbsp; Tag</B></FONT></TD></TR>
- <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">RDRS / mysqld / OnlineFS tag the<BR ALIGN="LEFT"/>caller&apos;s account name, once per<BR ALIGN="LEFT"/>transaction <FONT FACE="Menlo" POINT-SIZE="9">Marketing_mary01ab</FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">RDRS / mysqld / OnlineFS tag the<BR ALIGN="LEFT"/>caller&apos;s account name, once per<BR ALIGN="LEFT"/>transaction <FONT FACE="Menlo" POINT-SIZE="9">Backfill_mary01ab</FONT></TD></TR>
 </TABLE>>];
     r3 [label=<
 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
  <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>&#9320;&nbsp; Dbtc admission</B></FONT></TD></TR>
- <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">alias &rarr; its target USER<BR ALIGN="LEFT"/>(one indirection)<BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="9">&rarr; mary_mike_rl</FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">alias &rarr; its target USER<BR ALIGN="LEFT"/>(one indirection)<BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="9">&rarr; backfill_rl</FONT></TD></TR>
 </TABLE>>];
     r4 [label=<
 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">

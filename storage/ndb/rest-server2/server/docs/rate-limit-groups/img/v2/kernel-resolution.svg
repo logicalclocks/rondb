@@ -18,7 +18,7 @@
 <polygon fill="#f1f3f5" stroke="none" points="100.62,-324 100.62,-359 229.38,-359 229.38,-324 100.62,-324"/>
 <polygon fill="none" stroke="#8aa5a3" points="100.62,-324 100.62,-359 229.38,-359 229.38,-324 100.62,-324"/>
 <text xml:space="preserve" text-anchor="start" x="107.62" y="-342.55" font-family="Helvetica,sans-Serif" font-size="11.00">tagged name</text>
-<text xml:space="preserve" text-anchor="start" x="107.62" y="-332.5" font-family="Menlo" font-size="10.00">Marketing_mary01ab</text>
+<text xml:space="preserve" text-anchor="start" x="107.62" y="-332.5" font-family="Menlo" font-size="10.00">Backfill_mary01ab</text>
 <polygon fill="#f1f3f5" stroke="none" points="100.62,-298 100.62,-324 229.38,-324 229.38,-298 100.62,-298"/>
 <polygon fill="none" stroke="#8aa5a3" points="100.62,-298 100.62,-324 229.38,-324 229.38,-298 100.62,-298"/>
 <text xml:space="preserve" text-anchor="start" x="107.62" y="-308" font-family="Helvetica,sans-Serif" font-size="11.00">table: any she may read</text>
@@ -28,15 +28,15 @@
 <title>alias1</title>
 <polygon fill="#096b67" stroke="none" points="500.5,-363.12 500.5,-389.88 738.75,-389.88 738.75,-363.12 500.5,-363.12"/>
 <polygon fill="none" stroke="#8aa5a3" points="500.5,-363.12 500.5,-389.88 738.75,-389.88 738.75,-363.12 500.5,-363.12"/>
-<text xml:space="preserve" text-anchor="start" x="515" y="-373.43" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00" fill="white">USER ALIAS</text>
-<text xml:space="preserve" text-anchor="start" x="582.5" y="-373.43" font-family="Helvetica,sans-Serif" font-size="11.00" fill="white"> </text>
-<text xml:space="preserve" text-anchor="start" x="585.5" y="-373.43" font-family="Menlo" font-size="10.00" fill="white">Marketing_mary01ab</text>
-<text xml:space="preserve" text-anchor="start" x="693.5" y="-373.43" font-family="Helvetica,sans-Serif" font-size="11.00" fill="white"> (new)</text>
-<polygon fill="#edf4f4" stroke="none" points="500.5,-336.38 500.5,-363.12 599,-363.12 599,-336.38 500.5,-336.38"/>
-<polygon fill="none" stroke="#8aa5a3" points="500.5,-336.38 500.5,-363.12 599,-363.12 599,-336.38 500.5,-336.38"/>
-<text xml:space="preserve" text-anchor="start" x="534.38" y="-346.3" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">target</text>
-<polygon fill="none" stroke="#8aa5a3" points="599,-336.38 599,-363.12 738.75,-363.12 738.75,-336.38 599,-336.38"/>
-<text xml:space="preserve" text-anchor="start" x="632.88" y="-346.38" font-family="Menlo" font-size="10.00">mary_mike_rl</text>
+<text xml:space="preserve" text-anchor="start" x="518" y="-373.43" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00" fill="white">USER ALIAS</text>
+<text xml:space="preserve" text-anchor="start" x="585.5" y="-373.43" font-family="Helvetica,sans-Serif" font-size="11.00" fill="white"> </text>
+<text xml:space="preserve" text-anchor="start" x="588.5" y="-373.43" font-family="Menlo" font-size="10.00" fill="white">Backfill_mary01ab</text>
+<text xml:space="preserve" text-anchor="start" x="690.5" y="-373.43" font-family="Helvetica,sans-Serif" font-size="11.00" fill="white"> (new)</text>
+<polygon fill="#edf4f4" stroke="none" points="500.5,-336.38 500.5,-363.12 602,-363.12 602,-336.38 500.5,-336.38"/>
+<polygon fill="none" stroke="#8aa5a3" points="500.5,-336.38 500.5,-363.12 602,-363.12 602,-336.38 500.5,-336.38"/>
+<text xml:space="preserve" text-anchor="start" x="535.88" y="-346.3" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">target</text>
+<polygon fill="none" stroke="#8aa5a3" points="602,-336.38 602,-363.12 738.75,-363.12 738.75,-336.38 602,-336.38"/>
+<text xml:space="preserve" text-anchor="start" x="637.38" y="-346.38" font-family="Menlo" font-size="10.00">backfill_rl</text>
 <polygon fill="none" stroke="#8aa5a3" points="500.5,-293.12 500.5,-336.38 738.75,-336.38 738.75,-293.12 500.5,-293.12"/>
 <text xml:space="preserve" text-anchor="start" x="507.5" y="-321.88" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#566574">One target, no rules. Stored by name,</text>
 <text xml:space="preserve" text-anchor="start" x="507.5" y="-312.12" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#566574">re&#45;resolved if the target USER is recreated.</text>
@@ -67,21 +67,21 @@
 <!-- user1 -->
 <g id="node3" class="node">
 <title>user1</title>
-<polygon fill="#096b67" stroke="none" points="880.5,-353.12 880.5,-379.88 1001,-379.88 1001,-353.12 880.5,-353.12"/>
-<polygon fill="none" stroke="#8aa5a3" points="880.5,-353.12 880.5,-379.88 1001,-379.88 1001,-353.12 880.5,-353.12"/>
-<text xml:space="preserve" text-anchor="start" x="887.5" y="-363.43" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00" fill="white">USER</text>
-<text xml:space="preserve" text-anchor="start" x="919" y="-363.43" font-family="Helvetica,sans-Serif" font-size="11.00" fill="white"> </text>
-<text xml:space="preserve" text-anchor="start" x="922" y="-363.43" font-family="Menlo" font-size="10.00" fill="white">mary_mike_rl</text>
-<polygon fill="#edf4f4" stroke="none" points="880.5,-319.12 880.5,-353.12 1001,-353.12 1001,-319.12 880.5,-319.12"/>
-<polygon fill="none" stroke="#8aa5a3" points="880.5,-319.12 880.5,-353.12 1001,-353.12 1001,-319.12 880.5,-319.12"/>
-<text xml:space="preserve" text-anchor="start" x="887.5" y="-336.68" font-family="Helvetica,sans-Serif" font-size="11.00">rate 400,000 µs/s</text>
-<text xml:space="preserve" text-anchor="start" x="887.5" y="-327.57" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#566574">(2% of a 20&#45;thread node)</text>
+<polygon fill="#096b67" stroke="none" points="882.75,-353.12 882.75,-379.88 998.75,-379.88 998.75,-353.12 882.75,-353.12"/>
+<polygon fill="none" stroke="#8aa5a3" points="882.75,-353.12 882.75,-379.88 998.75,-379.88 998.75,-353.12 882.75,-353.12"/>
+<text xml:space="preserve" text-anchor="start" x="890.5" y="-363.43" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00" fill="white">USER</text>
+<text xml:space="preserve" text-anchor="start" x="922" y="-363.43" font-family="Helvetica,sans-Serif" font-size="11.00" fill="white"> </text>
+<text xml:space="preserve" text-anchor="start" x="925" y="-363.43" font-family="Menlo" font-size="10.00" fill="white">backfill_rl</text>
+<polygon fill="#edf4f4" stroke="none" points="882.75,-319.12 882.75,-353.12 998.75,-353.12 998.75,-319.12 882.75,-319.12"/>
+<polygon fill="none" stroke="#8aa5a3" points="882.75,-319.12 882.75,-353.12 998.75,-353.12 998.75,-319.12 882.75,-319.12"/>
+<text xml:space="preserve" text-anchor="start" x="889.75" y="-336.68" font-family="Helvetica,sans-Serif" font-size="11.00">rate 400,000 µs/s</text>
+<text xml:space="preserve" text-anchor="start" x="889.75" y="-327.57" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#566574">(2% of a 20&#45;thread node)</text>
 </g>
 <!-- alias1&#45;&gt;user1 -->
 <g id="edge2" class="edge">
 <title>alias1:r1&#45;&gt;user1</title>
-<path fill="none" stroke="#096b67" stroke-width="1.1" d="M739.75,-349.75C780.91,-349.75 826.83,-349.7 864.28,-349.64"/>
-<polygon fill="#096b67" stroke="#096b67" stroke-width="1.1" points="863.97,-352.09 870.96,-349.63 863.96,-347.19 863.97,-352.09"/>
+<path fill="none" stroke="#096b67" stroke-width="1.1" d="M739.75,-349.75C781.72,-349.75 828.63,-349.69 866.47,-349.64"/>
+<polygon fill="#096b67" stroke="#096b67" stroke-width="1.1" points="866.24,-352.09 873.23,-349.62 866.23,-347.19 866.24,-352.09"/>
 <text xml:space="preserve" text-anchor="middle" x="799.12" y="-350.94" font-family="Helvetica,sans-Serif" font-size="9.00">one indirection</text>
 </g>
 <!-- alias2 -->

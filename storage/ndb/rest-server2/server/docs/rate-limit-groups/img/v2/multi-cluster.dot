@@ -11,7 +11,7 @@ digraph multi {
  <TR><TD><FONT FACE="Menlo" POINT-SIZE="9">recommender_m_rl</FONT></TD><TD>20.00</TD><TD>13 Recommender</TD><TD PORT="r1"><FONT FACE="Menlo" POINT-SIZE="9">rondb-m</FONT></TD></TR>
  <TR><TD><FONT FACE="Menlo" POINT-SIZE="9">recommender2_m_rl</FONT></TD><TD>30.00</TD><TD>14 Recommender2</TD><TD PORT="r2"><FONT FACE="Menlo" POINT-SIZE="9">rondb-m</FONT></TD></TR>
  <TR><TD><FONT FACE="Menlo" POINT-SIZE="9">recommender_s_rl</FONT></TD><TD>20.00</TD><TD>13 Recommender</TD><TD PORT="r3"><FONT FACE="Menlo" POINT-SIZE="9">rondb-s</FONT></TD></TR>
- <TR><TD COLSPAN="4" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#566574">each row names its cluster: the namespace. Same people in two groups on different clusters is no tie (section 9).</FONT></TD></TR>
+ <TR><TD COLSPAN="4" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#566574">each row names its cluster: the namespace. The same project in two groups on different clusters is no tie (section 9).</FONT></TD></TR>
 </TABLE>>];
 
   subgraph cluster_M {
@@ -35,7 +35,7 @@ digraph multi {
     userR [label=<
 <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5" COLOR="#8aa5a3">
  <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT"><B>USER entries installed by Hopsworks</B></TD></TR>
- <TR><TD ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#566574">none — no group names rondb-r</FONT></TD></TR>
+ <TR><TD ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#566574">none: no group names rondb-r</FONT></TD></TR>
 </TABLE>>];
   }
 

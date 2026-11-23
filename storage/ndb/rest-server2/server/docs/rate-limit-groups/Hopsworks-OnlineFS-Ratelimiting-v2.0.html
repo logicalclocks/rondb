@@ -88,8 +88,9 @@
   members connect through the REST server (RDRS) or through the MySQL server.</p>
   <p>The online feature store is one RonDB cluster, or several, shared by every project,
   every user and every job in a Hopsworks installation. This feature introduces the
-  <strong>rate limit group</strong>: a named budget shared by a set of users or whole
-  projects, covering everything they do, on every cluster or on one named cluster. Rate
+  <strong>rate limit group</strong>: a named budget shared by one or more whole
+  projects, covering everything their members do in them, on every cluster or on one
+  named cluster. Rate
   limit groups are created on one administration page. Work that falls under a rate
   limit group is slowed down and, if it keeps coming, rejected once the budget is used
   up; everyone outside the rate limit group is unaffected.</p>
@@ -118,7 +119,7 @@
 <h2>1. Summary</h2>
 <ul>
   <li><strong>One budget per team, not per key.</strong> A rate limit group is a share
-  of the cluster given to a set of users or projects. Every member&rsquo;s work draws from the
+  of the cluster given to one or more projects. Every member&rsquo;s work draws from the
   same budget, through both entry points for data: the REST server (RDRS) and the MySQL
   server.</li>
   <li><strong>Scoped to a cluster when needed.</strong> A rate limit group covers every
@@ -167,7 +168,7 @@ much&rdquo;, where a team is a set of people, and sometimes &ldquo;this team may
   <tbody>
     <tr><td>Name</td><td>A short name for the budget.</td></tr>
     <tr><td>Budget</td><td>A percentage of a cluster&rsquo;s capacity for database work. <a href="#meaning">Section 4</a> explains what a given percentage means.</td></tr>
-    <tr><td>Who</td><td>Login users and/or whole projects. A project means its current members: people who join later are covered automatically, people who leave drop out.</td></tr>
+    <tr><td>Who</td><td>One or more whole projects. A project means its current members, working in that project: people who join later are covered automatically, people who leave drop out. A person who is in two projects is covered in each by that project&rsquo;s group.</td></tr>
     <tr><td>Cluster</td><td>Either <em>every cluster</em>, or one named RonDB cluster. With a single cluster there is nothing to choose; <a href="#multi">section 10</a> covers installations with several.</td></tr>
   </tbody>
 </table></div>
@@ -185,8 +186,8 @@ point. Two things a rate limit group is <em>not</em>:</p>
   team. On an idle cluster the team still gets at most 20%; on a busy one it is still
   allowed up to 20%.</li>
 </ul>
-<p>Rate limit groups are not tied to the organisation chart. A rate limit group whose
-members are a set of heavy users, another for a partner team, and a small one for a
+<p>Rate limit groups are not tied to the organisation chart. A rate limit group for a
+project of heavy users, another for a partner team&rsquo;s projects, and a small one for a
 free-tier project are the same mechanism with different lists.</p>
 </section>
 
@@ -226,21 +227,22 @@ shows the exact figure for your cluster next to the percentage.</p>
 
 <section id="how">
 <h2>5. How a limit is applied</h2>
-<p>When someone reads or writes, RonDB charges the work to the rate limit group that
-person is in. Four rules cover every case:</p>
+<p>When someone reads or writes, RonDB charges the work to the rate limit group of the
+project they are working in. Four rules cover every case:</p>
 <ol>
   <li><strong>Both entry points count.</strong> A request through the REST server (RDRS)
   with an API key and a query through the MySQL server with a database account are charged
-  to the same rate limit group, because both identify the person doing the work. The platform&rsquo;s own
+  to the same rate limit group, because both identify the person doing the work and the
+  project they do it in. The platform&rsquo;s own
   administrative queries are not charged.</li>
-  <li><strong>One group per person per cluster.</strong> The administration page refuses
-  two rate limit groups that would both cover the same person on the same cluster. The
+  <li><strong>One group per project per cluster.</strong> The administration page refuses
+  two rate limit groups that would both list the same project on the same cluster. The
   one sanctioned overlap: a group naming a cluster wins there over a group covering every
   cluster, which is how &ldquo;20% everywhere, but 30% on this cluster&rdquo; is written.</li>
   <li><strong>The whole transaction is charged together.</strong> A request that touches several tables,
   such as a feature-view read, is charged as a whole to the caller&rsquo;s rate limit group.</li>
-  <li><strong>Not in a group, not limited.</strong> A person who is in no rate limit
-  group is not limited.</li>
+  <li><strong>Not in a group, not limited.</strong> Work in a project that is in no rate
+  limit group is not limited.</li>
 </ol>
 <p>Work is measured as CPU time on the data nodes: a small cost per row read, a larger
 one per row written, a cost per row scanned, plus a little per byte moved. Each data node
@@ -256,14 +258,16 @@ a temporary error, and writes only under heavy, sustained overload
 owns a <strong>feature store</strong>, which is the project&rsquo;s collection of
 <strong>feature groups</strong> (tables of features). A project can share its whole
 feature store, or single feature groups, with other projects, whose members may then read
-that data. The scenario has four projects on one cluster:</p>
+that data. The scenario has five projects on one cluster; Backfill is the project from
+which Mary and Mike run their backfills:</p>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col">Project</th><th scope="col">Members</th><th scope="col">Feature groups it owns</th><th scope="col">Shared with</th></tr></thead>
   <tbody>
-    <tr><td>Marketing</td><td>Mary, Mike</td><td><code>marketing_clicks</code>, <code>marketing_campaigns</code></td><td>Recommender, Recommender2 (whole store)</td></tr>
+    <tr><td>Marketing</td><td>Mary, Mike</td><td><code>marketing_clicks</code>, <code>marketing_campaigns</code></td><td>Recommender, Recommender2, Backfill (whole store)</td></tr>
     <tr><td>Sales</td><td>Sam</td><td><code>sales_orders</code></td><td>Recommender (that one feature group)</td></tr>
     <tr><td>Recommender</td><td>Alice, Ava</td><td><code>recommender_features</code></td><td>nobody</td></tr>
     <tr><td>Recommender2</td><td>Rosa</td><td><code>recommender2_features</code></td><td>nobody</td></tr>
+    <tr><td>Backfill</td><td>Mary, Mike</td><td>none</td><td>nobody</td></tr>
   </tbody>
 </table></div>
 <p>The administrator has three requirements, each of which is one rate limit group. Group names are
@@ -273,22 +277,23 @@ confused with the project it is named after:</p>
   <thead><tr><th scope="col">Requirement</th><th scope="col">Rate limit group</th><th scope="col">Who</th><th scope="col">Cluster</th><th scope="col">Budget</th></tr></thead>
   <tbody>
     <tr><td>&ldquo;Recommender gets 20% of the cluster, whatever its members do.&rdquo;</td><td><code>recommender_team_rl</code></td><td>project Recommender</td><td>every cluster</td><td>20%</td></tr>
-    <tr><td>&ldquo;Mary and Mike together may use at most 2%, so their backfills cannot disturb production serving.&rdquo;</td><td><code>mary_mike_rl</code></td><td>Mary, Mike</td><td>every cluster</td><td>2%</td></tr>
+    <tr><td>&ldquo;The members of project Backfill together may use at most 2%, so their backfills cannot disturb production serving.&rdquo;</td><td><code>backfill_rl</code></td><td>project Backfill</td><td>every cluster</td><td>2%</td></tr>
     <tr><td>&ldquo;Recommender2 may use at most 5%.&rdquo;</td><td><code>recommender2_rl</code></td><td>project Recommender2</td><td>every cluster</td><td>5%</td></tr>
   </tbody>
 </table></div>
-<p>The first is the classic team share. The second bounds two named people without
-touching the rest of their project. The third bounds a consumer team, including
+<p>The first is the classic team share. The second bounds a small project without
+touching what its members do in Marketing. The third bounds a consumer team, including
 everything it reads of Marketing&rsquo;s shared data. With these three rate limit groups in
 place:</p>
 <div class="tablewrap"><table>
   <thead><tr><th scope="col">Who reads what</th><th scope="col">Charged to</th><th scope="col">Why</th></tr></thead>
   <tbody>
     <tr><td>Alice reads <code>recommender_features</code></td><td><code>recommender_team_rl</code></td><td>Alice is in project Recommender.</td></tr>
-    <tr><td>Alice reads <code>marketing_clicks</code></td><td><code>recommender_team_rl</code></td><td>Same. Borrowed data is no different: the budget follows the person.</td></tr>
+    <tr><td>Alice reads <code>marketing_clicks</code></td><td><code>recommender_team_rl</code></td><td>Same. Borrowed data is no different: the budget follows the project she works in.</td></tr>
     <tr><td>Ava reads <code>sales_orders</code></td><td><code>recommender_team_rl</code></td><td>Same rate limit group; Alice and Ava share the 20%.</td></tr>
-    <tr><td>Mary reads <code>marketing_clicks</code></td><td><code>mary_mike_rl</code></td><td>Mary is listed; all her work draws from the 2%.</td></tr>
-    <tr><td>Mary reads <code>marketing_campaigns</code></td><td><code>mary_mike_rl</code></td><td>Same: the cap is on Mary, not on a table.</td></tr>
+    <tr><td>Mary, from Backfill, reads <code>marketing_clicks</code></td><td><code>backfill_rl</code></td><td>Backfill is listed; everything its members do in it draws from the 2%.</td></tr>
+    <tr><td>Mary, from Backfill, reads <code>marketing_campaigns</code></td><td><code>backfill_rl</code></td><td>Same: the cap is on the project, not on a table.</td></tr>
+    <tr><td>Mary, from Marketing, reads <code>marketing_clicks</code></td><td>none</td><td>Marketing is in no rate limit group. Each project Mary is in follows its own group.</td></tr>
     <tr><td>Rosa reads <code>marketing_clicks</code></td><td><code>recommender2_rl</code></td><td>Rosa is in Recommender2.</td></tr>
     <tr><td>Rosa reads <code>sales_orders</code></td><td>rejected</td><td>Sales never shared with Recommender2. Access is checked before any rate limit group.</td></tr>
     <tr><td>Sam reads <code>sales_orders</code></td><td>none</td><td>Sam is not in any rate limit group, so his reads are not limited.</td></tr>
@@ -328,7 +333,7 @@ nothing to configure beyond the page.</p>
     <tr><td><span style="color:#b3261e">&#9679;</span> refused</td><td>The cluster rejected it because the total budget is already full (<a href="#budgets">section 9</a>). Lower another budget first.</td></tr>
   </tbody>
 </table></div>
-<p>The page refuses two rate limit groups that would both cover the same person on the
+<p>The page refuses two rate limit groups that would both list the same project on the
 same cluster, so every request has exactly one budget. Who may create rate limit groups
 is an administrator role; the page lives under Hopsworks administration.</p>
 </section>
@@ -376,7 +381,7 @@ then wants to say &ldquo;that team may use 20% of <em>my</em> cluster, this othe
 A rate limit group expresses that by naming the cluster: one group per team, scoped to
 the owner&rsquo;s cluster, each a percentage of that cluster. A group covering <em>every</em>
 cluster means that percentage on each of them, and a group naming a cluster wins there
-over an every-cluster group covering the same people, which is how one team gets 20%
+over an every-cluster group listing the same project, which is how one team gets 20%
 everywhere but 30% on one cluster. Hopsworks discovers the clusters automatically and
 installs each group on the right one; the administration page shows the state per
 cluster.</p>
@@ -389,14 +394,15 @@ cluster.</p>
   <dd>No. Access is decided by project membership and sharing exactly as before. A rate limit group
   only decides which budget pays for work that is already allowed.</dd>
   <dt><strong>Someone joins or leaves the team. Do I edit the rate limit group?</strong></dt>
-  <dd>Not if the rate limit group names the project; membership is read live, and the
-  limit follows within moments of the change. If the rate limit group names people
-  individually, you edit the list.</dd>
+  <dd>No. A rate limit group names projects; membership is read live, and the
+  limit follows within moments of the change.</dd>
   <dt><strong>Can a person be in two rate limit groups?</strong></dt>
-  <dd>Only across clusters: a group naming a cluster and an every-cluster group may both
-  cover them, and the named one wins on its cluster. Two groups that would both cover the
-  same person on the same cluster are refused, so every request has exactly one
-  budget.</dd>
+  <dd>Through two projects, yes: a person in two projects is covered in each by that
+  project&rsquo;s group, and their work in one project never draws from the other&rsquo;s
+  budget. A project itself is in two groups only across clusters: a group naming a
+  cluster and an every-cluster group may both list it, and the named one wins on its
+  cluster. Two groups that would both list the same project on the same cluster are
+  refused, so every request has exactly one budget.</dd>
   <dt><strong>Can I limit a team only on certain feature groups?</strong></dt>
   <dd>No. A budget covers everything its members do on the cluster. To protect a
   specific dataset&rsquo;s cluster, give the consuming team a budget on that cluster; on a

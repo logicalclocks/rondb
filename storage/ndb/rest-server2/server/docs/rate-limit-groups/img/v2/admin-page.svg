@@ -41,9 +41,9 @@
   <text x="336" y="196" class="t" font-size="13">Project Recommender</text>
   <text x="540" y="196" class="t" font-size="13" font-style="italic">every cluster</text>
   <text x="690" y="196" class="ok">● installed</text>
-  <text x="64" y="226" class="mono">mary_mike_rl</text>
+  <text x="64" y="226" class="mono">backfill_rl</text>
   <text x="276" y="226" class="t">2%</text>
-  <text x="336" y="226" class="t" font-size="13">Mary, Mike</text>
+  <text x="336" y="226" class="t" font-size="13">Project Backfill</text>
   <text x="540" y="226" class="t" font-size="13" font-style="italic">every cluster</text>
   <text x="690" y="226" class="ok">● installed</text>
   <rect x="52" y="238" width="722" height="36" fill="#edf4f4"/>
@@ -63,9 +63,9 @@
   <text x="336" y="338" class="t" font-size="13">Project Recommender</text>
   <text x="540" y="338" class="t" font-size="13" font-style="italic">this cluster</text>
   <text x="690" y="338" class="pend">● partial</text>
-  <text x="64" y="368" class="mono">mary_mike_rl</text>
+  <text x="64" y="368" class="mono">backfill_rl</text>
   <text x="276" y="368" class="t">2%</text>
-  <text x="336" y="368" class="t" font-size="13">Mary, Mike</text>
+  <text x="336" y="368" class="t" font-size="13">Project Backfill</text>
   <text x="540" y="368" class="t" font-size="13" font-style="italic">every cluster</text>
   <text x="690" y="368" class="ok">● installed</text>
   <text x="64" y="398" class="mono">recommender2_rl</text>
@@ -140,12 +140,12 @@
 
   <!-- Who -->
   <text x="850" y="394" class="h">Who shares this budget</text>
-  <text x="850" y="414" class="m">Login users and/or whole projects. A project means its current members.</text>
+  <text x="850" y="414" class="m">One or more projects. A project means its current members, in that project.</text>
   <rect x="850" y="424" width="552" height="52" rx="6" class="input"/>
   <rect x="860" y="434" width="236" height="32" rx="16" class="chip"/>
   <text x="876" y="455" class="t">Project · Recommender2</text>
   <text x="1082" y="456" class="m">×</text>
-  <text x="1110" y="455" class="m">+ add user or project</text>
+  <text x="1110" y="455" class="m">+ add project</text>
 
   <!-- Cluster -->
   <text x="850" y="520" class="h">Where it applies</text>
@@ -199,8 +199,8 @@
   <text x="1462" y="346" class="c">  .budget_percent = 8.00</text>
 
   <line x1="1402" y1="450" x2="1454" y2="450" class="call"/>
-  <text x="1462" y="446" class="c">rate_limit_group_user</text>
-  <text x="1462" y="464" class="c">  (uid NULL, project_id 14)</text>
+  <text x="1462" y="446" class="c">rate_limit_group_project</text>
+  <text x="1462" y="464" class="c">  (project_id 14)</text>
 
   <line x1="1402" y1="548" x2="1454" y2="548" class="call"/>
   <text x="1462" y="544" class="c">rate_limit_group</text>

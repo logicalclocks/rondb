@@ -1,7 +1,8 @@
 # Hopsworks OnlineFS rate limit groups — design docs and working notes
 
 Follow-up to RONDB-978 (per-identity rate limits). A **rate limit group** is a named
-budget (% of a RonDB cluster) tied to WHO (Hopsworks users and/or whole projects) and a
+budget (% of a RonDB cluster) tied to WHO (one or more whole Hopsworks projects; since
+2026-11-23 a group can no longer name an individual user) and a
 CLUSTER (one by name, or every cluster). One group = one kernel `USER SET` entry per
 targeted cluster, installed by Hopsworks itself. Earlier drafts called this a
 "rate-limit bucket"; the term was dropped for customers. Design version 1.0 also scoped
@@ -26,10 +27,12 @@ new session does not have to re-read the rondb and hopsworks repos.
 
 Shared vocabulary of the v2.0 documents (keep it when editing):
 - "rate limit group", never "bucket"; tables `rate_limit_group` (with `cluster`, NULL =
-  every cluster), `rate_limit_group_user`, `rate_limit_group_cluster_state`; column `group_id`.
+  every cluster), `rate_limit_group_project` (one project per row; no `uid` rows since
+  2026-11-23), `rate_limit_group_cluster_state`; column `group_id`.
   No `rate_limit_group_data`, no `data_scope`, no override table (v1.0 only).
 - Example groups `recommender_team_rl` (project Recommender, every cluster, 20%),
-  `mary_mike_rl` (Mary+Mike, 2%), `recommender2_rl` (project Recommender2, 5%);
+  `backfill_rl` (project Backfill, id 15, members Mary and Mike, 2%; replaced the
+  user-listing `mary_mike_rl` on 2026-11-23), `recommender2_rl` (project Recommender2, 5%);
   multi-cluster examples `recommender_m_rl` / `recommender2_m_rl` / `recommender_s_rl`
   name namespaces `rondb-m` / `rondb-s`.
 - Alias option is `--target=<group>`; an alias has exactly one target and no scope options.
@@ -44,8 +47,8 @@ Shared vocabulary of the v2.0 documents (keep it when editing):
 | Folder | Used by | Naming |
 |---|---|---|
 | `img/` | `RonDB-Group-Rate-Limits.html` (existing-tables, new-tables, lookup-maps, multi-cluster, admin-page) and the v1.0 customer doc (`admin-page-customer`) | bucket era, except `admin-page-customer` |
-| `img/design/` | `Hopsworks-OnlineFS-Ratelimiting-Design-v1.0.html` (all nine figures); `existing-tables` is also reused by the v2.0 design doc | group era |
-| `img/v2/` | the v2.0 documents: group-concept, lifecycle (numbered install + request flow), new-tables, kernel-resolution, architecture, multi-cluster, multi-cluster-topology, admin-page (design doc), admin-page-customer (white paper) | cluster era |
+| `img/design/` | `Hopsworks-OnlineFS-Ratelimiting-Design-v1.0.html` (all nine figures) | group era |
+| `img/v2/` | the v2.0 documents: existing-tables (the v1.0 figure plus project Backfill), group-concept, lifecycle (numbered install + request flow), new-tables, kernel-resolution, architecture, multi-cluster, multi-cluster-topology, admin-page (design doc), admin-page-customer (white paper) | cluster era |
 
 Every figure ships as `.dot` (source), `.svg` and `.png`; the admin mockups are hand-written
 SVG. In the ERDs, grey italic borderless cells are explanations, not columns.
