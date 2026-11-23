@@ -16,8 +16,7 @@
 set (CMAKE_CXX_STANDARD 20)
 set (CMAKE_CXX_STANDARD_REQUIRED ON)
 
-#When changing Drogon version port RONDB-1016 fix into new version
-SET(DROGON_VERSION 1.9.7) # See ../README.txt for how to upgrade
+SET(DROGON_VERSION 1.9.14) # See ../README.txt for how to upgrade
 
 set(TRANTOR_USE_TLS "openssl" CACHE STRING "Select TLS library for Trantor" FORCE)
 
@@ -44,6 +43,19 @@ target_compile_options(Jsoncpp_lib PRIVATE
 # Silence CMP0075 warning from drogon's check_include_file_cxx() calls.
 cmake_policy(SET CMP0075 NEW)
 
+# Suppress warnings for every target below this directory: the drogon and
+# trantor libraries and their tools, examples and tests (drogon_ctl/,
+# examples/, lib/tests/ and so on). The tools, examples and tests are targets
+# of their own, so the PRIVATE options of the drogon target further down do not
+# reach them. Unlike the PUBLIC options of the drogon target, these options are
+# not passed on to the REST server.
+add_compile_options(
+    -Wno-parentheses
+    -Wno-pessimizing-move
+    -Wno-range-loop-construct
+    -Wno-unused-but-set-variable
+)
+
 # Add drogon subdirectory
 add_subdirectory(drogon-${DROGON_VERSION})
 
@@ -55,15 +67,15 @@ target_include_directories(unittest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/drogon-
 #
 # If a build fails due to a warning (raised to an error) in a drogon/trantor
 # source file, add the corresponding -Wno-<warning> to the PRIVATE compile
-# options below. If it still doesn't work, move it to the corresponding PUBLIC
-# compile options.
+# options below. If the file belongs to a tool, example or test, add it to
+# add_compile_options() above instead. If it still doesn't work, the warning
+# comes from a header that the REST server includes too: move it to the
+# corresponding PUBLIC compile options.
 #
 target_compile_options(drogon PRIVATE
-    -Wno-parentheses
-    -Wno-range-loop-construct
+    -Wno-reorder
     -Wno-type-limits
     -Wno-undef
-    -Wno-unused-but-set-variable
     -Wno-unused-parameter
 )
 target_compile_options(drogon PUBLIC

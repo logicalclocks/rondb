@@ -20,10 +20,35 @@ depends on jsoncpp, but expects to find it installed on the system. This
 patch modifies drogon to use the vendored jsoncpp instead of the system
 jsoncpp if possible.
 
-diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/cmake_modules/FindJsoncpp.cmake b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/cmake_modules/FindJsoncpp.cmake
-index 1c60a76e490..97c478e96c8 100755
---- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/cmake_modules/FindJsoncpp.cmake
-+++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/cmake_modules/FindJsoncpp.cmake
+drogon 1.9.14 looks for a jsoncpp CMake package on the system before it
+falls back to FindJsoncpp.cmake. The patch skips that lookup when the
+vendored Jsoncpp_lib target exists. Without that, a build machine that
+has jsoncpp installed would link drogon to the system library.
+
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/CMakeLists.txt b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/CMakeLists.txt
+index 2f26a01c709..e21a7e9dd83 100644
+--- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/CMakeLists.txt
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/CMakeLists.txt
+@@ -197,7 +197,14 @@ if(TARGET std::filesystem)
+ endif()
+ 
+ # jsoncpp
+-find_package(jsoncpp QUIET CONFIG)
++# Added by Hopsworks: when the vendored Jsoncpp_lib target exists, do not look
++# for a jsoncpp CMake package on the system. FindJsoncpp.cmake below then uses
++# the vendored target.
++if (TARGET Jsoncpp_lib)
++  set(jsoncpp_FOUND FALSE)
++else()
++  find_package(jsoncpp QUIET CONFIG)
++endif()
+ if (jsoncpp_FOUND)
+   message(STATUS "jsoncpp found by config")
+   if (USE_STATIC_LIBS_ONLY)
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/cmake_modules/FindJsoncpp.cmake b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/cmake_modules/FindJsoncpp.cmake
+index 7504f615ba9..0c83d602bf3 100755
+--- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/cmake_modules/FindJsoncpp.cmake
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/cmake_modules/FindJsoncpp.cmake
 @@ -10,6 +10,12 @@
  # false, do not try to use jsoncpp. 
  # Jsoncpp_lib - The imported target library.
@@ -34,10 +59,10 @@ index 1c60a76e490..97c478e96c8 100755
 +  set(Jsoncpp_FOUND TRUE)
 +else()
 +
- # only look in default directories
- find_path(JSONCPP_INCLUDE_DIRS
-           NAMES json/json.h
-@@ -39,6 +45,8 @@ find_package_handle_standard_args(Jsoncpp
+ # On Apple Silicon Macs, Homebrew installs to /opt/homebrew instead of
+ # /usr/local (Intel Macs). Detect the prefix dynamically so cmake finds
+ # dependencies regardless of Mac architecture.
+@@ -55,6 +61,8 @@ find_package_handle_standard_args(Jsoncpp
                                    JSONCPP_LIBRARIES)
  mark_as_advanced(JSONCPP_INCLUDE_DIRS JSONCPP_LIBRARIES)
  

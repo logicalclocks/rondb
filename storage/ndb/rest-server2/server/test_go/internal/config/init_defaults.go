@@ -64,6 +64,7 @@ func newWithDefaults() AllConfigs {
 			MaxKeepaliveRequests:   0,
 			IdleConnectionTimeoutS: 0,
 			UploadPath:             "",
+			UseCompression:         true,
 		},
 		RateLimit: RateLimit{
 			Enable:     false,

@@ -1,0 +1,237 @@
+# This file is part of the RonDB REST API Server
+# Copyright (c) 2026 Hopsworks AB
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+Make the stack size of drogon's IO event loop threads configurable
+
+drogon runs request handlers on its IO event loop threads. trantor
+starts those threads with std::thread, so they get the OS default stack
+size (about 512 KiB on macOS). RonSQL recurses deeply when it processes
+deeply nested queries and overflowed that stack (RONDB-1016).
+
+This patch adds HttpAppFramework::setThreadStackSize() and passes the
+size through trantor's EventLoopThreadPool to EventLoopThread, which
+starts its thread with pthread_create instead of std::thread so that the
+stack size can be set. A size of 0 keeps the OS default. rdrs2 sets
+8 MiB in server/src/main.cc.
+
+trantor 1.5.29 detaches the thread instead of joining it when the
+EventLoopThread destructor runs on the loop thread itself. The patch
+keeps that behaviour with pthread_equal() and pthread_detach().
+
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/lib/inc/drogon/HttpAppFramework.h b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/lib/inc/drogon/HttpAppFramework.h
+index 154df3ca962..971189b2c21 100644
+--- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/lib/inc/drogon/HttpAppFramework.h
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/lib/inc/drogon/HttpAppFramework.h
+@@ -801,6 +801,12 @@ class DROGON_EXPORT HttpAppFramework : public trantor::NonCopyable
+      */
+     virtual HttpAppFramework &setThreadNum(size_t threadNum) = 0;
+ 
++    /**
++     * @brief Set the stack size for IO event loop threads.
++     * @param stackSize The stack size in bytes. 0 means use OS default.
++     */
++    virtual HttpAppFramework &setThreadStackSize(size_t stackSize) = 0;
++
+     /// Get the number of threads for IO event loops
+     virtual size_t getThreadNum() const = 0;
+ 
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/lib/src/HttpAppFrameworkImpl.cc b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/lib/src/HttpAppFrameworkImpl.cc
+index 566eff5dd41..d964350eb17 100644
+--- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/lib/src/HttpAppFrameworkImpl.cc
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/lib/src/HttpAppFrameworkImpl.cc
+@@ -356,6 +356,12 @@ HttpAppFramework &HttpAppFrameworkImpl::setThreadNum(size_t threadNum)
+     return *this;
+ }
+ 
++HttpAppFramework &HttpAppFrameworkImpl::setThreadStackSize(size_t stackSize)
++{
++    threadStackSize_ = stackSize;
++    return *this;
++}
++
+ PluginBase *HttpAppFrameworkImpl::getPlugin(const std::string &name)
+ {
+     return pluginsManagerPtr_->getPlugin(name);
+@@ -611,7 +617,8 @@ void HttpAppFrameworkImpl::run()
+     // Create IO threads
+     ioLoopThreadPool_ =
+         std::make_unique<trantor::EventLoopThreadPool>(threadNum_,
+-                                                       "DrogonIoLoop");
++                                                       "DrogonIoLoop",
++                                                       threadStackSize_);
+     std::vector<trantor::EventLoop *> ioLoops = ioLoopThreadPool_->getLoops();
+     for (size_t i = 0; i < threadNum_; ++i)
+     {
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/lib/src/HttpAppFrameworkImpl.h b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/lib/src/HttpAppFrameworkImpl.h
+index aac9e4f0dd1..eb06521ef49 100644
+--- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/lib/src/HttpAppFrameworkImpl.h
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/lib/src/HttpAppFrameworkImpl.h
+@@ -73,6 +73,7 @@ class HttpAppFrameworkImpl final : public HttpAppFramework
+         const std::vector<std::pair<std::string, std::string>> &sslConfCmds)
+         override;
+     HttpAppFramework &setThreadNum(size_t threadNum) override;
++    HttpAppFramework &setThreadStackSize(size_t stackSize) override;
+ 
+     size_t getThreadNum() const override
+     {
+@@ -711,6 +712,7 @@ class HttpAppFrameworkImpl final : public HttpAppFramework
+     std::atomic_bool routersInit_{false};
+ 
+     size_t threadNum_{1};
++    size_t threadStackSize_{0};
+     std::unique_ptr<trantor::EventLoopThreadPool> ioLoopThreadPool_;
+ 
+ #if !defined(_WIN32) && !TARGET_OS_IOS
+diff --git a/storage/ndb/rest-server2/extra/drogon/trantor-1.5.29/trantor/net/EventLoopThread.cc b/storage/ndb/rest-server2/extra/drogon/trantor-1.5.29/trantor/net/EventLoopThread.cc
+index b90aad0f287..d6f3416f1e9 100644
+--- a/storage/ndb/rest-server2/extra/drogon/trantor-1.5.29/trantor/net/EventLoopThread.cc
++++ b/storage/ndb/rest-server2/extra/drogon/trantor-1.5.29/trantor/net/EventLoopThread.cc
+@@ -19,9 +19,28 @@
+ #endif
+ 
+ using namespace trantor;
+-EventLoopThread::EventLoopThread(const std::string &threadName)
+-    : loopThreadName_(threadName), thread_([this]() { loopFuncs(); })
++
++void *EventLoopThread::threadFunc(void *arg)
+ {
++    EventLoopThread *self = static_cast<EventLoopThread *>(arg);
++    self->loopFuncs();
++    return nullptr;
++}
++
++EventLoopThread::EventLoopThread(const std::string &threadName,
++                                 size_t stackSize)
++    : loopThreadName_(threadName), stackSize_(stackSize)
++{
++    pthread_attr_t attr;
++    pthread_attr_init(&attr);
++    if (stackSize_ > 0)
++    {
++        pthread_attr_setstacksize(&attr, stackSize_);
++    }
++    pthread_create(&threadId_, &attr, &EventLoopThread::threadFunc, this);
++    pthread_attr_destroy(&attr);
++    threadStarted_ = true;
++
+     auto f = promiseForLoopPointer_.get_future();
+     // Convert shared_ptr to weak_ptr
+     loop_ = f.get();
+@@ -35,20 +54,25 @@ EventLoopThread::~EventLoopThread()
+     {
+         loop->quit();
+     }
+-    if (thread_.joinable())
++    if (threadStarted_ && !threadJoined_)
+     {
+-        if (std::this_thread::get_id() == thread_.get_id())
++        if (pthread_equal(pthread_self(), threadId_))
+         {
+-            thread_.detach();
++            pthread_detach(threadId_);
+             return;
+         }
+-        thread_.join();
++        pthread_join(threadId_, nullptr);
++        threadJoined_ = true;
+     }
+ }
+ 
+ void EventLoopThread::wait()
+ {
+-    thread_.join();
++    if (threadStarted_ && !threadJoined_)
++    {
++        pthread_join(threadId_, nullptr);
++        threadJoined_ = true;
++    }
+ }
+ 
+ void EventLoopThread::loopFuncs()
+diff --git a/storage/ndb/rest-server2/extra/drogon/trantor-1.5.29/trantor/net/EventLoopThread.h b/storage/ndb/rest-server2/extra/drogon/trantor-1.5.29/trantor/net/EventLoopThread.h
+index 591265f5111..d2cc8299978 100644
+--- a/storage/ndb/rest-server2/extra/drogon/trantor-1.5.29/trantor/net/EventLoopThread.h
++++ b/storage/ndb/rest-server2/extra/drogon/trantor-1.5.29/trantor/net/EventLoopThread.h
+@@ -22,6 +22,7 @@
+ #include <memory>
+ #include <condition_variable>
+ #include <future>
++#include <pthread.h>
+ 
+ namespace trantor
+ {
+@@ -32,7 +33,8 @@ namespace trantor
+ class TRANTOR_EXPORT EventLoopThread : NonCopyable
+ {
+   public:
+-    explicit EventLoopThread(const std::string &threadName = "EventLoopThread");
++    explicit EventLoopThread(const std::string &threadName = "EventLoopThread",
++                             size_t stackSize = 0);
+     ~EventLoopThread();
+ 
+     /**
+@@ -63,12 +65,16 @@ class TRANTOR_EXPORT EventLoopThread : NonCopyable
+     std::weak_ptr<EventLoop> loop_;
+ 
+     std::string loopThreadName_;
++    size_t stackSize_{0};
+     void loopFuncs();
++    static void *threadFunc(void *arg);
+     std::promise<std::shared_ptr<EventLoop>> promiseForLoopPointer_;
+     std::promise<int> promiseForRun_;
+     std::promise<int> promiseForLoop_;
+     std::once_flag once_;
+-    std::thread thread_;
++    pthread_t threadId_{};
++    bool threadStarted_{false};
++    bool threadJoined_{false};
+ };
+ 
+ }  // namespace trantor
+diff --git a/storage/ndb/rest-server2/extra/drogon/trantor-1.5.29/trantor/net/EventLoopThreadPool.cc b/storage/ndb/rest-server2/extra/drogon/trantor-1.5.29/trantor/net/EventLoopThreadPool.cc
+index 33264d434f0..c440b9e8c80 100644
+--- a/storage/ndb/rest-server2/extra/drogon/trantor-1.5.29/trantor/net/EventLoopThreadPool.cc
++++ b/storage/ndb/rest-server2/extra/drogon/trantor-1.5.29/trantor/net/EventLoopThreadPool.cc
+@@ -15,12 +15,14 @@
+ #include <trantor/net/EventLoopThreadPool.h>
+ using namespace trantor;
+ EventLoopThreadPool::EventLoopThreadPool(size_t threadNum,
+-                                         const std::string &name)
++                                         const std::string &name,
++                                         size_t stackSize)
+     : loopIndex_(0)
+ {
+     for (size_t i = 0; i < threadNum; ++i)
+     {
+-        loopThreadVector_.emplace_back(std::make_shared<EventLoopThread>(name));
++        loopThreadVector_.emplace_back(
++            std::make_shared<EventLoopThread>(name, stackSize));
+     }
+ }
+ void EventLoopThreadPool::start()
+diff --git a/storage/ndb/rest-server2/extra/drogon/trantor-1.5.29/trantor/net/EventLoopThreadPool.h b/storage/ndb/rest-server2/extra/drogon/trantor-1.5.29/trantor/net/EventLoopThreadPool.h
+index 8ca9776b316..3f0ef59947b 100644
+--- a/storage/ndb/rest-server2/extra/drogon/trantor-1.5.29/trantor/net/EventLoopThreadPool.h
++++ b/storage/ndb/rest-server2/extra/drogon/trantor-1.5.29/trantor/net/EventLoopThreadPool.h
+@@ -38,7 +38,8 @@ class TRANTOR_EXPORT EventLoopThreadPool : NonCopyable
+      * @param name The name of the EventLoopThreadPool object.
+      */
+     EventLoopThreadPool(size_t threadNum,
+-                        const std::string &name = "EventLoopThreadPool");
++                        const std::string &name = "EventLoopThreadPool",
++                        size_t stackSize = 0);
+ 
+     /**
+      * @brief Run all event loops in the pool.

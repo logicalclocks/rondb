@@ -15,11 +15,11 @@
 
 Symlink trantor to where drogon expects to find it as a submodule.
 
-diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/trantor b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/trantor
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/trantor b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/trantor
 new file mode 120000
-index 00000000000..c7224976042
+index 00000000000..bf275a33b37
 --- /dev/null
-+++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/trantor
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/trantor
 @@ -0,0 +1 @@
-+../trantor-1.5.21/
++../trantor-1.5.29/
 \ No newline at end of file

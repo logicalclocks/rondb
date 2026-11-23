@@ -256,11 +256,10 @@ void BatchPKWriteCtrl::batchPKWrite(
       setErrorResponse(req, resp, status);
     } else {
       resp->setStatusCode(static_cast<drogon::HttpStatusCode>(status.http_code));
-      if (use_compressed) {
-        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
-      } else {
-        resp->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
-      }
+      // JSON either way; use_compressed only decides whether Drogon may gzip
+      // it.
+      resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+      resp->setAllowCompression(use_compressed);
       // convert resp to json
       std::vector<PKReadResponseJSON> responses;
       size_t calc_size_json = 20; // Batch overhead

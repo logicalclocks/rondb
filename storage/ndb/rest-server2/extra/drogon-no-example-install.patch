@@ -1,0 +1,51 @@
+# This file is part of the RonDB REST API Server
+# Copyright (c) 2026 Hopsworks AB
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+Do not install drogon's example programs and _drogon_ctl
+
+drogon 1.9.14 added install rules for its example programs (benchmark,
+client, helloworld and others) and for the build helper _drogon_ctl.
+rdrs2 builds the examples only to catch compile errors after patches
+(see drogon/CMakeLists.txt), so they must not end up in the bin
+directory of a RonDB installation. This patch removes the two install
+rules, which keeps the set of installed files the same as with drogon
+1.9.7.
+
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/drogon_ctl/CMakeLists.txt b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/drogon_ctl/CMakeLists.txt
+index 2cda37f4c0d..11371f1cff3 100755
+--- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/drogon_ctl/CMakeLists.txt
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/drogon_ctl/CMakeLists.txt
+@@ -71,7 +71,6 @@ if(APPLE)
+   target_link_libraries(drogon_ctl PRIVATE resolv)
+ endif()
+ message(STATUS "bin:" ${INSTALL_BIN_DIR})
+-install(TARGETS _drogon_ctl RUNTIME DESTINATION ${INSTALL_BIN_DIR})
+ install(TARGETS drogon_ctl RUNTIME DESTINATION ${INSTALL_BIN_DIR})
+ if(WIN32)
+   set(CTL_FILE $<TARGET_FILE:drogon_ctl>)
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/examples/CMakeLists.txt b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/examples/CMakeLists.txt
+index 61e65d8323a..9d4b91d3703 100755
+--- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/examples/CMakeLists.txt
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/examples/CMakeLists.txt
+@@ -55,9 +55,6 @@ foreach(target ${example_targets})
+         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
+ endforeach()
+ 
+-install(TARGETS ${example_targets}
+-    RUNTIME DESTINATION ${INSTALL_BIN_DIR})
+-
+ # Add warnings for our example targets--some warnings (such as -Wunused-parameter) only appear
+ # when the templated functions are instantiated at their point of use.
+ if(NOT ${CMAKE_PLATFORM_NAME} STREQUAL "Windows" AND CMAKE_CXX_COMPILER_ID MATCHES GNU)
