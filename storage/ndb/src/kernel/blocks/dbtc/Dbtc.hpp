@@ -3762,6 +3762,7 @@ class Dbtc : public SimulatedBlock {
                                 DatabaseRecordPtr) const;
   void release_api_ref(Signal*, ApiConnectRecordPtr, Uint32);
   void release_api_ref(Signal*, ApiConnectRecordPtr, DatabaseRecordPtr, Uint32);
+  void release_api_ref_if_unqueued(Signal*, ApiConnectRecordPtr, Uint32);
   void check_drop_db_conf(Signal*, DatabaseRecordPtr);
   void release_database_record(Signal*, DatabaseRecordPtr);
   void send_drop_db_conf(Signal*, DatabaseRecordPtr, Uint32);

@@ -1,0 +1,13 @@
+CREATE DATABASE TEST_DB;
+CREATE DATABASE rl_noquota;
+CREATE DATABASE rl_quota2;
+CREATE TABLE rl_noquota.t (pk INT PRIMARY KEY, v INT) ENGINE=NDBCLUSTER;
+CREATE TABLE rl_quota2.t (pk INT PRIMARY KEY, v INT) ENGINE=NDBCLUSTER;
+INSERT INTO rl_noquota.t VALUES (1, 10);
+INSERT INTO rl_quota2.t VALUES (1, 10);
+Running command
+Result of command: 0
+Test program success!
+DROP DATABASE rl_quota2;
+DROP DATABASE rl_noquota;
+DROP DATABASE TEST_DB;

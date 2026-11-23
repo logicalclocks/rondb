@@ -6504,7 +6504,7 @@ void Dbtc::releaseDirtyRead(Signal *signal,
       release_count_parallel_transactions(apiConnectptr.p);
     }
     jam();
-    release_api_ref(signal, apiConnectptr, __LINE__);
+    release_api_ref_if_unqueued(signal, apiConnectptr, __LINE__);
     return;
   }
 
@@ -7702,7 +7702,7 @@ void Dbtc::diverify010Lab(Signal *signal,
     sendtckeyconf(signal, 1, apiConnectptr);
     regApiPtr->apiConnectstate = CS_CONNECTED;
     regApiPtr->m_transaction_nodes.clear();
-    release_api_ref(signal, apiConnectptr, __LINE__);
+    release_api_ref_if_unqueued(signal, apiConnectptr, __LINE__);
     setApiConTimer(apiConnectptr, 0, __LINE__);
     if (apiConnectptr.p->m_count_parallel_transactions) {
       jam();
@@ -9647,7 +9647,7 @@ void Dbtc::releaseDirtyWrite(Signal *signal,
       regApiPtr->apiConnectstate = CS_CONNECTED;
       setApiConTimer(apiConnectptr, 0, __LINE__);
       sendtckeyconf(signal, 1, apiConnectptr);
-      release_api_ref(signal, apiConnectptr, __LINE__);
+      release_api_ref_if_unqueued(signal, apiConnectptr, __LINE__);
       if (apiConnectptr.p->m_count_parallel_transactions) {
         jam();
         release_count_parallel_transactions(apiConnectptr.p);
@@ -29136,12 +29136,16 @@ Dbtc::send_queued_query(Signal *signal, QueueRecord *queue_record) {
                 ((Uint32*)first_section_area)[5] : 0xFFFF ));
 
 #ifdef ERROR_INSERT
-    if (unlikely(ERROR_INSERTED(8160))) {
-      /* RONDB-1152 test: keep the re-sent operation in flight for 5 s. */
+    if (unlikely(ERROR_INSERTED(8160) || ERROR_INSERTED(8319))) {
+      /**
+       * RONDB-1152 test (8160): keep the re-sent operation in flight for
+       * 5 s. RONDB-1124 test (8319): for 1 s.
+       */
       jam();
       SectionHandle handle(this);
       ndbrequire(import(&handle, ptr, num_sections));
-      sendSignalWithDelay(reference(), queue_record->m_gsn, signal, 5000,
+      sendSignalWithDelay(reference(), queue_record->m_gsn, signal,
+                          ERROR_INSERTED(8160) ? 5000 : 1000,
                           signal_length, &handle);
       return;
     }
@@ -30904,6 +30908,21 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
       releaseSections(handle);
       return false;
     }
+    if (unlikely(ERROR_INSERTED(8319)) && TstartFlag == 0 &&
+        handle.m_cnt > 0) {
+      /**
+       * RONDB-1124 test (testNdbApi RateQueueDirtyReadOtherDatabase): every
+       * operation of a started transaction is queued, the one with the
+       * execute flag too, and send_queued_query holds its re-send for 1 s.
+       * The operation that started the transaction is not queued, so a
+       * dirty read that started it completes while the next one waits.
+       */
+      jam();
+      ndbrequire(queue_tckeyreq(signal, &handle, databaseRecordPtr,
+                                apiConnectptr));
+      releaseSections(handle);
+      return false;
+    }
 #endif
     if (unlikely(databaseRecordPtr.p->m_is_queueing_abort)) {
       jam();
@@ -31085,6 +31104,43 @@ void Dbtc::release_api_ref(Signal *signal,
   if (api_ref_count == 0) {
     check_drop_db_conf(signal, dbPtr);
   }
+}
+
+/**
+ * release_api_ref for an operation that completes the transaction's
+ * outstanding LQH operations: a dirty read (releaseDirtyRead), a dirty
+ * write or a commit without LQH operations. lqhkeyreqrec does not count a
+ * request that waits in the rate queue or that the queue handler has
+ * re-sent (m_num_queued_outstanding), so such a request can still be
+ * pending. It was queued under m_queuedDatabasePtrI, and the queue handler
+ * counted its re-send in that database's m_outstanding_queries. The
+ * re-sent request finds that database again only through
+ * m_queuedDatabasePtrI (check_tckey_queueing), and an abort releases the
+ * queued requests through it (release_queue_record_tc). So the reference
+ * is kept while such a request is pending. Before, a re-sent request of a
+ * transaction whose dirty read had released it was taken to its own
+ * table's database: a null database record when that database has no
+ * rate limit (a data node crash in execTCKEYREQ), and another database's
+ * m_outstanding_queries when it has one. The reference is released later
+ * by the operation that completes the transaction's work then, by the
+ * commit or the abort, or with the record.
+ */
+void Dbtc::release_api_ref_if_unqueued(Signal *signal,
+                                       ApiConnectRecordPtr apiPtr,
+                                       Uint32 line) {
+  if (unlikely(apiPtr.p->m_first_queued_req != nullptr ||
+               apiPtr.p->m_num_queued_outstanding > 0)) {
+    jam();
+    DEB_RATE_QUEUE_DROP(("(%u) Keep api_ref, queued: %p, outstanding: %u"
+                         ", LINE: %u, ApiPtr: %u",
+                         instance(),
+                         apiPtr.p->m_first_queued_req,
+                         apiPtr.p->m_num_queued_outstanding,
+                         line,
+                         apiPtr.i));
+    return;
+  }
+  release_api_ref(signal, apiPtr, line);
 }
 
 void Dbtc::debug_db_no_queue(DatabaseRecordPtr databaseRecordPtr,
