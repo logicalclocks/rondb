@@ -853,9 +853,11 @@ namespace label and <code>RonDbManagementClient</code> predate the design
     is NULL or equal to this cluster&rsquo;s name. Where one project is listed by both a
     named-cluster group and an every-cluster group, the named one wins in that cluster&rsquo;s RonDB
     (7.4): the project&rsquo;s accounts&rsquo; aliases here point at it. A group&rsquo;s <code>USER</code>
-    is desired on a cluster only where the group covers someone there: a named group on
-    its cluster, and an every-cluster group on every cluster where at least one of its
-    accounts is <em>not</em> overridden. A fully overridden every-cluster group therefore
+    is desired on a cluster unless a named group has taken everyone it covers there: a
+    named group on its cluster, and an every-cluster group on every cluster where at
+    least one of its accounts is <em>not</em> overridden, or whose projects have no
+    members yet, since an empty group is a reservation for the members to come and keeps
+    its budget (section 11). A fully overridden every-cluster group therefore
     has no <code>USER</code> on that cluster and its budget is not allocated there, which
     is what makes the override idiom save capacity, since a <code>USER</code> holds its
     budget while idle (section 14); a partially overridden one keeps its
@@ -929,14 +931,20 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
     deleted) becomes <code>USER DROP</code> plus <code>USER ALIAS DROP</code> for every
     alias targeting it; an account
     no longer covered loses its alias; an account that moved between groups gets
-    <code>USER ALIAS DROP</code> then <code>SET</code> (13.3). A move, or the
-    replacement of an operator&rsquo;s alias (below), is withheld while the destination
-    group is <em>refused</em> on that cluster (a wrong-kind name collision, the sum rule
-    of section 11 or the oversubscription freeze of step 4), unless the old target
-    <code>USER</code> is itself being dropped, which needs the alias gone first (13.3):
-    the account keeps the alias it has and stays metered where it is, and its old group
-    shows <em>partial</em> with a note naming the reason, so a refused group never
-    removes metering an account already has. The diff is per name, and
+    <code>USER ALIAS DROP</code> then <code>SET</code> (13.3). A group that is
+    <em>refused</em> on a cluster (a wrong-kind name collision, the sum rule of section
+    11 or the oversubscription freeze of step 4) never removes metering an account
+    already has. A refused group naming the cluster is narrowed to what it holds there,
+    the accounts aliased to its existing <code>USER</code> and none without one, and the
+    coverage of step 2 is recomputed with it so narrowed: the every-cluster group
+    listing the project takes the other accounts, and gets its <code>USER</code> back
+    where a full override had released it, so a refused override costs those accounts
+    the old limit, not the metering. A refused every-cluster group has no group behind
+    it, so a move to it, or the replacement of an operator&rsquo;s alias (below) for it,
+    is withheld, unless the old target <code>USER</code> is itself being dropped, which
+    needs the alias gone first (13.3): the account keeps the alias it has and stays
+    metered where it is, and its old group shows <em>partial</em> with a note naming the
+    reason. The diff is per name, and
     nothing is dropped to be re-added: editing a Who list from {Backfill, Sales} to
     {Backfill, Marketing} sends one <code>USER ALIAS DROP Sales_sam00035</code> and two
     <code>USER ALIAS SET &hellip; --target=backfill_rl</code>, for
@@ -1113,7 +1121,7 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
     <tr><td>A Who row names one project; a group lists at least one project, and the same project at most once, so an edit that removes every Who row is refused (Delete group removes a group).</td><td>A group with no project. Rejected.<br><br>A group listing project 15 twice. Rejected.</td></tr>
     <tr><td>No ties: two groups with the same cluster scope may not list the same project. A project is in at most one every-cluster group and, per named cluster, in at most one group naming that cluster. A named-cluster group and an every-cluster group may overlap: the named one wins on its cluster (7.4).</td><td>Group X: {project 15}, every cluster. Group Y: {project 11, project 15}, every cluster. Project 15 is in both. Rejected.<br><br>Group X: {project 13}, every cluster, 20%. Group Z: {project 13}, cluster M, 30%. Allowed: on M the members charge Z, elsewhere X.</td></tr>
     <tr><td>Budget between 0.01 and the configured cap of every targeted cluster (section 14, default 50%), with at most two decimals, as the table stores it. Zero is refused: RonDB reads a rate of 0 as <em>unlimited</em> (section 14), the opposite of what a zero budget would mean. RonDB will not accept one entry above its cap.</td><td>A group at 60% on a cluster with the default cap. Rejected.<br><br>A group at 0%. Rejected: 0 would run unlimited.</td></tr>
-    <tr><td>On every cluster, a save is refused when the budget sum it leaves exceeds both that cluster&rsquo;s configured cap (section 14, default 50%) and the sum before the save, the kernel&rsquo;s own test (section 14), counting exactly the groups whose <code>USER</code> is desired there (section 10 step 2): a named group on its cluster, and an every-cluster group on every cluster where at least one of its accounts is not overridden. A full override (7.4) counts only the named group there; a partial override counts both, because the overridden group&rsquo;s <code>USER</code> must still exist for its uncovered members, and a <code>USER</code> holds its budget while idle. Enforced on save against each cluster whose cap is readable; a cluster whose cap cannot be read does not block the save and is not guessed at, since save validity must not depend on connectivity (section 16 item 1): the group stays <em>pending</em> there as it already would, and the installer re-checks the sum against the real cap before issuing (section 10), recording <em>refused</em> naming the sum rule when it does not fit. So a save Hopsworks accepts either fits each cluster it could see or lowers a sum that was already past the cap (after a lowered cap or a restart onto fewer threads), and every configuration that fits can, under the single cap of section 14, always be reinstalled from scratch.</td><td>Groups at 30% and 25%, both on every cluster, caps at the default. The second save is rejected: 55% on each cluster.<br><br>The three example groups (27%) on a cluster whose cap was lowered to 20%: lowering <code>recommender2_rl</code> from 5% to 3% is accepted (25%, down from 27%); raising any budget is rejected.</td></tr>
+    <tr><td>On every cluster, a save is refused when the budget sum it leaves exceeds both that cluster&rsquo;s configured cap (section 14, default 50%) and the sum before the save, the kernel&rsquo;s own test (section 14), counting exactly the groups whose <code>USER</code> is desired there (section 10 step 2): a named group on its cluster, and an every-cluster group on every cluster where at least one of its accounts is not overridden, or whose projects have no members yet, since an empty group is a reservation and keeps its <code>USER</code>. A full override (7.4) counts only the named group there; a partial override counts both, because the overridden group&rsquo;s <code>USER</code> must still exist for its uncovered members, and a <code>USER</code> holds its budget while idle. Enforced on save against each cluster whose cap is readable; a cluster whose cap cannot be read does not block the save and is not guessed at, since save validity must not depend on connectivity (section 16 item 1): the group stays <em>pending</em> there as it already would, and the installer re-checks the sum against the real cap before issuing (section 10), recording <em>refused</em> naming the sum rule when it does not fit. So a save Hopsworks accepts either fits each cluster it could see or lowers a sum that was already past the cap (after a lowered cap or a restart onto fewer threads), and every configuration that fits can, under the single cap of section 14, always be reinstalled from scratch.</td><td>Groups at 30% and 25%, both on every cluster, caps at the default. The second save is rejected: 55% on each cluster.<br><br>The three example groups (27%) on a cluster whose cap was lowered to 20%: lowering <code>recommender2_rl</code> from 5% to 3% is accepted (25%, down from 27%); raising any budget is rejected.</td></tr>
     <tr><td>The group name may not equal any account name the group would alias: the <code>USER</code> and that member&rsquo;s alias would collide in RonDB&rsquo;s shared namespace and leave the group permanently <em>partial</em>. Checked over the group&rsquo;s own expansion at save; a collision a later join creates surfaces as <em>partial</em> with the error.</td><td>Group <code>Recommender_alice4f2</code> covering Alice. Rejected: her alias would need the group&rsquo;s own name.</td></tr>
     <tr><td>The cluster name, when set, should name a discovered cluster; a free-text name is accepted but flagged.</td><td>A group on cluster <code>mrketing</code> (typo). Saved, shown <em>pending</em> with a &ldquo;no such cluster&rdquo; hint.</td></tr>
   </tbody>
