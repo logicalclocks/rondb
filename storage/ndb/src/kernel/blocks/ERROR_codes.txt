@@ -44,7 +44,9 @@ Next DBACC 3007
       even if it fits in its current page
 4045: As 4044, and fail the allocation of the new disk row with 1601
       (after the in-memory varpart may have grown)
-Next DBTUP 4046 (4060-4064 reserved for the RONDB-1056 JIT above)
+4047: Delay the disk page of a key read by 800 ms in load_diskpage
+      (4046 is taken in 26.10)
+Next DBTUP 4048 (4060-4064 reserved for the RONDB-1056 JIT above)
 5121: CRASH_INSERTION in execJOIN_AGG_SETUP_REQ (DblqhProxy) — node failure testing
 5122: CRASH_INSERTION in execJOIN_AGG_COMPLETE_REQ (Dblqh) — node failure testing
 5123: CRASH_INSERTION in execJOIN_AGG_RELEASE_REQ (DblqhProxy) — node failure testing

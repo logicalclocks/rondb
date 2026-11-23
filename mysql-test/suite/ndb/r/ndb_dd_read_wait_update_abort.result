@@ -1,0 +1,37 @@
+CREATE LOGFILE GROUP `DEFAULT-LG`
+ADD UNDOFILE 'undofile0.dat'
+INITIAL_SIZE 16M
+UNDO_BUFFER_SIZE = 1M
+ENGINE NDB;
+ALTER LOGFILE GROUP `DEFAULT-LG`
+ADD UNDOFILE 'undofile1.dat'
+INITIAL_SIZE = 4M
+ENGINE NDB;
+ALTER LOGFILE GROUP `DEFAULT-LG`
+ADD UNDOFILE 'undofile2.dat'
+INITIAL_SIZE = 4M
+ENGINE NDB;
+CREATE TABLESPACE `DEFAULT-TS`
+ADD DATAFILE 'datafile0.dat'
+USE LOGFILE GROUP `DEFAULT-LG`
+INITIAL_SIZE 12M
+ENGINE NDB;
+ALTER TABLESPACE `DEFAULT-TS`
+ADD DATAFILE 'datafile1.dat'
+INITIAL_SIZE = 12M;
+"[shutting down mysqld 1]"
+"[shutting down mysqld 2]"
+# Committed reads of a prepared update that moved the disk row
+# Reads waiting for the disk page, update rolled back meanwhile
+"[dropping NDBT test table]"
+"[starting mysqld 1]"
+# restart
+"[starting mysqld 2]"
+# restart
+ALTER TABLESPACE `DEFAULT-TS`
+DROP DATAFILE 'datafile0.dat';
+ALTER TABLESPACE `DEFAULT-TS`
+DROP DATAFILE 'datafile1.dat';
+DROP TABLESPACE `DEFAULT-TS`;
+DROP LOGFILE GROUP `DEFAULT-LG`
+ENGINE NDB;

@@ -1571,6 +1571,15 @@ Dbtup::load_diskpage(Signal* signal,
       const NDB_TICKS now = NdbTick_getCurrentTicks();
       req.m_delay_until_time = NdbTick_AddMilliseconds(now, (Uint64)3000);
     }
+    if (ERROR_INSERTED(4047) && op_type == ZREAD) {
+      /**
+       * A read has to wait 800 ms for its disk page. This is below the
+       * default TransactionDeadlockDetectionTimeout.
+       */
+      flags |= Page_cache_client::DELAY_REQ;
+      const NDB_TICKS now = NdbTick_getCurrentTicks();
+      req.m_delay_until_time = NdbTick_AddMilliseconds(now, (Uint64)800);
+    }
     if (ERROR_INSERTED(4035) && (rand() % 13) == 0) {
       // Disk access have to randomly wait max 16ms for a diskpage
       Uint64 delay = (Uint64)(rand() % 16) + 1;
