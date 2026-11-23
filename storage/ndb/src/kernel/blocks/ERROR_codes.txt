@@ -788,10 +788,11 @@ DBTC node failure take over testing (RonDB)
       also during a scan. ndb_scan_tc_hbrep keeps a scan that finds no rows
       (5112) running past the API timeout.
 
-8319: Queue every TCKEYREQ and TCINDXREQ of a started transaction in the
-      rate queue, also the one with the execute flag (not the one that
-      starts the transaction), and hold each re-send from the queue for
-      1 s. testNdbApi RateQueueDirtyReadOtherDatabase
+8319: Queue every long TCKEYREQ and TCINDXREQ in the rate queue of a
+      database with a rate limit, also the one that starts the
+      transaction and the one with the execute flag, and hold each
+      re-send from the queue for 1 s. testNdbApi
+      RateQueueDirtyReadOtherDatabase
       (ndb_quota.ndb_rate_queue_other_database). 8318 is taken on
       26.02-main.
 

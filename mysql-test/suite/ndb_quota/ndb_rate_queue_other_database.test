@@ -8,8 +8,10 @@
 # database: a data node crash when that database has no rate limit, and
 # the wrong database's count of re-sent requests when it has one. The NDB
 # API test reads the test table (TEST_DB, with a rate limit) and then a
-# table of another database in one batch; error insert 8319 queues the
-# second read and re-sends it after 1 s, after the first one completed.
+# table of another database in one batch. Error insert 8319 queues both
+# reads under TEST_DB and holds each re-send for 1 s; the first read is
+# released as soon as it is sent to DBLQH, while the second is still on
+# its way back from the queue.
 CREATE DATABASE TEST_DB;
 CREATE DATABASE rl_noquota;
 CREATE DATABASE rl_quota2;

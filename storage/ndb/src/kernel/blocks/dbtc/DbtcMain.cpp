@@ -30946,14 +30946,16 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
       releaseSections(handle);
       return false;
     }
-    if (unlikely(ERROR_INSERTED(8319)) && TstartFlag == 0 &&
-        handle.m_cnt > 0) {
+    if (unlikely(ERROR_INSERTED(8319)) && handle.m_cnt > 0) {
       /**
        * RONDB-1124 test (testNdbApi RateQueueDirtyReadOtherDatabase): every
-       * operation of a started transaction is queued, the one with the
-       * execute flag too, and send_queued_query holds its re-send for 1 s.
-       * The operation that started the transaction is not queued, so a
-       * dirty read that started it completes while the next one waits.
+       * operation is queued, the one that starts the transaction and the
+       * one with the execute flag too, and send_queued_query holds each
+       * re-send for 1 s. The re-sends come back in queue order. A dirty
+       * read is released as soon as its LQHKEYREQ is sent
+       * (packLqhkeyreq040Lab), so a re-sent first dirty read completes the
+       * transaction's LQH operations while the next operation is still
+       * on its way back from the queue.
        */
       jam();
       ndbrequire(queue_tckeyreq(signal, &handle, databaseRecordPtr,

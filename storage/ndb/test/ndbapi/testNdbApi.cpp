@@ -7769,9 +7769,9 @@ int runRateLimitUserPerTransaction(NDBT_Context *ctx, NDBT_Step *step) {
 }
 
 int runSetRateQueueHoldErrorInsert(NDBT_Context *ctx, NDBT_Step *step) {
-  // Error insert 8319 in DBTC: every operation of a started transaction in
-  // a rate-limited database, except the one that started it, is queued in
-  // the rate queue, and its re-send is held for 1 s.
+  // Error insert 8319 in DBTC: every operation of a transaction that a
+  // database with a rate limit accounts is queued in its rate queue, and
+  // each re-send is held for 1 s.
   NdbRestarter restarter;
   CHECK(restarter.insertErrorInAllNodes(8319) == 0);
   return NDBT_OK;
@@ -7802,10 +7802,12 @@ int runRateQueueDirtyReadOtherDatabase(NDBT_Context *ctx, NDBT_Step *step) {
   // database record when that database has no rate limit (DBTC crashed),
   // and another database's count of re-sent requests when it has one (its
   // ndbrequire failed, or the first database's count stayed up). With
-  // error insert 8319 the first operation, a committed read of the test
-  // table, whose database has a rate limit, runs at once. The second, a
-  // committed read of a table in another database, is queued under the
-  // first database and re-sent after 1 s, after the first one completed.
+  // error insert 8319 both operations of the batch are queued under the
+  // test table's database, which has a rate limit: a committed read of the
+  // test table, then one of a table in another database. Their re-sends
+  // are held for 1 s and come back in order. DBTC releases a dirty read as
+  // soon as it sends it to DBLQH, so the first one completes the
+  // transaction's LQH operations while the second is still on its way.
   // The MTR wrapper sets the rate limit on the test database and creates
   // rl_noquota.t, in a database without a rate limit, and rl_quota2.t, in
   // a database with one.
@@ -7839,25 +7841,9 @@ int runRateQueueDirtyReadOtherDatabase(NDBT_Context *ctx, NDBT_Step *step) {
         NdbTick_Elapsed(start, NdbTick_getCurrentTicks()).milliSec();
     g_info << db << ": the batch completed after " << ms << " ms" << endl;
     CHECK(value->int32_value() == 10);
-    // The re-send is held for 1 s. A faster reply means that the second
-    // read was not queued, and nothing was tested.
+    // Each re-send is held for 1 s. A faster reply means that the reads
+    // were not queued, and nothing was tested.
     CHECK(ms >= 1000);
-    ndb->closeTransaction(trans);
-
-    // The re-sent read was counted off the database it was queued under.
-    // Had that count stayed up, the database would queue every new request
-    // (m_outstanding_queries > 0), also this read, which starts its
-    // transaction and so is not queued by 8319: it would come back after
-    // the 1 s that 8319 holds every re-send.
-    trans = ndb->startTransaction();
-    CHECKE(trans != nullptr, (*ndb));
-    const NDB_TICKS start2 = NdbTick_getCurrentTicks();
-    CHECKE(readRowZeroBatch(trans, rowRec, row.get(), true) == 0, (*trans));
-    const Uint64 ms2 =
-        NdbTick_Elapsed(start2, NdbTick_getCurrentTicks()).milliSec();
-    g_info << db << ": a single read completed after " << ms2 << " ms"
-           << endl;
-    CHECK(ms2 < 1000);
     ndb->closeTransaction(trans);
   }
   return NDBT_OK;
