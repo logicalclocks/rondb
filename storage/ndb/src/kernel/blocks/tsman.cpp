@@ -53,6 +53,7 @@ static bool g_use_old_format = false;
 // #define DEBUG_TSMAN 1
 #define DEBUG_TSMAN_NUM_EXTENTS 1
 #define DEBUG_TSMAN_RESTART 1
+// #define DEBUG_TSMAN_RESTART_EXTRA 1
 #define DEBUG_TSMAN_IO 1
 #endif
 
@@ -86,6 +87,18 @@ static bool g_use_old_format = false;
 #else
 #define DEB_TSMAN_RESTART(arglist) \
   do {                             \
+  } while (0)
+#endif
+
+/* One line per free extent and per UNDO record applied at restart */
+#ifdef DEBUG_TSMAN_RESTART_EXTRA
+#define DEB_TSMAN_RESTART_EXTRA(arglist) \
+  do {                                   \
+    g_eventLogger->info arglist;         \
+  } while (0)
+#else
+#define DEB_TSMAN_RESTART_EXTRA(arglist) \
+  do {                                   \
   } while (0)
 #endif
 
@@ -1679,8 +1692,8 @@ void Tsman::scan_extent_headers(Signal *signal, Ptr<Datafile> ptr) {
         jam();
         /* This extent was free still, so no need to do anything. */
         D("extent free" << V(j));
-        DEB_TSMAN_RESTART(("extent(%u,%u) free", ptr.p->m_file_no,
-                            ((page_no * per_page) + page_extent_no)));
+        DEB_TSMAN_RESTART_EXTRA(("extent(%u,%u) free", ptr.p->m_file_no,
+                                 ((page_no * per_page) + page_extent_no)));
         (*ext_table_id) = RNIL;
         (*ext_next_free_extent) = firstFree;
         firstFree = page_no * per_page + page_extent_no;
@@ -2602,11 +2615,11 @@ int Tsman::restart_undo_page_free_bits(Signal *signal, Uint32 tableId,
       ndbout << "tsman: apply " << *key << " " << (src & COMMITTED_MASK)
              << " -> " << bits << endl;
     }
-#ifdef DEBUG_TSMAN_RESTART
+#ifdef DEBUG_TSMAN_RESTART_EXTRA
     Uint32 per_page = file_ptr.p->m_online.m_extent_headers_per_extent_page;
     Uint32 extent_page_no = val.m_extent_page_no;
     Uint32 extent_no = (per_page * extent_page_no) + val.m_extent_no;
-    DEB_TSMAN_RESTART(
+    DEB_TSMAN_RESTART_EXTRA(
         ("page(%u,%u) in tab(%u,%u):%u, bits = %u, extent: %u"
          ", src: %u, page_no_in_extent: %u",
          key->m_file_no, key->m_page_no, tableId, fragId, create_table_version,

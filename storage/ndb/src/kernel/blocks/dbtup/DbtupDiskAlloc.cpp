@@ -37,11 +37,12 @@
 //#define DEBUG_UNDO_SPLIT 1
 //#define DEBUG_LCP 1
 #define DEBUG_PGMAN_IO 1
-#define DEBUG_PGMAN 1
-#define DEBUG_DISK 1
+//#define DEBUG_PGMAN 1
+//#define DEBUG_DISK 1
 //#define DEBUG_DISK_DIRTY_HEADER 1
 #define DEBUG_EXTENT_BITS 1
 //#define DEBUG_EXTENT_BITS_MOVE 1
+//#define DEBUG_EXTENT_BITS_UNDO 1
 //#define DEBUG_EXTENT_BITS_HASH 1
 //#define DEBUG_FREE_EXTENT 1
 //#define DEBUG_UNDO 1
@@ -132,6 +133,18 @@
   } while (0)
 #else
 #define DEB_EXTENT_BITS_MOVE(arglist) \
+  do {                                \
+  } while (0)
+#endif
+
+/* One line per UNDO record applied to the page free bits at restart */
+#ifdef DEBUG_EXTENT_BITS_UNDO
+#define DEB_EXTENT_BITS_UNDO(arglist) \
+  do {                                \
+    g_eventLogger->info arglist;      \
+  } while (0)
+#else
+#define DEB_EXTENT_BITS_UNDO(arglist) \
   do {                                \
   } while (0)
 #endif
@@ -3546,7 +3559,7 @@ void Dbtup::disk_restart_undo_page_bits(Signal *signal, Apply_undo *undo,
                           c_lqh->getCreateSchemaVersion(fragPtrP->fragTableId),
 			  fragPtrP->m_tablespace_id);
 
-  DEB_EXTENT_BITS(("(%u)tab(%u,%u), page(%u,%u):%u new_idx: %u,"
+  DEB_EXTENT_BITS_UNDO(("(%u)tab(%u,%u), page(%u,%u):%u new_idx: %u,"
                    " free_space: %u, page_tab(%u,%u).%u",
                   instance(),
                   fragPtrP->fragTableId,
