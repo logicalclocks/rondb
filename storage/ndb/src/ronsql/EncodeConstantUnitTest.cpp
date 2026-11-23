@@ -196,7 +196,10 @@ check_bytes(int line, ConditionalExpression ce,
 
 /*
  * The literal is refused with a permanent error of class cls: its value
- * lies outside the column's domain.
+ * lies outside the column's domain, the type cannot take it, or the
+ * column's type is not compared.  T-18: none of these is a
+ * RonSQLMaybeStaleSchema, which would make the statement reload every
+ * table and index it holds only to find the schema unchanged.
  */
 static void
 check_permanent(int line, ConditionalExpression ce,
@@ -228,35 +231,9 @@ check_permanent(int line, ConditionalExpression ce,
 #define CHECK_PERMANENT(ce, col, cls) \
   check_permanent(__LINE__, (ce), (col), (cls))
 
-/*
- * The literal is refused with RonSQLMaybeStaleSchema: the statement
- * reloads the schema and fails if it did not change.
- */
-static void
-check_stale(int line, ConditionalExpression ce,
-            const NdbDictionary::Column& col)
-{
-  try
-  {
-    encode(ce, col);
-    fprintf(stderr, "FAIL line %d: no error\n", line);
-    g_failures++;
-  }
-  catch (const RonSQLMaybeStaleSchema&)
-  {
-  }
-  catch (const std::exception& e)
-  {
-    fprintf(stderr, "FAIL line %d: not RonSQLMaybeStaleSchema: %s\n", line,
-            e.what());
-    g_failures++;
-  }
-}
-
-#define CHECK_STALE(ce, col) check_stale(__LINE__, (ce), (col))
-
 typedef NdbDictionary::Column C;
 static const RonSQLErrorClass kSemantic = RonSQLErrorClass::SEMANTIC;
+static const RonSQLErrorClass kUnsupported = RonSQLErrorClass::UNSUPPORTED;
 
 /*
  * Integers: the low bytes of the value; a literal outside the type's
@@ -308,10 +285,10 @@ test_integers()
   CHECK_PERMANENT(float_ce(18446744073709551616.0, "18446744073709551616"),
                   ubig, kSemantic);
   CHECK_PERMANENT(int_ce(-1), ubig, kSemantic);
-  // Anything but an integer is refused (possibly a stale schema).
-  CHECK_STALE(float_ce(1.5, "1.5"), ubig);
-  CHECK_STALE(float_ce(2.5, NULL), i);
-  CHECK_STALE(string_ce("1"), i);
+  // Anything but an integer is refused.
+  CHECK_PERMANENT(float_ce(1.5, "1.5"), ubig, kSemantic);
+  CHECK_PERMANENT(float_ce(2.5, NULL), i, kSemantic);
+  CHECK_PERMANENT(string_ce("1"), i, kSemantic);
 }
 
 // FLOAT and DOUBLE: the value in the column's type.
@@ -328,7 +305,7 @@ test_floats()
   CHECK_VALUE(int_ce(-7), d, minus_seven);
   const double tenth_d = 0.1;
   CHECK_VALUE(float_ce(0.1, "0.1"), d, tenth_d);
-  CHECK_STALE(string_ce("0.1"), d);
+  CHECK_PERMANENT(string_ce("0.1"), d, kSemantic);
 }
 
 // DECIMAL: MySQL's binary format at the column's precision and scale.
@@ -346,14 +323,14 @@ test_decimals()
   // A number without text is written at the column's scale.
   CHECK_BYTES(float_ce(2.5, NULL), dec, "\x80\x00\x00\x02\x32");
   // More fractional bytes or integer digits than the column has.
-  CHECK_STALE(float_ce(1.005, "1.005"), dec);
-  CHECK_STALE(float_ce(123456789.5, "123456789.5"), dec);
-  CHECK_STALE(string_ce("5"), dec);
+  CHECK_PERMANENT(float_ce(1.005, "1.005"), dec, kSemantic);
+  CHECK_PERMANENT(float_ce(123456789.5, "123456789.5"), dec, kSemantic);
+  CHECK_PERMANENT(string_ce("5"), dec, kSemantic);
   C dec5 = column("dec5", C::Decimal);
   dec5.setPrecision(5);
   dec5.setScale(2);
   CHECK_BYTES(int_ce(999), dec5, "\x83\xe7\x00");
-  CHECK_STALE(int_ce(100000), dec5);
+  CHECK_PERMANENT(int_ce(100000), dec5, kSemantic);
   C udec = column("udec", C::Decimalunsigned);
   udec.setPrecision(10);
   udec.setScale(2);
@@ -374,11 +351,11 @@ test_strings()
   CHECK_BYTES(string_ce(""), ch, "     ");
   CHECK_BYTES(string_ce("\xc3\xa9"), ch, "\xe9    ");
   CHECK_BYTES(string_ce("\xe2\x82\xac"), ch, "\x80    ");
-  CHECK_STALE(string_ce("abcdef"), ch);
+  CHECK_PERMANENT(string_ce("abcdef"), ch, kSemantic);
   // A character latin1 cannot hold.
   CHECK_PERMANENT(string_ce("\xe3\x81\x82"), ch, kSemantic);
-  CHECK_STALE(int_ce(1), ch);
-  CHECK_STALE(float_ce(1.5, "1.5"), ch);
+  CHECK_PERMANENT(int_ce(1), ch, kSemantic);
+  CHECK_PERMANENT(float_ce(1.5, "1.5"), ch, kSemantic);
 
   C vc = column("vc", C::Varchar);
   vc.setLength(10);
@@ -387,7 +364,7 @@ test_strings()
   CHECK_BYTES(string_ce(""), vc, "\x00");
   CHECK_BYTES(string_ce("\xc3\xa9"), vc, "\x01\xe9");
   const std::string too_long(256, 'x');
-  CHECK_STALE(string_ce(too_long), vc);
+  CHECK_PERMANENT(string_ce(too_long), vc, kSemantic);
 
   C lvc = column("lvc", C::Longvarchar);
   lvc.setLength(1000);
@@ -415,16 +392,16 @@ test_temporals()
   date_add.mysql_time.time_type = MYSQL_TIMESTAMP_DATE;
   CHECK_BYTES(date_add, date, "\x73\xd5\x0f");
   // The time part must be absent for a DATE and present otherwise.
-  CHECK_STALE(string_ce("2026-11-19 10:00:00"), date);
-  CHECK_STALE(string_ce("not a date"), date);
-  CHECK_STALE(int_ce(20261119), date);
+  CHECK_PERMANENT(string_ce("2026-11-19 10:00:00"), date, kSemantic);
+  CHECK_PERMANENT(string_ce("not a date"), date, kSemantic);
+  CHECK_PERMANENT(int_ce(20261119), date, kSemantic);
 
   // DATETIME2: 5 bytes, offset 0x8000000000, then (precision + 1) / 2
   // bytes of fraction.
   C dt0 = column("dt0", C::Datetime2);
   dt0.setPrecision(0);
   CHECK_BYTES(string_ce("2026-11-19 12:34:56"), dt0, "\x99\xbb\x66\xc8\xb8");
-  CHECK_STALE(string_ce("2026-11-19"), dt0);
+  CHECK_PERMANENT(string_ce("2026-11-19"), dt0, kSemantic);
   C dt3 = column("dt3", C::Datetime2);
   dt3.setPrecision(3);
   CHECK_BYTES(string_ce("2026-11-19 12:34:56.789"), dt3,
@@ -439,8 +416,8 @@ test_temporals()
   ts0.setPrecision(0);
   CHECK_BYTES(string_ce("2023-11-14 22:13:20"), ts0, "\x65\x53\xf1\x00");
   CHECK_BYTES(string_ce("2038-01-19 03:14:07"), ts0, "\x7f\xff\xff\xff");
-  CHECK_STALE(string_ce("1970-01-01 00:00:00"), ts0);
-  CHECK_STALE(string_ce("2038-01-19 03:14:08"), ts0);
+  CHECK_PERMANENT(string_ce("1970-01-01 00:00:00"), ts0, kSemantic);
+  CHECK_PERMANENT(string_ce("2038-01-19 03:14:08"), ts0, kSemantic);
   C ts2 = column("ts2", C::Timestamp2);
   ts2.setPrecision(2);
   CHECK_BYTES(string_ce("2023-11-14 22:13:20.12"), ts2,
@@ -451,10 +428,10 @@ test_temporals()
 static void
 test_unsupported_types()
 {
-  CHECK_STALE(int_ce(2026), column("y", C::Year));
-  CHECK_STALE(string_ce("12:00:00"), column("t", C::Time2));
-  CHECK_STALE(string_ce("ab"), column("bin", C::Binary));
-  CHECK_STALE(int_ce(1), column("bit", C::Bit));
+  CHECK_PERMANENT(int_ce(2026), column("y", C::Year), kUnsupported);
+  CHECK_PERMANENT(string_ce("12:00:00"), column("t", C::Time2), kUnsupported);
+  CHECK_PERMANENT(string_ce("ab"), column("bin", C::Binary), kUnsupported);
+  CHECK_PERMANENT(int_ce(1), column("bit", C::Bit), kUnsupported);
 }
 
 int
