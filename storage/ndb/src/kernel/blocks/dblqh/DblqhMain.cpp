@@ -5090,6 +5090,33 @@ void Dblqh::set_scan_ttl_now_sec(ScanRecord *scanPtr, Uint32 table_id) {
   }
 }
 
+/**
+ * The API pairs the KEYINFO20 and the TRANSID_AI of a scan row by their
+ * order of arrival in each receiver: key n belongs to row n. While a node
+ * has no connection to the API node, sendKeyinfo20() and
+ * Dbtup::sendReadAttrinfo() route these signals via TC (KEYINFO20_R and
+ * TRANSID_AI_R), else they send them directly. If the connection comes up
+ * during a batch, the first rows of the batch take the longer way via TC
+ * and the rest the direct way, and the two ways can mix keys and rows in
+ * different orders. updateCurrentTuple(), lockCurrentTuple() and
+ * deleteCurrentTuple() of row n then act on the row of key n with the
+ * values of another row, and an ordered scan returns rows out of order.
+ * A node restart opens that window: the node is primary for its fragments
+ * after the copy phase, but API nodes connect to it only at the end of the
+ * restart.
+ *
+ * So decide at each batch start, at the same points as
+ * set_scan_ttl_now_sec(), and keep routing for the whole batch. The
+ * receiver of the next batch has received all rows of this batch before it
+ * asks for it, and a prefetched batch of a parallel ordered scan goes to
+ * another receiver. A connection that goes down during a batch still
+ * switches its remaining rows to routing, as before.
+ */
+void Dblqh::set_scan_api_route(ScanRecord *scanPtr) {
+  const Uint32 nodeId = refToNode(scanPtr->scanApiBlockref);
+  scanPtr->m_route_api_signals = !getNodeInfo(nodeId).m_connected;
+}
+
 bool Dblqh::is_unique_hash_index_table(Uint32 table_id) {
   TablerecPtr t_tabptr;
   t_tabptr.i = table_id;
@@ -19456,6 +19483,7 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
   // batch after it resamples at its own start in sendScanFragConf.
   if (scanPtr->m_continous_scan_state == ScanRecord::CONTINOUS_SCAN_IDLE) {
     set_scan_ttl_now_sec(scanPtr, tcConnectptr.p->tableref);
+    set_scan_api_route(scanPtr);
   }
 
   /* --------------------------------------------------------------------
@@ -28544,6 +28572,7 @@ void Dblqh::restart_queued_scan(Signal *signal, Uint32 scanPtrI) {
   // resample the per-batch "now" so its first batch doesn't evaluate TTL
   // expiry with the clock read back at SCAN_FRAGREQ time (initScanrec).
   set_scan_ttl_now_sec(loc_scanptr.p, m_tc_connect_ptr.p->tableref);
+  set_scan_api_route(loc_scanptr.p);
   // Hiding read only version in outer scope
   continueAfterReceivingAllAiLab(signal, m_tc_connect_ptr);
   jamDebug();
@@ -28637,6 +28666,7 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
   scanPtr->tupScan = tupScan;
   scanPtr->scanApiBlockref = resultRef;
   scanPtr->scanTcrec = tcPtrI;
+  set_scan_api_route(scanPtr);
   TcConnectionrec *const regTcPtr = tcConnectptr.p;
   const bool accScan = (rangeScan == 0) && (tupScan == 0);
 
@@ -29280,6 +29310,7 @@ void Dblqh::init_release_scanrec(Signal *signal, ScanRecord *scanPtr) {
   // including the NR copy-fragment scan, which is set up directly and bypasses
   // initScanrec (it runs with m_ttl_ignore=1, so checkTTL never reads this).
   scanPtr->m_ttl_now_sec = 0;
+  scanPtr->m_route_api_signals = 0;
   /*
    * PA related
    * reset aggregation variables
@@ -29353,7 +29384,14 @@ Uint32 Dblqh::sendKeyinfo20(Signal *signal, ScanRecord *scanP,
   const BlockReference ref = scanP->scanApiBlockref;
   const Uint32 scanOp = scanP->m_curr_batch_size_rows;
   Uint32 nodeId = refToNode(ref);
-  const bool connectedToNode = getNodeInfo(nodeId).m_connected;
+  /**
+   * Route the whole batch if it started routed, see set_scan_api_route().
+   * Dbtup::sendReadAttrinfo() does the same for TRANSID_AI.
+   */
+  const bool connectedToNode =
+      getNodeInfo(nodeId).m_connected &&
+      !(scanP->m_route_api_signals &&
+        refToMain(tcConP->clientBlockref) == DBTC);
 #ifdef NOT_USED
   const Uint32 type = getNodeInfo(nodeId).m_type;
   const bool is_api = (type >= NodeInfo::API && type <= NodeInfo::REP);
@@ -30134,6 +30172,7 @@ void Dblqh::sendScanFragConf(Signal *signal,
     // per-batch "now" so its rows don't reuse the timestamp sampled when
     // the batch just sent to the API began.
     set_scan_ttl_now_sec(scanPtr, regTcPtr->tableref);
+    set_scan_api_route(scanPtr);
 
     DEB_CONT_SCAN(("(%u) LQH SCAN_FRAGCONF sent scanPtrI: %u, "
                    "CONT_SCAN_IDLE -> CONT_SCAN_ACTIVE"
