@@ -230,6 +230,7 @@ All 25 currently-known sites. Use as examples of correctly-categorized violation
 | 4917 | key length exceeds MAX_KEY_SIZE_IN_WORDS | B | Reachable via long-key schema |
 | 15913 | SCAN_TABREQ missing required section 0 | A | Structural |
 | 15970 | invalid apiConnectPtr in SCAN_TABREQ | A | Out-of-bounds pointer |
+| entry of TCKEYREQ, TCINDXREQ, SCAN_TABREQ, SCAN_NEXTREQ (`report_queue_flag_not_internal`) | rate queue re-send mark (passQueue flag; SCAN_NEXTREQ stopScan bit 2) not sent by this DBTC instance (`VT_TC_QUEUE_FLAG_NOT_INTERNAL`, 38) | A | Internal-only flag the NDB API never sets; it skipped the rate limit and an `ndbrequire` on the re-send counts stopped the node. Long TCKEYREQ / TCINDXREQ only: bit 24 of a short one is key length. Test: `ndb_spj.test_tc_queue_flag_q1`..`q5` |
 
 ### RONDIS (separate path — no QMGR signal)
 

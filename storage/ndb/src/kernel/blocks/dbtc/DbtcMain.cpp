@@ -3870,7 +3870,15 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   const UintR TtabMaxIndex = ctabrecFilesize;
   Uint32 Treqinfo = tcKeyReq->requestInfo;
 
-  Uint32 passQueueingFlag = TcKeyReq::getPassQueueingFlag(Treqinfo);
+  /* Bit 24 of a short TCKEYREQ is part of its key length. */
+  Uint32 passQueueingFlag =
+      TcKeyReq::getPassQueueingFlag(Treqinfo) && handle.m_cnt > 0;
+  if (unlikely(passQueueingFlag &&
+               signal->getSendersBlockRef() != reference())) {
+    jam();
+    report_queue_flag_not_internal(signal, handle);
+    return;
+  }
   ttransid_ptr = 6;
   ApiConnectRecordPtr apiConnectptr;
   apiConnectptr.i = TapiIndex;
@@ -17086,6 +17094,11 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     reportMaliciousSignal(signal, senderNodeId, VT_SCANTABREQ_MISSING_SECTION);
     return;
   }
+  if (unlikely(passQueueingFlag && sendersBlockRef != reference())) {
+    jam();
+    report_queue_flag_not_internal(signal, handle);
+    return;
+  }
 
   /**
    * Scan parallelism is determined by the number of receiver ids sent
@@ -19776,7 +19789,9 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
    * "Wrong transid" replies go to the sender).  The restore does not
    * depend on 8316 still being set.
    */
-  if (req->stopScan & 4) {
+  if ((req->stopScan & 4) && signal->getSendersBlockRef() == reference()) {
+    /* Only our own held close: the restore takes the sender from the
+     * signal. */
     jam();
     const Uint32 len = signal->getLength() - 1;
     signal->header.theSendersBlockRef = signal->theData[len];
@@ -19795,6 +19810,12 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
 #endif
 
   SectionHandle handle(this, signal);
+  if (unlikely(sent_from_queue &&
+               signal->getSendersBlockRef() != reference())) {
+    jam();
+    report_queue_flag_not_internal(signal, handle);
+    return;
+  }
   ApiConnectRecordPtr apiConnectptr;
   apiConnectptr.i = req->apiConnectPtr;
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
@@ -24543,9 +24564,21 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
   Uint32 tcIndxRequestInfo = tcIndxReq->requestInfo;
   Uint32 startFlag = tcIndxReq->getStartFlag(tcIndxRequestInfo);
   ApiConnectRecordPtr transPtr;
-  Uint32 passQueueingFlag = TcKeyReq::getPassQueueingFlag(tcIndxRequestInfo);
   bool isLongTcIndxReq = (signal->getNoOfSections() != 0);
   SectionHandle handle(this, signal);
+  /**
+   * Bit 24 of a short TCINDXREQ is part of its key length. Before, the
+   * ndbrequire(!passQueueingFlag) below stopped the data node for a short
+   * TCINDXREQ with such a key length on a released or invalid connection.
+   */
+  Uint32 passQueueingFlag =
+      TcKeyReq::getPassQueueingFlag(tcIndxRequestInfo) && isLongTcIndxReq;
+  if (unlikely(passQueueingFlag &&
+               signal->getSendersBlockRef() != reference())) {
+    jam();
+    report_queue_flag_not_internal(signal, handle);
+    return;
+  }
 
   transPtr.i = TapiIndex;
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(transPtr))) {
@@ -30884,7 +30917,12 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
   Uint32 TstartFlag = TcKeyReq::getStartFlag(Treqinfo);
   Uint32 TexecFlag =
       TcKeyReq::getExecuteFlag(Treqinfo) ? ApiConnectRecord::TF_EXEC_FLAG : 0;
-  Uint32 passQueueingFlag = TcKeyReq::getPassQueueingFlag(Treqinfo);
+  /**
+   * Bit 24 of a short TCKEYREQ or TCINDXREQ is part of its key length.
+   * Read as the flag, it let such a request skip the checks below.
+   */
+  Uint32 passQueueingFlag =
+      TcKeyReq::getPassQueueingFlag(Treqinfo) && handle.m_cnt > 0;
   if (!passQueueingFlag) {
 #ifdef ERROR_INSERT
     if (unlikely(ERROR_INSERTED(8160)) && TstartFlag == 0) {
@@ -31141,6 +31179,29 @@ void Dbtc::release_api_ref_if_unqueued(Signal *signal,
     return;
   }
   release_api_ref(signal, apiPtr, line);
+}
+
+/**
+ * The rate queue handler (send_queued_query) re-sends a queued request to
+ * this DBTC instance with a mark that it was queued: the passQueue flag of
+ * TCKEYREQ, TCINDXREQ and SCAN_TABREQ, and bit 2 of SCAN_NEXTREQ's
+ * stopScan. The mark makes the request skip the rate queue checks and
+ * takes it off the counts that the re-send raised (m_num_queued_outstanding
+ * of the transaction, m_outstanding_queries of the database). No other
+ * sender sets it: from an API it would bypass the rate limit, and a
+ * request that was never queued holds none of those counts, so the
+ * ndbrequire on them failed, or the database record was null, and the data
+ * node stopped. The NDB API never sets the mark, so this is Tier A. Bit 24
+ * of a short TCKEYREQ or TCINDXREQ is part of its key length, so there the
+ * flag exists in a long signal only. Another block of this node never sets
+ * the mark either: that would be a bug here.
+ */
+void Dbtc::report_queue_flag_not_internal(Signal *signal,
+                                          SectionHandle &handle) {
+  const NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
+  ndbrequire(senderNodeId != getOwnNodeId());
+  releaseSections(handle);
+  reportMaliciousSignal(signal, senderNodeId, VT_TC_QUEUE_FLAG_NOT_INTERNAL);
 }
 
 void Dbtc::debug_db_no_queue(DatabaseRecordPtr databaseRecordPtr,

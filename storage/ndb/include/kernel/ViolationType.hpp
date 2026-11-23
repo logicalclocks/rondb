@@ -127,8 +127,15 @@ enum ViolationType : Uint32 {
   VT_JOINAGG_KEYINFO_MALFORMED = 37, // B: join-aggregation KeyInfo block with
                                      //    lengths or counts outside its section
 
-  VT_UNKNOWN = 38,                      // fallback for out-of-range/rolling-upgrade values
-  NUM_VIOLATION_TYPES = 39              // sentinel — keep last
+  // ---- DBTC rate queue (see DbtcMain.cpp report_queue_flag_not_internal) ----
+  VT_TC_QUEUE_FLAG_NOT_INTERNAL = 38, // A: TCKEYREQ, TCINDXREQ or SCAN_TABREQ
+                                      //    with the passQueue flag, or
+                                      //    SCAN_NEXTREQ with the sent-from-queue
+                                      //    bit, not sent by the DBTC instance
+                                      //    itself (its rate queue re-send)
+
+  VT_UNKNOWN = 39,                      // fallback for out-of-range/rolling-upgrade values
+  NUM_VIOLATION_TYPES = 40              // sentinel — keep last
 };
 
 struct ViolationInfo {
@@ -197,6 +204,7 @@ inline constexpr ViolationInfo g_violation_info[NUM_VIOLATION_TYPES] = {
     {VT_SIGNAL_NO_HANDLER,         TIER_B, "signal_no_handler"},
     {VT_SPJ_MALFORMED_REQUEST,     TIER_B, "spj_malformed_request"},
     {VT_JOINAGG_KEYINFO_MALFORMED, TIER_B, "joinagg_keyinfo_malformed"},
+    {VT_TC_QUEUE_FLAG_NOT_INTERNAL, TIER_A, "tc_queue_flag_not_internal"},
     {VT_UNKNOWN,                   TIER_A, "unknown_violation_type"},
 };
 

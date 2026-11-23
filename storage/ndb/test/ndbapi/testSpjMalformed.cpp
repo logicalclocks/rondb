@@ -40,6 +40,8 @@
  * must reject at JOIN_AGG_SETUP_REQ (AggInterpreterBase::checkProgram).
  * P-32 sends one whose rows read a register they did not load, which
  * fails each row (K-1, AggInterpreterBase m_loaded_regs).
+ * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
+ * re-send (passQueue), which only DBTC itself may set (RONDB-1124).
  * Each malformed request is built by taking a known-good, word-for-word
  * SPJ encoding (the POSITIVE CONTROL below, encoded exactly as
  * NdbQueryBuilder would) and perturbing it as little as possible, so a
@@ -153,6 +155,31 @@ struct SpjMalformedSignals {
     req->transId2 = transId2;
     return TcKeyReq::StaticLength;
   }
+
+  /* The mark that DBTC's rate queue handler puts on a request it re-sends
+   * to itself (the Q cases send it from the API). */
+  static void setTcKeyReqPassQueue(Uint32 *data) {
+    TcKeyReq *req = (TcKeyReq *)data;
+    Uint32 ri = req->requestInfo;
+    TcKeyReq::setPassQueueingFlag(ri, 1);
+    req->requestInfo = ri;
+  }
+
+  static void setScanTabReqPassQueue(Uint32 *data) {
+    ScanTabReq *req = (ScanTabReq *)data;
+    Uint32 ri = req->requestInfo;
+    ScanTabReq::setPassQueueingFlag(ri, 1);
+    req->requestInfo = ri;
+  }
+
+  /* The key length of a short TCKEYREQ / TCINDXREQ, in requestInfo bits
+   * 20-31. */
+  static void setTcKeyReqKeyLength(Uint32 *data, Uint32 keyLen) {
+    TcKeyReq *req = (TcKeyReq *)data;
+    Uint32 ri = req->requestInfo;
+    TcKeyReq::setKeyLength(ri, keyLen);
+    req->requestInfo = ri;
+  }
 };
 
 namespace {
@@ -172,6 +199,7 @@ struct SpjReq {
   bool joinAgg{false};
   bool withAttrInfo{true};      /* TCKEYREQ: attach the AttrInfo section */
   bool toTcProxy{false};        /* send to DBTC instance 0, not the seized one */
+  bool passQueue{false};        /* set DBTC's rate queue re-send flag */
   /* Skip the SCAN_TABCONF of each completed fragment, wait for the
    * SCAN_TABREF or the EndOfData SCAN_TABCONF. */
   bool waitForEnd{false};
@@ -622,6 +650,84 @@ class SpjMalformedChecker {
                              {aggProgram(1, body), countLeaf()});
   }
 
+  /* ---- Q cases: DBTC's rate queue re-send mark sent by the API -------- *
+   * DBTC's rate queue handler re-sends a queued request to its own DBTC
+   * instance with a mark: the passQueue flag of TCKEYREQ, TCINDXREQ and
+   * SCAN_TABREQ, bit 2 of SCAN_NEXTREQ's stopScan.  DBTC took the mark
+   * from any sender.  From an API it skipped the rate limit, and since a
+   * request that was never queued holds none of the counts the mark takes
+   * it off, an ndbrequire stopped the data node.  DBTC now reports such a
+   * request as tc_queue_flag_not_internal (Tier A, disconnect); the MTR
+   * wrappers check the count.  An invalid connection pointer reaches the
+   * ndbrequire(!flag) of the error paths. */
+  static constexpr Uint32 kInvalidConnectPtr = 0xFFFFFF00u; /* RNIL */
+
+  int runQ1() {  /* TCKEYREQ with passQueue -> ndbrequire(queued > 0) */
+    SpjReq r;
+    makeWellFormedScan(r);
+    r.viaScan = false;
+    r.keyInfo.assign(1, 0x00000001u);
+    r.passQueue = true;
+    return expectSurvive("Q-1 TCKEYREQ with the rate queue flag", r);
+  }
+
+  int runQ2() {  /* long TCINDXREQ with passQueue, invalid connection */
+    const Uint32 nodeId = pickDbNode();
+    Uint32 apiConnectPtr = 0, tcRef = 0, seizeUp = 0;
+    if (!seize(nodeId, apiConnectPtr, tcRef, seizeUp)) return NDBT_FAILED;
+    std::vector<Uint32> words(TcKeyReq::StaticLength);
+    const Uint32 userPointer = ++m_userPointer;
+    SpjMalformedSignals::fillTcKeyReq(words.data(), kInvalidConnectPtr,
+                                      userPointer, m_tableId, m_schemaVersion,
+                                      0x5b200000u + nodeId, userPointer);
+    SpjMalformedSignals::setTcKeyReqPassQueue(words.data());
+    return expectSurviveRaw("Q-2 TCINDXREQ with the rate queue flag", nodeId,
+                            tcRef, GSN_TCINDXREQ, words,
+                            std::vector<Uint32>(1, 0x00000001u));
+  }
+
+  int runQ3() {  /* SCAN_NEXTREQ sent-from-queue bit, invalid connection */
+    const Uint32 nodeId = pickDbNode();
+    Uint32 apiConnectPtr = 0, tcRef = 0, seizeUp = 0;
+    if (!seize(nodeId, apiConnectPtr, tcRef, seizeUp)) return NDBT_FAILED;
+    /* apiConnectPtr, stopScan (bit 2: sent from the queue), transId1,
+     * transId2 */
+    const std::vector<Uint32> words = {kInvalidConnectPtr, 2u,
+                                       0x5b300000u + nodeId, ++m_userPointer};
+    return expectSurviveRaw("Q-3 SCAN_NEXTREQ marked as sent from the queue",
+                            nodeId, tcRef, GSN_SCAN_NEXTREQ, words,
+                            std::vector<Uint32>());
+  }
+
+  int runQ4() {  /* short TCINDXREQ, key length 16, invalid connection */
+    /* Not a malicious request: bit 24 of a short TCINDXREQ is bit 4 of
+     * its key length, here 16 words (8 in the signal, the rest would
+     * follow in KEYINFO).  DBTC read it as the passQueue flag, and its
+     * ndbrequire(!passQueueingFlag) on an invalid or released connection
+     * stopped the data node.  It must be dropped without a report. */
+    const Uint32 nodeId = pickDbNode();
+    Uint32 apiConnectPtr = 0, tcRef = 0, seizeUp = 0;
+    if (!seize(nodeId, apiConnectPtr, tcRef, seizeUp)) return NDBT_FAILED;
+    std::vector<Uint32> words(TcKeyReq::StaticLength);
+    const Uint32 userPointer = ++m_userPointer;
+    SpjMalformedSignals::fillTcKeyReq(words.data(), kInvalidConnectPtr,
+                                      userPointer, m_tableId, m_schemaVersion,
+                                      0x5b400000u + nodeId, userPointer);
+    SpjMalformedSignals::setTcKeyReqKeyLength(words.data(), 16);
+    words.resize(TcKeyReq::StaticLength + TcKeyReq::MaxKeyInfo, 0x01010101u);
+    return expectSurviveRaw("Q-4 short TCINDXREQ with a 16-word key", nodeId,
+                            tcRef, GSN_TCINDXREQ, words,
+                            std::vector<Uint32>());
+  }
+
+  int runQ5() {  /* SCAN_TABREQ with passQueue */
+    /* Not a crash before: DBTC took the flag only from a DBTC block. */
+    SpjReq r;
+    makeWellFormedScan(r);
+    r.passQueue = true;
+    return expectSurvive("Q-5 SCAN_TABREQ with the rate queue flag", r);
+  }
+
  private:
   SignalSender *const m_ss;
   NdbRestarter *const m_restarter;
@@ -722,6 +828,7 @@ class SpjMalformedChecker {
       len = SpjMalformedSignals::fillScanTabReq(
           d, apiConnectPtr, m_tableId, m_schemaVersion, transId1, transId2,
           kBatchRows, kBatchBytes, r.joinAgg, r.scanParallelism);
+      if (r.passQueue) SpjMalformedSignals::setScanTabReqPassQueue(d);
       gsn = GSN_SCAN_TABREQ;
       /* sections: 0 = receiver ids, 1 = AttrInfo, 2 = KeyInfo (optional) */
       sig.ptr[ScanTabReq::ReceiverIdSectionNum].p = r.rcvIds.data();
@@ -759,6 +866,7 @@ class SpjMalformedChecker {
       len = SpjMalformedSignals::fillTcKeyReq(d, apiConnectPtr, userPointer,
                                               m_tableId, m_schemaVersion,
                                               transId1, transId2);
+      if (r.passQueue) SpjMalformedSignals::setTcKeyReqPassQueue(d);
       gsn = GSN_TCKEYREQ;
 
       sig.ptr[TcKeyReq::KeyInfoSectionNum].p = r.keyInfo.data();
@@ -834,6 +942,39 @@ class SpjMalformedChecker {
     if (clusterHealthy()) {
       g_info << findingId << ": PASS (all data nodes started; reply "
              << gsnName(rep.gsn) << ")" << endl;
+      return NDBT_OK;
+    }
+    return failNodeDown(findingId);
+  }
+
+  /* Send one signal of `words` with up to one section to the DBTC
+   * instance tcRef on nodeId, expect no reply, then require every data
+   * node to still be started. */
+  int expectSurviveRaw(const char *findingId, Uint32 nodeId, Uint32 tcRef,
+                       Uint16 gsn, std::vector<Uint32> words,
+                       std::vector<Uint32> section0) {
+    SimpleSignal sig(false);
+    std::memcpy(sig.getDataPtrSend(), words.data(),
+                sizeof(Uint32) * words.size());
+    Uint32 nSec = 0;
+    if (!section0.empty()) {
+      sig.ptr[0].p = section0.data();
+      sig.ptr[0].sz = (Uint32)section0.size();
+      nSec = 1;
+    }
+    sig.header.m_noOfSections = nSec;
+    m_ss->lock();
+    const SendStatus sent = m_ss->sendSignal(nodeId, sig, refToBlock(tcRef),
+                                             gsn, (Uint32)words.size());
+    m_ss->unlock();
+    g_info << findingId << ": sent " << (sent == SEND_OK ? "OK" : "FAILED")
+           << endl;
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (clusterHealthy()) {
+      g_info << findingId << ": PASS (all data nodes started)" << endl;
       return NDBT_OK;
     }
     return failNodeDown(findingId);
@@ -959,6 +1100,11 @@ CASE_STEP(runP29, runP29)
 CASE_STEP(runP30, runP30)
 CASE_STEP(runP31, runP31)
 CASE_STEP(runP32, runP32)
+CASE_STEP(runQ1, runQ1)
+CASE_STEP(runQ2, runQ2)
+CASE_STEP(runQ3, runQ3)
+CASE_STEP(runQ4, runQ4)
+CASE_STEP(runQ5, runQ5)
 
 }  // namespace
 
@@ -1032,6 +1178,27 @@ TESTCASE("P32",
          "join aggregation: rows read a register they skipped the load "
          "of") {
   STEP(runP32);
+}
+TESTCASE("Q1", "TCKEYREQ with the rate queue flag from the API") {
+  STEP(runQ1);
+}
+TESTCASE("Q2",
+         "TCINDXREQ with the rate queue flag from the API, invalid "
+         "connection") {
+  STEP(runQ2);
+}
+TESTCASE("Q3",
+         "SCAN_NEXTREQ marked as sent from the rate queue by the API, "
+         "invalid connection") {
+  STEP(runQ3);
+}
+TESTCASE("Q4",
+         "short TCINDXREQ whose key length sets the rate queue flag bit, "
+         "invalid connection") {
+  STEP(runQ4);
+}
+TESTCASE("Q5", "SCAN_TABREQ with the rate queue flag from the API") {
+  STEP(runQ5);
 }
 NDBT_TESTSUITE_END(testSpjMalformed)
 
