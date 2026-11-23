@@ -1,4 +1,9 @@
 --source include/have_ndb.inc
+# With lower_case_table_names != 0 (macOS), CREATE DATABASE TEST_DB and
+# DROP DATABASE TEST_DB are stored in mysql.ndb_schema under different keys
+# ('TEST_DB' vs 'test_db'). A later cluster restart then makes the mysqld
+# metadata sync recreate TEST_DB, failing check-testcase of a later test.
+--source include/have_lowercase0.inc
 
 # RONDB-1121 F20 / RONDB-1092 follow-up.
 #
