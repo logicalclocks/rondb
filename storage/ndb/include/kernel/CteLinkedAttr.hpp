@@ -119,6 +119,40 @@ namespace CteLinkedAttr {
       p += 3 + data_words;
     }
   }
+
+  /**
+   * The bytes READ_LINKED_COLUMN_TO_REG decodes from an entry of the
+   * NDB column type ndbType, or 0 for a type it does not load.  An
+   * entry whose AttributeHeader holds fewer bytes is too short for the
+   * type: its data words end before the value does, and for the last
+   * entry the buffer does too.  Dbtup's handler reads such an entry as
+   * NULL and the JIT helper takes the per-row fallback, as for a
+   * missing entry (RONDB-1124).
+   */
+  static inline Uint32 linkedColumnBytes(Uint32 ndbType) {
+    switch (ndbType) {
+      case NDB_TYPE_TINYINT:
+      case NDB_TYPE_TINYUNSIGNED:
+        return 1;
+      case NDB_TYPE_SMALLINT:
+      case NDB_TYPE_SMALLUNSIGNED:
+        return 2;
+      case NDB_TYPE_MEDIUMINT:
+      case NDB_TYPE_MEDIUMUNSIGNED:
+      case NDB_TYPE_DATE:
+        return 3;
+      case NDB_TYPE_INT:
+      case NDB_TYPE_UNSIGNED:
+      case NDB_TYPE_FLOAT:
+        return 4;
+      case NDB_TYPE_BIGINT:
+      case NDB_TYPE_BIGUNSIGNED:
+      case NDB_TYPE_DOUBLE:
+        return 8;
+      default:
+        return 0;
+    }
+  }
 }
 
 #endif  // CTE_LINKED_ATTR_HPP

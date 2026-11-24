@@ -1472,13 +1472,13 @@ ndb_jit_h_branch_linked_null(JitState *s, uint32_t want_null) {
  * schemaVersion, AttrHeader, data) to the packed position and decodes
  * the value BY THE PACKED NDB TYPE into s->regs_i64[dst_reg].
  *
- * NULL / missing buffer / out-of-range position: where the
- * interpreter sets the register's NULL_INDICATOR (so the program's
- * BRANCH_REG_EQ/NE_NULL guards fire), JIT registers carry no null
- * state and the bridge FOLDS those guards — so the row takes the
- * per-row interpreter fallback instead, which replays the exact null
- * path. Completing rows therefore never hold NULL (the 5D
- * invariant). The bridge admits only types exact in signed i64
+ * NULL / missing buffer / out-of-range position / an entry with fewer
+ * bytes than the type: where the interpreter sets the register's
+ * NULL_INDICATOR (so the program's BRANCH_REG_EQ/NE_NULL guards fire),
+ * JIT registers carry no null state and the bridge FOLDS those guards —
+ * so the row takes the per-row interpreter fallback instead, which
+ * replays the exact null path. Completing rows therefore never hold
+ * NULL (the 5D invariant). The bridge admits only types exact in signed i64
  * (signed widths sign-extend, narrow unsigned zero-extend); the
  * default arm is defensive only. */
 extern "C" void
@@ -1506,8 +1506,11 @@ ndb_jit_h_load_linked_col(JitState *s, uint32_t pos_type,
     s->regs_i64[dst_reg] = 0;
     return;
   }
+  /* So is an entry with fewer bytes than the type decodes: the
+   * interpreter reads it as NULL. */
   AttributeHeader ah(*p);
-  if (ah.isNULL()) {
+  if (ah.isNULL() ||
+      ah.getByteSize() < CteLinkedAttr::linkedColumnBytes(type_id)) {
     s->row_fallback = 1;
     s->regs_i64[dst_reg] = 0;
     return;

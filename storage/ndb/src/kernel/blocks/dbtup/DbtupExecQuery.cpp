@@ -8570,9 +8570,12 @@ struct Dbtup::InterpreterContext {
       return INTERP_CONTINUE;
     }
 
-    /* Inspect the AttributeHeader. */
+    /* Inspect the AttributeHeader.  An entry with fewer bytes than the
+     * type decodes reads as NULL as well: the decode below would read
+     * past its data words, and past the buffer for the last entry. */
     AttributeHeader ah(*p);
-    if (ah.isNULL()) {
+    if (ah.isNULL() ||
+        unlikely(ah.getByteSize() < CteLinkedAttr::linkedColumnBytes(type))) {
       ctx.TregMemBuffer[ctx.theRegister] = NULL_INDICATOR;
       return INTERP_CONTINUE;
     }

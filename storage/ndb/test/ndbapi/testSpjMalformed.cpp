@@ -47,6 +47,8 @@
  * entry runs past its end, which fails each row (RONDB-1124 bug 12).
  * P-36 and P-37 send embedded programs whose inline-type compare has a
  * charset that does not fit the type (validateEmbeddedProgram).
+ * P-40 reads a linked attribute entry as a type wider than the entry,
+ * which reads as NULL (RONDB-1124).
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
  * re-send (passQueue), which only DBTC itself may set (RONDB-1124).
  * Each malformed request is built by taking a known-good, word-for-word
@@ -418,6 +420,12 @@ class SpjMalformedChecker {
         Interpreter::LoadConst16(0, 0),
         Interpreter::WriteInterpreterOutput(0, 0),
         Interpreter::ExitOK()};
+    return embeddedCountLeaf(emb);
+  }
+
+  /* A leaf whose rows run the embedded program emb, then COUNT(1). */
+  static std::vector<Uint32> embeddedCountLeaf(
+      const std::vector<Uint32> &emb) {
     std::vector<Uint32> body;
     body.push_back(aggOp(kOpEmbeddedInterp) | Uint32(emb.size()));
     body.insert(body.end(), emb.begin(), emb.end());
@@ -503,6 +511,27 @@ class SpjMalformedChecker {
     std::vector<Uint32> p = aggProgram(1, body);
     p[1] = (nGbCols << 16) | 1u;  /* (n_gb_cols << 16) | n_agg_results */
     return p;
+  }
+
+  /* A leaf (P-40) whose rows load linked position 0 as a BIGINT and go
+   * on to COUNT(1) only when the value is NULL:
+   *   0 READ_LINKED_COLUMN_TO_REG of position 0, BIGINT, into register 1
+   *   1 BRANCH_REG_EQ_NULL of register 1 to word 3
+   *   2 EXIT_OK without output 0: the row fails (1872)
+   *   3 LOAD_CONST16 0 into register 0
+   *   4 WRITE_INTERPRETER_OUTPUT 0 of register 0: go on after it
+   *   5 EXIT_OK
+   * So the scan gets SCAN_TABCONF when every row reads NULL and
+   * SCAN_TABREF when they read a value. */
+  static std::vector<Uint32> linkedNullLeaf() {
+    const std::vector<Uint32> emb = {
+        Interpreter::ReadLinkedColumnIntoReg(1, 0, NDB_TYPE_BIGINT),
+        Interpreter::BRANCH_REG_EQ_NULL | (1u << 6) | (2u << 16),
+        Interpreter::ExitOK(),
+        Interpreter::LoadConst16(0, 0),
+        Interpreter::WriteInterpreterOutput(0, 0),
+        Interpreter::ExitOK()};
+    return embeddedCountLeaf(emb);
   }
 
   /* ---------------------- the cases ----------------------------------- */
@@ -907,6 +936,67 @@ class SpjMalformedChecker {
     return expectAggRejected(
         "P-37 join aggregation inline-type BINARY compare with a charset",
         {inlineTypeLeaf(NDB_TYPE_BINARY, 8), countLeaf()});
+  }
+
+  int runP40() {  /* a linked entry shorter than the type it is read as */
+    /* READ_LINKED_COLUMN_TO_REG decoded up to 8 bytes from an entry
+     * without checking the entry's byte size: a BIGINT read of a 4-byte
+     * entry took 4 bytes from past its data, here past the end of the
+     * linked buffer (RONDB-1124).  Such an entry now reads as NULL, as a
+     * missing one does.  The leaf (linkedNullLeaf) goes on only for a
+     * NULL, so the request with the 4-byte entry must get SCAN_TABCONF.
+     * The controls: a NULL entry must get SCAN_TABCONF and an 8-byte one
+     * SCAN_TABREF (without them a harness whose rows never reach the
+     * program would pass).  The 8-byte one runs last, so that no request
+     * expected to succeed follows a failed scan. */
+    const std::vector<Uint32> leaf = linkedNullLeaf();
+    const Uint32 w0 = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
+    const Uint32 w1 = CteLinkedAttr::encodeWord1(0);
+    const char *findingId = "P-40 linked entry shorter than its type";
+
+    SpjReq nullEntry;
+    makeJoinAggScanLookup(nullEntry, {w0, w1, (0u << 16) | 0u}, leaf);
+    nullEntry.waitForEnd = true;
+    const Reply nullRep = sendScanTabReq(nullEntry);
+    printReply("CONTROL (NULL linked entry)", nullRep);
+
+    SpjReq shortEntry;
+    makeJoinAggScanLookup(shortEntry, {w0, w1, (0u << 16) | 4u, 7u}, leaf);
+    shortEntry.waitForEnd = true;
+    const Reply rep = sendScanTabReq(shortEntry);
+    printReply(findingId, rep);
+
+    SpjReq valueEntry;
+    makeJoinAggScanLookup(valueEntry, {w0, w1, (0u << 16) | 8u, 7u, 0u},
+                          leaf);
+    valueEntry.waitForEnd = true;
+    const Reply valueRep = sendScanTabReq(valueEntry);
+    printReply("CONTROL (8-byte linked entry)", valueRep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (nullRep.gsn != GSN_SCAN_TABCONF || valueRep.gsn != GSN_SCAN_TABREF) {
+      g_err << "P-40 CONTROLS: expected SCAN_TABCONF for the NULL entry and "
+               "SCAN_TABREF for the 8-byte one, got "
+            << gsnName(nullRep.gsn) << " and " << gsnName(valueRep.gsn)
+            << ".  The rows do not reach the leaf program; fix this before "
+               "trusting the result of P-40." << endl;
+      return NDBT_FAILED;
+    }
+    if (rep.gsn != GSN_SCAN_TABCONF) {
+      g_err << findingId << ": FAIL -- expected SCAN_TABCONF (the entry "
+            << "reads as NULL), got " << gsnName(rep.gsn) << " "
+            << rep.errorCode << ": the entry was decoded as a value"
+            << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId << ": PASS (all data nodes started; the entry "
+           << "read as NULL)" << endl;
+    return NDBT_OK;
   }
 
   /* ---- Q cases: DBTC's rate queue re-send mark sent by the API -------- *
@@ -1365,6 +1455,7 @@ CASE_STEP(runP33, runP33)
 CASE_STEP(runP35, runP35)
 CASE_STEP(runP36, runP36)
 CASE_STEP(runP37, runP37)
+CASE_STEP(runP40, runP40)
 CASE_STEP(runQ1, runQ1)
 CASE_STEP(runQ2, runQ2)
 CASE_STEP(runQ3, runQ3)
@@ -1461,6 +1552,11 @@ TESTCASE("P36",
 TESTCASE("P37",
          "join aggregation: inline-type BINARY compare with a charset") {
   STEP(runP37);
+}
+TESTCASE("P40",
+         "join aggregation: a linked attribute entry shorter than the "
+         "type it is read as") {
+  STEP(runP40);
 }
 TESTCASE("Q1", "TCKEYREQ with the rate queue flag from the API") {
   STEP(runQ1);
