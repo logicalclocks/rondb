@@ -26,6 +26,15 @@ WHERE reporting_node_id=1 AND violation_id=5;
 reporting_node_id	violation_id	tier	reason	has_count
 1	5	B	keyinfo_signal_length_mismatch	1
 #
+# Test 4: The catalog has the Tier A row of the DBDIH rebalance protocol
+#   (DIH_REBALANCE_REQ/CONF). Only data nodes send these signals, so an
+#   injection would disconnect a data node; the catalog row is checked.
+#
+SELECT violation_id, tier, reason FROM ndbinfo.security_violations
+WHERE reason='dih_rebalance_protocol';
+violation_id	tier	reason
+38	A	dih_rebalance_protocol
+#
 # Sanity: mysqld is still connected after all injections.
 #
 SELECT 1 AS still_connected;

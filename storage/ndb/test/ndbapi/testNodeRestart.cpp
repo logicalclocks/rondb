@@ -658,6 +658,9 @@ int runRestarter(NDBT_Context *ctx, NDBT_Step *step) {
       ctx->getProperty("HugoRowCheck", (unsigned)0) != 0;
   const int restartErrorInsert =
       ctx->getProperty("RestartErrorInsert", (unsigned)0);
+  /* DUMP 7037 mode (DihRebalanceTestMode), see runRebalanceTestModeOn */
+  const int rebalanceTestMode =
+      ctx->getProperty("RebalanceTestMode", (unsigned)0);
   NdbRestarter restarter;
   int i = 0;
   int lastId = 0;
@@ -698,6 +701,18 @@ int runRestarter(NDBT_Context *ctx, NDBT_Step *step) {
       const int dump[] = {DumpStateOrd::LqhNrKeyDebug, 1};
       if (restarter.dumpStateOneNode(nodeId, dump, 2)) {
         g_err << "Failed to turn on NR key debug in node " << nodeId << endl;
+        result = NDBT_FAILED;
+        break;
+      }
+    }
+
+    if (rebalanceTestMode != 0) {
+      /* While the node waits in no-start: DBDIH uses it during the start */
+      const int dump[] = {DumpStateOrd::DihRebalanceTestMode,
+                          rebalanceTestMode};
+      if (restarter.dumpStateOneNode(nodeId, dump, 2)) {
+        g_err << "Failed to set rebalance test mode " << rebalanceTestMode
+              << " in node " << nodeId << endl;
         result = NDBT_FAILED;
         break;
       }
@@ -9428,6 +9443,396 @@ int runHugoRowCheckOff(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+/**
+ * Replica chain switch tests, see
+ * storage/ndb/claude_files/replica_chain_switch/design.md.
+ *
+ * DBDIH must not change the replica chain of a fragment under a running
+ * transaction: two operations of the transaction on one row could go
+ * along different chains, and a replica could apply them in the opposite
+ * order. The tests update the same rows twice in one batch while DBDIH
+ * changes chains (fragment copies of node restarts, the rebalance in
+ * start phase 120, DUMP 7036), and then check that all replicas agree and
+ * where the primary replicas are.
+ */
+
+static int readBackupTableHook(Ndb *, NdbDictionary::Table &table, int when,
+                               void *) {
+  if (when == 0) {
+    table.setReadBackupFlag(true);
+  }
+  return 0;
+}
+
+/**
+ * Re-creates the test table with Read Backup. A simple read through a
+ * data node with a replica of the row then reads that replica, so that
+ * runVerifyTableReplicas compares all replicas, not only the primary.
+ */
+int runCreateReadBackupTable(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = GETNDB(step);
+  NdbDictionary::Dictionary *pDict = pNdb->getDictionary();
+  const BaseString tabName(ctx->getTab()->getName());
+  if (pDict->dropTable(tabName.c_str()) != 0 &&
+      pDict->getNdbError().code != 723) {
+    g_err << "Failed to drop table " << tabName.c_str() << ": "
+          << pDict->getNdbError() << endl;
+    return NDBT_FAILED;
+  }
+  if (NDBT_Tables::createTable(pNdb, tabName.c_str(), false, false,
+                               readBackupTableHook) != 0) {
+    g_err << "Failed to create table " << tabName.c_str()
+          << " with Read Backup: " << pDict->getNdbError() << endl;
+    return NDBT_FAILED;
+  }
+  const NdbDictionary::Table *tab = pDict->getTable(tabName.c_str());
+  if (tab == nullptr || !tab->getReadBackupFlag()) {
+    g_err << "Table " << tabName.c_str() << " was not created with Read"
+          << " Backup" << endl;
+    return NDBT_FAILED;
+  }
+  ctx->setTab(tab);
+  return NDBT_OK;
+}
+
+/**
+ * Updates the same rows twice in each transaction, with update counts u
+ * and u + 1, both in one batch so that both are on their way at the same
+ * time. If DBDIH changed the chain of a fragment between the two, a
+ * replica could apply them in the opposite order and commit u while the
+ * others commit u + 1. Temporary errors are retried, among them 1204:
+ * DBTC refuses an operation on a fragment whose chain changed after the
+ * transaction started.
+ */
+int runPkDoubleUpdateUntilStopped(NDBT_Context *ctx, NDBT_Step *step) {
+  const int records = ctx->getNumRecords();
+  Ndb *pNdb = GETNDB(step);
+  HugoOperations hugoOps(*ctx->getTab());
+  Uint32 commits = 0;
+  Uint32 temporaryErrors = 0;
+  Uint32 chainChanged = 0;
+
+  while (!ctx->isTestStopped()) {
+    const int row = rand() % records;
+    int batch = (rand() % 10) + 1;
+    if (row + batch > records) batch = records - row;
+    const int updates = rand() % 1000000000;
+
+    if (hugoOps.startTransaction(pNdb) == 0 &&
+        hugoOps.pkUpdateRecord(pNdb, row, batch, updates) == 0 &&
+        hugoOps.pkUpdateRecord(pNdb, row, batch, updates + 1) == 0 &&
+        hugoOps.execute_Commit(pNdb) == 0) {
+      hugoOps.closeTransaction(pNdb);
+      commits++;
+      continue;
+    }
+
+    NdbConnection *pCon = hugoOps.getTransaction();
+    if (pCon == nullptr) {
+      /* No transaction started, e.g. during a node failure */
+      NdbSleep_MilliSleep(50);
+      continue;
+    }
+    const NdbError error = pCon->getNdbError();
+    hugoOps.closeTransaction(pNdb);
+    if (error.status != NdbError::TemporaryError) {
+      g_err << "Double update of rows " << row << ".." << (row + batch - 1)
+            << " failed: " << error << endl;
+      return NDBT_FAILED;
+    }
+    temporaryErrors++;
+    if (error.code == 1204) chainChanged++;
+    NdbSleep_MilliSleep(50);
+  }
+
+  ndbout_c("Double update: %u transactions committed, %u temporary errors,"
+           " %u of them 1204 (chain changed during the transaction)",
+           commits, temporaryErrors, chainChanged);
+  return NDBT_OK;
+}
+
+/**
+ * Reads the current primary replica of each fragment of the test table
+ * from ndbinfo table_fragments_all, as each data node sees it
+ * (table_fragments has the rows of the master only). agree is false when
+ * two data nodes see different primaries for a fragment, or when a data
+ * node did not report. primaryCount[n] is the number of fragments node n
+ * is primary for.
+ */
+static int readTablePrimaries(NDBT_Context *ctx, Uint32 *fragCount,
+                              Uint32 primaryCount[ABS_MAX_NDB_NODES],
+                              bool *agree) {
+  const Uint32 tableId = ctx->getTab()->getTableId();
+  *fragCount = 0;
+  *agree = true;
+  for (Uint32 n = 0; n < ABS_MAX_NDB_NODES; n++) primaryCount[n] = 0;
+
+  NdbInfo ndbinfo(&ctx->m_cluster_connection, "ndbinfo/");
+  if (!ndbinfo.init()) {
+    g_err << "ndbinfo.init failed" << endl;
+    return NDBT_FAILED;
+  }
+  const NdbInfo::Table *table;
+  if (ndbinfo.openTable("ndbinfo/table_fragments_all", &table) != 0) {
+    g_err << "Failed to open ndbinfo table_fragments_all" << endl;
+    return NDBT_FAILED;
+  }
+  NdbInfoScanOperation *scanOp = nullptr;
+  if (ndbinfo.createScanOperation(table, &scanOp)) {
+    g_err << "No NdbInfoScanOperation" << endl;
+    ndbinfo.closeTable(table);
+    return NDBT_FAILED;
+  }
+  const NdbInfoRecAttr *nodeCol = nullptr;
+  const NdbInfoRecAttr *tableCol = nullptr;
+  const NdbInfoRecAttr *fragCol = nullptr;
+  const NdbInfoRecAttr *primaryCol = nullptr;
+  if (scanOp->readTuples() != 0 ||
+      (nodeCol = scanOp->getValue("node_id")) == nullptr ||
+      (tableCol = scanOp->getValue("table_id")) == nullptr ||
+      (fragCol = scanOp->getValue("fragment_id")) == nullptr ||
+      (primaryCol = scanOp->getValue("current_primary")) == nullptr ||
+      scanOp->execute() != 0) {
+    g_err << "Failed to scan ndbinfo table_fragments_all" << endl;
+    ndbinfo.releaseScanOperation(scanOp);
+    ndbinfo.closeTable(table);
+    return NDBT_FAILED;
+  }
+
+  /* Primary of each fragment id, 0 when not seen yet */
+  Vector<Uint32> primaries;
+  const Uint32 notSeen = 0;
+  bool reported[ABS_MAX_NDB_NODES] = {};
+  Uint32 reportingNodes = 0;
+  int rc;
+  while ((rc = scanOp->nextResult()) > 0) {
+    if (tableCol->u_32_value() != tableId) continue;
+    const Uint32 nodeId = nodeCol->u_32_value();
+    if (nodeId < ABS_MAX_NDB_NODES && !reported[nodeId]) {
+      reported[nodeId] = true;
+      reportingNodes++;
+    }
+    const Uint32 fragId = fragCol->u_32_value();
+    const Uint32 primary = primaryCol->u_32_value();
+    if (fragId >= primaries.size()) primaries.fill(fragId + 1, notSeen);
+    if (primaries[fragId] == notSeen) {
+      primaries[fragId] = primary;
+    } else if (primaries[fragId] != primary) {
+      *agree = false;
+      g_err << "Node " << nodeCol->u_32_value() << " sees node " << primary
+            << " as primary of fragment " << fragId << ", another node sees"
+            << " node " << primaries[fragId] << endl;
+    }
+  }
+  ndbinfo.releaseScanOperation(scanOp);
+  ndbinfo.closeTable(table);
+  if (rc < 0) {
+    g_err << "Failed to read ndbinfo table_fragments_all" << endl;
+    return NDBT_FAILED;
+  }
+  NdbRestarter restarter;
+  const Uint32 dataNodes = restarter.getNumDbNodes();
+  if (reportingNodes != dataNodes) {
+    *agree = false;
+    g_err << reportingNodes << " of " << dataNodes << " data nodes reported"
+          << " the fragments of table " << tableId << endl;
+  }
+
+  *fragCount = primaries.size();
+  for (Uint32 f = 0; f < primaries.size(); f++) {
+    if (primaries[f] < ABS_MAX_NDB_NODES) primaryCount[primaries[f]]++;
+  }
+  return NDBT_OK;
+}
+
+/**
+ * Waits until all data nodes see the same primary replicas of the test
+ * table and, when balanced is set, each data node is primary for its
+ * share of the fragments. The rebalance of a node restart (start phase
+ * 120) and DUMP 7036 give each alive node of a node group the same number
+ * of primary replicas when the node group's fragments divide evenly
+ * among its nodes, as they do when the fragment count of the table is a
+ * multiple of the number of data nodes.
+ */
+static int waitTablePrimaries(NDBT_Context *ctx, bool balanced,
+                              int timeoutSec) {
+  NdbRestarter restarter;
+  const int numNodes = restarter.getNumDbNodes();
+  for (int sec = 0;; sec++) {
+    Uint32 fragCount = 0;
+    Uint32 primaryCount[ABS_MAX_NDB_NODES];
+    bool agree = false;
+    bool ok = readTablePrimaries(ctx, &fragCount, primaryCount, &agree) ==
+                  NDBT_OK &&
+              agree && fragCount > 0;
+    const bool even = (fragCount % numNodes) == 0;
+    BaseString counts;
+    for (int i = 0; i < numNodes; i++) {
+      const int nodeId = restarter.getDbNodeId(i);
+      counts.appfmt(" node %d: %u", nodeId, primaryCount[nodeId]);
+      if (balanced && even && primaryCount[nodeId] != fragCount / numNodes) {
+        ok = false;
+      }
+    }
+    if (ok) {
+      ndbout_c("Primary replicas of the %u fragments of %s:%s%s", fragCount,
+               ctx->getTab()->getName(), counts.c_str(),
+               (balanced && !even) ? " (balance not checked, the fragments"
+                                     " do not divide evenly)"
+                                   : "");
+      return NDBT_OK;
+    }
+    if (sec >= timeoutSec) {
+      g_err << "After " << timeoutSec << " s the primary replicas of the "
+            << fragCount << " fragments of " << ctx->getTab()->getName()
+            << " are not "
+            << (balanced ? "balanced" : "the same on all data nodes") << ":"
+            << counts.c_str() << endl;
+      return NDBT_FAILED;
+    }
+    NdbSleep_SecSleep(1);
+  }
+}
+
+/**
+ * Finalizer: the primary replicas are the same on all data nodes and,
+ * unless CheckPrimariesBalanced is 0, balanced.
+ */
+int runCheckTablePrimaries(NDBT_Context *ctx, NDBT_Step *step) {
+  const bool balanced =
+      ctx->getProperty("CheckPrimariesBalanced", Uint32(1)) != 0;
+  return waitTablePrimaries(ctx, balanced, 60);
+}
+
+/**
+ * All replicas of each row are the same, read through every data node.
+ * Needs a Read Backup table (runCreateReadBackupTable).
+ */
+int runVerifyTableReplicas(NDBT_Context *ctx, NDBT_Step *step) {
+  UtilTransactions utilTrans(*ctx->getTab());
+  utilTrans.setVerbosity(1);
+  if (utilTrans.verifyTableReplicas(GETNDB(step), true) != NDBT_OK) {
+    g_err << "The replicas of table " << ctx->getTab()->getName()
+          << " differ" << endl;
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
+/**
+ * DUMP 7037 <mode> (DihRebalanceTestMode) on all data nodes, in error
+ * insert builds: mode 2 makes the data nodes act as if an older data node
+ * were in the cluster, so the primary replica moves to a restarted node
+ * as each fragment copy completes. runRestarter sets the mode again in
+ * each restarted node when the test case sets RebalanceTestMode.
+ */
+static int setRebalanceTestMode(int mode) {
+  NdbRestarter restarter;
+  const int dump[] = {DumpStateOrd::DihRebalanceTestMode, mode};
+  if (restarter.dumpStateAllNodes(dump, 2) != 0) {
+    g_err << "Failed to set rebalance test mode " << mode << endl;
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
+int runRebalanceTestModeOn(NDBT_Context *ctx, NDBT_Step *step) {
+  return setRebalanceTestMode(
+      (int)ctx->getProperty("RebalanceTestMode", Uint32(0)));
+}
+
+int runRebalanceTestModeOff(NDBT_Context *ctx, NDBT_Step *step) {
+  return setRebalanceTestMode(0);
+}
+
+/**
+ * Restarts each data node in turn with DUMP 7037 1, so that it does not
+ * ask for a rebalance in start phase 120 and comes back primary for no
+ * fragment, and checks that. Then DUMP 7036 moves primary replicas to it
+ * while the other steps run their transactions, and the step waits until
+ * the primary replicas are balanced.
+ */
+int runRebalanceOnDemand(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  const int numNodes = restarter.getNumDbNodes();
+  if (numNodes < 2) {
+    g_err << "[SKIPPED] The test needs at least 2 data nodes" << endl;
+    ctx->stopTest();
+    return NDBT_SKIPPED;
+  }
+  if (restarter.waitClusterStarted() != 0) {
+    g_err << "Cluster failed to start" << endl;
+    ctx->stopTest();
+    return NDBT_FAILED;
+  }
+
+  int result = NDBT_OK;
+  const int loops = ctx->getNumLoops() * numNodes;
+  for (int i = 0; i < loops && !ctx->isTestStopped(); i++) {
+    int nodeId = restarter.getDbNodeId(i % numNodes);
+    ndbout << "Restart node " << nodeId << " without the rebalance of start"
+           << " phase 120" << endl;
+    if (restarter.restartOneDbNode(nodeId, false, true, true) != 0 ||
+        restarter.waitNodesNoStart(&nodeId, 1) != 0) {
+      g_err << "Failed to restart node " << nodeId << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+    const int skip[] = {DumpStateOrd::DihRebalanceTestMode, 1};
+    if (restarter.dumpStateOneNode(nodeId, skip, 2) != 0 ||
+        restarter.startNodes(&nodeId, 1) != 0 ||
+        restarter.waitClusterStarted() != 0) {
+      g_err << "Failed to start node " << nodeId << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+
+    /* The fragment copies keep the chains, so node is primary for none */
+    Uint32 fragCount = 0;
+    Uint32 primaryCount[ABS_MAX_NDB_NODES];
+    bool agree = false;
+    for (int sec = 0; sec < 30; sec++) {
+      if (readTablePrimaries(ctx, &fragCount, primaryCount, &agree) ==
+              NDBT_OK &&
+          agree) {
+        break;
+      }
+      NdbSleep_SecSleep(1);
+    }
+    if (!agree) {
+      g_err << "The data nodes do not agree on the primary replicas after"
+            << " the restart of node " << nodeId << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+    if (primaryCount[nodeId] != 0) {
+      g_err << "Node " << nodeId << " is primary for "
+            << primaryCount[nodeId] << " of " << fragCount
+            << " fragments after a restart without rebalance" << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+
+    /* Transactions run on the unbalanced cluster for a while */
+    NdbSleep_SecSleep(2);
+    ndbout << "Rebalance the primary replicas with DUMP 7036" << endl;
+    const int rebalance[] = {DumpStateOrd::DihRebalancePrimaries};
+    if (restarter.dumpStateAllNodes(rebalance, 1) != 0) {
+      g_err << "Failed to send DUMP 7036" << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+    if (waitTablePrimaries(ctx, true, 60) != NDBT_OK) {
+      result = NDBT_FAILED;
+      break;
+    }
+    NdbSleep_SecSleep(2);
+  }
+
+  ctx->stopTest();
+  return result;
+}
+
 int runWatchdogSlowShutdown(NDBT_Context *ctx, NDBT_Step *step) {
   /* Steps
    * 1 Set low watchdog threshold
@@ -15878,6 +16283,87 @@ TESTCASE("InplaceCharPkChangeCISlowCopy",
   FINALIZER(runClearErrorInsert);
   FINALIZER(runNrKeyDebugOff);
   FINALIZER(runDropCharKeyTable);
+}
+TESTCASE("InplaceCharPkChangeCIOldDih",
+         "As InplaceCharPkChangeCISlowCopy, with all data nodes acting as "
+         "if an older data node were in the cluster (DUMP 7037 2): the "
+         "primary replica moves to the restarted node as each fragment "
+         "copy completes, and DBTC must refuse the operations of a "
+         "transaction that started before (1204) instead of 630") {
+  TC_PROPERTY("CSCharset", Uint32(0));
+  TC_PROPERTY("NumDataColumns", Uint32(10));
+  TC_PROPERTY("NrKeyDebug", Uint32(1));
+  TC_PROPERTY("RestartErrorInsert", Uint32(5106));
+  TC_PROPERTY("RebalanceTestMode", Uint32(2));
+  INITIALIZER(runNrKeyDebugOn);
+  INITIALIZER(runRebalanceTestModeOn);
+  INITIALIZER(runCreateCharKeyTable);
+  INITIALIZER(runLoadCharKeyTable);
+  INITIALIZER(runErrorInsertSlowCopyFrag);
+  STEP(runChangePkCharKeyTable);
+  STEP(runRestarter);
+  FINALIZER(runClearErrorInsert);
+  FINALIZER(runRebalanceTestModeOff);
+  FINALIZER(runNrKeyDebugOff);
+  FINALIZER(runDropCharKeyTable);
+}
+TESTCASE("ChainSwitchDoubleUpdate",
+         "Each transaction updates the same rows twice in one batch while "
+         "the data nodes restart one at a time with slow fragment copies. "
+         "Afterwards all replicas must agree, and the rebalance in start "
+         "phase 120 must have balanced the primary replicas") {
+  TC_PROPERTY("RestartErrorInsert", Uint32(5106));
+  INITIALIZER(runCreateReadBackupTable);
+  INITIALIZER(runLoadTable);
+  INITIALIZER(runErrorInsertSlowCopyFrag);
+  STEPS(runPkDoubleUpdateUntilStopped, 4);
+  STEP(runRestarter);
+  FINALIZER(runClearErrorInsert);
+  FINALIZER(runCheckTablePrimaries);
+  FINALIZER(runVerifyTableReplicas);
+  FINALIZER(runScanReadVerify);
+  FINALIZER(runClearTable);
+}
+TESTCASE("ChainSwitchDoubleUpdateOldDih",
+         "As ChainSwitchDoubleUpdate, with all data nodes acting as if an "
+         "older data node were in the cluster (DUMP 7037 2): the primary "
+         "replica moves to the restarted node as each fragment copy "
+         "completes, and DBTC refuses an operation on a fragment whose "
+         "chain changed during its transaction (1204). Afterwards all "
+         "replicas must agree, and all data nodes must see the same "
+         "primary replicas") {
+  TC_PROPERTY("RestartErrorInsert", Uint32(5106));
+  TC_PROPERTY("RebalanceTestMode", Uint32(2));
+  TC_PROPERTY("CheckPrimariesBalanced", Uint32(0));
+  INITIALIZER(runCreateReadBackupTable);
+  INITIALIZER(runLoadTable);
+  INITIALIZER(runRebalanceTestModeOn);
+  INITIALIZER(runErrorInsertSlowCopyFrag);
+  STEPS(runPkDoubleUpdateUntilStopped, 4);
+  STEP(runRestarter);
+  FINALIZER(runClearErrorInsert);
+  FINALIZER(runRebalanceTestModeOff);
+  FINALIZER(runCheckTablePrimaries);
+  FINALIZER(runVerifyTableReplicas);
+  FINALIZER(runScanReadVerify);
+  FINALIZER(runClearTable);
+}
+TESTCASE("ChainSwitchRebalanceOnDemand",
+         "Each data node in turn restarts without the rebalance of start "
+         "phase 120 (DUMP 7037 1) and must come back primary for no "
+         "fragment. Then DUMP 7036 moves primary replicas to it while "
+         "transactions update the same rows twice and scans update rows. "
+         "The primary replicas must get balanced, and afterwards all "
+         "replicas must agree") {
+  INITIALIZER(runCreateReadBackupTable);
+  INITIALIZER(runLoadTable);
+  STEPS(runPkDoubleUpdateUntilStopped, 4);
+  STEP(runScanUpdateUntilStopped);
+  STEP(runRebalanceOnDemand);
+  FINALIZER(runRebalanceTestModeOff);
+  FINALIZER(runVerifyTableReplicas);
+  FINALIZER(runScanReadVerify);
+  FINALIZER(runClearTable);
 }
 TESTCASE("ChangeNumLDMsNR", "Change the number of LDMs in a NR") {
   INITIALIZER(runLoadTable);

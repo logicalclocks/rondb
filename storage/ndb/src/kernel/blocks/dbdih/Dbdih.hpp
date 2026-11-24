@@ -2835,6 +2835,21 @@ class Dbdih : public SimulatedBlock {
   void rebalance_node_failed(Signal *, NodeId failedNodeId);
   void rebalance_report_sender(Signal *, NodeId offender);
 
+#ifdef ERROR_INSERT
+  /**
+   * DUMP 7037 <mode> (DihRebalanceTestMode), for tests. A node restart
+   * clears it, so tests set it again while a restarted node waits in
+   * NOSTART.
+   *   0  normal
+   *   1  this node does not ask for a rebalance in start phase 120: it
+   *      stays primary for no fragment until DUMP 7036 or a node failure
+   *   2  this node acts as if some data node did not support the
+   *      rebalance, the behaviour with an older data node in the cluster.
+   *      Set it on all data nodes, they must agree.
+   */
+  Uint32 c_rebalance_test_mode;
+#endif
+
   void switchReplicaReply(Signal *, NodeId nodeId);
 
   /**

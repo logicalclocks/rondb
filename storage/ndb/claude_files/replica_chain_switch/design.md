@@ -1,9 +1,10 @@
 # Replica chain switch during node restart
 
 Status: steps 1 (COMMIT_STORED keeps the replica chain), 2 (DBDIH chain
-clock and fragment stamps, DBTC check) and 3 (rebalance in start phase
-120, old behaviour with older data nodes) implemented. Step 4 (tests) is
-designed, not implemented; DUMP 7036 for it exists.
+clock and fragment stamps, DBTC check), 3 (rebalance in start phase 120,
+old behaviour with older data nodes) and 4 (tests) implemented. The MTR
+tests `ndb_rebalance_primaries` and `ndb_security` pass (2026-11-24);
+the testNodeRestart test cases have not run yet.
 
 ## Problem
 
@@ -239,15 +240,71 @@ primary recalculation at node failure (`removeNodeFromTable()`).
   participant its tables, changed fragments and elapsed time; NDBCNTR
   logs "Phase 120 was used by DIH to rebalance the primary replicas".
 
-### Step 4: tests
+### Step 4: tests (implemented)
 
-- `InplaceCharPkChange*` with 2 and 3 replicas: no 630.
-- A test where each transaction updates the same column twice across node
-  restarts, then checks that the replicas agree.
-- Load across `DUMP 7036` (rebalance on demand), and across node restarts
-  with an older data node in the cluster.
+The `testNodeRestart` cases are listed in `daily-devel--07-tests.txt`
+(3 replicas on 2026-11-21) and, except the existing `InplaceCharPkChange`
+ones, in `weekly-devel--04-tests.txt` (2 replicas). The autotest run
+command chooses the cluster, so the tests work with any number of
+replicas and node groups.
+
+- `ndb_rebalance_primaries` (MTR, debug build, 2 data nodes): node 2
+  restarts with DUMP 7037 1 and must come back primary for no fragment
+  of t1; DUMP 7036 must balance the primaries; a normal restart of node 2
+  must leave them balanced as soon as it has started (start phase 120
+  runs before the start completes). Each check also requires both data
+  nodes to see the same primaries in `ndbinfo.ndb$table_fragments_all`.
+  It prints booleans only, so it does not depend on the number of
+  fragments.
+
+- `InplaceCharPkChangeCS/CI/CISlowCopy` (existing): no 630 while nodes
+  restart.
+- `InplaceCharPkChangeCIOldDih`: as `CISlowCopy` with all data nodes in
+  DUMP 7037 mode 2, the behaviour with an older data node in the cluster:
+  the primary moves to the restarted node at each COMMIT_STORED, and only
+  the DBTC check (1204) keeps the delete and insert of a row on one chain.
+- `ChainSwitchDoubleUpdate`: on a Read Backup table, each transaction
+  updates the same rows twice in one batch (update counts u and u + 1,
+  all columns), so both operations are on their way at the same time,
+  while each node restarts with slow fragment copies (error 5106).
+  Afterwards: all data nodes see the same primaries and each node is
+  primary for its share (the rebalance of start phase 120),
+  `verifyTableReplicas` reads every row through every data node (with
+  Read Backup each reads its own replica), and the Hugo values are
+  checked. The steps count the 1204 errors.
+- `ChainSwitchDoubleUpdateOldDih`: the same with DUMP 7037 mode 2; only
+  checks that all data nodes see the same primaries.
+- `ChainSwitchRebalanceOnDemand`: each data node in turn restarts with
+  DUMP 7037 mode 1 (no rebalance in start phase 120) and must come back
+  primary for no fragment (step 1). Then DUMP 7036 moves the primaries
+  while double updates and scan updates run, and the primaries must get
+  balanced. Afterwards `verifyTableReplicas` and the Hugo check.
+- `ndb_security` (MTR): the catalog row of `VT_DIH_REBALANCE_PROTOCOL`.
+  Injecting it with DUMP 9100 would disconnect a data node, and a real
+  faulty signal stops the receiver in debug builds (`ndbassert`), so no
+  injection test.
+
+Test support:
+
+- DUMP 7037 `<mode>` (`DihRebalanceTestMode`, error insert builds only):
+  0 normal, 1 this node does not ask for a rebalance in start phase 120,
+  2 this node acts as if some data node did not support the rebalance
+  (set it on all nodes). A node held in NOSTART gets the DUMP before
+  READ_CONFIG_REQ, so the mode is cleared in the constructor, not in
+  `initData()`, and handled first in `execDUMP_STATE_ORD`; a restart
+  clears it.
+  `runRestarter` sets it on each restarted node when the test case sets
+  `RebalanceTestMode`.
+- The primaries come from ndbinfo `table_fragments_all` (in SQL
+  `ndbinfo.ndb$table_fragments_all`): `current_primary` as each data node
+  sees it. `table_fragments` has the rows of the master DBDIH only, so it
+  cannot show whether the nodes agree; the checks also require a row from
+  every data node. Each node gets exactly its share only when the
+  fragments of the table divide evenly among the data nodes; otherwise
+  only the agreement is checked.
 
 ## Open points
 
 - The length of a rebalance step for a large schema (budget 1024).
-- Tests (step 4).
+- A real mixed-version run (upgrade test with a 26.10.0 data node); the
+  tests above only simulate it with DUMP 7037 2.

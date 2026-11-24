@@ -242,6 +242,22 @@ cmd: testNodeRestart
 args: -n InplaceCharPkChangeCISlowCopy T1
 max-time: 1200
 
+cmd: testNodeRestart
+args: -n InplaceCharPkChangeCIOldDih T1
+max-time: 1200
+
+cmd: testNodeRestart
+args: -l 2 -n ChainSwitchDoubleUpdate T1
+max-time: 1800
+
+cmd: testNodeRestart
+args: -l 2 -n ChainSwitchDoubleUpdateOldDih T1
+max-time: 1800
+
+cmd: testNodeRestart
+args: -l 2 -n ChainSwitchRebalanceOnDemand T1
+max-time: 1800
+
 cmd: testPartitioning
 args : -n startTransactionHint_orderedIndex_MaxKey T1
 max-time: 60

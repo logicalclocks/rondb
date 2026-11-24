@@ -1,0 +1,85 @@
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE=NDB;
+CREATE VIEW t1_fragments AS
+SELECT tf.node_id, tf.fragment_id, tf.current_primary
+FROM ndbinfo.ndb$table_fragments_all AS tf
+JOIN ndbinfo.dict_obj_info AS doi ON tf.table_id = doi.id
+WHERE doi.fq_name = 'test/def/t1';
+#
+# Both data nodes see the same primary replicas, balanced over the
+# two nodes.
+#
+SELECT COUNT(*) AS fragments_seen_differently FROM (
+SELECT fragment_id FROM t1_fragments
+GROUP BY fragment_id HAVING COUNT(DISTINCT current_primary) > 1) AS d;
+fragments_seen_differently
+0
+SELECT node_id AS seen_by_node,
+SUM(current_primary = 2) = 0 AS node_2_primary_for_none,
+SUM(current_primary = 1) = SUM(current_primary = 2) AS balanced
+FROM t1_fragments GROUP BY node_id ORDER BY node_id;
+seen_by_node	node_2_primary_for_none	balanced
+1	0	1
+2	0	1
+#
+# Test 1: Node 2 restarts without the rebalance of start phase 120
+#   (DUMP 7037 1 while it waits in no-start). The fragment copies
+#   keep the replica chains, so it comes back primary for no fragment.
+#
+SELECT COUNT(*) AS fragments_seen_differently FROM (
+SELECT fragment_id FROM t1_fragments
+GROUP BY fragment_id HAVING COUNT(DISTINCT current_primary) > 1) AS d;
+fragments_seen_differently
+0
+SELECT node_id AS seen_by_node,
+SUM(current_primary = 2) = 0 AS node_2_primary_for_none,
+SUM(current_primary = 1) = SUM(current_primary = 2) AS balanced
+FROM t1_fragments GROUP BY node_id ORDER BY node_id;
+seen_by_node	node_2_primary_for_none	balanced
+1	1	0
+2	1	0
+SELECT COUNT(*), SUM(b) FROM t1;
+COUNT(*)	SUM(b)
+100	5050
+#
+# Test 2: DUMP 7036 makes the master rebalance the primary replicas.
+#   Only the master acts, so it goes to all data nodes.
+#
+SELECT COUNT(*) AS fragments_seen_differently FROM (
+SELECT fragment_id FROM t1_fragments
+GROUP BY fragment_id HAVING COUNT(DISTINCT current_primary) > 1) AS d;
+fragments_seen_differently
+0
+SELECT node_id AS seen_by_node,
+SUM(current_primary = 2) = 0 AS node_2_primary_for_none,
+SUM(current_primary = 1) = SUM(current_primary = 2) AS balanced
+FROM t1_fragments GROUP BY node_id ORDER BY node_id;
+seen_by_node	node_2_primary_for_none	balanced
+1	0	1
+2	0	1
+UPDATE t1 SET b = b + 1;
+SELECT COUNT(*), SUM(b) FROM t1;
+COUNT(*)	SUM(b)
+100	5150
+#
+# Test 3: Node 2 restarts normally. Start phase 120 rebalances the
+#   primary replicas before the restart completes, so they are
+#   balanced as soon as the node has started, without any DUMP.
+#
+SELECT COUNT(*) AS fragments_seen_differently FROM (
+SELECT fragment_id FROM t1_fragments
+GROUP BY fragment_id HAVING COUNT(DISTINCT current_primary) > 1) AS d;
+fragments_seen_differently
+0
+SELECT node_id AS seen_by_node,
+SUM(current_primary = 2) = 0 AS node_2_primary_for_none,
+SUM(current_primary = 1) = SUM(current_primary = 2) AS balanced
+FROM t1_fragments GROUP BY node_id ORDER BY node_id;
+seen_by_node	node_2_primary_for_none	balanced
+1	0	1
+2	0	1
+UPDATE t1 SET b = b + 1;
+SELECT COUNT(*), SUM(b) FROM t1;
+COUNT(*)	SUM(b)
+100	5250
+DROP VIEW t1_fragments;
+DROP TABLE t1;
