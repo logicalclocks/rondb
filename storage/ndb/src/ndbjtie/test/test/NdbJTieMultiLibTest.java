@@ -47,7 +47,7 @@ public class NdbJTieMultiLibTest extends JTieTestBase {
 
         // load native library and class #2
         out.println();
-        loadSystemLibrary("ndbclient");
+        loadSystemLibrary("rondbclient");
         out.println();
         out.println("    loaded: " + NDBAPI.class);
 

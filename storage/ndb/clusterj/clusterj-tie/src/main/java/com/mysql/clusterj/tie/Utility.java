@@ -140,7 +140,7 @@ public class Utility {
     // The idea is to force loading the CharsetMap native class prior to calling the static create method
     // First, make sure that the native library is loaded because CharsetMap depends on it
     static {
-        ClusterConnectionServiceImpl.loadSystemLibrary("ndbclient");
+        ClusterConnectionServiceImpl.loadSystemLibrary("rondbclient");
     }
     static Class<?> charsetMapClass = loadClass("com.mysql.ndbjtie.mysql.CharsetMap");
     static Class<?> loadClass(String className) {

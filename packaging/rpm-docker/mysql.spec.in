@@ -419,8 +419,8 @@ rm -f %{buildroot}%{_datadir}/mysql-*/{mysql.server,mysqld_multi.server,mysql-lo
 rm -rf %{buildroot}%{_datadir}/mysql-*/nodejs/
 rm -rf %{buildroot}%{_datadir}/mysql-*/java/
 rm -rf %{buildroot}%{_libdir}/mysql/ndb_engine.so
-rm -rf %{buildroot}%{_libdir}/mysql/libndbclient_static.a
-rm -rf %{buildroot}%{_libdir}/mysql/libndbclient.so
+rm -rf %{buildroot}%{_libdir}/mysql/librondbclient_static.a
+rm -rf %{buildroot}%{_libdir}/mysql/librondbclient.so
 %endif
 
 %check
@@ -480,7 +480,7 @@ rm -r $(readlink var) var
 %attr(755, root, root) %{_sbindir}/ndb_mgmd
 %attr(755, root, root) %{_sbindir}/ndbd
 %attr(755, root, root) %{_sbindir}/ndbmtd
-%attr(755, root, root) %{_libdir}/mysql/libndbclient.so.6.1.0
+%attr(755, root, root) %{_libdir}/mysql/librondbclient.so.@NDB_SHARED_LIB_VERSION@
 %endif
 
 %attr(755, root, root) %{_sbindir}/mysqld

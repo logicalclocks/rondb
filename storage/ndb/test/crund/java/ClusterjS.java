@@ -102,7 +102,7 @@ class ClusterjS extends CrundSLoad {
         assert (sessionFactory == null);
 
         // load native library (better diagnostics doing it explicitely)
-        //loadSystemLibrary("ndbclient");
+        //loadSystemLibrary("rondbclient");
 
         out.print("creating SessionFactory ...");
         out.flush();

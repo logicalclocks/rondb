@@ -86,6 +86,10 @@ MERGE_CONVENIENCE_LIBRARIES(ndbclient_static ${LIBS_TO_MERGE}
   COMPONENT Development
   LINK_LIBRARIES OpenSSL::SSL OpenSSL::Crypto ${LIBS_TO_LINK}
   )
+# The target keeps its name, the installed file is librondbclient_static.a.
+# MERGE_CONVENIENCE_LIBRARIES takes OUTPUT_NAME but does not use it.
+SET_TARGET_PROPERTIES(ndbclient_static PROPERTIES
+  OUTPUT_NAME rondbclient_static)
 
 IF(NOT WITH_NDB)
   RETURN()
@@ -122,14 +126,16 @@ IF(WITH_NDB_JAVA)
 ENDIF()
 
 #
-# Build shared ndbclient library
+# Build shared ndbclient library, installed as librondbclient
+# (rondbclient.dll on Windows). The name and version differ from the
+# libndbclient.so.6.1.0 of MySQL NDB and of older RonDB releases, whose
+# ABI differs. NDB_SHARED_LIB_VERSION is set in cmake/mysql_version.cmake.
 #
 SET(NDBCLIENT_SO_LIBS ${LIBS_TO_MERGE} ${NDBJTIE_LIB})
-SET(NDB_SHARED_LIB_VERSION "6.1.0")
 
 CONFIGURE_FILE(
-  ${CMAKE_CURRENT_SOURCE_DIR}/libndbclient.ver.in
-  ${CMAKE_CURRENT_BINARY_DIR}/libndbclient.ver)
+  ${CMAKE_CURRENT_SOURCE_DIR}/librondbclient.ver.in
+  ${CMAKE_CURRENT_BINARY_DIR}/librondbclient.ver)
 
 # This is needed for java-based unit tests.
 IF(MY_COMPILER_IS_CLANG AND WITH_UBSAN)
@@ -138,7 +144,7 @@ ENDIF()
 
 # This contains a dummy function _ndbclient_exports() which calls
 # enough symbols to pull in everything we need.
-# libndbclient.ver will export everything, except mysys functions
+# librondbclient.ver will export everything, except mysys functions
 # handle_options my_init my_load_defaults
 ADD_CONVENIENCE_LIBRARY(ndbclient_exports ndbclient_exports.cpp)
 
@@ -150,7 +156,7 @@ IF(WIN32)
     COMPONENT Development
     DESTINATION "${INSTALL_LIBDIR}"
     LINK_LIBRARIES ${NDBCLIENT_SO_LIBS} ${NDBJTIE_LIB} ${LIBS_TO_LINK}
-    OUTPUT_NAME ndbclient
+    OUTPUT_NAME rondbclient
     SOVERSION ${NDB_SHARED_LIB_VERSION}
     )
 ELSE()
@@ -161,7 +167,7 @@ ELSE()
     COMPONENT Development
     DESTINATION "${INSTALL_LIBDIR}"
     LINK_LIBRARIES ${NDBJTIE_LIB} ${LIBS_TO_LINK}
-    OUTPUT_NAME ndbclient
+    OUTPUT_NAME rondbclient
     SOVERSION ${NDB_SHARED_LIB_VERSION}
     )
 ENDIF()
@@ -199,7 +205,7 @@ IF(NOT WIN32)
     STRING_APPEND(ndbclient_so_link_flags " ${LINK_FLAG_NO_UNDEFINED}")
     IF(LINUX)
       STRING_APPEND(ndbclient_so_link_flags
-        " -Wl,--version-script=${CMAKE_CURRENT_BINARY_DIR}/libndbclient.ver")
+        " -Wl,--version-script=${CMAKE_CURRENT_BINARY_DIR}/librondbclient.ver")
     ENDIF()
   ENDIF()
   IF(SOLARIS)

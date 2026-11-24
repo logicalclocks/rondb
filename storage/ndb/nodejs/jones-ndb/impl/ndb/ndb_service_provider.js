@@ -72,7 +72,7 @@ exports.loadRequiredModules = function() {
       msg +=
       "  This module has been built, but was not succesfully loaded.  Perhaps\n" +
       "  setting " + ldp + " to the mysql lib directory (containing\n" +
-      "  libndbclient) will resolve the problem.\n\n";
+      "  librondbclient) will resolve the problem.\n\n";
       if (existsSync(gypConfigFile)) {
         try {
 	  /* 'utf8' here is a json, rather than MySQL, setting. */

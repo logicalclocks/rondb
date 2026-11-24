@@ -156,7 +156,7 @@ class Paths {
   static const std::string runClass() { return javaRunClassPrefix; }
   static const std::string crundCpp() { return cppCrundDir() + "crundAB"; }
 
-  // Paths for libndbclient
+  // Paths for librondbclient
   static const std::string libBuildDir() { return binDir() + libraryDir; }
 
   // mysql client

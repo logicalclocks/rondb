@@ -52,7 +52,7 @@ public class ClusterConnectionServiceImpl
         LoggerFactoryService.getFactory().registerLogger("com.mysql.clusterj.tie");
     }
 
-    /** Load the ndbclient system library only once */
+    /** Load the rondbclient system library only once */
     static boolean ndbclientLoaded = false;
 
     /** Size of OperationOptions, needed for some ndb apis */
@@ -92,7 +92,7 @@ public class ClusterConnectionServiceImpl
     }
 
     public ClusterConnection create(String connectString, int nodeId, int connectTimeoutMgm) {
-        loadSystemLibrary("ndbclient");
+        loadSystemLibrary("rondbclient");
         try {
             return new ClusterConnectionImpl(connectString, nodeId, connectTimeoutMgm);
         } catch (ClusterJFatalUserException cjex) {

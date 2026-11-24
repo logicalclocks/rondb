@@ -109,7 +109,7 @@ class Paths {
   }
   std::string cjtInstJar() { return jarInstDir() + cjtFile(); }
 
-  // Paths for libndbclient
+  // Paths for librondbclient
   std::string libBuildDir();
   std::string libInstDir() { return libInstallPath; }
 
