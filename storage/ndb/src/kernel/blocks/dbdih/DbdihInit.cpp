@@ -94,6 +94,7 @@ void Dbdih::initData() {
   c_lcpState.ctcCounter = 0;
   c_lcpState.m_lcp_trylock_timeout = 0;
   cwaitLcpSr = false;
+  m_chain_clock.store(1, std::memory_order_relaxed);
   c_nsl_active_step = 0;
   c_nsl_perm_retries = 0;
   c_nsl_last_perm_ref = 0;

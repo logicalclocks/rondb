@@ -16721,6 +16721,7 @@ void Dbdih::execDIGETNODESREQ(Signal *signal) {
   Uint32 nodeCount;
   Uint32 sig2;
   Uint32 only_readable_nodes = req->only_readable_nodes;
+  Uint64 chainStamp;
   Ptr<Hash2FragmentMap> ptr;
   DiGetNodesConf *const conf = (DiGetNodesConf *)&signal->theData[0];
   TabRecord *regTabDesc = tabRecord;
@@ -16759,6 +16760,7 @@ loop:
   Uint32 node_val = m_node_view_lock.read_lock();
   Uint32 map_ptr_i = tabPtr.p->m_map_ptr_i;
   Uint32 new_map_ptr_i = tabPtr.p->m_new_map_ptr_i;
+  chainStamp = 0;
 
   if (get_next_fragid_indicator != 0) {
     /**
@@ -16917,6 +16919,7 @@ loop:
     thrjam(jambuf);
     goto crash_check_exit;
   }
+  chainStamp = fragPtr.p->m_chain_stamp;
   sig2 = (nodeCount - 1) + (fragPtr.p->distributionKey << 16);
   conf->instanceKey = dihGetInstanceKey(fragPtr);
   conf->zero = 0;
@@ -16937,6 +16940,10 @@ loop:
       thrjam(jambuf);
       goto crash_check_exit;
     }
+    /* DBTC writes both fragments, a change in either counts */
+    if (fragPtr.p->m_chain_stamp > chainStamp) {
+      chainStamp = fragPtr.p->m_chain_stamp;
+    }
     conf->nodes[MAX_REPLICAS] = newFragId;
     conf->nodes[MAX_REPLICAS + 1] =
         (nodeCount - 1) + (fragPtr.p->distributionKey << 16);
@@ -16946,6 +16953,9 @@ loop:
 check_exit:
   conf->fragChangeNumber = fragPtr.p->changeNumber;
   conf->tabChangeNumber = tabPtr.p->changeNumber;
+  /* Read inside the read sections, see m_chain_clock */
+  conf->setChainStamp(chainStamp);
+  conf->setChainClock(m_chain_clock.load(std::memory_order_relaxed));
 
   if (unlikely(!tabPtr.p->m_lock.read_unlock(tab_val)))
     goto loop;
@@ -17650,11 +17660,17 @@ Dbdih::make_table_use_new_node_order(Signal *signal,
     " fragId = " << fragPtr.p->fragId);
 
   DIH_TAB_WRITE_LOCK(tabPtr.p);
+  Uint16 oldNodes[MAX_REPLICAS];
+  const Uint32 oldCount = fragPtr.p->fragReplicas;
+  ndbrequire(oldCount <= MAX_REPLICAS);
+  memcpy(oldNodes, fragPtr.p->activeNodes, sizeof(oldNodes));
   for (Uint32 i = 0; i < numReplicas; i++) {
     jam();
     ndbrequire(i < MAX_REPLICAS);
     fragPtr.p->activeNodes[i] = newNodeOrder[i];
   }//for
+  check_chain_change(fragPtr, oldNodes, oldCount, fragPtr.p->activeNodes,
+                     numReplicas);
   fragPtr.p->changeNumber++;
   DEB_ACTIVE_NODES(("make_table_use_new_node_order: tab(%u,%u),"
                     " distKey: %u, senderSignalId: %u, signalId: %u"
@@ -25673,6 +25689,7 @@ void Dbdih::initFragstore(FragmentstorePtr fragPtr,
                           Uint32 tableId)
 {
   fragPtr.p->changeNumber = 0;
+  fragPtr.p->m_chain_stamp = 0;
   fragPtr.p->nextPool = RNIL64;
   fragPtr.p->fragId = fragId;
   fragPtr.p->tableId = tableId;
@@ -27809,6 +27826,10 @@ void Dbdih::updateNodeInfo(Signal *signal, TabRecordPtr tabPtr, FragmentstorePtr
   bool found = false;
   replicatePtr.i = fragPtr.p->storedReplicas;
   DIH_TAB_CHECK_WRITE_LOCK(tabPtr.p);
+  Uint16 oldNodes[MAX_REPLICAS];
+  const Uint32 oldCount = fragPtr.p->fragReplicas;
+  ndbrequire(oldCount <= MAX_REPLICAS);
+  memcpy(oldNodes, fragPtr.p->activeNodes, sizeof(oldNodes));
   do {
     jam();
     ndbrequire(c_replicaRecordPool.getPtr(replicatePtr));
@@ -27847,6 +27868,8 @@ void Dbdih::updateNodeInfo(Signal *signal, TabRecordPtr tabPtr, FragmentstorePtr
       break;
     }//if
   }//for
+  check_chain_change(fragPtr, oldNodes, oldCount, fragPtr.p->activeNodes,
+                     index);
   fragPtr.p->changeNumber++;
   DEB_ACTIVE_NODES(("updateNodeInfo: tab(%u,%u),"
                     " distKey: %u, senderSignalId: %u, signalId: %u"
@@ -27861,6 +27884,55 @@ void Dbdih::updateNodeInfo(Signal *signal, TabRecordPtr tabPtr, FragmentstorePtr
                     fragPtr.p->activeNodes[2],
                     fragPtr.p->changeNumber));
 }//Dbdih::updateNodeInfo()
+
+static bool node_in_chain(const Uint16 *nodes, Uint32 count, Uint16 nodeId) {
+  for (Uint32 k = 0; k < count; k++) {
+    if (nodes[k] == nodeId) return true;
+  }
+  return false;
+}
+
+/**
+ * Tick m_chain_clock and stamp the fragment with it if its replica chain
+ * changed in a way that lets a later operation of a transaction overtake
+ * an earlier one in some replica: another primary, or the replicas present
+ * in both chains in another order. A replica added or removed alone does
+ * not count, nor a fragment that had no chain before (a new table).
+ * Called inside the table's write lock section.
+ */
+void Dbdih::check_chain_change(FragmentstorePtr fragPtr,
+                               const Uint16 *oldNodes, Uint32 oldCount,
+                               const Uint16 *newNodes, Uint32 newCount) {
+  if (oldCount == 0 || newCount == 0) {
+    jam();
+    return;
+  }
+  bool changed = (oldNodes[0] != newNodes[0]);
+  Uint32 i = 0;
+  Uint32 j = 0;
+  while (!changed) {
+    while (i < oldCount && !node_in_chain(newNodes, newCount, oldNodes[i])) {
+      i++;
+    }
+    while (j < newCount && !node_in_chain(oldNodes, oldCount, newNodes[j])) {
+      j++;
+    }
+    if (i == oldCount || j == newCount) {
+      /* Both lists hold the same common nodes, so both end together */
+      break;
+    }
+    changed = (oldNodes[i] != newNodes[j]);
+    i++;
+    j++;
+  }
+  if (changed) {
+    jam();
+    /* Only the DBDIH thread writes the clock */
+    const Uint64 clock = m_chain_clock.load(std::memory_order_relaxed) + 1;
+    m_chain_clock.store(clock, std::memory_order_relaxed);
+    fragPtr.p->m_chain_stamp = clock;
+  }
+}
 
 void Dbdih::writeFragment(RWFragment *wf, FragmentstorePtr fragPtr) {
   writePageWord(wf, wf->fragId);

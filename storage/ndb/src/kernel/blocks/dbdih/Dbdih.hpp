@@ -275,6 +275,12 @@ class Dbdih : public SimulatedBlock {
     Uint64 nextPool;
     Uint64 oldStoredReplicas;    /* "DEAD" STORED REPLICAS */
     Uint64 storedReplicas;       /* "ALIVE" STORED REPLICAS */
+    /**
+     * m_chain_clock when the primary or the replica order of this
+     * fragment last changed, 0 if never. Written under the table's write
+     * lock, see m_chain_clock.
+     */
+    Uint64 m_chain_stamp;
 
     /**
      * Used by Fully replicated tables to find the main fragment and to
@@ -353,6 +359,35 @@ class Dbdih : public SimulatedBlock {
    * transactions.
    */
   NdbSeqLock m_node_view_lock;
+
+  /**
+   * DBTC gets the replica chain separately for each operation. A
+   * transaction that sent operations on a row along the old chain of a
+   * fragment and sends more along the new one can see a later operation
+   * overtake an earlier one in some replica.
+   *
+   * m_chain_clock is a logical clock that ticks whenever the primary of a
+   * fragment, or the order of the replicas the fragment already had,
+   * changes; adding or removing a replica alone does not count. The
+   * changed fragment gets the new value as Fragmentstore::m_chain_stamp.
+   * Both are written inside the table's write lock section, after the
+   * lock is taken.
+   *
+   * DIGETNODES returns the fragment's stamp and the clock, both read in
+   * its read section. DBTC keeps the clock of the first operation of a
+   * transaction that is not a committed read, and refuses a later one on
+   * a fragment with a larger stamp (error 1204): that fragment changed
+   * after the transaction started. A transaction that started after the
+   * change sees only the new chain.
+   *
+   * Written only by the DBDIH thread, read by DBTC threads in DIGETNODES;
+   * the seqlocks of the tables order it against the chains. 64 bits do
+   * not wrap. Starts at 1, so DBTC can use 0 as not set.
+   */
+  std::atomic<Uint64> m_chain_clock;
+  void check_chain_change(FragmentstorePtr fragPtr,
+                          const Uint16 *oldNodes, Uint32 oldCount,
+                          const Uint16 *newNodes, Uint32 newCount);
 
   struct NodeRecord {
     NodeRecord() {}

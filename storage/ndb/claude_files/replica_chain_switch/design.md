@@ -1,7 +1,8 @@
 # Replica chain switch during node restart
 
-Status: step 1 implemented (COMMIT_STORED keeps the replica chain). Steps
-2 to 4 are designed, not implemented.
+Status: steps 1 (COMMIT_STORED keeps the replica chain) and 2 (DBDIH
+chain clock and fragment stamps, DBTC check) implemented. Steps 3 and 4
+are designed, not implemented.
 
 ## Problem
 
@@ -91,24 +92,48 @@ primary recalculation at node failure (`removeNodeFromTable()`).
   backup order can differ between nodes, which is harmless.
 - Cost until step 3: a restarted node is primary for no fragment.
 
-### Step 2: distribution counter in DBDIH, check in DBTC
+### Step 2: chain clock and fragment stamps in DBDIH, check in DBTC (implemented)
 
-- DBDIH keeps one node-wide 32-bit counter, bumped whenever the primary or
-  the order of existing replicas of a fragment changes. Adding a replica at
-  STORED and removing a failed node do not need it (the distribution key
+- DBDIH keeps a node-wide 64-bit logical clock, `m_chain_clock`, and each
+  fragment a 64-bit stamp, `Fragmentstore::m_chain_stamp`. When the primary
+  or the order of existing replicas of a fragment changes, the clock ticks
+  and the fragment gets the new value as its stamp. Adding a replica at
+  STORED and removing a failed node do not count (the distribution key
   covers the first, DBTC aborts transactions with operations on a failed
-  node).
-- `execDIGETNODESREQ` returns the counter in `DiGetNodesConf`, read inside
-  the existing retry loop over the table lock and `m_node_view_lock`, so a
-  reader sees chain and counter together.
-- DBTC: one word in the transaction record, set by the first key operation
-  that is not a committed read. Each later such operation compares it with
-  the counter `DIGETNODES` returned; on a mismatch it refuses the operation
-  with 1204 (temporary, the application retries). One word per transaction,
-  one comparison per operation. Scans need nothing: lock take-over updates
-  go to the node holding the scan lock.
-- The node failure path (`removeNodeFromTable()`, under the table write
-  lock) and the graceful-stop switch bump the counter too.
+  node). A new fragment has stamp 0.
+- The tick is in `check_chain_change()`, called by `updateNodeInfo()` and
+  `make_table_use_new_node_order()` inside the table's write lock section.
+  It compares the old and new chain: another primary, or the nodes present
+  in both in another order. A fragment with no chain before (a new table)
+  does not count. Any code that changes chains only has to follow this
+  rule, so the graceful-stop switch (one fragment per section), the
+  recalculation at node failure and the rebalance in step 3 (any batch
+  size) need nothing else.
+- `execDIGETNODESREQ` returns the fragment's stamp (the larger of the two
+  while a reorg moves rows, DBTC writes both) and the clock in
+  `DiGetNodesConf` (two words each, only for direct execution), read inside
+  its read sections.
+- DBTC: `ApiConnectRecord::m_chain_start_clock`, 0 until the first key
+  operation that is not a committed read, which stores the clock. Each
+  later such operation on a fragment whose stamp is larger refuses with
+  `ZDISTRIBUTION_CHANGED_ERROR` (1204, temporary, the application retries)
+  through `releaseAtErrorLab()`, which aborts the transaction, like a
+  `DIGETNODES` failure. Reset in `initApiConnectRec()`. One 64-bit word per
+  transaction, one comparison per operation. Scans need nothing: lock
+  take-over updates go to the node holding the scan lock.
+- Why it is safe: the operations of a transaction run in order in one DBTC
+  thread. If it reads a fragment's chain and later a different chain of
+  the same fragment, the write section that changed it ran between the two
+  reads, so its tick came after the transaction took its clock, and the
+  stamp is larger. The clock of the first operation is read in the same
+  read section as its chain, so it never covers a change that operation
+  did not see. A transaction reading the clock of a later tick from
+  another table's section then sees the changed table's seqlock odd or
+  advanced (wmb after the lock in the writer, rmb in the reader).
+- Aborts: only transactions that use a fragment whose chain changed after
+  they started; transactions that use rebalanced and not yet rebalanced
+  tables are not aborted. The clock has one writer (the DBDIH thread) and
+  starts at 1, so 0 means not set in DBTC; 64 bits do not wrap.
 
 ### Step 3: rebalance in a start phase after the restart barrier (110)
 
@@ -124,8 +149,8 @@ primary recalculation at node failure (`removeNodeFromTable()`).
   `m_node_view_lock` held, as many tables as fit a fragment budget (small
   tables share a step), for each table the table write lock,
   `calc_primary_replicas()` over all fragments and `updateNodeInfo()` on
-  each, and one counter bump per step. Then it replies; the master answers
-  the requesters, which continue their start phases.
+  each, which stamps the fragments whose chain changed. Then it replies;
+  the master answers the requesters, which continue their start phases.
 - Primaries are computed locally on each node. `calc_primary_replicas()`
   writes only its `m_temp_*` counters and each fragment's `primaryNode`;
   its inputs are the fragment layout, the alive nodes and the stored
