@@ -61,6 +61,10 @@
  * number in one aggregate slot (checkAggSlotKinds).
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
  * re-send (passQueue), which only DBTC itself may set (RONDB-1124).
+ * S-1 and S-2 send join aggregation signals that only data nodes send
+ * (SignalScopes.hpp), which a data node must drop and report: S-1
+ * JOIN_AGG_SEND_REQ to DBTC, S-2 a JOIN_AGG_FINAL_REP that stopped a
+ * data node, on release data nodes only (RONDB-1124).
  * Each malformed request is built by taking a known-good, word-for-word
  * SPJ encoding (the POSITIVE CONTROL below, encoded exactly as
  * NdbQueryBuilder would) and perturbing it as little as possible, so a
@@ -102,6 +106,7 @@
 #include <signaldata/TcKeyReq.hpp>
 #include <signaldata/QueryTree.hpp>
 #include <signaldata/DbspjErr.hpp>
+#include <signaldata/JoinAgg.hpp>
 #include <ndbapi/NdbAggregationCommon.hpp>
 #include <cstring>
 #include <vector>
@@ -1502,6 +1507,106 @@ class SpjMalformedChecker {
     return expectSurvive("Q-5 SCAN_TABREQ with the rate queue flag", r);
   }
 
+  /* ---- S cases: join aggregation signals from the API ----------------- *
+   * DBTC, DBSPJ, DBLQH and the DBLQH proxy pass the JOIN_AGG_* and CTE_*
+   * signals between data nodes only, so SignalScopes.hpp declares them
+   * Remote, or Local for the three that never leave their node.  They
+   * had no scope, so a data node ran their handlers for an API node too.
+   * A data node now drops a Remote one that an API node sends and
+   * reports it as signal_scope_remote_violation (violation 32, Tier A:
+   * the API node is disconnected); the MTR wrappers check the count. */
+
+  int runS1() {  /* JOIN_AGG_SEND_REQ to DBTC */
+    /* DBTC answered a JOIN_AGG_SEND_REQ from any node with a
+     * JOIN_AGG_SEND_CONF to the block reference in the request, so an
+     * API node could make DBTC send a SEND_CONF to any DBLQH.  No block
+     * unit test sends SEND_REQ, so it is Remote in debug builds too and
+     * the case runs against debug and release data nodes.  The request
+     * names us: a SEND_CONF back means that DBTC took it.  Its word 0
+     * is the reference of the DBTC instance that answers. */
+    const char *const findingId = "S-1 JOIN_AGG_SEND_REQ from the API to DBTC";
+    const Uint32 nodeId = pickDbNode();
+    Uint32 apiConnectPtr = 0, tcRef = 0, seizeUp = 0;
+    if (!seize(nodeId, apiConnectPtr, tcRef, seizeUp)) return NDBT_FAILED;
+    SimpleSignal sig(false);
+    JoinAggSendReq *req =
+        reinterpret_cast<JoinAggSendReq *>(sig.getDataPtrSend());
+    req->senderRef = m_ss->getOwnRef();
+    req->senderData = ++m_userPointer;
+    req->requestId = 0;
+    req->aggStateKey = 0;
+    req->numRowsSent = 0;
+    req->resultBytes = 0;
+    Uint32 reply[25] = {0};
+    m_ss->lock();
+    const SendStatus sent =
+        m_ss->sendSignal(nodeId, sig, refToBlock(tcRef),
+                         GSN_JOIN_AGG_SEND_REQ, JoinAggSendReq::SignalLength);
+    /* The wait also gives a crash time to surface. */
+    const Uint32 gsn =
+        sent == SEND_OK
+            ? waitReplyLocked(GSN_JOIN_AGG_SEND_CONF, GSN_JOIN_AGG_SEND_CONF,
+                              tcRef, nodeId, SettleMillis, reply)
+            : 0;
+    m_ss->unlock();
+    g_info << findingId << ": sent " << (sent == SEND_OK ? "OK" : "FAILED")
+           << endl;
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (gsn == GSN_JOIN_AGG_SEND_CONF) {
+      g_err << findingId << ": FAIL -- DBTC answered with JOIN_AGG_SEND_CONF: "
+               "the data node took a JOIN_AGG_SEND_REQ from an API node"
+            << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId
+           << ": PASS (all data nodes started; no JOIN_AGG_SEND_CONF)" << endl;
+    return NDBT_OK;
+  }
+
+  int runS2() {  /* JOIN_AGG_FINAL_REP to DBLQH, sender node past the max */
+    /* execJOIN_AGG_FINAL_REP stopped the data node on
+     * ndbrequire(senderNodeId < ABS_MAX_NDB_NODES), so one FINAL_REP
+     * from an API node stopped a data node.  The block unit tests send
+     * FINAL_REP from an API node, so a debug data node still takes it
+     * (NDB_SCOPE_REMOTE_EXCEPT_DEBUG in SignalScopes.hpp) and stops: the
+     * case needs release data nodes, and its MTR wrapper skips on debug
+     * ones.  The check comes before any state lookup, so any LDM
+     * instance will do: DBLQH instance 1. */
+    const char *const findingId =
+        "S-2 JOIN_AGG_FINAL_REP from the API, sender node past the maximum";
+    const Uint32 nodeId = pickDbNode();
+    SimpleSignal sig(false);
+    JoinAggFinalRep *rep =
+        reinterpret_cast<JoinAggFinalRep *>(sig.getDataPtrSend());
+    rep->aggStateKey = 0;
+    rep->senderNodeId = 0xFFFF;
+    rep->identWord = 0xFFFFFF00u; /* RNIL */
+    rep->transid[0] = 0x5b510000u + nodeId;
+    rep->transid[1] = ++m_userPointer;
+    rep->redistributeCountLo = 0;
+    rep->redistributeCountHi = 0;
+    rep->errorCode = 0;
+    m_ss->lock();
+    const SendStatus sent =
+        m_ss->sendSignal(nodeId, sig, numberToBlock(DBLQH, 1),
+                         GSN_JOIN_AGG_FINAL_REP, JoinAggFinalRep::SignalLength);
+    m_ss->unlock();
+    g_info << findingId << ": sent " << (sent == SEND_OK ? "OK" : "FAILED")
+           << endl;
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (clusterHealthy()) {
+      g_info << findingId << ": PASS (all data nodes started)" << endl;
+      return NDBT_OK;
+    }
+    return failNodeDown(findingId);
+  }
+
  private:
   SignalSender *const m_ss;
   NdbRestarter *const m_restarter;
@@ -1963,6 +2068,8 @@ CASE_STEP(runQ2, runQ2)
 CASE_STEP(runQ3, runQ3)
 CASE_STEP(runQ4, runQ4)
 CASE_STEP(runQ5, runQ5)
+CASE_STEP(runS1, runS1)
+CASE_STEP(runS2, runS2)
 
 }  // namespace
 
@@ -2107,6 +2214,14 @@ TESTCASE("Q4",
 }
 TESTCASE("Q5", "SCAN_TABREQ with the rate queue flag from the API") {
   STEP(runQ5);
+}
+TESTCASE("S1", "JOIN_AGG_SEND_REQ from the API to DBTC") {
+  STEP(runS1);
+}
+TESTCASE("S2",
+         "JOIN_AGG_FINAL_REP from the API, sender node past the maximum "
+         "(release data nodes only)") {
+  STEP(runS2);
 }
 NDBT_TESTSUITE_END(testSpjMalformed)
 

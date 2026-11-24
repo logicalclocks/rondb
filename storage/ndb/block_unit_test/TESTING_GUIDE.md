@@ -151,9 +151,14 @@ JOIN_AGG_FINAL_REP) and the consumer requests (CTE_SCAN_REQ,
 CTE_LOOKUP_REQ, JOIN_AGG_NULL_ROW_REQ) from the API node. Points that
 matter when writing such a test:
 
-- These GSNs have no entry in `SignalScopes.hpp`, so DBLQH executes them
-  for an API sender in every build; only SCAN_FRAGREQ depends on the
-  debug relaxation.
+- These GSNs, like LQHKEYREQ and SCAN_FRAGREQ, are
+  `NDB_SCOPE_REMOTE_EXCEPT_DEBUG` in `SignalScopes.hpp`: a debug data
+  node executes them for an API sender, a release one drops them and
+  disconnects the API node (Tier A). The MTR wrapper must therefore
+  source `include/have_ndb_debug.inc`. A GSN declared `Remote` or `Local`
+  there disconnects the test's API node in debug builds too; a new test
+  that sends one must change its entry to
+  `NDB_SCOPE_REMOTE_EXCEPT_DEBUG` first.
 - Address them to the owner LDM instance from SETUP_CONF
   (`numberToBlock(DBLQH, ownerInstance)`), never to instance 0 (the
   proxy does not handle them).

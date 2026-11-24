@@ -1,0 +1,9 @@
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# S-1: JOIN_AGG_SEND_REQ from the API to DBTC
+Running command
+Result of command: 0
+Test program success!
+# Reported as signal_scope_remote_violation: OK
