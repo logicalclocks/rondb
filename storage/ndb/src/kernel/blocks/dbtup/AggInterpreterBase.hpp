@@ -787,6 +787,20 @@ class AggInterpreterBase : public PushdownInterpreter {
   Int32 initGBTypesFromMetadata(const Uint32* metadata,
                                 Uint32 metadataLen,
                                 EmulatedJamBuffer *jamBuf);
+  /* Describes a GROUP BY column in info from a type, size and collation
+   * id that came in a request: the setup metadata, a CTE marker of a
+   * linked entry, or the column metadata of a linked entry's table
+   * column.  The collation must fit the type
+   * (NdbSqlUtil::get_compare_collation): a CHAR GROUP BY column with
+   * collation 0 left info.cs nullptr, and the ORDER BY top-N compare of
+   * a CTE called cmpChar with it; a non-string column with a collation
+   * failed the assert of its compare function in the group hash table.
+   * Returns false for such a column.  CHAR keys compare padded
+   * (NdbSqlUtil::getStringResultCmp). */
+  static bool initGBColType(GBColTypeInfo& info,
+                            Uint32 typeId,
+                            Uint32 maxBytes,
+                            Uint32 csNumber);
   Int32 initStringAggSlotFromMetadata(Uint32 aggIndex,
                                       Uint32 typeId,
                                       Uint32 maxBytes,

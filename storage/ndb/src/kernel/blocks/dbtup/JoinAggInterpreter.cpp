@@ -2747,16 +2747,12 @@ Int32 JoinAggInterpreter::initGBTypesForNullLocal(EmulatedJamBuffer *jamBuf) {
         Uint32 word1 = ah[-1];
         if (CteLinkedAttr::isCteMarker(word0)) {
           thrjamDebug(jamBuf);
-          info.typeId = CteLinkedAttr::decodeTypeId(word0);
-          info.maxBytes = CteLinkedAttr::decodeMaxBytes(word0);
-          info.cs = nullptr;
-          Uint32 csNumber = CteLinkedAttr::decodeCsNumber(word1);
-          if (csNumber != 0) {
-            thrjamDebug(jamBuf);
-            info.cs = NdbSqlUtil::get_collation(csNumber);
-            if (unlikely(info.cs == nullptr)) {
-              return ZAGG_OTHER_ERROR;
-            }
+          /* As initGBTypes: the collation must fit the type */
+          if (unlikely(!initGBColType(
+                  info, CteLinkedAttr::decodeTypeId(word0),
+                  CteLinkedAttr::decodeMaxBytes(word0),
+                  CteLinkedAttr::decodeCsNumber(word1)))) {
+            return ZAGG_OTHER_ERROR;
           }
         } else {
           thrjamDebug(jamBuf);
@@ -2772,15 +2768,10 @@ Int32 JoinAggInterpreter::initGBTypesForNullLocal(EmulatedJamBuffer *jamBuf) {
           const ColumnMeta *meta =
               findColumnMeta(tableId, tableVersion, linkedAttrId);
           if (meta != nullptr) {
-            info.typeId = meta->typeId;
-            info.maxBytes = meta->maxBytes;
-            info.cs = nullptr;
-            if (meta->csNumber != 0) {
-              thrjamDebug(jamBuf);
-              info.cs = NdbSqlUtil::get_collation(meta->csNumber);
-              if (unlikely(info.cs == nullptr)) {
-                return ZAGG_OTHER_ERROR;
-              }
+            thrjamDebug(jamBuf);
+            if (unlikely(!initGBColType(info, meta->typeId, meta->maxBytes,
+                                        meta->csNumber))) {
+              return ZAGG_OTHER_ERROR;
             }
           } else {
             g_eventLogger->debug("initGBTypesForNullLocal: missing metadata "
@@ -2797,8 +2788,6 @@ Int32 JoinAggInterpreter::initGBTypesForNullLocal(EmulatedJamBuffer *jamBuf) {
           "for local GROUP BY column attr_id=%u", attr_id);
       return ZAGG_OTHER_ERROR;
     }
-    const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
-    info.cmpFn = sqlType.m_cmp;
   }
   return publishGBTypes(jamBuf);
 }

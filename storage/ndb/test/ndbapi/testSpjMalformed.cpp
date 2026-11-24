@@ -51,6 +51,9 @@
  * which reads as NULL (RONDB-1124).
  * P-41 is a plain interpreted read, not through DBSPJ, whose AttrInfo
  * header lengths wrap in 32 bits, which DBTUP refuses (RONDB-1124).
+ * P-43 and P-44 send GROUP BY column metadata whose collation does not
+ * fit its type, which JOIN_AGG_SETUP_REQ must refuse
+ * (AggInterpreterBase::initGBColType).
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
  * re-send (passQueue), which only DBTC itself may set (RONDB-1124).
  * Each malformed request is built by taking a known-good, word-for-word
@@ -544,6 +547,55 @@ class SpjMalformedChecker {
         Interpreter::WriteInterpreterOutput(0, 0),
         Interpreter::ExitOK()};
     return embeddedCountLeaf(emb);
+  }
+
+  /* ---- GROUP BY column metadata (P-43, P-44) --------------------------- *
+   * A leaf that groups by column 0 of the table, its primary key (T1's
+   * KOL1, an Unsigned), and counts the rows. */
+  static std::vector<Uint32> localGroupByLeaf() {
+    std::vector<Uint32> body;
+    body.push_back((0u << 16) |
+                   (Uint32(NDB_TYPE_UNSIGNED) & AGG_GB_COL_TYPE_MASK));
+    const std::vector<Uint32> count = countBody(0, 0);
+    body.insert(body.end(), count.begin(), count.end());
+    std::vector<Uint32> p = aggProgram(1, body);
+    p[1] = (1u << 16) | 1u;  /* one GROUP BY column, one result */
+    return p;
+  }
+
+  /* Appends the column metadata of the main program to a join
+   * aggregation's KeyInfo, after its leaves, as NdbQueryImpl lays it out
+   * (NdbQueryOperation.cpp, appendJoinAggColumnMetaEntry): a container
+   * [marker][version][1 block], the block's [kind MAIN][no CTE][length],
+   * and the block [marker][version][1 entry][entry].  The entry describes
+   * the GROUP BY column of localGroupByLeaf with typeId, maxBytes and
+   * csNumber.  DBTC sends the block with JOIN_AGG_SETUP_REQ, and
+   * DblqhProxy gives it to AggInterpreterBase::initGBTypesFromMetadata. */
+  void appendGroupByMeta(SpjReq &r, Uint32 typeId, Uint32 maxBytes,
+                         Uint32 csNumber) {
+    const std::vector<Uint32> entry = {
+        JOIN_AGG_META_SOURCE_LOCAL_COLUMN,
+        0,  /* source: column 0 */
+        8,  /* program offset of the GROUP BY column word */
+        0,  /* GROUP BY slot 0 */
+        m_tableId,
+        m_schemaVersion,
+        0,  /* column id */
+        typeId,
+        maxBytes,
+        csNumber,
+        0,  /* precision << 16 | scale */
+        JOIN_AGG_META_FLAG_GROUP_BY};
+    r.keyInfo.push_back(JOIN_AGG_META_MARKER);
+    r.keyInfo.push_back(JOIN_AGG_META_VERSION);
+    r.keyInfo.push_back(1);  /* one block */
+    r.keyInfo.push_back(JOIN_AGG_META_KIND_MAIN);
+    r.keyInfo.push_back(kNoCteIndex);
+    r.keyInfo.push_back(3 + Uint32(entry.size()));
+    r.keyInfo.push_back(JOIN_AGG_META_MARKER);
+    r.keyInfo.push_back(JOIN_AGG_META_VERSION);
+    r.keyInfo.push_back(1);  /* one entry */
+    r.keyInfo.insert(r.keyInfo.end(), entry.begin(), entry.end());
   }
 
   /* ---------------------- the cases ----------------------------------- */
@@ -1107,6 +1159,28 @@ class SpjMalformedChecker {
     return NDBT_OK;
   }
 
+  int runP43() {  /* GROUP BY metadata: a CHAR column with collation 0 */
+    /* initGBTypesFromMetadata left the collation nullptr for charset 0.
+     * The group hash table then compared the keys as bytes, but the
+     * ORDER BY top-N compare of a CTE (compareGroupsByOrderSpec) called
+     * cmpChar with it: a debug data node failed its assert, a release
+     * one crashed.  The NDB API sends 0 for a column without a
+     * collation. */
+    return expectGroupByMetaRejected(
+        "P-43 join aggregation GROUP BY CHAR column with collation 0",
+        NDB_TYPE_CHAR, 0);
+  }
+
+  int runP44() {  /* GROUP BY metadata: an Unsigned column with latin1 */
+    /* The group hash table compares the keys of a column with a
+     * collation with its compare function, and cmpUnsigned asserts that
+     * it has no collation: a debug data node stopped when two groups
+     * met in one bucket. */
+    return expectGroupByMetaRejected(
+        "P-44 join aggregation GROUP BY Unsigned column with a collation",
+        NDB_TYPE_UNSIGNED, 8);
+  }
+
   /* ---- Q cases: DBTC's rate queue re-send mark sent by the API -------- *
    * DBTC's rate queue handler re-sends a queued request to its own DBTC
    * instance with a mark: the passQueue flag of TCKEYREQ, TCINDXREQ and
@@ -1199,6 +1273,8 @@ class SpjMalformedChecker {
   static constexpr Uint32 kAggReceiverId = 0x00010000u;
   static constexpr Uint32 kBatchRows = 16;
   static constexpr Uint32 kBatchBytes = 32768;
+  /* The cteIndex of the main program's column metadata block (RNIL) */
+  static constexpr Uint32 kNoCteIndex = 0xFFFFFF00u;
 
   struct Reply {
     Uint32 gsn{0};
@@ -1499,6 +1575,52 @@ class SpjMalformedChecker {
     return NDBT_OK;
   }
 
+  /* A GROUP BY metadata case: first the join aggregation of
+   * localGroupByLeaf with the metadata of its column (Unsigned, 4 bytes,
+   * no collation), which must get SCAN_TABCONF, then the same with
+   * typeId and csNumber in the metadata, which JOIN_AGG_SETUP_REQ must
+   * refuse (DbspjErr::InvalidRequest) with every data node started. */
+  int expectGroupByMetaRejected(const char *findingId, Uint32 typeId,
+                                Uint32 csNumber) {
+    SpjReq good;
+    makeJoinAggScan(good, {localGroupByLeaf()});
+    appendGroupByMeta(good, NDB_TYPE_UNSIGNED, 4, 0);
+    const Reply control = sendScanTabReq(good);
+    printReply("CONTROL (join aggregation with GROUP BY metadata)", control);
+    if (control.gsn != GSN_SCAN_TABCONF) {
+      g_err << "GROUP BY METADATA CONTROL did not get SCAN_TABCONF (got "
+            << gsnName(control.gsn) << ", err " << control.errorCode
+            << ").  The raw column metadata encoding is wrong; fix this "
+               "before trusting the result of "
+            << findingId << "." << endl;
+      return clusterHealthy() ? NDBT_FAILED : failNodeDown(findingId);
+    }
+
+    SpjReq r;
+    makeJoinAggScan(r, {localGroupByLeaf()});
+    appendGroupByMeta(r, typeId, 4, csNumber);
+    r.waitForEnd = true;
+    const Reply rep = sendScanTabReq(r);
+    printReply(findingId, rep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (rep.gsn != GSN_SCAN_TABREF) {
+      g_err << findingId << ": FAIL -- expected SCAN_TABREF, got "
+            << gsnName(rep.gsn)
+            << ": the GROUP BY metadata was not rejected" << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId << ": PASS (all data nodes started; SCAN_TABREF "
+           << rep.errorCode << ", JOIN_AGG_SETUP_REF sends "
+           << Uint32(DbspjErr::InvalidRequest) << ")" << endl;
+    return NDBT_OK;
+  }
+
   /* Patch the tree header count/length and the child node length after an
    * insertion of `added` words inside the child node. */
   void fixupTreeHeaderAndChildLen(SpjReq &r, Uint32 added) {
@@ -1566,6 +1688,8 @@ CASE_STEP(runP36, runP36)
 CASE_STEP(runP37, runP37)
 CASE_STEP(runP40, runP40)
 CASE_STEP(runP41, runP41)
+CASE_STEP(runP43, runP43)
+CASE_STEP(runP44, runP44)
 CASE_STEP(runQ1, runQ1)
 CASE_STEP(runQ2, runQ2)
 CASE_STEP(runQ3, runQ3)
@@ -1672,6 +1796,15 @@ TESTCASE("P41",
          "interpreted read whose AttrInfo header lengths wrap in 32 "
          "bits") {
   STEP(runP41);
+}
+TESTCASE("P43",
+         "join aggregation: GROUP BY CHAR column metadata with collation 0") {
+  STEP(runP43);
+}
+TESTCASE("P44",
+         "join aggregation: GROUP BY Unsigned column metadata with a "
+         "collation") {
+  STEP(runP44);
 }
 TESTCASE("Q1", "TCKEYREQ with the rate queue flag from the API") {
   STEP(runQ1);

@@ -57,7 +57,7 @@ struct MemChunk {
 struct GBColTypeInfo {
   Uint32 typeId;
   const CHARSET_INFO *cs;          // nullptr for non-string types
-  NdbSqlUtil::Cmp *cmpFn;         // from NdbSqlUtil::getType(typeId)
+  NdbSqlUtil::Cmp *cmpFn;         // NdbSqlUtil::getStringResultCmp(typeId)
   Uint32 maxBytes;                 // AttributeDescriptor::getSizeInBytes
 };
 

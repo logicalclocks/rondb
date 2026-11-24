@@ -1,0 +1,16 @@
+--source include/have_ndb.inc
+
+# P-44: a join aggregation whose GROUP BY column metadata describes an
+# Unsigned column with a collation (latin1). The group hash table then
+# compared two keys of a bucket with cmpUnsigned and the collation,
+# which it asserts it has none of, so a debug data node stopped;
+# initGBColType now refuses the metadata at JOIN_AGG_SETUP_REQ.
+# The case runs a join aggregation with the column's own metadata first,
+# then the malformed one, which must get SCAN_TABREF with every data
+# node still started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P44
+--let $spj_case_title = P-44: join aggregation GROUP BY Unsigned column with a collation
+--source suite/ndb_spj/include/spj_malformed_case.inc

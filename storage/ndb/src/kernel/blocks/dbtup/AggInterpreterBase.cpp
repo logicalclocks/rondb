@@ -2276,6 +2276,16 @@ void AggInterpreterBase::freeAllChunks() {
   m_total_chunk_bytes = 0;
 }
 
+bool AggInterpreterBase::initGBColType(GBColTypeInfo& info,
+                                       Uint32 typeId,
+                                       Uint32 maxBytes,
+                                       Uint32 csNumber) {
+  info.typeId = typeId;
+  info.maxBytes = maxBytes;
+  info.cmpFn = NdbSqlUtil::getStringResultCmp(typeId);
+  return NdbSqlUtil::get_compare_collation(typeId, csNumber, &info.cs);
+}
+
 /*
  * Step 2b — shared GROUP BY type-metadata initializer.
  *
@@ -2328,16 +2338,17 @@ Int32 AggInterpreterBase::initGBTypes(
 
       if (CteLinkedAttr::isCteMarker(word0)) {
         thrjamDebug(jamBuf);
-        info.typeId = CteLinkedAttr::decodeTypeId(word0);
-        info.maxBytes = CteLinkedAttr::decodeMaxBytes(word0);
-        info.cs = nullptr;
-        Uint32 csNumber = CteLinkedAttr::decodeCsNumber(word1);
-        if (csNumber != 0) {
-          thrjamDebug(jamBuf);
-          info.cs = NdbSqlUtil::get_collation(csNumber);
-          if (unlikely(info.cs == nullptr)) {
-            return ZAGG_OTHER_ERROR;
-          }
+        /* The marker comes from DBLQH (a CTE row) or, copied by DBSPJ,
+         * from the API (the virtual columns of a CTE_LOOKUP). */
+        if (unlikely(!initGBColType(info,
+                                    CteLinkedAttr::decodeTypeId(word0),
+                                    CteLinkedAttr::decodeMaxBytes(word0),
+                                    CteLinkedAttr::decodeCsNumber(word1)))) {
+          g_eventLogger->debug("initGBTypes: linked GROUP BY column %u of "
+              "type %u has a collation %u that does not fit it", i,
+              CteLinkedAttr::decodeTypeId(word0),
+              CteLinkedAttr::decodeCsNumber(word1));
+          return ZAGG_OTHER_ERROR;
         }
       } else {
         thrjamDebug(jamBuf);
@@ -2353,18 +2364,14 @@ Int32 AggInterpreterBase::initGBTypes(
         const ColumnMeta *meta =
             findColumnMeta(tableId, tableVersion, linkedAttrId);
         if (meta != nullptr) {
-          info.typeId = meta->typeId;
-          info.maxBytes = meta->maxBytes;
-          info.cs = nullptr;
-          if (meta->csNumber != 0) {
-            thrjamDebug(jamBuf);
-            info.cs = NdbSqlUtil::get_collation(meta->csNumber);
-            if (unlikely(info.cs == nullptr)) {
-              return ZAGG_OTHER_ERROR;
-            }
+          thrjamDebug(jamBuf);
+          if (unlikely(!initGBColType(info, meta->typeId, meta->maxBytes,
+                                      meta->csNumber))) {
+            g_eventLogger->debug("initGBTypes: linked GROUP BY column %u "
+                "of type %u has a collation %u that does not fit it", i,
+                meta->typeId, meta->csNumber);
+            return ZAGG_OTHER_ERROR;
           }
-          const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
-          info.cmpFn = sqlType.m_cmp;
           continue;
         }
         g_eventLogger->debug("initGBTypes: missing metadata for linked "
@@ -2396,9 +2403,9 @@ Int32 AggInterpreterBase::initGBTypes(
         Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
         info.cs = req_struct->tablePtrP->charsetArray[csPos];
       }
+      /* The table's own type and collation, which fit each other */
+      info.cmpFn = NdbSqlUtil::getStringResultCmp(info.typeId);
     }
-    const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
-    info.cmpFn = sqlType.m_cmp;
   }
   return publishGBTypes(jamBuf);
 }
@@ -2476,18 +2483,14 @@ Int32 AggInterpreterBase::initGBTypesFromMetadata(
         return ZAGG_OTHER_ERROR;
       }
 
-      GBColTypeInfo &info = m_gb_types[slotIndex];
-      info.typeId = typeId;
-      info.maxBytes = maxBytes;
-      info.cs = nullptr;
-      if (csNumber != 0) {
-        info.cs = NdbSqlUtil::get_collation(csNumber);
-        if (unlikely(info.cs == nullptr)) {
-          return ZAGG_OTHER_ERROR;
-        }
+      /* Refused here, at JOIN_AGG_SETUP_REQ, before any row */
+      if (unlikely(!initGBColType(m_gb_types[slotIndex], typeId, maxBytes,
+                                  csNumber))) {
+        g_eventLogger->debug("initGBTypesFromMetadata: GROUP BY column "
+            "%u of type %u has a collation %u that does not fit it",
+            slotIndex, typeId, csNumber);
+        return ZAGG_OTHER_ERROR;
       }
-      const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
-      info.cmpFn = sqlType.m_cmp;
       found[slotIndex] = true;
       foundCount++;
     }

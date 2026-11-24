@@ -1,0 +1,16 @@
+--source include/have_ndb.inc
+
+# P-43: a join aggregation whose GROUP BY column metadata describes a
+# CHAR column with collation 0. initGBTypesFromMetadata left the
+# collation nullptr, and the ORDER BY top-N compare of a CTE called
+# cmpChar with it, so a data node stopped; initGBColType now refuses
+# the metadata at JOIN_AGG_SETUP_REQ.
+# The case runs a join aggregation with the column's own metadata first,
+# then the malformed one, which must get SCAN_TABREF with every data
+# node still started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P43
+--let $spj_case_title = P-43: join aggregation GROUP BY CHAR column with collation 0
+--source suite/ndb_spj/include/spj_malformed_case.inc
