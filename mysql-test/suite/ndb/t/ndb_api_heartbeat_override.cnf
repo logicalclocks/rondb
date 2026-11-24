@@ -5,6 +5,7 @@
 ndbd=,
 ndb_mgmd=
 mysqld=,
+ndbapi=,,
 HeartbeatIntervalDbApi=2000
 MaxBufferedEpochs=800
 
@@ -17,12 +18,25 @@ HeartbeatIntervalDbApi=5000
 NodeId=12
 HeartbeatIntervalDbApi=5000
 
+# The second mysqld gets node ids of its own. Without them its two
+# connections ask for any free node id and can take 11 and 12 before the
+# first mysqld, which then never connects to the cluster. The third
+# ndbapi node is left free.
+[cluster_config.ndbapi.1.1]
+NodeId=13
+
+[cluster_config.ndbapi.2.1]
+NodeId=14
+
 [mysqld]
 ndbcluster
 ndb-cluster-connection-pool=2
 
 [mysqld.1.1]
 ndb-cluster-connection-pool-nodeids=11,12
+
+[mysqld.2.1]
+ndb-cluster-connection-pool-nodeids=13,14
 
 [ENV]
 NDB_CONNECTSTRING=             @mysql_cluster.1.ndb_connectstring
