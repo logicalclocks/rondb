@@ -1,8 +1,9 @@
 # Replica chain switch during node restart
 
-Status: steps 1 (COMMIT_STORED keeps the replica chain) and 2 (DBDIH
-chain clock and fragment stamps, DBTC check) implemented. Steps 3 and 4
-are designed, not implemented.
+Status: steps 1 (COMMIT_STORED keeps the replica chain), 2 (DBDIH chain
+clock and fragment stamps, DBTC check) and 3 (rebalance in start phase
+120, old behaviour with older data nodes) implemented. Step 4 (tests) is
+designed, not implemented; DUMP 7036 for it exists.
 
 ## Problem
 
@@ -85,12 +86,31 @@ primary recalculation at node failure (`removeNodeFromTable()`).
   in `activeNodes` order before `updateNodeInfo()`, so the rebuilt chain is
   the copy-phase chain with the new node right after the primary. Later
   `updateNodeInfo()` calls rebuild the same order.
-- Mixed versions: an old starting node still sends a new primary, and an
-  old cluster without dynamic primaries switches to the preferred primary.
-  `updateNodeInfo()` still switches in whatever primary the signal or the
-  preferred primary gives, so all nodes agree on the primary; only the
-  backup order can differ between nodes, which is harmless.
-- Cost until step 3: a restarted node is primary for no fragment.
+- Mixed versions (added with step 3): keeping the chain needs the
+  rebalance of step 3 to move primaries to the restarted node later, so
+  it is done only when every alive data node supports that rebalance
+  (`is_rebalance_primaries_supported()`, version 26.10.1). With an older
+  data node in the cluster all nodes do as the older versions do:
+  - the starting node decides once, in `execSTART_TOCONF()`
+    (`c_takeover_keep_chain`); in a mixed cluster it sets
+    `TabRecord::m_calc_primary_replicas`, calculates the new primaries
+    when the copy of each table starts and sends them in COMMIT_STORED;
+  - every receiver relinks the stored replicas
+    (`orderStoredReplicasAsActiveNodes()`) only when all nodes support the
+    rebalance, else it appends the new replica as before;
+  - an older starting node always sends its calculated primary, and
+    without dynamic primaries `updateNodeInfo()` switches to the preferred
+    primary, so all nodes agree on the primary.
+
+  The switch changes the chain, so the fragment gets a new stamp (step 2,
+  not version gated): DBTC on nodes of this version refuses transactions
+  that straddle it with 1204, older DBTCs keep the old race until the
+  upgrade completes. The last restart of a rolling upgrade has only new
+  nodes alive, keeps the chain and rebalances the whole cluster.
+- Rare case: an older node is included (another node group) while a new
+  node copies with the chain kept; receivers then append without
+  relinking, the backup order changes as in the old behaviour, and step 2
+  catches it on new DBTCs.
 
 ### Step 2: chain clock and fragment stamps in DBDIH, check in DBTC (implemented)
 
@@ -135,22 +155,54 @@ primary recalculation at node failure (`removeNodeFromTable()`).
   tables are not aborted. The clock has one writer (the DBDIH thread) and
   starts at 1, so 0 means not set in DBTC; 64 bits do not wrap.
 
-### Step 3: rebalance in a start phase after the restart barrier (110)
+### Step 3: rebalance in start phase 120, after the restart barrier (implemented)
 
-- The restart barrier releases when every restarting node has recovered,
-  so no fragment copy runs anywhere after it, and one rebalance covers all
-  restarts released together. The node still reports "starting" during the
-  phase, so a Kubernetes rolling restart waits until primaries are
-  balanced.
-- Flow: in the new phase (e.g. 120, to check against the phase lists) the
-  DBDIH of each restarting node asks the master. The master combines
-  requests that arrive together into one run and sends `DIH_REBALANCE_REQ`
-  to all live DBDIHs. Each runs a CONTINUEB loop: per step, with
-  `m_node_view_lock` held, as many tables as fit a fragment budget (small
-  tables share a step), for each table the table write lock,
-  `calc_primary_replicas()` over all fragments and `updateNodeInfo()` on
-  each, which stamps the fragments whose chain changed. Then it replies;
-  the master answers the requesters, which continue their start phases.
+- The restart barrier (110) releases when every restarting node has
+  recovered, so no fragment copy runs anywhere after it, and one rebalance
+  covers all restarts released together. The node still reports
+  "starting" during phase 120, so a Kubernetes rolling restart waits until
+  the primaries are balanced. Phase 120 counts as recovered
+  (`getNodeRecovered()`, start phase >= 110), so a node failure there
+  takes the normal path in NDBCNTR and DBDIH.
+- Signals `DIH_REBALANCE_REQ` (987) and `DIH_REBALANCE_CONF` (988), DBDIH
+  to DBDIH, scope Remote, classes `DihRebalanceReq`/`DihRebalanceConf`
+  in `DihSwitchReplica.hpp`. DBDIH asks for STTOR 120
+  (`sendSTTORRY()`), `rebalance_start_phase()`.
+- Requester (restarted node, node restart or initial node restart only;
+  other start types log the step as skipped): `[NODE-START]` step 17/17
+  (rebalance), sends `DIH_REBALANCE_REQ(Request)` to the master and
+  continues its start phases on `DIH_REBALANCE_CONF(Done)`, or when the
+  master fails. Skips when some alive node lacks support.
+- Master (`rebalance_master_request()`): one run at a time. A request
+  during a run joins it: the run started when no node was below the
+  barrier, so the requester had completed its copy. Otherwise
+  `rebalance_master_check()`:
+  - not supported by all alive nodes: answer, no run;
+  - busy: LCP master take-over, `c_nodeStartMaster.activeState`/`wait`
+    (start inclusion, graceful-stop switch), a graceful stop permission,
+    a take-over in `c_masterActiveTakeOverList`, or
+    `Ndbcntr::is_any_node_below_restart_barrier()`: answer, and keep a
+    pending run retried every second (`ZREBALANCE_PENDING`), since a
+    starting node that fails before it is alive in DBDIH neither
+    rebalances nor makes failure handling do it;
+  - node failure handling in progress (`m_remove_node_from_table_ongoing`):
+    answer, it recomputes every table.
+  
+  A run sends `DIH_REBALANCE_REQ(Run, runId)` to all alive DBDIHs, itself
+  included, and answers the requesters when all have replied
+  `RunDone`. While a run is going on the master refuses `START_PERMREQ`
+  (`ZNODE_ALREADY_STARTING_ERROR`, retried every 3 s) and `STOP_PERM_REQ`
+  (`NodeStartInProgress`, retried every 100 ms).
+- Participant (`rebalance_tables()`): a CONTINUEB loop
+  (`ZREBALANCE_TABLES`, guarded by a generation) over all `TS_ACTIVE`
+  tables, about 1024 units of work per step (one per table record plus
+  one per fragment, so small tables share a step). Per table
+  (`rebalance_table()`): `calc_primary_replicas()` over all fragments,
+  then under the table write lock `updateNodeInfo()` on each, which
+  stamps the fragments whose chain changed; the computation of node
+  failure handling (`removeNodeFromTable()`). A table whose description
+  is in use (`tabCopyStatus != CS_IDLE`) is retried shortly. No
+  `m_node_view_lock`: with stamps per fragment the table lock suffices.
 - Primaries are computed locally on each node. `calc_primary_replicas()`
   writes only its `m_temp_*` counters and each fragment's `primaryNode`;
   its inputs are the fragment layout, the alive nodes and the stored
@@ -158,28 +210,44 @@ primary recalculation at node failure (`removeNodeFromTable()`).
 - Schema operations: the restarting node keeps its shared
   `NodeRestartLock` until SL_STARTED (`execNODE_START_REP`), which keeps
   schema transactions out. An exclusive DICT lock would deadlock with it.
-- New node starts: while a rebalance runs, the master refuses
-  `START_PERMREQ` with `ZNODE_ALREADY_STARTING_ERROR` (the starter retries
-  every 3 s). Distribution info is copied only after permission. If a
-  start was already permitted when a request arrives, the master answers
-  without a run; that node's own phase rebalances later.
-- Node or master failure: every DBDIH stops its loop. Failure handling
-  recomputes the primaries of every table (`removeNodeFromTables()`), which
-  is the same computation, so the requester treats the phase as done.
-- Only node restarts and initial node restarts; system restart computes
-  primaries itself. The step appears in the `[NODE-START]` log.
-- Version gate: only when all nodes support it, like
-  `is_dynamic_primary_replicas_supported()`.
+- Node failure: `startRemoveFailedNode()` calls `rebalance_node_failed()`
+  for every failed node that was alive in DBDIH. Participants stop their
+  loop, the master answers the requesters (SkippedNodeFailure), a
+  requester whose master failed continues. Failure handling recomputes
+  the primaries of every table (`removeNodeFromTables()`).
+- Signal checks (`execDIH_REBALANCE_REQ/CONF`): both requests carry the
+  sender's `cfailurenr`. One that overtook a node failure here (sender's
+  number larger, e.g. a new master's Run before this node's NODE_FAILREP)
+  is executed again after 100 ms. A Run from a node that is not the master
+  with another failure number is a stale run of a failed master and is
+  ignored (info line). Every signal that no correct data node sends is
+  logged as an error, ignored, and its sender reported with
+  `reportMaliciousSignal(VT_DIH_REBALANCE_PROTOCOL)` (Tier A, violation
+  id 38), so QMGR disconnects it instead of this node crashing: a sender
+  field that does not match the sending node, a Run or Done not from the
+  master (same failure number), a Request to a non-master, a failure
+  number more than `MAX_NDB_NODES` ahead, an unknown type or result. Debug
+  builds also stop on such a signal (`ndbassert`) to catch the bug in the
+  sender; production builds only disconnect it. Such a signal from this
+  node itself is a bug here (`ndbrequire`).
+- DUMP 7036 (`DihRebalancePrimaries`): the master runs a rebalance now
+  (`ALL DUMP 7036` works, only the master acts).
+- Version gate: `ndbd_support_rebalance_primaries()` (26.10.1) for every
+  alive data node; the same gate decides whether COMMIT_STORED keeps the
+  chain (step 1).
+- Logs: the master logs start and completion of each run, each
+  participant its tables, changed fragments and elapsed time; NDBCNTR
+  logs "Phase 120 was used by DIH to rebalance the primary replicas".
 
 ### Step 4: tests
 
 - `InplaceCharPkChange*` with 2 and 3 replicas: no 630.
 - A test where each transaction updates the same column twice across node
   restarts, then checks that the replicas agree.
-- A DUMP that triggers the rebalance on demand, to run load across it.
+- Load across `DUMP 7036` (rebalance on demand), and across node restarts
+  with an older data node in the cluster.
 
 ## Open points
 
-- The length of a rebalance step for a large schema; DBTC threads retry
-  `DIGETNODES` while `m_node_view_lock` is held.
-- The phase number after 110 and the `[NODE-START]` step.
+- The length of a rebalance step for a large schema (budget 1024).
+- Tests (step 4).

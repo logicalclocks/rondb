@@ -6189,7 +6189,8 @@ void Ndbcntr::Missra::sendNextSTTOR(Signal *signal) {
        * [NODE-START] step 14 (activate) ends here: NDB start phase 6
        * (GCP start), the FK enabling of NDB start phase 7, NDB start
        * phase 8 and start phases 9 and 100 are done. Start phase 101
-       * is the SUMA handover (step 15), 110 the restart barrier (16).
+       * is the SUMA handover (step 15), 110 the restart barrier (16),
+       * 120 the rebalance of the primary replicas (17).
        */
       char buf[NodeStartLog::BUF_SIZE];
       const Int64 elapsed =
@@ -6332,6 +6333,11 @@ void Ndbcntr::Missra::sendNextSTTOR(Signal *signal) {
               "Phase 101 was used by SUMA to take over"
               " responsibility for sending some of the"
               " asynchronous change events");
+          break;
+        case 120:
+          g_eventLogger->info(
+              "Phase 120 was used by DIH to rebalance the primary"
+              " replicas after a node restart");
           break;
         default:
           break;

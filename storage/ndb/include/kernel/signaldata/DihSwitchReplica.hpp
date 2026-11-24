@@ -81,6 +81,65 @@ class DihSwitchReplicaConf {
   Uint32 senderNode;
 };
 
+/**
+ * Rebalance of the primary replicas after node restarts.
+ *
+ * Request: the DIH of a restarted node asks the master DIH in start
+ *   phase 120, after the restart barrier. The master answers with
+ *   DihRebalanceConf(Done) when a rebalance covering the node has
+ *   completed, or right away when it cannot run one.
+ * Run: the master asks every alive DIH, itself included, to recompute
+ *   the primary replicas of all tables; each answers with
+ *   DihRebalanceConf(RunDone).
+ */
+class DihRebalanceReq {
+  /**
+   * Sender/Reciver
+   */
+  friend class Dbdih;
+
+ public:
+  static constexpr Uint32 SignalLength = 4;
+
+  enum RequestType { Request = 1, Run = 2 };
+
+ private:
+  Uint32 senderRef;
+  Uint32 requestType;
+  Uint32 runId;   // Run only
+  Uint32 failNo;  // the sender's Dbdih::cfailurenr
+};
+
+class DihRebalanceConf {
+  /**
+   * Sender/Reciver
+   */
+  friend class Dbdih;
+
+ public:
+  static constexpr Uint32 SignalLength = 5;
+
+  enum ConfType { RunDone = 1, Done = 2 };
+
+  /* Result of Done */
+  enum Result {
+    Completed = 0,
+    /* A node start, node stop or master take-over is in progress */
+    SkippedBusy = 1,
+    /* Node failure handling recomputes the primaries instead */
+    SkippedNodeFailure = 2,
+    /* Some data node does not support the rebalance */
+    SkippedNotSupported = 3
+  };
+
+ private:
+  Uint32 senderRef;
+  Uint32 confType;
+  Uint32 runId;              // RunDone
+  Uint32 result;             // Done
+  Uint32 changedFragments;   // RunDone: fragments whose primary changed
+};
+
 #undef JAM_FILE_ID
 
 #endif

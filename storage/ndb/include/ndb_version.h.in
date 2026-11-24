@@ -1718,4 +1718,20 @@ bool
 ndbd_backup_failed_cleanup_ord(Uint32 x) {
   return x >= NDBD_BACKUP_FAILED_CLEANUP_ORD_2610;
 }
+
+/**
+ * A node restart moves primary replicas to the restarted node in start
+ * phase 120, after the restart barrier: its DBDIH asks the master DBDIH
+ * (DIH_REBALANCE_REQ), which makes every DBDIH recompute the primary
+ * replicas of all tables. Until then a restarted node is primary for no
+ * fragment, since the end of a fragment copy no longer moves the primary.
+ * The node asks only when all data nodes support it; an older master
+ * would not know the signal.
+ */
+#define NDBD_REBALANCE_PRIMARIES_2610 NDB_MAKE_VERSION(26,10,1)
+static inline
+bool
+ndbd_support_rebalance_primaries(Uint32 x) {
+  return x >= NDBD_REBALANCE_PRIMARIES_2610;
+}
 #endif

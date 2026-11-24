@@ -134,8 +134,13 @@ enum ViolationType : Uint32 {
                                       //    bit, not sent by the DBTC instance
                                       //    itself (its rate queue re-send)
 
-  VT_UNKNOWN = 39,                      // fallback for out-of-range/rolling-upgrade values
-  NUM_VIOLATION_TYPES = 40              // sentinel — keep last
+  // ---- DBDIH rebalance of primary replicas (DIH_REBALANCE_REQ/CONF) ----
+  VT_DIH_REBALANCE_PROTOCOL = 39,  // A: a rebalance signal that no correct
+                                   //    data node sends (wrong sender, not
+                                   //    from or to the master, unknown type)
+
+  VT_UNKNOWN = 40,                      // fallback for out-of-range/rolling-upgrade values
+  NUM_VIOLATION_TYPES = 41              // sentinel — keep last
 };
 
 struct ViolationInfo {
@@ -205,6 +210,7 @@ inline constexpr ViolationInfo g_violation_info[NUM_VIOLATION_TYPES] = {
     {VT_SPJ_MALFORMED_REQUEST,     TIER_B, "spj_malformed_request"},
     {VT_JOINAGG_KEYINFO_MALFORMED, TIER_B, "joinagg_keyinfo_malformed"},
     {VT_TC_QUEUE_FLAG_NOT_INTERNAL, TIER_A, "tc_queue_flag_not_internal"},
+    {VT_DIH_REBALANCE_PROTOCOL,    TIER_A, "dih_rebalance_protocol"},
     {VT_UNKNOWN,                   TIER_A, "unknown_violation_type"},
 };
 

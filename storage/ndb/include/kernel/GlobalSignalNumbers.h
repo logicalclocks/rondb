@@ -37,7 +37,7 @@
  * version there signal may be sent. The signal number must remain reserved and
  * handled by receiver until that version is no longer supported.
  */
-const GlobalSignalNumber MAX_GSN = 986;
+const GlobalSignalNumber MAX_GSN = 988;
 
 struct GsnName {
   GlobalSignalNumber gsn;
@@ -1339,4 +1339,11 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_GET_COLLATION_INFO_REQ      984
 #define GSN_GET_COLLATION_INFO_CONF     985
 #define GSN_GET_COLLATION_INFO_REF      986
+
+/**
+ * Rebalance of primary replicas after a node restart, between DBDIHs,
+ * see DihRebalanceReq.
+ */
+#define GSN_DIH_REBALANCE_REQ           987
+#define GSN_DIH_REBALANCE_CONF          988
 #endif

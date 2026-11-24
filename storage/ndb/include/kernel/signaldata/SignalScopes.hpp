@@ -192,6 +192,9 @@
   /* Only DBDICT sends these, as replies; a data node never receives one */   \
   X(GSN_GET_COLLATION_INFO_CONF, Remote)                                       \
   X(GSN_GET_COLLATION_INFO_REF, Remote)                                        \
+  /* Only DBDIH sends these, to the DBDIHs of other data nodes */              \
+  X(GSN_DIH_REBALANCE_REQ, Remote)                                             \
+  X(GSN_DIH_REBALANCE_CONF, Remote)                                            \
   /* ============= Management (DB or MGM, never API) ================= */     \
   X(GSN_START_ORD, Management)                                                 \
   X(GSN_STOP_REQ, Management)                                                  \

@@ -39,7 +39,7 @@
 /**
  * NodeStartLog - uniform [NODE-START] logging of the data node start.
  *
- * The start of a data node is described as 16 fixed major steps, each
+ * The start of a data node is described as 17 fixed major steps, each
  * with a fixed set of sub-steps. Step numbers are the same for every
  * start type; steps that do not apply to the current start type are
  * announced in the plan line and additionally log a one-line 'skipped'
@@ -48,14 +48,14 @@
  *
  * Line shapes produced (all begin with the greppable [NODE-START] tag):
  *
- *   [NODE-START] plan: node restart, executing 15/16 steps
+ *   [NODE-START] plan: node restart, executing 16/17 steps
  *                (skipping: 4 redo-init)
- *   [NODE-START] step 8/16 (restore) started: 1842 fragments to restore
- *   [NODE-START] step 8/16 sub-step 2/2 (restore: restore fragments)
+ *   [NODE-START] step 8/17 (restore) started: 1842 fragments to restore
+ *   [NODE-START] step 8/17 sub-step 2/2 (restore: restore fragments)
  *                progress LDM(2): 231/460 fragments, elapsed=45s
- *   [NODE-START] step 8/16 (restore) completed, elapsed=312s
- *   [NODE-START] step 4/16 (redo-init) skipped (node restart)
- *   [NODE-START] step 13/16 (wait-lcp) waiting: LCP 1234 must complete,
+ *   [NODE-START] step 8/17 (restore) completed, elapsed=312s
+ *   [NODE-START] step 4/17 (redo-init) skipped (node restart)
+ *   [NODE-START] step 13/17 (wait-lcp) waiting: LCP 1234 must complete,
  *                elapsed=180s
  *   [NODE-START] waiting: start phase 6 barrier, master node 2 grants it
  *                once every node has completed start phase 5, elapsed=30s
@@ -96,7 +96,7 @@
  * Assist lines count from the start of the assisted sub-step.
  */
 struct NodeStartLog {
-  static constexpr Uint32 TOTAL_STEPS = 16;
+  static constexpr Uint32 TOTAL_STEPS = 17;
   static constexpr Uint32 BUF_SIZE = 512;
   /**
    * NodeStartLogReportFrequency default, for reports emitted before
@@ -120,7 +120,8 @@ struct NodeStartLog {
     NSL_WAIT_LCP = 13,      /* wait for LCP to make node durable      */
     NSL_ACTIVATE = 14,      /* GCP start, activate indexes, FKs       */
     NSL_HANDOVER = 15,      /* SUMA subscription handover             */
-    NSL_BARRIER = 16        /* restart barrier, start phase 110       */
+    NSL_BARRIER = 16,       /* restart barrier, start phase 110       */
+    NSL_REBALANCE = 17      /* primary replicas, start phase 120      */
   };
 
   static const char *stepName(Uint32 step) {
@@ -128,7 +129,8 @@ struct NodeStartLog {
         "init",         "join",        "admission",   "redo-init",
         "start-perm",   "redo-prepare", "metadata",   "restore",
         "undo-dd",      "redo-exec",   "index-rebuild", "synchronize",
-        "wait-lcp",     "activate",    "handover",    "barrier"};
+        "wait-lcp",     "activate",    "handover",    "barrier",
+        "rebalance"};
     if (step < 1 || step > TOTAL_STEPS) return "?";
     return names[step - 1];
   }
@@ -199,6 +201,7 @@ struct NodeStartLog {
         /*14 activate      */ {1, 1, 1, 1},
         /*15 handover      */ {0, 0, 1, 1},
         /*16 barrier       */ {0, 0, 1, 1},
+        /*17 rebalance     */ {0, 0, 1, 1},
     };
     if (step < 1 || step > TOTAL_STEPS || startType > 3) return true;
     return tab[step - 1][startType] != 0;
@@ -290,6 +293,8 @@ struct NodeStartLog {
       case NSL_HANDOVER:
         return 2;
       case NSL_BARRIER:
+        return 1;
+      case NSL_REBALANCE:
         return 1;
     }
     return 1;
@@ -401,6 +406,9 @@ struct NodeStartLog {
       }
       case NSL_BARRIER: {
         return (sub == 1) ? "wait at restart barrier" : unknown;
+      }
+      case NSL_REBALANCE: {
+        return (sub == 1) ? "move primary replicas" : unknown;
       }
     }
     return unknown;
