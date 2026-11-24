@@ -2457,7 +2457,7 @@ public:
   // sender) in a JoinAggParkRec queued on a placeholder entry
   // (aggStateKey == RNIL).  SETUP fills the placeholder and hands the
   // queue back (joinAggIdentityInsert waitersOut) for re-dispatch on
-  // the parking LDM; a 10 ms sweeper aborts still-unfilled
+  // the parking LDM; a 200 ms sweeper aborts still-unfilled
   // placeholders so a SETUP_REF can never deadlock DBTC's abort.
   //------------------------------------------------------------------
   struct JoinAggParkRec {
@@ -2475,7 +2475,7 @@ public:
     JAI_ROP_RESOLVED = 0,   // *keyOut valid, park rec NOT consumed
     JAI_ROP_PARKED = 1,     // queued on an existing placeholder
     JAI_ROP_PARKED_NEW = 2, // queued on a NEW placeholder (caller
-                            // schedules the 10 ms sweeper)
+                            // schedules the 200 ms sweeper)
     JAI_ROP_FAILED = 3      // no entry space, park rec NOT consumed
   };
   static Uint32 joinAggSeizeParkRec();  // RNIL when exhausted

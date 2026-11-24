@@ -1,0 +1,17 @@
+# RONDB-1124, testCteProtocol case PK-4c: a success JOIN_AGG_FINAL_REP
+# that parks on a node whose SETUP has not run, and that the 200 ms
+# placeholder sweeper then expires, is answered with an error FINAL_REP
+# (1274), so the sender aborts and its COMPLETE fails with the temporary
+# 1274 instead of waiting at the FINAL_REP barrier until DBTC times out.
+# The program is the receiving node's coordinator and sends its SETUP only
+# after the sweep; that late SETUP must create a fresh state.  FINAL_REP
+# goes between data nodes only, so the case needs two; suite ndb_push_agg
+# runs the whole program on one data node, where PK-4c is skipped.  Needs
+# the leak-check DUMPs 2361 / 2362 / 2363, which crash a node on a leak;
+# the program prints PASSED or FAILED.
+--source include/have_ndb.inc
+--source include/have_debug.inc
+--source include/have_ndb_debug.inc
+
+--echo Running testCteProtocol PK-4c (multi-node)
+--exec $NDB_PUSH_AGG_DIR/testCteProtocol -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT -n PK-4c

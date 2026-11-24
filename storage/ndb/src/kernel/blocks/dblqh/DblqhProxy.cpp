@@ -2863,7 +2863,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     /* Leave ONE identity unfilled so the sweeper rejects its consumers.
      * Still complete the SETUP round: a live node silently losing its
      * reply leaves DBTC waiting forever, including during API failure.
-     * Delay the REF to give the 10 ms sweeper time to run first. */
+     * Delay the REF well past the sweeper (JOIN_AGG_PARK_SWEEP_DELAY_MS)
+     * so that it runs first. */
     CLEAR_ERROR_INSERT_VALUE;
     SectionHandle handle(this, signal);
     releaseSections(handle);
@@ -2872,7 +2873,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     signal->theData[2] = senderData;
     signal->theData[3] = requestId;
     signal->theData[4] = cteIndex;
-    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 200, 5);
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal,
+                        5 * JOIN_AGG_PARK_SWEEP_DELAY_MS, 5);
     return;
   }
 #endif

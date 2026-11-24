@@ -5,7 +5,7 @@
 # signals DBTC and DBSPJ send in the meantime (aggregation feeds, the
 # NULL-row injections of an outer join, an identity-addressed COMPLETE)
 # park on the identity placeholder and are replayed by the flush when
-# the SETUP processes, or aborted by the 10 ms sweeper when the SETUP is
+# the SETUP processes, or aborted by the 200 ms sweeper when the SETUP is
 # later than that (the temporary 1274), in which case RonSQL retries the
 # query.  Either way
 # every result below must equal the MySQL baseline: a CTE probed by a

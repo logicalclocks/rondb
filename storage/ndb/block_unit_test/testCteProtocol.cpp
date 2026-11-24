@@ -137,6 +137,12 @@
  *         the sender's COMPLETE fails with 1275 instead of waiting at its
  *         FINAL_REP barrier.  Needs two data nodes (suite
  *         ndb_push_agg_dist runs it with -n PK-4b); skipped on one.
+ *   PK-4c a success FINAL_REP parked on a node whose SETUP is held past
+ *         the 200 ms sweep is answered by the sweeper with an error
+ *         FINAL_REP: the sender's COMPLETE fails with 1274 instead of
+ *         waiting at its FINAL_REP barrier; the late SETUP then creates
+ *         a fresh state.  Needs two data nodes (ndb_push_agg_dist runs it
+ *         with -n PK-4c); skipped on one.
  *   PK-5  5149 refuses every SETUP as if the identity table were full:
  *         the query fails with OutOfQueryMemory (20008).
  *   PK-6  8313 delays a SETUP_CONF addressed to an absent DBTC scan:
@@ -2870,24 +2876,20 @@ pk4(Ctx &c)
   return checkLeaks(c.ss, c.restarter, "PK-4");
 }
 
-/* PK-4b: a success FINAL_REP that cannot park is answered, not dropped.
- * A peer node P gets a CTE-mode SETUP whose owner list names P and
- * c.node; c.node gets no SETUP.  The COMPLETE on P gives c.node no key,
- * so P's FINAL_REP reaches c.node by identity and finds no state, and
- * 5148 with a cap of 0 refuses every park there.  Nothing is scanned:
- * P has no group to redistribute, so that FINAL_REP is all P sends to
- * c.node.  Before the fix c.node dropped it and P waited at its FINAL_REP
- * barrier with the COMPLETE unanswered (here a 30 s timeout; with DBTC
- * the query hung).  Now c.node answers P with an error FINAL_REP and
- * P's COMPLETE fails with the temporary 1275.  Needs two data nodes. */
+/* PK-4b and PK-4c: a peer node P gets a CTE-mode SETUP whose owner list
+ * names P and c.node; c.node gets no SETUP.  The COMPLETE on P gives
+ * c.node no key, so P's FINAL_REP reaches c.node by identity and finds no
+ * state.  Nothing is scanned: P has no group to redistribute, so that
+ * FINAL_REP is all P sends to c.node.  P stays at its FINAL_REP barrier
+ * with the COMPLETE unanswered until c.node's FINAL_REP comes.  peer gets
+ * P's node, key and owner; with peer.key != RNIL the caller must release
+ * P's state. */
 static int
-pk4b(Ctx &c)
+peerFinalRepByIdentity(Ctx &c, const char *label, CteNode &peer)
 {
-  if (c.restarter.getNumDbNodes() < 2) {
-    fprintf(stderr, "PK-4b: [SKIPPED] a FINAL_REP needs two data nodes\n");
-    return 0;
-  }
-  CteNode peer = {0, RNIL, 0};
+  peer.node = 0;
+  peer.key = RNIL;
+  peer.owner = 0;
   for (int i = 0; i < c.restarter.getNumDbNodes(); i++) {
     const Uint32 node = (Uint32)c.restarter.getDbNodeId(i);
     if (node != c.node) {
@@ -2895,8 +2897,6 @@ pk4b(Ctx &c)
       break;
     }
   }
-  ErrorInsertGuard guard = {c.restarter, c.node, true};
-  if (!setErrorInsert(c.restarter, c.node, 5148, 0)) return -1;
   {
     SetupParams p;
     p.strategy |= JoinAggSetupReq::CTE_MODE_FLAG;
@@ -2904,51 +2904,144 @@ pk4b(Ctx &c)
     p.fullLength = true;
     p.setupNodes.set(c.node);
     p.setupNodes.set(peer.node);
-    Uint32 refCode = 0;
-    if (sendSetupReq(c.ss, peer.node, c.prog, c.meta, p, peer.key,
-                     peer.owner, refCode) != 0) {
-      fprintf(stderr, "PK-4b: CTE SETUP on node %u not accepted (code=%u)\n",
-              peer.node, refCode);
+    Uint32 key = RNIL, owner = 0, refCode = 0;
+    if (sendSetupReq(c.ss, peer.node, c.prog, c.meta, p, key, owner,
+                     refCode) != 0) {
+      fprintf(stderr, "%s: CTE SETUP on node %u not accepted (code=%u)\n",
+              label, peer.node, refCode);
       return -1;
     }
+    peer.key = key;
+    peer.owner = owner;
   }
-  {
-    /* c.node's triple has no key: P addresses it by identity. */
-    const Uint32 triples[] = {c.node, RNIL, 0,
-                              peer.node, peer.key, peer.owner};
-    SimpleSignal ssig;
-    JoinAggCompleteReq *req =
-        reinterpret_cast<JoinAggCompleteReq *>(ssig.getDataPtrSend());
-    req->senderRef = c.ss.getOwnRef();
-    req->senderData = FAKE_SENDER_DATA;
-    req->requestId = FAKE_REQUEST_ID;
-    req->transid[0] = FAKE_TRANS_ID1;
-    req->transid[1] = FAKE_TRANS_ID2;
-    req->aggStateKey = peer.key;
-    req->maxBatchRows = 1000;
-    req->heartbeatScanFragPtrI = RNIL;
-    req->identWord = RNIL;  /* keyed form */
-    ssig.set(c.ss, 0, numberToBlock(DBLQH, peer.owner),
-             GSN_JOIN_AGG_COMPLETE_REQ, JoinAggCompleteReq::SignalLength);
-    ssig.header.m_noOfSections = 1;
-    ssig.ptr[0].p = triples;
-    ssig.ptr[0].sz = NDB_ARRAY_SIZE(triples);
-    if (c.ss.sendSignal(peer.node, &ssig) != SEND_OK) {
-      fprintf(stderr, "sendSignal CTE COMPLETE_REQ failed\n");
-      return -1;
-    }
+  /* c.node's triple has no key: P addresses it by identity. */
+  const Uint32 triples[] = {c.node, RNIL, 0,
+                            peer.node, peer.key, peer.owner};
+  SimpleSignal ssig;
+  JoinAggCompleteReq *req =
+      reinterpret_cast<JoinAggCompleteReq *>(ssig.getDataPtrSend());
+  req->senderRef = c.ss.getOwnRef();
+  req->senderData = FAKE_SENDER_DATA;
+  req->requestId = FAKE_REQUEST_ID;
+  req->transid[0] = FAKE_TRANS_ID1;
+  req->transid[1] = FAKE_TRANS_ID2;
+  req->aggStateKey = peer.key;
+  req->maxBatchRows = 1000;
+  req->heartbeatScanFragPtrI = RNIL;
+  req->identWord = RNIL;  /* keyed form */
+  ssig.set(c.ss, 0, numberToBlock(DBLQH, peer.owner),
+           GSN_JOIN_AGG_COMPLETE_REQ, JoinAggCompleteReq::SignalLength);
+  ssig.header.m_noOfSections = 1;
+  ssig.ptr[0].p = triples;
+  ssig.ptr[0].sz = NDB_ARRAY_SIZE(triples);
+  if (c.ss.sendSignal(peer.node, &ssig) != SEND_OK) {
+    fprintf(stderr, "%s: sendSignal CTE COMPLETE_REQ failed\n", label);
+    return -1;
   }
-  int rc = expectRef(c.ss, GSN_JOIN_AGG_COMPLETE_REF,
-                     ZJOIN_AGG_PARK_POOL_EXHAUSTED,
-                     "PK-4b COMPLETE of the peer whose FINAL_REP could "
-                     "not park");
+  return 0;
+}
+
+/* PK-4b: a success FINAL_REP that cannot park is answered, not dropped.
+ * As peerFinalRepByIdentity, with 5148 at a cap of 0 refusing every park
+ * on c.node.  Before the fix c.node dropped the report and P waited at
+ * its FINAL_REP barrier with the COMPLETE unanswered (here a 30 s
+ * timeout; with DBTC the query hung).  Now c.node answers P with an error
+ * FINAL_REP and P's COMPLETE fails with the temporary 1275.  Needs two
+ * data nodes. */
+static int
+pk4b(Ctx &c)
+{
+  if (c.restarter.getNumDbNodes() < 2) {
+    fprintf(stderr, "PK-4b: [SKIPPED] a FINAL_REP needs two data nodes\n");
+    return 0;
+  }
+  ErrorInsertGuard guard = {c.restarter, c.node, true};
+  if (!setErrorInsert(c.restarter, c.node, 5148, 0)) return -1;
+  CteNode peer = {0, RNIL, 0};
+  int rc = peerFinalRepByIdentity(c, "PK-4b", peer);
+  if (rc == 0) {
+    rc = expectRef(c.ss, GSN_JOIN_AGG_COMPLETE_REF,
+                   ZJOIN_AGG_PARK_POOL_EXHAUSTED,
+                   "PK-4b COMPLETE of the peer whose FINAL_REP could "
+                   "not park");
+  }
   if (!guard.clear()) rc = -1;
-  if (sendReleaseReq(c.ss, peer.node, peer.key, FAKE_REQUEST_ID,
-                     FAKE_TRANS_ID1, FAKE_TRANS_ID2, 0) != 0 ||
-      waitReleaseConf(c.ss, "PK-4b RELEASE_CONF") != 0)
+  if (peer.key != RNIL &&
+      (sendReleaseReq(c.ss, peer.node, peer.key, FAKE_REQUEST_ID,
+                      FAKE_TRANS_ID1, FAKE_TRANS_ID2, 0) != 0 ||
+       waitReleaseConf(c.ss, "PK-4b RELEASE_CONF") != 0))
     rc = -1;
   if (rc != 0) return -1;
   return checkLeaks(c.ss, c.restarter, "PK-4b");
+}
+
+/* PK-4c: a success FINAL_REP that the placeholder sweeper expires is
+ * answered, not dropped.  As peerFinalRepByIdentity: the test is c.node's
+ * coordinator and holds its SETUP back past the sweep deadline, so P's
+ * FINAL_REP parks on a new placeholder there and, with no insert holding
+ * the sweepers, the 200 ms sweeper expires it.  Before the fix the sweeper
+ * dropped the report: P waited at its FINAL_REP barrier with the COMPLETE
+ * unanswered (here a 30 s timeout; with DBTC the query hung), and the
+ * state the late SETUP then creates would wait for the dropped report
+ * too.  Now c.node answers P with an error FINAL_REP and P's COMPLETE
+ * fails with the temporary 1274.  Require the sweep event, so the answer
+ * is the sweeper's and not a refused park (PK-4b).  Then the late SETUP
+ * arrives: the sweep removed the placeholder, so it creates a fresh state,
+ * which the coordinator releases as DBTC reclaims a SETUP that answers a
+ * failed query.  Needs two data nodes. */
+static int
+pk4c(Ctx &c)
+{
+  if (c.restarter.getNumDbNodes() < 2) {
+    fprintf(stderr, "PK-4c: [SKIPPED] a FINAL_REP needs two data nodes\n");
+    return 0;
+  }
+  ProtocolEventListener events;
+  events.timeoutMs = WAIT_TIMEOUT_MS;
+  if (!events.open(c.restarter)) return -1;
+  CteNode peer = {0, RNIL, 0};
+  int rc = peerFinalRepByIdentity(c, "PK-4c", peer);
+  if (rc == 0) {
+    rc = expectRef(c.ss, GSN_JOIN_AGG_COMPLETE_REF,
+                   ZJOIN_AGG_SETUP_NOT_RECEIVED,
+                   "PK-4c COMPLETE of the peer whose FINAL_REP was swept");
+  }
+  if (rc == 0) {
+    char marker[96];
+    snprintf(marker, sizeof(marker),
+             "[JOIN_AGG_PARK_SWEPT node=%u failed=0 count=1]", c.node);
+    ScopedSenderUnlock unlock(c.ss);
+    if (!events.waitFor(marker)) rc = -1;
+  }
+  CteNode late = {c.node, RNIL, 0};
+  if (rc == 0) {
+    SetupParams p;
+    p.strategy |= JoinAggSetupReq::CTE_MODE_FLAG;
+    p.cteIndex = CTE_INDEX;
+    p.fullLength = true;
+    p.setupNodes.set(c.node);
+    p.setupNodes.set(peer.node);
+    Uint32 refCode = 0;
+    if (sendSetupReq(c.ss, c.node, c.prog, c.meta, p, late.key, late.owner,
+                     refCode) != 0) {
+      fprintf(stderr, "PK-4c: the late CTE SETUP on node %u was not "
+                      "accepted (code=%u)\n", c.node, refCode);
+      late.key = RNIL;
+      rc = -1;
+    }
+  }
+  if (peer.key != RNIL &&
+      (sendReleaseReq(c.ss, peer.node, peer.key, FAKE_REQUEST_ID,
+                      FAKE_TRANS_ID1, FAKE_TRANS_ID2, 0) != 0 ||
+       waitReleaseConf(c.ss, "PK-4c RELEASE_CONF of the peer") != 0))
+    rc = -1;
+  if (late.key != RNIL &&
+      (sendReleaseReq(c.ss, late.node, late.key, FAKE_REQUEST_ID,
+                      FAKE_TRANS_ID1, FAKE_TRANS_ID2, 0) != 0 ||
+       waitReleaseConf(c.ss, "PK-4c RELEASE_CONF of the late state") != 0))
+    rc = -1;
+  if (rc != 0) return -1;
+  return checkLeaks(c.ss, c.restarter, "PK-4c");
 }
 
 /* PK-5: 5149 refuses every SETUP as if the identity table were full. */
@@ -3236,6 +3329,7 @@ int main(int argc, char **argv)
           {"PK-3 sweeper REFs after a lost SETUP", pk3},
           {"PK-4 park pool exhaustion", pk4},
           {"PK-4b FINAL_REP refused a park record", pk4b},
+          {"PK-4c FINAL_REP swept before a late SETUP", pk4c},
           {"PK-5 identity table exhaustion", pk5},
           {"PK-6 stale SETUP_CONF reclaim", pk6},
           {"PK-7 duplicate identity refused", pk7},

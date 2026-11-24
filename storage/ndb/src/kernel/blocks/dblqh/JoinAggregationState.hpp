@@ -138,6 +138,12 @@ struct LeafProgram {
  * ZCONTINUE_* numbering (53 = ZCONTINUE_CTE_LIMIT_FINALIZE). */
 #define ZCONTINUE_JOIN_AGG_PARK_SWEEP 54
 #define ZCONTINUE_JOIN_AGG_FLUSH_PARKED 55
+/* How long a placeholder waits for its SETUP before the sweeper fails
+ * every request parked on it (the temporary 1274).  A sweep fails the
+ * query, so this must outlast a SETUP that is only late (a loaded LDM or
+ * proxy, a JIT compile of the leaf programs); a lost SETUP still fails
+ * the query within a fraction of a second.  Was 10 ms. */
+#define JOIN_AGG_PARK_SWEEP_DELAY_MS 200
 
 struct JoinAggregationState {
   //------------------------------------------------------------------

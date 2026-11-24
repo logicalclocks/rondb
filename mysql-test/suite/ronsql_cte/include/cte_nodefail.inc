@@ -227,7 +227,7 @@ my $ok = eval {
   my @errors = ($err =~ /\(code (\d+)\)/g);
   push @errors, ($err =~ /^NDB [^\n]*? (\d+),/mg);
   # Node-failure reports from DBTC / DBLQH (286), DBSPJ (20016) and the
-  # API (40xx), plus SETUP_NOT_RECEIVED (1274) from the 10 ms placeholder
+  # API (40xx), plus SETUP_NOT_RECEIVED (1274) from the 200 ms placeholder
   # sweeper: it REFs the consumers parked at the failure, and a retried
   # attempt that starts while the survivors still handle the failure can
   # see its SETUP processed later than its consumers arrive (plan F-10).

@@ -3995,6 +3995,10 @@ private:
       Signal *signal, Uint32 gsn, const Uint32 *transid, Uint32 identWord,
       Uint32 *keyOut);
   void joinAggParkSweep(Signal *signal);
+  bool failUndeliveredJoinAggFinalRep(Signal *signal, Uint32 senderNodeId,
+                                      Uint32 identWord, Uint32 transId1,
+                                      Uint32 transId2, Uint32 repErrorCode,
+                                      Uint32 errorCode);
   void joinAggFlushParked(Signal *signal, Uint32 parkRecI);
 #ifdef ERROR_INSERT
   void joinAggReleaseHeldFlush(Signal *signal);

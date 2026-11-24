@@ -95,8 +95,8 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
       insert, letting SETUP run first. Extra selects: 0 = all, 0xFFFF
       = the main aggregation only, 0xFFFE = none (sweeper hold only),
       otherwise cteIndex + 1.
-5139: Leave ONE SETUP identity unfilled; send SETUP_REF 1274 after 200 ms
-      so consumers can be swept first (sweeper REF 1274, temporary) and
+5139: Leave ONE SETUP identity unfilled; send SETUP_REF 1274 after 1 s
+      (5 sweep delays) so consumers can be swept first (sweeper REF 1274, temporary) and
       DBTC can finish its SETUP round (DblqhProxy, cleared after use).
 5140: Hold inbound JOIN_AGG_REDISTRIBUTE_REQ with RI_NEED_CONF, 200 ms at
       a time, until cleared. Other rows proceed normally, avoiding a timer

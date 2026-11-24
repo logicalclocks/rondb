@@ -2,10 +2,10 @@
 # placeholder sweeper.
 #
 # DBLQH error insert 5139 leaves ONE SETUP identity unfilled on every
-# data node and sends SETUP_REF 1274 after 200 ms, allowing DBTC's SETUP
+# data node and sends SETUP_REF 1274 after 1 s, allowing DBTC's SETUP
 # accounting to drain (it clears itself once it fired). The
 # consumer signals that raced ahead of that SETUP park on an identity
-# placeholder that is never filled, so the 10 ms sweeper answers each of
+# placeholder that is never filled, so the 200 ms sweeper answers each of
 # them with SETUP_NOT_RECEIVED (1274): the query fails with 1274 instead
 # of hanging.  1274 is a temporary error (a late or lost SETUP is a race,
 # not an internal error) and the failure happens before any row is
@@ -76,18 +76,19 @@ call mtr.add_suppression("Participant timeout");
 --remove_file $MYSQL_TMP_DIR/cte_park_sweeper_json.clean.sorted
 
 # The failed first attempt's scan stays open in DBTC until 5139's delayed
-# SETUP_REFs (sent 200 ms after the intercepted SETUP) complete its SETUP
+# SETUP_REFs (sent 1 s after the intercepted SETUP) complete its SETUP
 # round: DBTC does not tear a scan down with a SETUP reply outstanding.
 # RDRS stays connected, so nothing releases that scan earlier (in cps-1 the
 # ronsql_cli exit does, through API failure handling), and cps-2 plus the
-# first dumps take less than 200 ms: DUMP 2560 used to find the scan still
+# first dumps take less than that: DUMP 2560 used to find the scan still
 # RUNNING with setupOutstanding=2.  Let the REFs arrive before the leak
 # dumps; a scan the round does not release is still caught.
 # T-19: instead of a fixed second, which a loaded machine can outlast,
 # wait until DBTC holds no open transaction (ndbinfo.cluster_transactions
 # lists every transaction record that is not idle), for at most 30 s; a
 # transaction still open then is left to the dumps.  If none was seen
-# open, the REFs may still be on their way: wait the second as before.
+# open, the REFs may still be on their way: wait two seconds, longer than
+# 5139's delay.
 --let $cps_seen_open = 0
 --let $cps_polls = 300
 while ($cps_polls)
@@ -106,7 +107,7 @@ while ($cps_polls)
 }
 if (!$cps_seen_open)
 {
-  --sleep 1
+  --sleep 2
 }
 
 --echo

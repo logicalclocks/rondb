@@ -9458,7 +9458,7 @@ void Dblqh::handle_release_exclusive_frag_access(Fragrecord *fragPtrP) {
  *    encoded key for inline continuation.
  *  - JAI_ROP_PARKED / _NEW: the request is queued on the placeholder;
  *    the caller unwinds its partial parse WITHOUT sending a REF.  For
- *    _NEW the 10 ms failure sweeper is scheduled here (clobbers
+ *    _NEW the 200 ms failure sweeper is scheduled here (clobbers
  *    signal->theData — legal, both callers' unwinds use locals only).
  *  - JAI_ROP_FAILED: no park capacity; sections restored, record
  *    freed, caller takes its normal error path.
@@ -9558,15 +9558,17 @@ SimulatedBlock::JoinAggResolveOrParkResult Dblqh::parkJoinAggConsumer(
 
   if (res == SimulatedBlock::JAI_ROP_PARKED_NEW) {
     jam();
-    /* Schedule this placeholder's 10 ms failure sweeper on the same
-     * originally-addressed block instance as the re-dispatch target
-     * (plan 2.2: closes the SETUP_REF abort deadlock). */
+    /* Schedule this placeholder's failure sweeper, after
+     * JOIN_AGG_PARK_SWEEP_DELAY_MS, on the same originally-addressed
+     * block instance as the re-dispatch target (plan 2.2: closes the
+     * SETUP_REF abort deadlock). */
     signal->theData[0] = ZCONTINUE_JOIN_AGG_PARK_SWEEP;
     signal->theData[1] = regTcPtr->transid[0];
     signal->theData[2] = regTcPtr->transid[1];
     signal->theData[3] = queryTag;
     signal->theData[4] = cteId;
-    sendSignalWithDelay(rec->m_destRef, GSN_CONTINUEB, signal, 10, 5);
+    sendSignalWithDelay(rec->m_destRef, GSN_CONTINUEB, signal,
+                        JOIN_AGG_PARK_SWEEP_DELAY_MS, 5);
   }
 #ifdef ERROR_INSERT
   /* The header's sender ref was overwritten by sendSignalWithDelay above;
@@ -9599,13 +9601,18 @@ static inline Uint32 joinAggFeedError(Int32 ret, Uint32 fallback) {
 
 /**
  * RONDB-1120 P2: the placeholder failure sweeper.  If the identity is
- * still an unfilled placeholder after 10 ms, SETUP never arrived
- * (SETUP_REF or loss) — abort every parked request with a REF so
- * DBTC's abort (which waits for the CONF/REF of every in-flight
- * request) cannot deadlock, and release the parked sections.  The REFs
+ * still an unfilled placeholder after JOIN_AGG_PARK_SWEEP_DELAY_MS
+ * (200 ms), SETUP never arrived (SETUP_REF or loss) — abort every
+ * parked request with a REF so DBTC's abort (which waits for the
+ * CONF/REF of every in-flight request) cannot deadlock, and release the
+ * parked sections.  The REFs
  * carry the temporary ZJOIN_AGG_SETUP_NOT_RECEIVED: a SETUP that is only
  * late (a loaded instance, a JIT compile) or lost with a failed node is
- * a race a retry of the query survives.
+ * a race a retry of the query survives.  A success FINAL_REP has no REF;
+ * its sender gets an error FINAL_REP with the same code
+ * (failUndeliveredJoinAggFinalRep).  The swept placeholder is removed,
+ * so a late SETUP creates a fresh state, which DBTC reclaims once the
+ * REF or the sender's COMPLETE_REF has failed the query.
  */
 void Dblqh::joinAggParkSweep(Signal *signal) {
   const Uint32 transid[2] = { signal->theData[1], signal->theData[2] };
@@ -9682,9 +9689,21 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
       sendSignal(rec->m_senderRef, GSN_JOIN_AGG_REDISTRIBUTE_REF, signal,
                  JoinAggRedistributeRef::SignalLength, JBB);
     } else if (rec->m_gsn == GSN_JOIN_AGG_FINAL_REP) {
-      /* Fire-and-forget — nothing to REF; the query dies via the
-       * COMPLETE / redistribute REFs and DBTC's heartbeat timers. */
       jam();
+      /* FINAL_REP has no REF.  Its sender's state waits for this
+       * node's FINAL_REP; when the SETUP is only late, the state it
+       * creates would also wait for the report dropped here.  Answer
+       * the sender with an error FINAL_REP so that it aborts and its
+       * COMPLETE_REF fails the query with the temporary 1274. */
+      const JoinAggFinalRep *rep =
+          reinterpret_cast<const JoinAggFinalRep *>(rec->m_theData);
+      const bool answered = failUndeliveredJoinAggFinalRep(
+          signal, rep->senderNodeId, rep->identWord, rep->transid[0],
+          rep->transid[1], rep->errorCode, ZJOIN_AGG_SETUP_NOT_RECEIVED);
+      g_eventLogger->info(
+          "(%u)DBLQH JoinAgg park sweep FINAL_REP: senderNode=%u "
+          "errorCode=%u answered=%u",
+          instance(), rep->senderNodeId, rep->errorCode, Uint32(answered));
     } else if (rec->m_gsn == GSN_JOIN_AGG_NULL_ROW_REQ) {
       const JoinAggNullRowReq *req =
           reinterpret_cast<const JoinAggNullRowReq *>(rec->m_theData);
@@ -9726,6 +9745,56 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
    * for this line after killing the requester. */
   infoEvent("[JOIN_AGG_PARK_SWEPT node=%u failed=%u count=%u]",
             getOwnNodeId(), deadRequester, swept);
+}
+
+/**
+ * A success JOIN_AGG_FINAL_REP addressed by identity did not reach a
+ * state on this node: no park record or identity entry was free (1275),
+ * or it parked and the placeholder sweeper expired it because the SETUP
+ * did not come in time (1274).  This node has no state to abort: the
+ * missing state is why the report parked.  The sender's state exists and
+ * waits for this node's FINAL_REP at its checkCteReady barrier, and DBTC
+ * waits for its COMPLETE reply; a state that a late SETUP creates here
+ * would wait for the dropped report too.  FINAL_REP has no REF, so answer
+ * the sender with an error FINAL_REP addressed by identity to its DBLQH
+ * instance 1, the form abortCteRedistribution uses to tell its peers.
+ * The sender aborts its state and its COMPLETE_REF fails the query with
+ * the temporary errorCode; DBTC then cancels the other participants and
+ * reclaims a late SETUP's state.
+ *
+ * An error report (repErrorCode != 0) is never answered: its origin has
+ * already failed the query, and an answer is itself an error report, so
+ * it cannot bounce back.  Only a connected data node other than this one
+ * is answered.  The arguments are values because the caller's report may
+ * lie in the signal buffer this overwrites.  Returns whether it answered.
+ */
+bool Dblqh::failUndeliveredJoinAggFinalRep(Signal *signal,
+                                           Uint32 senderNodeId,
+                                           Uint32 identWord,
+                                           Uint32 transId1,
+                                           Uint32 transId2,
+                                           Uint32 repErrorCode,
+                                           Uint32 errorCode) {
+  if (repErrorCode != 0 || senderNodeId == 0 ||
+      senderNodeId == getOwnNodeId() ||
+      getNodeInfo(senderNodeId).getType() != NodeInfo::DB ||
+      !getNodeInfo(senderNodeId).m_connected) {
+    jam();
+    return false;
+  }
+  jam();
+  JoinAggFinalRep *fail = (JoinAggFinalRep *)signal->getDataPtrSend();
+  fail->aggStateKey = RNIL;
+  fail->senderNodeId = getOwnNodeId();
+  fail->identWord = identWord;
+  fail->transid[0] = transId1;
+  fail->transid[1] = transId2;
+  fail->redistributeCountLo = 0;
+  fail->redistributeCountHi = 0;
+  fail->errorCode = errorCode;
+  sendSignal(numberToRef(DBLQH, 1, senderNodeId), GSN_JOIN_AGG_FINAL_REP,
+             signal, JoinAggFinalRep::SignalLength, JBB);
+  return true;
 }
 
 /**
@@ -20678,7 +20747,7 @@ bool Dblqh::joinAggParkCapReached() {
  * any SectionHandle is constructed): moves the signal's sections into
  * the park record for the PARKED cases; on RESOLVED / FAILED the
  * sections are restored onto the signal and the record freed, so the
- * caller continues inline.  PARKED_NEW schedules the 10 ms sweeper on
+ * caller continues inline.  PARKED_NEW schedules the 200 ms sweeper on
  * the originally-addressed block instance.
  */
 SimulatedBlock::JoinAggResolveOrParkResult
@@ -20726,7 +20795,8 @@ Dblqh::joinAggResolveOrParkGeneric(Signal *signal, Uint32 gsn,
       signal->theData[2] = transid[1];
       signal->theData[3] = queryTag;
       signal->theData[4] = cteId;
-      sendSignalWithDelay(rec->m_destRef, GSN_CONTINUEB, signal, 10, 5);
+      sendSignalWithDelay(rec->m_destRef, GSN_CONTINUEB, signal,
+                          JOIN_AGG_PARK_SWEEP_DELAY_MS, 5);
     }
     return res;
   }
@@ -20808,7 +20878,7 @@ void Dblqh::joinAggNullRowReqImpl(Signal *signal) {
     /* RONDB-1120 P2c: the wire key is RNIL (or stale) under the
      * un-gated SETUP round — resolve the local main-agg state by
      * identity; on a miss, park this signal like the LQHKEYREQ /
-     * SCAN_FRAGREQ feeds and let the SETUP flush (or the 10 ms
+     * SCAN_FRAGREQ feeds and let the SETUP flush (or the 200 ms
      * sweeper REF) re-drive it. */
     const Uint32 transid[2] = { req->transId[0], req->transId[1] };
     const Uint32 base = joinAggIdentityLookup(
@@ -25531,38 +25601,15 @@ void Dblqh::execJOIN_AGG_FINAL_REP(Signal *signal) {
           jam();
           /* Park pool or identity table exhausted, and this node has no
            * state for the identity yet (its SETUP has not run), so there
-           * is nothing here to abort.  Dropping a success report would
-           * leave that state, once it exists, waiting at the
-           * checkCteReady barrier for a FINAL_REP that never comes, and
-           * DBTC waiting for its COMPLETE reply.  FINAL_REP has no REF:
-           * answer the sender, whose state exists and waits for our
-           * FINAL_REP, with an error FINAL_REP by identity.  It aborts
-           * and its COMPLETE_REF fails the query with the temporary
-           * 1275.  An error report is not answered: its origin has
-           * already failed the query, and this keeps the answer from
-           * bouncing back. */
+           * is nothing here to abort.  Answer the sender with the
+           * temporary 1275 (failUndeliveredJoinAggFinalRep). */
           g_eventLogger->info(
               "(%u)DBLQH FINAL_REP park FAILED: senderNode=%u "
               "errorCode=%u",
               instance(), senderNodeId, errorCode);
-          if (errorCode == 0 && senderNodeId != getOwnNodeId() &&
-              getNodeInfo(senderNodeId).getType() == NodeInfo::DB &&
-              getNodeInfo(senderNodeId).m_connected) {
-            jam();
-            JoinAggFinalRep *fail =
-                (JoinAggFinalRep *)signal->getDataPtrSend();
-            fail->aggStateKey = RNIL;
-            fail->senderNodeId = getOwnNodeId();
-            fail->identWord = identWord;
-            fail->transid[0] = transid[0];
-            fail->transid[1] = transid[1];
-            fail->redistributeCountLo = 0;
-            fail->redistributeCountHi = 0;
-            fail->errorCode = ZJOIN_AGG_PARK_POOL_EXHAUSTED;
-            sendSignal(numberToRef(DBLQH, 1, senderNodeId),
-                       GSN_JOIN_AGG_FINAL_REP, signal,
-                       JoinAggFinalRep::SignalLength, JBB);
-          }
+          (void)failUndeliveredJoinAggFinalRep(
+              signal, senderNodeId, identWord, transid[0], transid[1],
+              errorCode, ZJOIN_AGG_PARK_POOL_EXHAUSTED);
           return;
         }
       }
@@ -26238,7 +26285,7 @@ void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
          * missed — park the ORIGINAL request (plan 2.2) and unwind
          * the partial setup WITHOUT sending SCAN_FRAGREF.  The saved
          * request re-executes from scratch when SETUP fills the
-         * placeholder (or is REF'd by the 10 ms sweeper). */
+         * placeholder (or is REF'd by the 200 ms sweeper). */
         Uint32 keyOut = RNIL;
         Uint32 parkRecI = RNIL;
         const SimulatedBlock::JoinAggResolveOrParkResult pr =
