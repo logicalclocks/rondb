@@ -572,7 +572,8 @@ bool lqh_take_node_one_shot_error();
 #define ZJOIN_AGG_INVALID_SECTION_COUNT    1261
 #define ZATTRINFO_TOO_LARGE                1262
 /* Aggregation-read flag on an operation that is not a committed
- * interpreted read (RONDB-1124 WP-F F1b).  Same code as DBTUP's
+ * interpreted read (RONDB-1124 WP-F F1b), or an aggregation scan
+ * without an interpreted program.  Same code as DBTUP's
  * ZAGG_WRONG_OPERATION, which is only visible inside DBTUP. */
 #define ZAGG_READ_WRONG_OPERATION          1868
 /* DBTUP's ZAGG_ALLOC_MEM_FAILED (out of query memory, temporary). */

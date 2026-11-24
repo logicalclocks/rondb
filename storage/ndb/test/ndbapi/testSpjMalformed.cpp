@@ -40,6 +40,9 @@
  * must reject at JOIN_AGG_SETUP_REQ (AggInterpreterBase::checkProgram).
  * P-32 sends one whose rows read a register they did not load, which
  * fails each row (K-1, AggInterpreterBase m_loaded_regs).
+ * P-33 sends a SCAN_FRAGREQ straight to DBLQH, which only a debug data
+ * node takes from an API node: an aggregation scan without an
+ * interpreted program, which DBLQH must refuse with SCAN_FRAGREF.
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
  * re-send (passQueue), which only DBTC itself may set (RONDB-1124).
  * Each malformed request is built by taking a known-good, word-for-word
@@ -71,6 +74,7 @@
 #include <AttributeHeader.hpp>
 #include <NdbSleep.h>
 #include <mgmapi.h>
+#include <signaldata/ScanFrag.hpp>
 #include <signaldata/ScanTab.hpp>
 #include <signaldata/TcKeyReq.hpp>
 #include <signaldata/QueryTree.hpp>
@@ -650,6 +654,85 @@ class SpjMalformedChecker {
                              {aggProgram(1, body), countLeaf()});
   }
 
+  /* ---- P-33: a raw SCAN_FRAGREQ straight to DBLQH ---------------------- *
+   * An aggregation scan without an interpreted program: the aggregation
+   * flag together with the not-interpreted flag.  execSCAN_FRAGREQ
+   * stopped the node on ndbrequire(opExec).  DBTC and DBSPJ never set
+   * the not-interpreted flag (only BACKUP does, without aggregation), so
+   * only a raw SCAN_FRAGREQ gets there.  Only a debug data node takes a
+   * SCAN_FRAGREQ from an API node (NDB_SCOPE_REMOTE_EXCEPT_DEBUG in
+   * SignalScopes.hpp); a release node drops it and disconnects us, so
+   * the case needs a debug build.  DBLQH now answers SCAN_FRAGREF 1868,
+   * as LQHKEYREQ does for an aggregation read without a program.  The
+   * check comes before the fragment lookup, so any LDM instance will
+   * do: DBLQH instance 1, which has every table defined.
+   * kAggWrongOperation is ZAGG_READ_WRONG_OPERATION in Dblqh.hpp. */
+  static constexpr Uint32 kAggWrongOperation = 1868;
+
+  int runP33() {
+    const char *const findingId =
+        "P-33 aggregation SCAN_FRAGREQ without an interpreted program";
+    const Uint32 nodeId = pickDbNode();
+    const Uint32 senderData = ++m_userPointer;
+    SimpleSignal sig(false);
+    Uint32 *d = sig.getDataPtrSend();
+    std::memset(d, 0, sizeof(Uint32) * ScanFragReq::SignalLength);
+    ScanFragReq *req = (ScanFragReq *)d;
+    req->senderData = senderData;
+    req->resultRef = m_ss->getOwnRef();
+    req->savePointId = 0;
+    Uint32 ri = 0;
+    ScanFragReq::setReadCommittedFlag(ri, 1);
+    ScanFragReq::setAggregationFlag(ri, 1);
+    ScanFragReq::setNotInterpretedFlag(ri, 1);
+    req->requestInfo = ri;
+    req->tableId = m_tableId;
+    req->fragmentNoKeyLen = 0;
+    req->schemaVersion = m_schemaVersion;
+    req->transId1 = 0x5b330000u + nodeId;
+    req->transId2 = senderData;
+    req->resultData = senderData;
+    req->batch_size_rows = kBatchRows;
+    req->batch_size_bytes = kBatchBytes;
+    /* AttrInfo: a plain (not interpreted) read of column 0 */
+    Uint32 attrInfo[1] = {0u << 16};
+    sig.ptr[ScanFragReq::AttrInfoSectionNum].p = attrInfo;
+    sig.ptr[ScanFragReq::AttrInfoSectionNum].sz = 1;
+    sig.header.m_noOfSections = 1;
+
+    Uint32 reply[25] = {0};
+    m_ss->lock();
+    const SendStatus sent =
+        m_ss->sendSignal(nodeId, sig, numberToBlock(DBLQH, 1),
+                         GSN_SCAN_FRAGREQ, ScanFragReq::SignalLength);
+    const Uint32 gsn =
+        sent == SEND_OK
+            ? waitReplyLocked(GSN_SCAN_FRAGREF, GSN_SCAN_FRAGCONF, senderData,
+                              nodeId, ReplyMillis, reply)
+            : 0;
+    m_ss->unlock();
+    g_info << findingId << ": reply " << gsnName(gsn);
+    if (gsn == GSN_SCAN_FRAGREF) g_info << " errorCode " << reply[3];
+    g_info << endl;
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (gsn != GSN_SCAN_FRAGREF || reply[3] != kAggWrongOperation) {
+      g_err << findingId << ": FAIL -- expected SCAN_FRAGREF "
+            << kAggWrongOperation << ", got " << gsnName(gsn)
+            << ": the request did not reach the check (a release data "
+               "node drops a SCAN_FRAGREQ from an API node)" << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId << ": PASS (all data nodes started; SCAN_FRAGREF "
+           << reply[3] << ")" << endl;
+    return NDBT_OK;
+  }
+
   /* ---- Q cases: DBTC's rate queue re-send mark sent by the API -------- *
    * DBTC's rate queue handler re-sends a queued request to its own DBTC
    * instance with a mark: the passQueue flag of TCKEYREQ, TCINDXREQ and
@@ -755,6 +838,8 @@ class SpjMalformedChecker {
       case GSN_SCAN_TABREF: return "SCAN_TABREF";
       case GSN_TCKEYCONF: return "TCKEYCONF";
       case GSN_TCKEYREF: return "TCKEYREF";
+      case GSN_SCAN_FRAGCONF: return "SCAN_FRAGCONF";
+      case GSN_SCAN_FRAGREF: return "SCAN_FRAGREF";
       case 0: return "(no reply / disconnected)";
       default: return "(other)";
     }
@@ -1100,6 +1185,7 @@ CASE_STEP(runP29, runP29)
 CASE_STEP(runP30, runP30)
 CASE_STEP(runP31, runP31)
 CASE_STEP(runP32, runP32)
+CASE_STEP(runP33, runP33)
 CASE_STEP(runQ1, runQ1)
 CASE_STEP(runQ2, runQ2)
 CASE_STEP(runQ3, runQ3)
@@ -1178,6 +1264,11 @@ TESTCASE("P32",
          "join aggregation: rows read a register they skipped the load "
          "of") {
   STEP(runP32);
+}
+TESTCASE("P33",
+         "aggregation SCAN_FRAGREQ without an interpreted program, sent "
+         "straight to DBLQH (debug data nodes only)") {
+  STEP(runP33);
 }
 TESTCASE("Q1", "TCKEYREQ with the rate queue flag from the API") {
   STEP(runQ1);

@@ -1,0 +1,18 @@
+--source include/have_ndb.inc
+# Only a debug data node takes a SCAN_FRAGREQ from an API node
+# (NDB_SCOPE_REMOTE_EXCEPT_DEBUG in SignalScopes.hpp); a release node
+# drops it and disconnects the API node before DBLQH sees it.
+--source include/have_ndb_debug.inc
+
+# P-33: a SCAN_FRAGREQ sent straight to DBLQH with the aggregation flag
+# and the not-interpreted flag, an aggregation scan without an
+# interpreted program. DBTC and DBSPJ never send that combination.
+# execSCAN_FRAGREQ stopped the data node on ndbrequire(opExec); DBLQH
+# now refuses the scan with SCAN_FRAGREF 1868, which the case requires,
+# with every data node still started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P33
+--let $spj_case_title = P-33: aggregation SCAN_FRAGREQ without an interpreted program
+--source suite/ndb_spj/include/spj_malformed_case.inc

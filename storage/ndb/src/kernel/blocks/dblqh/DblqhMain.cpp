@@ -25957,6 +25957,21 @@ void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
     const Uint32 scanLockMode = ScanFragReq::getLockMode(reqinfo);
     const Uint8 keyinfo = ScanFragReq::getKeyinfoFlag(reqinfo);
     const Uint8 rangeScan = ScanFragReq::getRangeScanFlag(reqinfo);
+    /**
+     * Pushdown aggregation runs in the interpreter, so an aggregation
+     * scan must carry an interpreted program. DBTC and DBSPJ never set
+     * the not-interpreted flag, but a raw SCAN_FRAGREQ can set both
+     * (from an API node in a debug build, where SCAN_FRAGREQ is not
+     * restricted to data nodes). Refuse it as LQHKEYREQ refuses an
+     * aggregation read without one.
+     */
+    if (unlikely(ScanFragReq::getAggregationFlag(reqinfo) &&
+                 ScanFragReq::getNotInterpretedFlag(reqinfo))) {
+      jam();
+      errorCode = ZAGG_READ_WRONG_OPERATION;
+      releaseSections(handle);
+      goto error_handler;
+    }
     if (unlikely(!getFragmentrec(fragId))) {
       jam();
       errorCode = 1231;
