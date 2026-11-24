@@ -25,8 +25,20 @@
 #   cm-4  ORDER BY the MIN, which sorts with the charset
 #   cm-5  cm-1 over a join (join aggregation in DBLQH)
 #   cm-6  ORDER BY the MAX of CHAR arms of different lengths
+#   cm-7  arms of 300 and 15000 bytes: MIN and MAX can need 30 KB, a
+#         limit error
 #
 # Expected results come from mysqld (strict_diff).
+#
+# cm-7: NdbAggregator::Finalize refuses a program whose group record
+# can be over 16 KB, counted at the declared column sizes, since the
+# API receives one record into a buffer of that size.  It counted a
+# string MIN / MAX over a CASE at its THEN arm only.  Here the ELSE arm
+# is 15000 bytes, so MIN and MAX each hold 15000 bytes and the record
+# is 30 KB: the query ran, and the record overran the receive buffer
+# (NdbReceiverBuffer::allocRow only asserts that a row fits).  The slot
+# is now counted at its widest arm and the query is refused before it
+# runs.
 
 --source include/have_ndb.inc
 
@@ -157,10 +169,32 @@ FROM cms GROUP BY g ORDER BY mx|
 
 DELIMITER ;|
 
+--echo
+--echo === cm-7: arms of 300 and 15000 bytes, a 30 KB record: a limit error ===
+--disable_query_log
+--disable_warnings
+CREATE TABLE cms_wide (
+  g  INT NOT NULL,
+  id INT NOT NULL,
+  k  INT NOT NULL,
+  a  VARCHAR(300) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL,
+  b  VARCHAR(15000) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL,
+  PRIMARY KEY (g, id)
+) ENGINE=NDB;
+# Only the ELSE arm runs (k <= 5), so MIN and MAX both take b.
+INSERT INTO cms_wide VALUES
+  (1, 1, 1, 'pear', REPEAT('b', 15000)),
+  (1, 2, 2, 'fig',  CONCAT(REPEAT('b', 14999), 'c'));
+--enable_warnings
+--enable_query_log
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT g, MIN(CASE WHEN k > 5 THEN a ELSE b END) AS mn, MAX(CASE WHEN k > 5 THEN a ELSE b END) AS mx FROM cms_wide GROUP BY g;' 2>&1
+
 --let $QUERY=
 
 --disable_query_log
 --disable_warnings
+DROP TABLE cms_wide;
 DROP TABLE cms_drv;
 DROP TABLE cms;
 --enable_warnings

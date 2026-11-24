@@ -168,6 +168,7 @@ NdbAggregator::NdbAggregator(const NdbDictionary::Table* table) :
     memset(gb_columns_, 0, sizeof(gb_columns_));
     memset(reg_columns_, 0, sizeof(reg_columns_));
     memset(agg_columns_, 0, sizeof(agg_columns_));
+    memset(agg_arm_bytes_, 0, sizeof(agg_arm_bytes_));
     memset(reg_types_, NDB_TYPE_UNDEFINED, sizeof(reg_types_));
     /* Finalize fills col_meta only for columns with metadata; the others
      * stay Undefined / no charset (byte comparison). */
@@ -229,6 +230,7 @@ void NdbAggregator::initForResults(const Uint32 *programBuffer,
   }
   memset(reg_columns_, 0, sizeof(reg_columns_));
   memset(agg_columns_, 0, sizeof(agg_columns_));
+  memset(agg_arm_bytes_, 0, sizeof(agg_arm_bytes_));
   memset(reg_types_, NDB_TYPE_UNDEFINED, sizeof(reg_types_));
   if (aggColumns != nullptr) {
     for (Uint32 i = 0; i < nAggColumns && i < MAX_AGG_N_RESULTS; i++) {
@@ -1773,6 +1775,14 @@ bool NdbAggregator::RepeatAgg(Uint32 agg_id, Uint32 reg_id) {
       SetError(kErrMixedStringCaseArms);
       return false;
     }
+    /* The slot keeps the value of whichever arm wins, so Finalize counts
+     * its string result at the widest arm. */
+    if (first_is_string) {
+      const Uint32 bytes = static_cast<Uint32>(col->getSizeInBytes());
+      if (bytes > agg_arm_bytes_[agg_id]) {
+        agg_arm_bytes_[agg_id] = bytes;
+      }
+    }
   }
   if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
@@ -1853,12 +1863,18 @@ bool NdbAggregator::Finalize() {
 
   // String MIN/MAX append a length word and a padded column value after
   // the fixed slots. getSizeInBytes() includes VARCHAR length prefixes.
+  // A MIN/MAX over a CASE counts at its widest arm (agg_arm_bytes_): the
+  // API receives a record into MAX_AGG_RESULT_BATCH_BYTES, and a larger
+  // one would overrun it.
   for (Uint32 i = 0; i < n_agg_results_; i++) {
     const NdbDictionary::Column *col = agg_columns_[i];
     if ((agg_ops_[i] == kOpMin || agg_ops_[i] == kOpMax) &&
         col != nullptr && isStringType(col->getType())) {
-      result_size_est_ += sizeof(Uint32) +
-                         ((col->getSizeInBytes() + 3) & ~3U);
+      Uint32 bytes = static_cast<Uint32>(col->getSizeInBytes());
+      if (bytes < agg_arm_bytes_[i]) {
+        bytes = agg_arm_bytes_[i];
+      }
+      result_size_est_ += sizeof(Uint32) + ((bytes + 3) & ~3U);
     }
   }
 

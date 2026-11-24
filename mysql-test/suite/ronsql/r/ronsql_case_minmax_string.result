@@ -136,3 +136,7 @@ g	mx
 1	Kk
 2	Mm
 3	Oo
+
+=== cm-7: arms of 300 and 15000 bytes, a 30 KB record: a limit error ===
+Error handling: RPE
+ronsql_cli caught exception: The GROUP BY columns and aggregate results of one group can need more than 16 KB, counted at the declared column sizes.

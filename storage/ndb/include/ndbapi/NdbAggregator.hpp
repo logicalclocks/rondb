@@ -520,6 +520,10 @@ class NdbAggregator {
   const NdbDictionary::Column *gb_columns_[MAX_AGG_N_GROUPBY_COLS];
   const NdbDictionary::Column *reg_columns_[kRegTotal];
   const NdbDictionary::Column *agg_columns_[MAX_AGG_N_RESULTS];
+  /* A string MIN / MAX over a CASE: the largest declared size in bytes
+   * of the column of an arm after the first (RepeatAgg), 0 if none.
+   * agg_columns_ keeps the first arm's column. */
+  Uint32 agg_arm_bytes_[MAX_AGG_N_RESULTS];
   Uint32 reg_types_[kRegTotal];
 
   Uint32 n_gb_cols_;

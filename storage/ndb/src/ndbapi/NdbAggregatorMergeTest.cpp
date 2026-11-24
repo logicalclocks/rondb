@@ -342,6 +342,35 @@ static bool runResultSizeCases() {
   CHECK(count.LoadLinkedColumn(0, 0, &column));
   CHECK(count.Count(0, 0));
   CHECK(count.Finalize());
+
+  // A string MAX over a CASE whose arms differ in size counts at its
+  // widest arm, whichever arm that is (RepeatAgg). Counted at the first
+  // arm, a wide later arm made records the API cannot receive.
+  for (Uint32 recordBytes : {Uint32(16 * 1024), Uint32(16 * 1024 + 4)}) {
+    for (Uint32 widePos = 0; widePos < 3; widePos++) {
+      NdbColumnImpl narrow;
+      narrow.setType(NdbDictionary::Column::Longvarchar);
+      narrow.setCharset(&my_charset_bin);
+      narrow.m_attrSize = 1;
+      narrow.m_arraySize = 300;
+      NdbColumnImpl wide;
+      wide.setType(NdbDictionary::Column::Longvarchar);
+      wide.setCharset(&my_charset_bin);
+      wide.m_attrSize = 1;
+      wide.m_arraySize = recordBytes - 5 * sizeof(Uint32) -
+                         sizeof(AggResItem);
+
+      NdbAggregator arms(nullptr);
+      for (Uint32 arm = 0; arm < 3; arm++) {
+        const NdbColumnImpl *col = arm == widePos ? &wide : &narrow;
+        CHECK(arms.LoadLinkedColumn(arm, arm, col));
+        CHECK(arm == 0 ? arms.Max(0, 0) : arms.RepeatAgg(0, arm));
+      }
+      const bool accepted = arms.Finalize();
+      CHECK(accepted == (recordBytes <= 16 * 1024));
+      if (!accepted) CHECK(arms.GetError().errno_ == kErrTooBigResult);
+    }
+  }
   return true;
 }
 
