@@ -5692,6 +5692,8 @@ int Dbtup::prepareAndHandleJoinAggRow(KeyReqStruct *req_struct,
   const Uint32 *linked_data = nullptr;
   Uint32 linked_len = 0;
   if (RsubLen > 0) {
+    /* interpreterStartLab checked the five regions in 64 bits against
+     * attrinfo_len, so this sum does not wrap. */
     const Uint32 *sub_start =
         &cinBuffer[5 + cinBuffer[0] + cinBuffer[1] +
                     cinBuffer[2] + cinBuffer[3]];
@@ -6139,7 +6141,7 @@ Uint64 Dbtup::readCheapMemForJit(Uint32 byte_off, Uint32 width) {
 int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
   Operationrec *const regOperPtr = req_struct->operPtrP;
   int TnoDataRW;
-  Uint32 RtotalLen, dstLen;
+  Uint32 dstLen;
   Uint32 *dst;
 
   Uint32 RinitReadLen = cinBuffer[0];
@@ -6155,11 +6157,15 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
   dst = &signal->theData[25];
   dstLen = (MAX_READ / 4) - 25;
 
-  RtotalLen= RinitReadLen;
-  RtotalLen += RexecRegionLen;
-  RtotalLen += RfinalUpdateLen;
-  RtotalLen += RfinalRLen;
-  RtotalLen += RsubLen;
+  /* The five lengths are the sender's: summed in 32 bits they could wrap
+   * to a total that passes the checks below while one region alone runs
+   * gigabytes past cinBuffer (RONDB-1124).  Summed in 64 bits, a section
+   * that passes holds every region within its first RattrinbufLen words,
+   * so no partial sum of the five wraps either; prepareAndHandleJoinAggRow
+   * and handleAggReadRow rely on that. */
+  const Uint64 RtotalLen = Uint64(RinitReadLen) + Uint64(RexecRegionLen) +
+                           Uint64(RfinalUpdateLen) + Uint64(RfinalRLen) +
+                           Uint64(RsubLen);
 
   Uint32 RattroutCounter = 0;
   Uint32 RinstructionCounter = 5;

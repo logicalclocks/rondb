@@ -49,6 +49,8 @@
  * charset that does not fit the type (validateEmbeddedProgram).
  * P-40 reads a linked attribute entry as a type wider than the entry,
  * which reads as NULL (RONDB-1124).
+ * P-41 is a plain interpreted read, not through DBSPJ, whose AttrInfo
+ * header lengths wrap in 32 bits, which DBTUP refuses (RONDB-1124).
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
  * re-send (passQueue), which only DBTC itself may set (RONDB-1124).
  * Each malformed request is built by taking a known-good, word-for-word
@@ -186,6 +188,16 @@ struct SpjMalformedSignals {
     ScanTabReq *req = (ScanTabReq *)data;
     Uint32 ri = req->requestInfo;
     ScanTabReq::setPassQueueingFlag(ri, 1);
+    req->requestInfo = ri;
+  }
+
+  /* A plain interpreted read (P-41): not ViaSPJ, and the AttrInfo
+   * section is an interpreted program with its 5-word header. */
+  static void setTcKeyReqInterpretedRead(Uint32 *data) {
+    TcKeyReq *req = (TcKeyReq *)data;
+    Uint32 ri = req->requestInfo;
+    TcKeyReq::setViaSPJFlag(ri, 0);
+    TcKeyReq::setInterpretedFlag(ri, 1);
     req->requestInfo = ri;
   }
 
@@ -999,6 +1011,102 @@ class SpjMalformedChecker {
     return NDBT_OK;
   }
 
+  /* ---- P-41: the interpreted AttrInfo header of a plain key read ------ *
+   * A TCKEYREQ, not ViaSPJ, for an interpreted dirty read of the row with
+   * primary key 1.  Its AttrInfo section is the 5-word header
+   * [initReadLen][interpretLen][finalUpdateLen][finalReadLen][subLen]
+   * followed by one program word, and reaches Dbtup::interpreterStartLab
+   * as the API sent it.  A dirty read is answered by the DBLQH that read
+   * the row, with TCKEYREF carrying the operation pointer in word 0. */
+  static constexpr Uint32 kRefuseCode = 899;     /* EXIT_REFUSE's code */
+  static constexpr Uint32 kTotalLenError = 882;  /* ZTOTAL_LEN_ERROR */
+
+  Reply sendInterpretedRead(const std::vector<Uint32> &attrInfo) {
+    Reply rep;
+    const Uint32 nodeId = pickDbNode();
+    Uint32 apiConnectPtr = 0, tcRef = 0, seizeUp = 0;
+    if (!seize(nodeId, apiConnectPtr, tcRef, seizeUp)) {
+      rep.disconnected = true;
+      return rep;
+    }
+    const Uint32 userPointer = ++m_userPointer;
+    SimpleSignal sig(false);
+    Uint32 *d = sig.getDataPtrSend();
+    const Uint32 len = SpjMalformedSignals::fillTcKeyReq(
+        d, apiConnectPtr, userPointer, m_tableId, m_schemaVersion,
+        0x5b410000u + nodeId, userPointer);
+    SpjMalformedSignals::setTcKeyReqInterpretedRead(d);
+    Uint32 key[1] = {1};  /* KOL1, the primary key of a loaded row */
+    std::vector<Uint32> ai(attrInfo);
+    sig.ptr[TcKeyReq::KeyInfoSectionNum].p = key;
+    sig.ptr[TcKeyReq::KeyInfoSectionNum].sz = 1;
+    sig.ptr[TcKeyReq::AttrInfoSectionNum].p = ai.data();
+    sig.ptr[TcKeyReq::AttrInfoSectionNum].sz = (Uint32)ai.size();
+    sig.header.m_noOfSections = 2;
+
+    m_ss->lock();
+    const SendStatus sent =
+        m_ss->sendSignal(nodeId, sig, refToBlock(tcRef), GSN_TCKEYREQ, len);
+    Uint32 reply[25];
+    if (sent == SEND_OK) {
+      /* From whichever data node holds the row (node 0: any). */
+      rep.gsn = waitReplyLocked(GSN_TCKEYCONF, GSN_TCKEYREF, userPointer, 0,
+                                ReplyMillis, reply);
+      if (rep.gsn == GSN_TCKEYREF) rep.errorCode = reply[3];
+    } else {
+      rep.disconnected = true;
+    }
+    m_ss->unlock();
+    return rep;
+  }
+
+  int runP41() {  /* interpreted header lengths that wrap in 32 bits */
+    /* interpreterStartLab summed the five lengths in 32 bits:
+     * 0x80000000 + 0x80000001 is 1, so the section of 6 words passed
+     * its check with an exec region of 2^31 words and the subroutine
+     * region 8 GB past cinBuffer, where the CALL of the program jumped
+     * (RONDB-1124).  The sum is now 64 bits and the read fails with
+     * ZTOTAL_LEN_ERROR.  The control, the same read with a well-formed
+     * header and the program EXIT_REFUSE, must fail with the refuse
+     * code: without it a harness whose read never reaches the
+     * interpreter would pass. */
+    const char *findingId = "P-41 interpreted header lengths that wrap";
+    const std::vector<Uint32> good = {
+        0, 1, 0, 0, 0, Interpreter::EXIT_REFUSE | (kRefuseCode << 16)};
+    const Reply control = sendInterpretedRead(good);
+    printReply("CONTROL (interpreted read, EXIT_REFUSE)", control);
+    if (control.gsn != GSN_TCKEYREF || control.errorCode != kRefuseCode) {
+      g_err << "P-41 CONTROL did not get TCKEYREF " << kRefuseCode
+            << " (got " << gsnName(control.gsn) << ", err "
+            << control.errorCode << ").  The raw interpreted read is "
+               "wrong; fix this before trusting the result of P-41."
+            << endl;
+      return clusterHealthy() ? NDBT_FAILED : failNodeDown(findingId);
+    }
+
+    const std::vector<Uint32> bad = {
+        0, 0x80000000u, 0, 0, 0x80000001u,
+        Interpreter::CALL | (0u << 16)};
+    const Reply rep = sendInterpretedRead(bad);
+    printReply(findingId, rep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (rep.gsn != GSN_TCKEYREF || rep.errorCode != kTotalLenError) {
+      g_err << findingId << ": FAIL -- expected TCKEYREF " << kTotalLenError
+            << ", got " << gsnName(rep.gsn) << " " << rep.errorCode
+            << ": the wrapped header was not refused" << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId << ": PASS (all data nodes started; TCKEYREF "
+           << rep.errorCode << ")" << endl;
+    return NDBT_OK;
+  }
+
   /* ---- Q cases: DBTC's rate queue re-send mark sent by the API -------- *
    * DBTC's rate queue handler re-sends a queued request to its own DBTC
    * instance with a mark: the passQueue flag of TCKEYREQ, TCINDXREQ and
@@ -1244,8 +1352,8 @@ class SpjMalformedChecker {
     return rep;
   }
 
-  /* Caller holds the lock.  Return the first gsn1/gsn2 from nodeId whose
-   * word 0 is word0Match, or 0 on timeout. */
+  /* Caller holds the lock.  Return the first gsn1/gsn2 from nodeId (any
+   * node for 0) whose word 0 is word0Match, or 0 on timeout. */
   Uint32 waitReplyLocked(Uint32 gsn1, Uint32 gsn2, Uint32 word0Match,
                          Uint32 nodeId, Uint32 timeoutMillis, Uint32 *data) {
     const NDB_TICKS start = NdbTick_getCurrentTicks();
@@ -1257,7 +1365,8 @@ class SpjMalformedChecker {
       if (s == nullptr) return 0;
       const Uint32 gsn = s->readSignalNumber();
       if ((gsn == gsn1 || gsn == gsn2) &&
-          refToNode(s->header.theSendersBlockRef) == nodeId &&
+          (nodeId == 0 ||
+           refToNode(s->header.theSendersBlockRef) == nodeId) &&
           s->getLength() >= 1 && s->getDataPtr()[0] == word0Match) {
         memcpy(data, s->getDataPtr(), 4 * s->getLength());
         return gsn;
@@ -1456,6 +1565,7 @@ CASE_STEP(runP35, runP35)
 CASE_STEP(runP36, runP36)
 CASE_STEP(runP37, runP37)
 CASE_STEP(runP40, runP40)
+CASE_STEP(runP41, runP41)
 CASE_STEP(runQ1, runQ1)
 CASE_STEP(runQ2, runQ2)
 CASE_STEP(runQ3, runQ3)
@@ -1557,6 +1667,11 @@ TESTCASE("P40",
          "join aggregation: a linked attribute entry shorter than the "
          "type it is read as") {
   STEP(runP40);
+}
+TESTCASE("P41",
+         "interpreted read whose AttrInfo header lengths wrap in 32 "
+         "bits") {
+  STEP(runP41);
 }
 TESTCASE("Q1", "TCKEYREQ with the rate queue flag from the API") {
   STEP(runQ1);

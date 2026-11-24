@@ -1,0 +1,20 @@
+--source include/have_ndb.inc
+
+# P-41: an interpreted read, not through DBSPJ, whose AttrInfo header
+# lengths wrap in 32 bits (RONDB-1124). DBTC and DBLQH pass the section
+# on as the API sent it. Dbtup::interpreterStartLab summed the five
+# region lengths in 32 bits: 0x80000000 + 0x80000001 is 1, so a 6-word
+# section passed its check with an exec region of 2^31 words and the
+# subroutine region 8 GB past the interpreter's buffer, where the
+# program's CALL jumped. The sum is now 64 bits and the read fails
+# with ZTOTAL_LEN_ERROR (882).
+# The case runs the same read with a well-formed header and an
+# EXIT_REFUSE program first, which must get TCKEYREF 899, then the
+# wrapped header, which must get TCKEYREF 882 with every data node
+# still started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P41
+--let $spj_case_title = P-41: interpreted read whose AttrInfo header lengths wrap
+--source suite/ndb_spj/include/spj_malformed_case.inc
