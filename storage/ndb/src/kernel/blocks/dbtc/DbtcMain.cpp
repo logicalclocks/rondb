@@ -3723,10 +3723,45 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
       tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_INDEX_OP_RETURN);
   bool is_immediate = Tspecial_op_flags != 0 || isIndexOpReturn;
   DatabaseRecordPtr databaseRecordPtr;
-  Uint32 user_id_flag = TcKeyReq::getUserIdFlag(Treqinfo);
-  if (user_id_flag && handle.m_cnt != 0) {
-    Uint32 user_id = tcKeyReq->userId;
-    Uint32 user_id_version = tcKeyReq->userIdVersion;
+  Uint32 user_id = RNIL;
+  Uint32 user_id_version = 0;
+  if (TcKeyReq::getUserIdFlag(Treqinfo) && handle.m_cnt != 0) {
+    user_id = tcKeyReq->userId;
+    user_id_version = tcKeyReq->userIdVersion;
+  }
+  if (!is_immediate) {
+    /**
+     * The request is accounted to the transaction's rate limit user, also
+     * when it names none.  Before, a request without the user id was
+     * accounted to its table's database: an operation re-sent from the
+     * rate queue after a completed dirty read had released the
+     * transaction's database (release_api_ref) had no database record,
+     * and the passQueue handling below dereferenced a null pointer.
+     * Requests that DBTC sends itself (is_immediate) name no user and are
+     * not queued.  A request that the queue handler re-sends (passQueue)
+     * was checked when it arrived and was queued, so it takes the
+     * transaction's user as it is.
+     */
+    if (likely(!(passQueueingFlag && handle.m_cnt != 0)) &&
+        unlikely(!set_trans_user(regApiPtr,
+                                 is_transaction_to_start(regApiPtr,
+                                                         TstartFlag),
+                                 user_id,
+                                 user_id_version))) {
+      jam();
+      releaseSections(handle);
+      db_abort_handling(signal,
+                        apiConnectptr,
+                        TstartFlag,
+                        TcKeyReq::getExecuteFlag(Treqinfo) ?
+                          ApiConnectRecord::TF_EXEC_FLAG : 0,
+                        ZRATE_LIMIT_USER_MISMATCH);
+      return;
+    }
+    user_id = regApiPtr->m_user_id;
+    user_id_version = regApiPtr->m_user_id_version;
+  }
+  if (user_id != RNIL) {
     DatabaseRecord key(*this, user_id);
     if (unlikely(!m_databaseRecordHash.find(databaseRecordPtr, key))) {
       databaseRecordPtr.i = localTabptr.p->databaseRecord;
@@ -7408,7 +7443,9 @@ Dbtc::ApiConnectRecord::ApiConnectRecord()
   m_queuedDatabasePtrI(RNIL64),
   m_parallel_transactions_db(RNIL64),
   m_first_queued_req(nullptr),
-  m_last_queued_req(nullptr)
+  m_last_queued_req(nullptr),
+  m_user_id(RNIL),
+  m_user_id_version(0)
 {
   NdbTick_Invalidate(&m_start_ticks);
   tcConnect.init();
@@ -16287,10 +16324,32 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
 
   {
     DatabaseRecordPtr databaseRecordPtr;
-    Uint32 user_id_flag = ScanTabReq::getUserIdFlag(ri);
-    if (user_id_flag) {
-      Uint32 user_id = scanTabReq->userId;
-      Uint32 user_id_version = scanTabReq->userIdVersion;
+    Uint32 user_id = RNIL;
+    Uint32 user_id_version = 0;
+    if (ScanTabReq::getUserIdFlag(ri)) {
+      user_id = scanTabReq->userId;
+      user_id_version = scanTabReq->userIdVersion;
+    }
+    if (transOwnerPtr.p != apiConnectptr.p) {
+      /**
+       * A scan in a transaction that has key operations is accounted to
+       * the transaction's rate limit user, as they are (set_trans_user).
+       * A scan that names another user is refused.  A scan re-sent from
+       * the rate queue was checked when it arrived.
+       */
+      if (likely(!passQueueingFlag) &&
+          unlikely(!set_trans_user(transOwnerPtr.p,
+                                   false,
+                                   user_id,
+                                   user_id_version))) {
+        jam();
+        errCode = ZRATE_LIMIT_USER_MISMATCH;
+        goto SCAN_TAB_error;
+      }
+      user_id = transOwnerPtr.p->m_user_id;
+      user_id_version = transOwnerPtr.p->m_user_id_version;
+    }
+    if (user_id != RNIL) {
       DatabaseRecord key(*this, user_id);
       if (unlikely(!m_databaseRecordHash.find(databaseRecordPtr, key))) {
         databaseRecordPtr.i = tabptr.p->databaseRecord;
@@ -22515,10 +22574,35 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
     }
     return;
   }
-  Uint32 user_id_flag = TcKeyReq::getUserIdFlag(tcIndxRequestInfo);
-  if (user_id_flag && isLongTcIndxReq) {
-    Uint32 user_id = tcIndxReq->userId;
-    Uint32 user_id_version = tcIndxReq->userIdVersion;
+  Uint32 user_id = RNIL;
+  Uint32 user_id_version = 0;
+  if (TcKeyReq::getUserIdFlag(tcIndxRequestInfo) && isLongTcIndxReq) {
+    user_id = tcIndxReq->userId;
+    user_id_version = tcIndxReq->userIdVersion;
+  }
+  /**
+   * As in execTCKEYREQ: the request is accounted to the transaction's rate
+   * limit user, and one that names another user aborts the transaction.
+   * A request re-sent from the rate queue was checked when it arrived.
+   */
+  if (likely(!(passQueueingFlag && isLongTcIndxReq)) &&
+      unlikely(!set_trans_user(regApiPtr,
+                               is_transaction_to_start(regApiPtr, startFlag),
+                               user_id,
+                               user_id_version))) {
+    jam();
+    releaseSections(handle);
+    db_abort_handling(signal,
+                      transPtr,
+                      startFlag,
+                      TcKeyReq::getExecuteFlag(tcIndxRequestInfo) ?
+                        ApiConnectRecord::TF_EXEC_FLAG : 0,
+                      ZRATE_LIMIT_USER_MISMATCH);
+    return;
+  }
+  user_id = regApiPtr->m_user_id;
+  user_id_version = regApiPtr->m_user_id_version;
+  if (user_id != RNIL) {
     DatabaseRecord key(*this, user_id);
     if (unlikely(!m_databaseRecordHash.find(databaseRecordPtr, key))) {
       databaseRecordPtr.i = localTabptr.p->databaseRecord;
@@ -22661,6 +22745,20 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
   indexOp->indexOpId = indexOpPtr.i;
 
   // Save original signal
+  // But clear flags that should not be carried on first
+
+  /**
+   * When receiving execTCINDXREQ we need to handle getUserIdFlag
+   * properly, this means we use it to set database in TCINDXREQ,
+   * this means it need not be set again in TCKEYREQ.
+   * getScanIndFlag is not checked and can be set and cause
+   * corruption of the TCKEYREQ execution.
+   * Finally getDistributionKeyFlag can be set without checks
+   * which also needs protection against.
+   */
+  TcKeyReq::setUserIdFlag(tcIndxReq->requestInfo, 0);
+  TcKeyReq::setDistributionKeyFlag(tcIndxReq->requestInfo, 0);
+  TcKeyReq::setScanIndFlag(tcIndxReq->requestInfo, 0);
   indexOp->tcIndxReq = *tcIndxReq;
   indexOp->connectionIndex = TapiIndex;
   regApiPtr->accumulatingIndexOp = indexOp->indexOpId;
@@ -23496,6 +23594,7 @@ void Dbtc::readIndexTable(Signal *signal, ApiConnectRecordPtr transPtr,
    * TCKEYREQ is responsible for freeing the KeyInfo and
    * AttrInfo sections passed to it
    */
+
   EXECUTE_DIRECT(DBTC, GSN_TCKEYREQ, signal, TcKeyReq::StaticLength);
   jamEntry();
 
@@ -23569,11 +23668,6 @@ void Dbtc::executeIndexOperation(Signal *signal, ApiConnectRecord *regApiPtr,
   tcKeyReq->transId2 = regApiPtr->transid[1];
   tcKeyReq->senderData = tcIndxReq->senderData;  // Needed for TRANSID_AI to API
 
-  if (tabPtr.p->get_user_defined_partitioning()) {
-    jam();
-    tcKeyReq->scanInfo = indexOp->fragmentId;  // As read from Index table
-    TcKeyReq::setDistributionKeyFlag(tcKeyRequestInfo, 1U);
-  }
   regApiPtr->m_special_op_flags = 0;
   regApiPtr->executingIndexOp = 0;
 
@@ -23670,6 +23764,14 @@ void Dbtc::executeIndexOperation(Signal *signal, ApiConnectRecord *regApiPtr,
     regApiPtr->immediateTriggerId = triggerId;
     regApiPtr->m_executing_trigger_ops++;
   }
+  Uint32 extra_len = 0;
+  if (tabPtr.p->get_user_defined_partitioning()) {
+    jam();
+    tcKeyReq->scanInfo = indexOp->fragmentId;  // As read from Index table
+    TcKeyReq::setDistributionKeyFlag(tcKeyRequestInfo, 1U);
+    extra_len++;
+  }
+  tcKeyReq->requestInfo = tcKeyRequestInfo;
   releaseIndexOperation(regApiPtr, indexOp);
 
   ndbassert(tc_testbit(regApiPtr->m_flags,
@@ -23678,7 +23780,10 @@ void Dbtc::executeIndexOperation(Signal *signal, ApiConnectRecord *regApiPtr,
   /* Execute TCKEYREQ now - it is now responsible for freeing
    * the KeyInfo and AttrInfo sections
    */
-  EXECUTE_DIRECT(DBTC, GSN_TCKEYREQ, signal, TcKeyReq::StaticLength);
+  EXECUTE_DIRECT(DBTC,
+                 GSN_TCKEYREQ,
+                 signal,
+                 TcKeyReq::StaticLength + extra_len);
   jamEntry();
 
 #ifdef ERROR_INSERT
@@ -28141,6 +28246,52 @@ bool Dbtc::is_transaction_to_start(ApiConnectRecord *transPtrP,
       return true;
     }
   }
+  return false;
+}
+
+/**
+ * The rate limit user of a request of the transaction regApiPtr.
+ * user_id and user_id_version are what the request names, user_id RNIL
+ * when it names no user.
+ *
+ * Every request of a transaction is accounted to one user, or none: the
+ * one that the request starting the transaction names (to_start).  It is
+ * kept in the transaction record, since the database record the rate
+ * queue uses (m_queuedDatabasePtrI) can be released between operations of
+ * the transaction.  A later request that names no user is accounted to
+ * the transaction's; one that names another user, also in a transaction
+ * started without one, is refused: the caller aborts the transaction.
+ *
+ * This is called when a request arrives, before it can be queued, so the
+ * request that starts a transaction sets the user before any other
+ * request of it is looked at.  The callers do not call it again for a
+ * request that the queue handler re-sends (passQueue): that request was
+ * checked when it arrived and takes the transaction's user as it is.
+ *
+ * Returns false when the request names another user than the
+ * transaction's.  The caller then accounts the request to
+ * regApiPtr->m_user_id.
+ */
+bool Dbtc::set_trans_user(ApiConnectRecord *regApiPtr,
+                          bool to_start,
+                          Uint32 user_id,
+                          Uint32 user_id_version) {
+  if (to_start) {
+    jamDebug();
+    regApiPtr->m_user_id = user_id;
+    regApiPtr->m_user_id_version = (user_id == RNIL) ? 0 : user_id_version;
+    return true;
+  }
+  if (likely(user_id == RNIL)) {
+    jamDebug();
+    return true;
+  }
+  if (likely(user_id == regApiPtr->m_user_id &&
+             user_id_version == regApiPtr->m_user_id_version)) {
+    jamDebug();
+    return true;
+  }
+  jam();
   return false;
 }
 

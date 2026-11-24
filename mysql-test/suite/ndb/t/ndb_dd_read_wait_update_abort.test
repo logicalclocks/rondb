@@ -1,0 +1,135 @@
+--source include/have_ndb.inc
+# The test program uses error inserts in the data nodes
+--source include/have_ndb_debug.inc
+
+# Runs the NDB API test cases of testBasic for reads of a row with a
+# prepared update that moved its disk row to a new disk page (DISK_REORG,
+# error insert 4044), on the disk data table D2 against the MTR cluster:
+#  - UpdateGrowDiskReorgError: committed reads from another transaction
+#    while the update is prepared and after it is rolled back or
+#    committed. The read of the prepared update must not leave
+#    m_load_extra_diskpage_on_commit set in its operation record, the
+#    next read using the record then failed in load_extra_diskpage. Also
+#    updates that fail to allocate the new disk row (error insert 4045)
+#    after the in-memory varpart has grown.
+#  - ReadWaitDiskPageUpdateAbort: the read waits for its disk page (error
+#    insert 4047). A read in the updating transaction returns the updated
+#    row. A committed read from another transaction returns the committed
+#    row when the update is rolled back while the read waits, and must
+#    not use the released operation record of the update when its disk
+#    page arrives.
+#
+# The testBasic binary is only present in WITH_NDB_TEST builds.
+
+# Locate the testBasic binary next to ndb_mgm, skip if this build does
+# not include the NDBT test programs.
+--perl
+use strict;
+use File::Basename;
+my $mgm = $ENV{'NDB_MGM'} or die "NDB_MGM not set";
+my ($mgm_bin) = split(/\s+/, $mgm);
+my $tb = dirname($mgm_bin) . "/testBasic";
+my $vardir = $ENV{'MYSQLTEST_VARDIR'} or die "MYSQLTEST_VARDIR not set";
+open(my $f, '>', "$vardir/tmp/tb_location.inc") or die "$!";
+if (-x $tb) {
+  print $f "let \$TEST_BASIC= $tb;\n";
+} else {
+  print $f "--skip Needs testBasic binary (WITH_NDB_TEST build)\n";
+}
+close($f);
+EOF
+--source $MYSQLTEST_VARDIR/tmp/tb_location.inc
+--remove_file $MYSQLTEST_VARDIR/tmp/tb_location.inc
+
+# The test program creates the logfile group DEFAULT-LG and the tablespace
+# DEFAULT-TS with 224M of files if they do not exist, and does not drop
+# them. They are created here instead, with small files of the names that
+# the test program looks for, and dropped afterwards.
+
+CREATE LOGFILE GROUP `DEFAULT-LG`
+ADD UNDOFILE 'undofile0.dat'
+INITIAL_SIZE 16M
+UNDO_BUFFER_SIZE = 1M
+ENGINE NDB;
+
+ALTER LOGFILE GROUP `DEFAULT-LG`
+ADD UNDOFILE 'undofile1.dat'
+INITIAL_SIZE = 4M
+ENGINE NDB;
+
+ALTER LOGFILE GROUP `DEFAULT-LG`
+ADD UNDOFILE 'undofile2.dat'
+INITIAL_SIZE = 4M
+ENGINE NDB;
+
+CREATE TABLESPACE `DEFAULT-TS`
+ADD DATAFILE 'datafile0.dat'
+USE LOGFILE GROUP `DEFAULT-LG`
+INITIAL_SIZE 12M
+ENGINE NDB;
+
+ALTER TABLESPACE `DEFAULT-TS`
+ADD DATAFILE 'datafile1.dat'
+INITIAL_SIZE = 12M;
+
+# The test program creates its test table (TEST_DB.D2) directly via the
+# NDB API. Both MySQL Servers are shut down while it runs and started
+# again after the table has been dropped, so they never see the database
+# TEST_DB and no CREATE or DROP DATABASE TEST_DB is needed here. With
+# lower_case_table_names=2 (macOS) those two statements are distributed
+# with different keys (TEST_DB and test_db), and a later MySQL Server
+# restart on the same MTR worker creates the database again.
+--connect(s1,127.0.0.1,root,,test,$MASTER_MYPORT,)
+--connect(s2,127.0.0.1,root,,test,$MASTER_MYPORT1,)
+
+--connection s1
+--echo "[shutting down mysqld 1]"
+--let $mysqld_name=mysqld.1.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld1_file_name= $_expect_file_name
+
+--connection s2
+--echo "[shutting down mysqld 2]"
+--let $mysqld_name=mysqld.2.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld2_file_name= $_expect_file_name
+
+--connection default
+
+--echo # Committed reads of a prepared update that moved the disk row
+--exec $TEST_BASIC -n UpdateGrowDiskReorgError D2 >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo # Reads waiting for the disk page, update rolled back meanwhile
+--exec $TEST_BASIC -n ReadWaitDiskPageUpdateAbort D2 >> $NDB_TOOLS_OUTPUT 2>&1
+
+# The NDBT framework drops its auto-created table when a case
+# completes cleanly, so the table only exists here if the last case
+# left it behind; a missing table is not an error.
+--echo "[dropping NDBT test table]"
+--exec $NDB_DROP_TABLE -d TEST_DB D2 >> $NDB_TOOLS_OUTPUT 2>&1 || true
+
+--echo "[starting mysqld 1]"
+--let $_expect_file_name= $expect_mysqld1_file_name
+--let $mysqld_name=mysqld.1.1
+--source include/start_mysqld.inc
+
+--echo "[starting mysqld 2]"
+--let $_expect_file_name= $expect_mysqld2_file_name
+--let $mysqld_name=mysqld.2.1
+--source include/start_mysqld.inc
+
+--remove_file $NDB_TOOLS_OUTPUT
+
+# Wait until the MySQL Server is connected to the cluster again
+--source include/ndb_not_readonly.inc
+
+ALTER TABLESPACE `DEFAULT-TS`
+DROP DATAFILE 'datafile0.dat';
+
+ALTER TABLESPACE `DEFAULT-TS`
+DROP DATAFILE 'datafile1.dat';
+
+DROP TABLESPACE `DEFAULT-TS`;
+
+DROP LOGFILE GROUP `DEFAULT-LG`
+ENGINE NDB;

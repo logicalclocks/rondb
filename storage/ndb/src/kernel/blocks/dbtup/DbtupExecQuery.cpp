@@ -1485,7 +1485,10 @@ Dbtup::load_diskpage(Signal* signal,
      */
     return -(TUP_NO_TUPLE_FOUND);
   }
-  if (ptr->m_operation_ptr_i != RNIL)
+  const Uint32 op_type = flags & 7;
+  if (ptr->m_operation_ptr_i != RNIL &&
+      op_type != ZREAD &&
+      op_type != ZREAD_EX)
   {
     /**
      * There is a previous operation, we need to get the flag
@@ -1494,6 +1497,9 @@ Dbtup::load_diskpage(Signal* signal,
      *
      * This is handled in prepareActiveOpList, but this flag
      * is required to know whether to call load_extra_diskpage.
+     *
+     * A write can only come here from the transaction that owns the
+     * previous operation, since that transaction holds the row lock.
      */
     jam();
     OperationrecPtr prevOpPtr;
@@ -1506,9 +1512,23 @@ Dbtup::load_diskpage(Signal* signal,
   else
   {
     /**
-     * No operation on the row, so there is no new disk row to load. The
-     * flag can be left set from an earlier use of this operation record
-     * (see the read path in execTUPKEYREQ).
+     * No operation on the row, or this is a read. In both cases there is
+     * no new disk row to load.
+     *
+     * A read never uses the new disk page of a prepared update that moved
+     * the disk row (DISK_REORG). A read of the committed row uses the
+     * original disk page, and a read in the updating transaction finds
+     * the disk part in the copy row (DISK_INLINE).
+     *
+     * A read must not point to the previous operation either. A committed
+     * read from another transaction holds no lock, so the update can be
+     * aborted and its operation record released while the read waits for
+     * the disk page. disk_page_load_callback would then follow
+     * prevActiveOp to a released or reused operation record in
+     * load_extra_diskpage.
+     *
+     * The flag can also be left set from an earlier use of this operation
+     * record (see the read path in execTUPKEYREQ).
      */
     jamDebug();
     regOperPtr->op_struct.bit_field.m_load_extra_diskpage_on_commit = 0;
@@ -1550,6 +1570,15 @@ Dbtup::load_diskpage(Signal* signal,
       flags |= Page_cache_client::DELAY_REQ;
       const NDB_TICKS now = NdbTick_getCurrentTicks();
       req.m_delay_until_time = NdbTick_AddMilliseconds(now, (Uint64)3000);
+    }
+    if (ERROR_INSERTED(4047) && op_type == ZREAD) {
+      /**
+       * A read has to wait 800 ms for its disk page. This is below the
+       * default TransactionDeadlockDetectionTimeout.
+       */
+      flags |= Page_cache_client::DELAY_REQ;
+      const NDB_TICKS now = NdbTick_getCurrentTicks();
+      req.m_delay_until_time = NdbTick_AddMilliseconds(now, (Uint64)800);
     }
     if (ERROR_INSERTED(4035) && (rand() % 13) == 0) {
       // Disk access have to randomly wait max 16ms for a diskpage

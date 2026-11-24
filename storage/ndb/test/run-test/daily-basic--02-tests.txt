@@ -68,6 +68,10 @@ cmd: testBasic
 args: -n UpdateGrowDiskReorgError D2
 max-time: 300
 
+cmd: testBasic
+args: -n ReadWaitDiskPageUpdateAbort D2
+max-time: 300
+
 cmd: testBackup
 args: -n Bug17882305 T1
 max-time: 180

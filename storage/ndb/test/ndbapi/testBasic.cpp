@@ -1763,6 +1763,259 @@ int runUpdateGrowDiskReorgError(NDBT_Context *ctx, NDBT_Step *step) {
   return growCheckRows(ndb, tab, hugoOps, rows, mmCol, ddCol, 'c');
 }
 
+/**
+ * ReadWaitDiskPageUpdateAbort
+ *
+ * A read that waits for its disk page while the row has a prepared update
+ * that moved the disk row to a new disk page (DISK_REORG, forced by error
+ * insert 4044). Error insert 4047 makes a key read wait 800 ms for its
+ * disk page. For every row:
+ * 1) A read in the updating transaction waits for the disk page and must
+ *    return the updated row.
+ * 2) A committed read from another transaction waits for the disk page,
+ *    and the update is rolled back meanwhile. The read holds no lock, so
+ *    the operation record of the update is released while the read waits.
+ *    The read must not use it when the disk page arrives, and must return
+ *    the committed row.
+ * 3) The update is done again and committed.
+ */
+static bool growFindColumns(const NdbDictionary::Table *tab, int &mmCol,
+                            int &ddCol) {
+  mmCol = -1;
+  ddCol = -1;
+  for (int i = 0; i < tab->getNoOfColumns(); i++) {
+    const NdbDictionary::Column *col = tab->getColumn(i);
+    if (col->getType() == NdbDictionary::Column::Blob ||
+        col->getType() == NdbDictionary::Column::Text) {
+      return false;
+    }
+    if (!isNullableVarbinary(col)) continue;
+    if (col->getStorageType() == NdbDictionary::Column::StorageTypeMemory) {
+      if (mmCol == -1) mmCol = i;
+    } else if (ddCol == -1) {
+      ddCol = i;
+    }
+  }
+  return mmCol != -1 && ddCol != -1;
+}
+
+/* Insert the rows with all nullable columns NULL. */
+static int growInsertNullRows(Ndb *ndb, const NdbDictionary::Table *tab,
+                              HugoOperations &hugoOps, int rows) {
+  int result = NDBT_OK;
+  for (int row = 0; row < rows && result == NDBT_OK; row++) {
+    NdbTransaction *trans = ndb->startTransaction();
+    if (trans == nullptr) {
+      g_err << "startTransaction failed: " << ndb->getNdbError() << endl;
+      return NDBT_FAILED;
+    }
+    do {
+      NdbOperation *op = trans->getNdbOperation(tab);
+      CHK2(op != nullptr, trans->getNdbError());
+      CHK2(op->insertTuple() == 0, op->getNdbError());
+      CHK2(hugoOps.equalForRow(op, row) == 0, "equalForRow failed");
+      for (int i = 0; i < tab->getNoOfColumns(); i++) {
+        const NdbDictionary::Column *col = tab->getColumn(i);
+        if (col->getPrimaryKey()) continue;
+        if (col->getNullable()) {
+          CHK2(op->setValue(i, (const char *)nullptr) == 0,
+               op->getNdbError());
+        } else {
+          CHK2(hugoOps.setValueForAttr(op, i, row, 0) == 0,
+               "setValueForAttr failed");
+        }
+      }
+      if (result != NDBT_OK) break;
+      CHK2(trans->execute(NdbTransaction::Commit) == 0, trans->getNdbError());
+    } while (0);
+    ndb->closeTransaction(trans);
+  }
+  return result;
+}
+
+/* Fill 0 means that the column is expected to be NULL. */
+static bool growValueIs(const NdbDictionary::Column *col,
+                        const NdbRecAttr *val, char fill) {
+  if (fill == 0) return val->isNULL() == 1;
+  std::vector<char> buf;
+  maxVarbinaryValue(col, fill, buf);
+  return val->isNULL() == 0 && val->get_size_in_bytes() == buf.size() &&
+         memcmp(val->aRef(), buf.data(), buf.size()) == 0;
+}
+
+struct GrowAsynchRead {
+  bool done;
+  int result;
+};
+
+static void growAsynchReadDone(int result, NdbTransaction *, void *obj) {
+  GrowAsynchRead *read = (GrowAsynchRead *)obj;
+  read->done = true;
+  read->result = result;
+}
+
+int runReadWaitDiskPageUpdateAbort(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *ndb = GETNDB(step);
+  const NdbDictionary::Table *tab = ctx->getTab();
+  /* Records is also the number of rows that runClearTable deletes. */
+  const int rows = ctx->getProperty("Records", Uint32(4));
+  /* Error insert 4047 delays the disk page of a read by 800 ms. */
+  const Uint64 minDelayMillis = 500;
+
+  int mmCol;
+  int ddCol;
+  if (!growFindColumns(tab, mmCol, ddCol)) {
+    g_err << "[SKIPPED] Test requires a table without blob columns, with a"
+          << " nullable Varbinary or Longvarbinary column in memory and one"
+          << " on disk" << endl;
+    return NDBT_SKIPPED;
+  }
+  const int cols[2] = {mmCol, ddCol};
+
+  /* The committed reads wait in their own Ndb object. */
+  Ndb readNdb(&ctx->m_cluster_connection, "TEST_DB");
+  if (readNdb.init() != 0 || readNdb.waitUntilReady(30) != 0) {
+    g_err << "Failed to set up the Ndb object of the reader: "
+          << readNdb.getNdbError() << endl;
+    return NDBT_FAILED;
+  }
+
+  HugoOperations hugoOps(*tab);
+  NdbRestarter restarter;
+  int result = NDBT_OK;
+
+  if (UtilTransactions(*tab).clearTable(ndb) != 0) {
+    g_err << "Failed to clear table " << tab->getName() << endl;
+    return NDBT_FAILED;
+  }
+  if (growInsertNullRows(ndb, tab, hugoOps, rows) != NDBT_OK) {
+    return NDBT_FAILED;
+  }
+
+  for (int row = 0; row < rows && result == NDBT_OK; row++) {
+    NdbTransaction *trans = ndb->startTransaction();
+    NdbTransaction *readTrans = nullptr;
+    if (trans == nullptr) {
+      g_err << "startTransaction failed: " << ndb->getNdbError() << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+    do {
+      /* The prepared update that moved the disk row. */
+      CHK2(restarter.insertErrorInAllNodes(4044) == 0,
+           "Failed to insert error 4044");
+      CHK2(growDefineUpdate(trans, tab, hugoOps, row, mmCol, ddCol, 'b') == 0,
+           trans->getNdbError());
+      CHK2(trans->execute(NdbTransaction::NoCommit) == 0,
+           trans->getNdbError());
+      CHK2(restarter.insertErrorInAllNodes(4047) == 0,
+           "Failed to insert error 4047");
+
+      /* 1) A read in the updating transaction waits for the disk page. */
+      {
+        NdbOperation *op = trans->getNdbOperation(tab);
+        CHK2(op != nullptr, trans->getNdbError());
+        CHK2(op->readTuple(NdbOperation::LM_Read) == 0, op->getNdbError());
+        CHK2(hugoOps.equalForRow(op, row) == 0, "equalForRow failed");
+        NdbRecAttr *const vals[2] = {op->getValue(mmCol),
+                                     op->getValue(ddCol)};
+        CHK2(vals[0] != nullptr && vals[1] != nullptr, op->getNdbError());
+        const NDB_TICKS start = NdbTick_getCurrentTicks();
+        CHK2(trans->execute(NdbTransaction::NoCommit) == 0,
+             trans->getNdbError());
+        const Uint64 millis =
+            NdbTick_Elapsed(start, NdbTick_getCurrentTicks()).milliSec();
+        CHK2(millis >= minDelayMillis,
+             "Row " << row << ": the read in the updating transaction took "
+                    << millis << " ms, error insert 4047 did not delay it");
+        for (int i = 0; i < 2; i++) {
+          CHK2(growValueIs(tab->getColumn(cols[i]), vals[i], 'b'),
+               "Row " << row << " column " << tab->getColumn(cols[i])->getName()
+                      << ": the read in the updating transaction did not"
+                      << " return the updated value");
+        }
+        if (result != NDBT_OK) break;
+      }
+
+      /**
+       * 2) A committed read from another transaction waits for the disk
+       *    page while the update is rolled back.
+       */
+      readTrans = readNdb.startTransaction();
+      CHK2(readTrans != nullptr, readNdb.getNdbError());
+      NdbOperation *readOp = readTrans->getNdbOperation(tab);
+      CHK2(readOp != nullptr, readTrans->getNdbError());
+      CHK2(readOp->readTuple(NdbOperation::LM_CommittedRead) == 0,
+           readOp->getNdbError());
+      CHK2(hugoOps.equalForRow(readOp, row) == 0, "equalForRow failed");
+      NdbRecAttr *const readVals[2] = {readOp->getValue(mmCol),
+                                       readOp->getValue(ddCol)};
+      CHK2(readVals[0] != nullptr && readVals[1] != nullptr,
+           readOp->getNdbError());
+      GrowAsynchRead read = {false, 0};
+      const NDB_TICKS start = NdbTick_getCurrentTicks();
+      readTrans->executeAsynchPrepare(NdbTransaction::Commit,
+                                      &growAsynchReadDone, &read);
+      readNdb.sendPreparedTransactions(1);
+      /* Let the read reach DBTUP and start waiting for its disk page. */
+      NdbSleep_MilliSleep(250);
+      CHK2(!read.done && readNdb.pollNdb(0, 1) == 0 && !read.done,
+           "Row " << row << ": the committed read did not wait for its disk"
+                  << " page, error insert 4047 did not delay it");
+      CHK2(trans->execute(NdbTransaction::Rollback) == 0,
+           trans->getNdbError());
+      for (int i = 0; i < 20 && !read.done; i++) {
+        readNdb.pollNdb(1000, 1);
+      }
+      const Uint64 millis =
+          NdbTick_Elapsed(start, NdbTick_getCurrentTicks()).milliSec();
+      CHK2(read.done,
+           "Row " << row << ": the committed read did not complete");
+      CHK2(read.result == 0, "Row " << row << ": the committed read failed: "
+                                    << readTrans->getNdbError());
+      CHK2(millis >= minDelayMillis,
+           "Row " << row << ": the committed read took " << millis
+                  << " ms, error insert 4047 did not delay it");
+      for (int i = 0; i < 2; i++) {
+        CHK2(growValueIs(tab->getColumn(cols[i]), readVals[i], 0),
+             "Row " << row << " column " << tab->getColumn(cols[i])->getName()
+                    << ": the committed read did not return NULL after the"
+                    << " update was rolled back");
+      }
+    } while (0);
+    restarter.insertErrorInAllNodes(0);
+    if (readTrans != nullptr) readNdb.closeTransaction(readTrans);
+    ndb->closeTransaction(trans);
+    if (result != NDBT_OK) break;
+    if (growCheckRow(ndb, tab, hugoOps, row, mmCol, ddCol,
+                     NdbOperation::LM_Read, 0) != NDBT_OK) {
+      return NDBT_FAILED;
+    }
+
+    /* 3) The update moving the disk row again, committed. */
+    if (restarter.insertErrorInAllNodes(4044) != 0) {
+      g_err << "Failed to insert error 4044" << endl;
+      return NDBT_FAILED;
+    }
+    trans = ndb->startTransaction();
+    if (trans == nullptr) {
+      g_err << "startTransaction failed: " << ndb->getNdbError() << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+    do {
+      CHK2(growDefineUpdate(trans, tab, hugoOps, row, mmCol, ddCol, 'c') == 0,
+           trans->getNdbError());
+      CHK2(trans->execute(NdbTransaction::Commit) == 0, trans->getNdbError());
+    } while (0);
+    ndb->closeTransaction(trans);
+    restarter.insertErrorInAllNodes(0);
+  }
+  restarter.insertErrorInAllNodes(0);
+  if (result != NDBT_OK) return result;
+  return growCheckRows(ndb, tab, hugoOps, rows, mmCol, ddCol, 'c');
+}
+
 int runBug25090(NDBT_Context *ctx, NDBT_Step *step) {
   Ndb *pNdb = GETNDB(step);
   // NdbDictionary::Dictionary * dict = pNdb->getDictionary();
@@ -4766,6 +5019,17 @@ TESTCASE("UpdateGrowDiskReorgError",
          "nullable Varbinary columns in memory and on disk, e.g. D2") {
   TC_PROPERTY("Records", Uint32(16));
   INITIALIZER(runUpdateGrowDiskReorgError);
+  FINALIZER(runClearTable);
+}
+TESTCASE("ReadWaitDiskPageUpdateAbort",
+         "A read waits for its disk page (error insert 4047) on a row with "
+         "a prepared update that moved the disk row (4044). A read in the "
+         "updating transaction returns the updated row, a committed read "
+         "returns the committed row when the update is rolled back while "
+         "it waits. Needs nullable Varbinary columns in memory and on "
+         "disk, e.g. D2") {
+  TC_PROPERTY("Records", Uint32(4));
+  INITIALIZER(runReadWaitDiskPageUpdateAbort);
   FINALIZER(runClearTable);
 }
 TESTCASE("Fill", "Verify what happens when we fill the db") {
