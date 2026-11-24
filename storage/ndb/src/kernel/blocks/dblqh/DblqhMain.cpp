@@ -9619,7 +9619,7 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
   const Uint32 queryTag = signal->theData[3];
   const Uint32 cteId = signal->theData[4];
   if (ERROR_INSERTED(5145) || ERROR_INSERTED(5138) || ERROR_INSERTED(5148) ||
-      ERROR_INSERTED(5150) || ERROR_INSERTED(5160)) {
+      ERROR_INSERTED(5150) || ERROR_INSERTED(5161)) {
     jam();
     /* Test hooks. 5145 (NF-11, NF-12): hold until this instance
      * processes NODE_FAILREP or the test clears the insert. The failure
@@ -9628,7 +9628,7 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
      * normally. 5138 / 5148 (PK-1, PK-4): hold while SETUP is held.
      * For guaranteed replay, switch 5138 to extra 0xFFFE first: SETUP
      * runs while sweepers stay held. Clear after the query completes.
-     * 5150 (PK-8) / 5160 (PK-8b): hold while the proxy waits for a
+     * 5150 (PK-8) / 5161 (PK-8b): hold while the proxy waits for a
      * NULL_ROW / SCAN_FRAGREQ to park; the SETUP then fills the
      * placeholder before this runs again. */
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 20, 5);
@@ -9807,7 +9807,7 @@ bool Dblqh::failUndeliveredJoinAggFinalRep(Signal *signal,
 void Dblqh::joinAggFlushParked(Signal *signal, Uint32 parkRecI) {
   JoinAggParkRec *const rec = joinAggGetParkRec(parkRecI);
 #ifdef ERROR_INSERT
-  if (ERROR_INSERTED(5150) || ERROR_INSERTED(5160)) {
+  if (ERROR_INSERTED(5150) || ERROR_INSERTED(5161)) {
     jam();
     /* Test hook (PK-8, PK-8b): the SETUP succeeded and detached this
      * record for replay.  Keep it on this instance's held chain until
@@ -9815,11 +9815,11 @@ void Dblqh::joinAggFlushParked(Signal *signal, Uint32 parkRecI) {
      * replay runs against a failed coordinator and must be rejected by
      * the guards.  One timer per instance re-checks the chain every
      * 20 ms.  The event selects one held NULL_ROW (5150) or SCAN_FRAGREQ
-     * (5160) per instance and arming.  A SCAN_FRAGREQ does not carry its
+     * (5161) per instance and arming.  A SCAN_FRAGREQ does not carry its
      * coordinator, so its event reports coordinator 0. */
     rec->m_next = m_join_agg_held_flush_head;
     m_join_agg_held_flush_head = parkRecI;
-    const Uint32 observedGsn = ERROR_INSERTED(5160)
+    const Uint32 observedGsn = ERROR_INSERTED(5161)
                                    ? GSN_SCAN_FRAGREQ
                                    : GSN_JOIN_AGG_NULL_ROW_REQ;
     if (rec->m_gsn == observedGsn &&
@@ -9899,13 +9899,13 @@ void Dblqh::joinAggFlushParked(Signal *signal, Uint32 parkRecI) {
 }
 
 #ifdef ERROR_INSERT
-/* Test hooks 5150 (PK-8) and 5160 (PK-8b): while the insert is set,
+/* Test hooks 5150 (PK-8) and 5161 (PK-8b): while the insert is set,
  * re-check in 20 ms; once NODE_FAILREP cleared it, hand every held
  * record back to the normal flush path, one job each, so the replays
- * run after this instance marked the coordinator down.  For 5160,
+ * run after this instance marked the coordinator down.  For 5161,
  * NODE_FAILREP calls this itself, see there. */
 void Dblqh::joinAggReleaseHeldFlush(Signal *signal) {
-  if (ERROR_INSERTED(5150) || ERROR_INSERTED(5160)) {
+  if (ERROR_INSERTED(5150) || ERROR_INSERTED(5161)) {
     jam();
     signal->theData[0] = ZCONTINUE_JOIN_AGG_FLUSH_HELD;
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 20, 1);
@@ -9924,7 +9924,7 @@ void Dblqh::joinAggReleaseHeldFlush(Signal *signal) {
     released++;
     i = next;
   }
-  g_eventLogger->info("DBLQH %u: error insert 5150/5160 released %u held "
+  g_eventLogger->info("DBLQH %u: error insert 5150/5161 released %u held "
                       "parked replays", instance(), released);
 }
 #endif
@@ -17563,7 +17563,7 @@ void Dblqh::execNODE_FAILREP(Signal *signal) {
     // coordinator status first, after this handler marks failed nodes down.
     CLEAR_ERROR_INSERT_VALUE;
   }
-  if (ERROR_INSERTED(5145) || ERROR_INSERTED(5150) || ERROR_INSERTED(5160)) {
+  if (ERROR_INSERTED(5145) || ERROR_INSERTED(5150) || ERROR_INSERTED(5161)) {
     jam();
     /* End the parking hold on every LDM/query instance at node failure.
      * Keep it off even after the original placeholder has been swept:
@@ -17571,11 +17571,11 @@ void Dblqh::execNODE_FAILREP(Signal *signal) {
      * The proxy's separate SETUP hold is unaffected.  For 5150 (PK-8)
      * the held replays are released by the next re-check, after this
      * handler marked the failed coordinator down below. */
-    const bool releaseHeldNow = ERROR_INSERTED(5160);
+    const bool releaseHeldNow = ERROR_INSERTED(5161);
     CLEAR_ERROR_INSERT_VALUE;
     if (releaseHeldNow) {
       jam();
-      /* 5160 (PK-8b): queue the held replays now, ahead of this
+      /* 5161 (PK-8b): queue the held replays now, ahead of this
        * instance's node-failure handling (ZHANDLE_TC_FAILED_SCANS below),
        * so they run before its NF_COMPLETEREP and so before
        * JOIN_AGG_NODE_FAIL_REP can release the state. A held SCAN_FRAGREQ
@@ -20624,7 +20624,7 @@ bool Dblqh::joinAggCoordinatorDown(Uint32 coordinatorRef) {
 #ifdef ERROR_INSERT
   if (ERROR_INSERTED(5154) || m_join_agg_observed_replay) {
     /* NF-14 (5154) and the observed replay of PK-8 / PK-8b (5150 /
-     * 5160): simulate a DISCONNECT_REP that lags the whole node-failure
+     * 5161): simulate a DISCONNECT_REP that lags the whole node-failure
      * protocol, so that only ZNODE_DOWN can stop the work. */
     disconnected = false;
   }
@@ -28482,7 +28482,7 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
       jam();
 #ifdef ERROR_INSERT
       if (m_join_agg_observed_replay) {
-        /* PK-8b (5160): the selected parked SCAN_FRAGREQ, replayed after
+        /* PK-8b (5161): the selected parked SCAN_FRAGREQ, replayed after
          * NODE_FAILREP with m_connected ignored, was refused here, so
          * execSCAN_FRAGREQ answers SCAN_FRAGREF 286. */
         infoEvent("[JOIN_AGG_SCAN_FRAGREQ_REJECTED node=%u failed=%u "

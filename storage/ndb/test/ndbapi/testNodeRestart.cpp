@@ -13344,8 +13344,8 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
     /* Match the complete marker, including node and iteration; a
      * requester-naming marker is matched up to the requester field. */
     BaseString expected, line;
-    /* PK-8 (5150) and PK-8b (5160) name the held replay they observe. */
-    const bool matchParkedReplay = hold.insert == 5150 || hold.insert == 5160;
+    /* PK-8 (5150) and PK-8b (5161) name the held replay they observe. */
+    const bool matchParkedReplay = hold.insert == 5150 || hold.insert == 5161;
     Uint32 replayInstance = 0, replayPark = RNIL, replayCoordinator = 0;
     if (matchParkedReplay) {
       expected.assfmt("[%s node=%u iteration=%u instance=", hold.eventTag,
@@ -13395,7 +13395,7 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
     }
     if (matchParkedReplay) {
       const char *marker = strstr(line.c_str(), expected.c_str());
-      /* A held NULL_ROW names its coordinator. A held SCAN_FRAGREQ (5160)
+      /* A held NULL_ROW names its coordinator. A held SCAN_FRAGREQ (5161)
        * does not carry it and reports 0; its rejection marker names it. */
       const Uint32 expectedCoordinator =
           hold.insert == 5150 ? ctx->getProperty("CteNfTc", (Uint32)0) : 0;
@@ -14465,11 +14465,11 @@ static int runCteCoordinatorParkedReplayKiller(NDBT_Context *ctx,
  * a SCAN_FRAGREQ feed, the guard in initScanrec. The query is
  * ScanAggMain: the aggregate leaf is an index scan of cte_nf_src's
  * PRIMARY ordered index, so its feeds are SCAN_FRAGREQs. Error insert
- * 5160 on a peer P holds its SETUP until a SCAN_FRAGREQ has parked on
+ * 5161 on a peer P holds its SETUP until a SCAN_FRAGREQ has parked on
  * the SETUP's identity, then holds the replays as 5150 does, and
  * CTE_PK8_REPLAY_HELD selects one held SCAN_FRAGREQ per instance (with
  * coordinator 0: the request does not name it). The coordinator is
- * killed after this event. NODE_FAILREP on P marks it down and, for 5160,
+ * killed after this event. NODE_FAILREP on P marks it down and, for 5161,
  * queues the held replays ahead of P's own node-failure handling, so they
  * run before JOIN_AGG_NODE_FAIL_REP can release the state and their
  * identity lookup still finds it. The guard ignores m_connected for the
@@ -14483,7 +14483,7 @@ static int runCteCoordinatorParkedReplayKiller(NDBT_Context *ctx,
  * coordinator restarted the leak dumps must be clean. Runs on 2 nodes.
  */
 static const CteNfHoldCase CTE_PK8B_HOLD = {
-    "CteCoordinatorDiesParkedScanReplay", 5160, "CTE_PK8_REPLAY_HELD",
+    "CteCoordinatorDiesParkedScanReplay", 5161, "CTE_PK8_REPLAY_HELD",
     "the API never learned that its coordinator died while parked "
     "SCAN_FRAGREQ replays were held",
     CteQueryUtil::ScanAggMain, cteNfPickPeer, CTE_NF_KILL_COORDINATOR,
@@ -15987,7 +15987,7 @@ TESTCASE("CteCoordinatorDiesParkedReplay",
   FINALIZER(runCteNfDropTables);
 }
 TESTCASE("CteCoordinatorDiesParkedScanReplay",
-         "RONDB-1124 bug 8 PK-8b: error insert 5160 on a peer lets the "
+         "RONDB-1124 bug 8 PK-8b: error insert 5161 on a peer lets the "
          "SETUP succeed once a SCAN_FRAGREQ has parked, then holds the "
          "replay of the parked consumers; killing the coordinator must make "
          "the SCAN_FRAGREQ replay hit the coordinator guard on the host "

@@ -11,7 +11,7 @@
 #
 # The query is a main aggregation whose aggregate leaf is an index scan
 # of the source table's PRIMARY ordered index (CteQueryUtil ScanAggMain),
-# so its feeds are SCAN_FRAGREQs. Error insert 5160 on the peer holds its
+# so its feeds are SCAN_FRAGREQs. Error insert 5161 on the peer holds its
 # SETUP_REQ until one SCAN_FRAGREQ has parked on the SETUP's identity,
 # lets the SETUP succeed, and then holds the replay of the parked
 # consumers on every LDM / query instance until that instance processes
@@ -81,7 +81,7 @@ EOF
 
 --connection default
 
---echo # PK-8b: kill the coordinator while parked SCAN_FRAGREQ replays are held on a peer (error insert 5160)
+--echo # PK-8b: kill the coordinator while parked SCAN_FRAGREQ replays are held on a peer (error insert 5161)
 --exec $TEST_NODE_RESTART -n CteCoordinatorDiesParkedScanReplay T1 >> $NDB_TOOLS_OUTPUT 2>&1
 
 # The NDBT framework drops T1 and the case's finalizer drops the CTE

@@ -396,7 +396,7 @@ class FsReadWriteReq;
  * 60 is ZCONTINUE_JOIN_AGG_FLUSH_HELD, 61 ZCONTINUE_JOIN_AGG_SEND. */
 #define ZCONTINUE_CTE_DROP_ZERO_FINALIZE 62
 #ifdef ERROR_INSERT
-/* Test hooks 5150 / 5160: one timer per instance re-checks the held
+/* Test hooks 5150 / 5161: one timer per instance re-checks the held
  * replays. */
 #define ZCONTINUE_JOIN_AGG_FLUSH_HELD 60
 #endif
@@ -4843,7 +4843,7 @@ public:
    */
   Uint32 m_delay_copy_park_tc = RNIL;
   /**
-   * ERROR_INSERT 5150 (PK-8) and 5160 (PK-8b): park records whose replay
+   * ERROR_INSERT 5150 (PK-8) and 5161 (PK-8b): park records whose replay
    * this instance holds until NODE_FAILREP clears the insert, chained
    * through m_next, and whether the single re-check timer is scheduled.
    * One timer per instance, never one per record: the time queue holds

@@ -222,7 +222,7 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
       5155-5157 with an extra value ("<node> ERROR 5155 <table id>") act
       only on requests for that table id; other reads and scans on the node
       neither take the token nor clear the insert.
-5160: PK-8b, 5150 for a SCAN_FRAGREQ feed (RONDB-1124 bug 8): hold every
+5161: PK-8b, 5150 for a SCAN_FRAGREQ feed (RONDB-1124 bug 8): hold every
       JOIN_AGG_SETUP_REQ, 20 ms at a time, until a SCAN_FRAGREQ has parked
       on its identity (DblqhProxy; the sweepers are held meanwhile), then
       let it succeed and hold the replay of the parked consumers on each
@@ -237,7 +237,7 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
       it then emits "[JOIN_AGG_SCAN_FRAGREQ_REJECTED node=N failed=C
       iteration=I instance=B park=R]". The proxy's insert is cleared by
       the test.
-Next DBLQH 5161
+Next DBLQH 5162
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8135

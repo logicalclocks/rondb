@@ -33,7 +33,9 @@ continues both lists. Their status is in `../ronsql_executor/README.md`.
 - **Error inserts.** These numbers are free next, as recorded on the "Next"
   lines in `storage/ndb/src/kernel/blocks/ERROR_codes.txt`:
   - DBTUP 4047;
-  - DBLQH 5161;
+  - DBLQH 5162. A DBLQH number can also be taken by an entry outside
+    the RONDB-1124 block of `ERROR_codes.txt`: check with
+    `git grep -w <n> storage/ndb/src/kernel` before taking one;
   - DBTC 8135 / 8320 (RonDB);
   - DBSPJ 17542.
 
@@ -89,7 +91,7 @@ New error codes and inserts added by these fixes:
   if QueryMemory ran out;
 - 1256 `ZJOIN_AGG_RESULT_TOO_LARGE`, now only for the 16-bit length limit;
 - `kErrMixedStringCaseArms` in `NdbAggregator`;
-- error insert DBLQH 5160 (bug 8): PK-8b, 5150 for a parked SCAN_FRAGREQ.
+- error insert DBLQH 5161 (bug 8): PK-8b, 5150 for a parked SCAN_FRAGREQ.
 
 Bug 14 adds `AggInterpreterBase::checkProgram`, which runs:
 - in `DblqhProxy::execJOIN_AGG_SETUP_REQ` for every leaf, before the
@@ -114,7 +116,7 @@ Each fix has its own commit and test. What the fixes found and left open:
   references (block tests) are never down; an out-of-range DBTC node id
   is down instead of failing `ptrCheckGuard`.
 - Test: PK-8b (`testNodeRestart -n CteCoordinatorDiesParkedScanReplay`,
-  `ndb_cte.cte_nodefail_coordinator_scan_replay`, error insert 5160). PK-8
+  `ndb_cte.cte_nodefail_coordinator_scan_replay`, error insert 5161). PK-8
   now also ignores `m_connected` for its replay.
 - Open: the LQHKEYREQ guard uses the same helper but has no deterministic
   test with `m_connected` ignored.
