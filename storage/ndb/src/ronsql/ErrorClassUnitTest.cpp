@@ -355,6 +355,13 @@ static const VerdictCase verdict_cases[] = {
   // The statement's own errors, by classification.
   {"1860 arithmetic overflow", 1860, PRM, NE::ApplicationError, DMEC, false,
    false, false, false, Act::FAIL, EC::SEMANTIC, false, false},
+  // An aggregation group larger than a query memory chunk fails at once;
+  // out of query memory is retried.
+  {"1873 aggregation group too large", 1873, PRM, NE::ApplicationError,
+   DMEC, false, false, false, false, Act::FAIL, EC::SEMANTIC, false, false},
+  {"1870 aggregation out of query memory", 1870, TMP,
+   NE::TemporaryResourceError, DMEC, false, false, false, false, Act::RETRY,
+   EC::INTERNAL, true, false},
   {"626 no such row", 626, PRM, NE::NoDataFound, HA_ERR_KEY_NOT_FOUND,
    false, false, false, false, Act::FAIL, EC::SEMANTIC, false, false},
   {"827 out of DataMemory", 827, PRM, NE::InsufficientSpace,

@@ -58,6 +58,7 @@ enum NdbAggregatorError {
   kErrUnsupportedStringOperation,
   kErrUnsupportedTemporalOperation,
   kErrMixedStringCaseArms,
+  kErrTooBigGroupKey,
   kErrMaxErrno
 };
 
@@ -70,7 +71,7 @@ static AggregationError g_errors_[] = {
   {kErrAggNoUsed, "Aggregation id is already used"},
   {kErrEmptyProgram, "Empty program"},
   {kErrAlreadyFinalized, "Already finalized"},
-  {kErrTooBigResult, "Single aggregation result could be larger than 16K bytes"},
+  {kErrTooBigResult, "The aggregate results of one group could be larger than 65535 bytes"},
   {kErrTooBigProgram, "Aggregation program should be less than 4K bytes"},
   {kErrTooManyGroupbyCols, "Number of group by columns should be less than 128"},
   {kErrEmptyAggResult, "Empty aggregation"},
@@ -78,6 +79,7 @@ static AggregationError g_errors_[] = {
   {kErrUnsupportedStringOperation, "String columns are only supported for MIN/MAX"},
   {kErrUnsupportedTemporalOperation, "Temporal (DATE/YEAR/DATETIME/TIME) columns are only supported for MIN/MAX/COUNT"},
   {kErrMixedStringCaseArms, "MIN/MAX over CASE arms needs strings of one type and collation in all arms, or in none"},
+  {kErrTooBigGroupKey, "The GROUP BY columns of one group could be larger than 65535 bytes"},
   {kErrMaxErrno, ""}
 };
 
@@ -288,6 +290,27 @@ class NdbAggregator {
   bool uses_wide_type() const {
     return uses_wide_type_;
   }
+
+  /* The bytes of a result record that holds one group whose strings are
+   * short: the result and group headers, the GROUP BY key and the
+   * values, with every variable-length string (VARCHAR / VARBINARY,
+   * long or not) of a GROUP BY column or a string MIN / MAX counted at
+   * most kTypicalStringBytes past its length prefix, and every other
+   * column at its declared size.  Set by Finalize().  A receive buffer
+   * sized from it mostly fits a record of one group; a larger record
+   * grows the buffer (NdbReceiver::storeAggRecord,
+   * NdbRecAttr::receive_agg_record). */
+  Uint32 typical_record_bytes() const {
+    return typical_record_bytes_;
+  }
+  /* The length assumed for a variable-length string by
+   * typical_record_bytes(), in bytes.  Declared sizes are generous
+   * (VARCHAR(255) in utf8mb4 is 1020 bytes) while most stored values,
+   * names, codes and identifiers, are a few dozen bytes; a string
+   * MIN / MAX keeps one stored value.  A longer value costs one growth
+   * of a receive buffer, while sizing every buffer at the declared size
+   * costs that memory for every receiver of every scan. */
+  static constexpr Uint32 kTypicalStringBytes = 64;
 
   /**
    * Single-row CTE projection mode (cte_single_row_kernel_plan.md):
@@ -594,7 +617,13 @@ class NdbAggregator {
   // added; else HasRoom(1).
   bool HasGroupByRoom();
   bool result_record_fetched_;
-  Uint32 result_size_est_;
+  /* GROUP BY key bytes of one group in a result record (an
+   * AttributeHeader and the padded value of each column): at the
+   * declared sizes, and as typical_record_bytes() counts them. */
+  Uint32 gb_key_bytes_;
+  Uint32 gb_key_bytes_typical_;
+  Uint32 typical_record_bytes_;
+  void addGroupByKeyBytes(const NdbDictionary::Column* col);
   bool disk_columns_;
   bool uses_wide_type_;   // any LoadColumn type > 31 (DATETIME2/TIMESTAMP2)
   bool single_row_mode_;  // single-row CTE projection program: GROUP BY

@@ -226,6 +226,17 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       PA_INTERP_TRACE(m_frag_id,
                       "Found group, len: %u", len_in_char);
     } else {
+      Uint32 alloc_error = 0;
+      char* agg_rec = allocGroupData(
+          len_in_char + m_n_agg_results * sizeof(AggResItem),
+          len_in_char, &alloc_error);
+      if (agg_rec == nullptr) {
+        /* ZAGG_GROUP_TOO_LARGE (permanent): the group does not fit one
+         * query memory chunk.  ZAGG_ALLOC_MEM_FAILED (temporary): the
+         * chunk budget or RG_QUERY_MEMORY is exhausted.  Nothing was
+         * counted for the group yet. */
+        return static_cast<Int32>(alloc_error);
+      }
       /* read_length update keeps Dblqh::ScanRecord::m_curr_batch_size_bytes
        * tracking accurate even though aggregation uses its own batch
        * accounting via m_agg_curr_batch_size_bytes. */
@@ -233,13 +244,6 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
                        m_n_agg_results * sizeof(AggResItem)) / sizeof(Int32);
       m_result_size += len_in_char +
                        m_n_agg_results * sizeof(AggResItem);
-      char* agg_rec = allocGroupData(
-          len_in_char + m_n_agg_results * sizeof(AggResItem),
-          len_in_char);
-      if (agg_rec == nullptr) {
-        /* The chunk budget or RG_QUERY_MEMORY is exhausted. */
-        return ZAGG_ALLOC_MEM_FAILED;
-      }
       memset(agg_rec, 0, len_in_char + m_n_agg_results * sizeof(AggResItem));
       memcpy(agg_rec, reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
       m_gb_map->insertRawInBucket(gb_bucket, agg_rec,

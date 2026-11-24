@@ -38,10 +38,25 @@ struct CHARSET_INFO;
  */
 #define PA_CHECK 1
 
-// Wire bytes, including result and group headers. A group must fit
-// within one result batch.
+// The data node's target for one result record (one scan batch), in wire
+// bytes including result and group headers: it packs groups into a record
+// up to this size, and a group larger than it goes alone in a record of
+// its own.  The API receives a record of any size (its receive buffers
+// grow), so this is not a limit on a group.
 #define MAX_AGG_RESULT_BATCH_BYTES (16 * 1024)
 #define DEF_AGG_RESULT_BATCH_BYTES MAX_AGG_RESULT_BATCH_BYTES
+// A group in a result record has a length word key_len << 16 | val_len:
+// its GROUP BY key (an AttributeHeader and the padded value of each
+// column) and its values (the AggResItem slots and the string MIN/MAX
+// payloads) take at most 0xFFFF bytes each (resultLensFit in the data
+// node).  NdbAggregator::Finalize refuses a program whose group can need
+// more, counted at the declared column sizes.  The data node also keeps
+// each group's key and AggResItem slots (not its string payloads) in one
+// 32 KB query memory chunk: it fails a query whose actual group does not
+// fit with error 1873 (ZAGG_GROUP_TOO_LARGE), a permanent error.  That
+// limit depends on the stored values, so the API does not check it.
+#define MAX_AGG_GROUP_KEY_BYTES 0xFFFF
+#define MAX_AGG_GROUP_VALUE_BYTES 0xFFFF
 #define MAX_AGG_N_GROUPBY_COLS 128
 #define MAX_AGG_N_RESULTS 256
 #define MAX_AGG_PROGRAM_WORD_SIZE 1024

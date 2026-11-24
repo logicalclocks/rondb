@@ -151,8 +151,10 @@ NdbAggregator::NdbAggregator(const NdbDictionary::Table* table) :
   curr_prog_pos_(PROGRAM_HEADER_SIZE),
   instructions_length_(PROGRAM_HEADER_SIZE),
   result_record_fetched_(false),
-  result_size_est_(RESULT_HEADER_SIZE * sizeof(Uint32) +
-               RESULT_ITEM_HEADER_SIZE * sizeof(Uint32)),
+  gb_key_bytes_(0),
+  gb_key_bytes_typical_(0),
+  typical_record_bytes_((RESULT_HEADER_SIZE + RESULT_ITEM_HEADER_SIZE) *
+                        sizeof(Uint32)),
   disk_columns_(false),
   uses_wide_type_(false),
   single_row_mode_(false),
@@ -1602,6 +1604,36 @@ bool NdbAggregator::DropZeroCountGroups(Uint32 agg_id) {
   return true;
 }
 
+/* The bytes typical_record_bytes() counts for a value of a column of
+ * type `type` whose declared size, length prefix included, is
+ * `declared`: a variable-length string at most kTypicalStringBytes past
+ * its length prefix, any other value (CHAR and BINARY are sent at their
+ * declared size) at its declared size. */
+static Uint32 typicalValueBytes(Uint32 type, Uint32 declared) {
+  Uint32 prefix = 0;
+  switch (type) {
+    case NdbDictionary::Column::Varchar:
+    case NdbDictionary::Column::Varbinary:
+      prefix = 1;
+      break;
+    case NdbDictionary::Column::Longvarchar:
+    case NdbDictionary::Column::Longvarbinary:
+      prefix = 2;
+      break;
+    default:
+      return declared;
+  }
+  const Uint32 typical = prefix + NdbAggregator::kTypicalStringBytes;
+  return declared < typical ? declared : typical;
+}
+
+void NdbAggregator::addGroupByKeyBytes(const NdbDictionary::Column* col) {
+  const Uint32 declared = static_cast<Uint32>(col->getSizeInBytes());
+  const Uint32 typical = typicalValueBytes(col->getType(), declared);
+  gb_key_bytes_ += sizeof(AttributeHeader) + ((declared + 3) & ~3U);
+  gb_key_bytes_typical_ += sizeof(AttributeHeader) + ((typical + 3) & ~3U);
+}
+
 bool NdbAggregator::GroupBy(const char* name) {
   if (name == nullptr) {
     SetError(kErrInvalidColumnName);
@@ -1623,7 +1655,7 @@ bool NdbAggregator::GroupBy(const char* name) {
   buffer_[curr_prog_pos_++] =
       (col_id << 16) | (col->getType() & AGG_GB_COL_TYPE_MASK);
 
-  result_size_est_ += (sizeof(AttributeHeader) + ((col->getSizeInBytes() + 3) & (~3)));
+  addGroupByKeyBytes(col);
 
   gb_col_ids_[n_gb_cols_] = col_id;
   gb_columns_[n_gb_cols_] = col;
@@ -1660,8 +1692,7 @@ bool NdbAggregator::GroupBy(Int32 col_id) {
   if (!HasGroupByRoom()) return false;
   buffer_[curr_prog_pos_++] = raw_col_id << 16;
 
-  result_size_est_ +=
-      (sizeof(AttributeHeader) + ((col->getSizeInBytes() + 3) & (~3)));
+  addGroupByKeyBytes(col);
   if (col->getStorageType() == NDB_STORAGETYPE_DISK) {
     disk_columns_ = true;
   }
@@ -1690,8 +1721,7 @@ bool NdbAggregator::GroupByLinked(Uint32 position,
   buffer_[curr_prog_pos_++] =
       (col_id << 16) | (parentCol->getType() & AGG_GB_COL_TYPE_MASK);
 
-  result_size_est_ += (sizeof(AttributeHeader) +
-                        ((parentCol->getSizeInBytes() + 3) & (~3)));
+  addGroupByKeyBytes(parentCol);
   if (parentCol->getStorageType() == NDB_STORAGETYPE_DISK) {
     disk_columns_ = true;
   }
@@ -1859,13 +1889,12 @@ bool NdbAggregator::Finalize() {
     }
   }
 
-  result_size_est_ += sizeof(AggResItem) * n_agg_results_;
-
-  // String MIN/MAX append a length word and a padded column value after
-  // the fixed slots. getSizeInBytes() includes VARCHAR length prefixes.
-  // A MIN/MAX over a CASE counts at its widest arm (agg_arm_bytes_): the
-  // API receives a record into MAX_AGG_RESULT_BATCH_BYTES, and a larger
-  // one would overrun it.
+  // The values of one group: the fixed slots, then for each string
+  // MIN/MAX a length word and the padded column value.
+  // getSizeInBytes() includes VARCHAR length prefixes.  A MIN/MAX over a
+  // CASE counts at its widest arm (agg_arm_bytes_), whichever arm wins.
+  Uint32 value_bytes = sizeof(AggResItem) * n_agg_results_;
+  Uint32 value_bytes_typical = value_bytes;
   for (Uint32 i = 0; i < n_agg_results_; i++) {
     const NdbDictionary::Column *col = agg_columns_[i];
     if ((agg_ops_[i] == kOpMin || agg_ops_[i] == kOpMax) &&
@@ -1874,27 +1903,34 @@ bool NdbAggregator::Finalize() {
       if (bytes < agg_arm_bytes_[i]) {
         bytes = agg_arm_bytes_[i];
       }
-      result_size_est_ += sizeof(Uint32) + ((bytes + 3) & ~3U);
+      const Uint32 typical = typicalValueBytes(col->getType(), bytes);
+      value_bytes += sizeof(Uint32) + ((bytes + 3) & ~3U);
+      value_bytes_typical += sizeof(Uint32) + ((typical + 3) & ~3U);
     }
   }
 
-  // The estimate already includes result and group headers. Receiver
-  // bookkeeping is allocated separately from these wire bytes.
-  if (result_size_est_ > MAX_AGG_RESULT_BATCH_BYTES) {
-    SetError(kErrTooBigResult);
-    /*
-     * PA related
-     * No need to release memory here.
-     * Destruction will do it.
-     * if (gb_map_) {
-     *   delete gb_map_;
-     * }
-     * if (agg_results_) {
-     *   delete agg_results_;
-     * }
-     */
+  // A result record carries a group's key and values with 16-bit byte
+  // lengths, so a group whose key or values can need more, at the
+  // declared column sizes, could not be sent: the data node would fail
+  // the query when it met one.  A group larger than the data node's
+  // batch target (MAX_AGG_RESULT_BATCH_BYTES) is sent in a record of its
+  // own, and the API's receive buffers grow to take it.  The data node
+  // keeps a group's key and slots in one 32 KB query memory chunk and
+  // fails an actual group that does not fit with 1873, a permanent
+  // error; declared sizes cannot tell that, so it is not checked here
+  // (a GROUP BY key declared over 32 KB usually holds short values).
+  // No memory to release here: the destructor does it.
+  if (gb_key_bytes_ > MAX_AGG_GROUP_KEY_BYTES) {
+    SetError(kErrTooBigGroupKey);
     return false;
   }
+  if (value_bytes > MAX_AGG_GROUP_VALUE_BYTES) {
+    SetError(kErrTooBigResult);
+    return false;
+  }
+  typical_record_bytes_ =
+      (RESULT_HEADER_SIZE + RESULT_ITEM_HEADER_SIZE) * sizeof(Uint32) +
+      gb_key_bytes_typical_ + value_bytes_typical;
   finalized_ = true;
   return true;
 }

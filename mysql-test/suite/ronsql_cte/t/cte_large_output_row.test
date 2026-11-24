@@ -12,11 +12,12 @@
 # that fits one message (CTE_LOOKUP_CONF carries it and DBSPJ replays
 # it unfragmented).
 #
-# One CTE body is one aggregator, and NdbAggregator::Finalize caps its
-# group at 16 KB at the declared sizes, so with RonSQL a CTE row stays
-# under one message: in release builds (MAX_TRANSID_AI_SIZE 7400 words)
-# these rows go unfragmented.  In VM_TRACE builds MAX_TRANSID_AI_SIZE is
-# 240 words, and every row here (about 2000 words) takes the fragmented
+# One CTE body is one aggregator.  At the declared sizes RonSQL keeps a
+# CTE's GROUP BY key to at most 4092 bytes, and NdbAggregator::Finalize
+# its values to at most 65535, so a CTE row can be larger than one
+# message.  In release builds (MAX_TRANSID_AI_SIZE 7400 words) the rows
+# here go unfragmented.  In VM_TRACE builds MAX_TRANSID_AI_SIZE is 240
+# words, and every row here (about 2000 words) takes the fragmented
 # path.
 #
 # Data: lr_src.s and lr_src.t are VARCHAR(4000) latin1 with values of

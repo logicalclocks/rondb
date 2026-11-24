@@ -216,12 +216,21 @@ class AggInterpreterBase : public PushdownInterpreter {
    * RG_QUERY_MEMORY; allocGroupData carves from the current chunk,
    * freeGroupData decrements the chunk's live count and releases the
    * page when it hits zero.  Same shape both interpreters end up using
-   * in Step 2b. */
+   * in Step 2b.
+   *
+   * allocGroupData returns nullptr when it cannot carve the `len` bytes
+   * of a group (its key, `key_len` of them, then its AggResItem slots),
+   * with *error_code ZAGG_GROUP_TOO_LARGE when the group is larger than
+   * one chunk holds, which no amount of query memory changes (a
+   * permanent error: the API refuses only a key or values over the
+   * 16-bit lengths of a result record, at the declared column sizes),
+   * and ZAGG_ALLOC_MEM_FAILED when the chunk budget or RG_QUERY_MEMORY
+   * is exhausted (temporary). */
   void initChunkAllocator(Uint32 thread_id, Uint32 budget_pages,
                           Uint32 available_pages);
   bool bookMoreMemory();
   MemChunk* allocNewChunk();
-  char* allocGroupData(Uint32 len, Uint32 key_len);
+  char* allocGroupData(Uint32 len, Uint32 key_len, Uint32* error_code);
   void freeGroupData(char* ptr);
   void freeAllChunks();
 

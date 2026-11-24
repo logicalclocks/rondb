@@ -8,10 +8,11 @@ call mtr.add_suppression("Participant timeout");
 # Aggregation result records larger than one transporter message
 # (dblqh_ronsql_analysis.md bug 6).
 #
-# NdbAggregator::Finalize caps one aggregator's group at 16 KB, counted
-# at the declared column sizes, but SELECT-list subqueries on different
-# tables each get their own leaf aggregator, and the data node puts all
-# leaves' slots in one group record.  Three string MAX leaves of about
+# NdbAggregator::Finalize caps the values of one aggregator's group at
+# 64 KB (65535 bytes, the record format's limit), counted at the
+# declared column sizes, but SELECT-list subqueries on different tables
+# each get their own leaf aggregator, and the data node puts all leaves'
+# slots in one group record.  Three string MAX leaves of about
 # 15 KB each make a 45 KB record, larger than one transporter message
 # (32 KB): DBLQH sent it as one TRANSID_AI and stopped ("Message too big
 # in sendSignal"), and then failed the query with error 1256 instead.

@@ -5,11 +5,13 @@ SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 #
 # A standalone pushed GROUP BY keeps each fragment's groups resident
 # until the scan ends or QueryMemory runs short, then drains them in
-# result records of at most 16 KB, one record per scan batch. The API
-# receives each record in a 16 KB buffer and refuses to push a program
-# whose single group could exceed 16 KB, counting string MIN/MAX
-# values. push_agg_compare.inc runs every query with pushdown OFF and
-# ON and fails unless both return the same rows.
+# result records of at most 16 KB, one record per scan batch; a larger
+# group goes alone in a record of its own. The API's receive buffers
+# grow to such a record. A program is refused only when the GROUP BY
+# key or the values of one group, counting string MIN/MAX values at
+# their declared sizes, could exceed 65535 bytes, the 16-bit lengths
+# of a result record. push_agg_compare.inc runs every query with
+# pushdown OFF and ON and fails unless both return the same rows.
 #
 ############################################################
 # A: high cardinality, each fragment drains many 16 KB records
@@ -24,18 +26,18 @@ SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 # B1 4000-byte GROUP BY key: pushed=1 rows=300
 # B2 4000-byte string MIN/MAX payloads: pushed=1 rows=40
 ############################################################
-# C: groups near the 16 KB limit
+# C: groups near and over the 16 KB batch target
 ############################################################
 # One 10 KB MAX payload per group: pushed, each record above 8 KB.
 # C1 MAX over VARCHAR(10000): pushed=1 rows=4
-# MIN and MAX payloads could need 20 KB: not pushed, server computes.
-# C2 MIN and MAX over VARCHAR(10000): pushed=0 rows=4
+# MIN and MAX payloads of 20 KB: pushed, a record over 16 KB per group.
+# C2 MIN and MAX over VARCHAR(10000): pushed=1 rows=4
 # COUNT over a wide string returns no payload: pushed.
 # C3 COUNT over VARCHAR(10000): pushed=1 rows=4
 # A 15000-byte key fits one record on its own: pushed.
 # C4 VARCHAR(15000) GROUP BY key: pushed=1 rows=10
-# A 17000-byte key cannot fit one record: not pushed.
-# C5 VARCHAR(17000) GROUP BY key: pushed=0 rows=10
+# A 17000-byte key goes alone in a record over 16 KB: pushed.
+# C5 VARCHAR(17000) GROUP BY key: pushed=1 rows=10
 ############################################################
 # D: concurrent high-cardinality scans on every LDM thread
 ############################################################

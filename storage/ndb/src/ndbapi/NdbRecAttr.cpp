@@ -32,6 +32,7 @@
 #include "NdbDictionaryImpl.hpp"
 #include <NdbTCP.h>
 #include "AttributeHeader.hpp"
+#include <new>
 
 NdbRecAttr::NdbRecAttr(Ndb *) {
   init();
@@ -73,9 +74,13 @@ NdbRecAttr::setup(const NdbColumnImpl* anAttrInfo,
   } else {
     /*
      * PA related
-     * Aggregation
+     * Aggregation: the result record, whose size is only known when it
+     * arrives.  receive_agg_record allocates theRef at the record's size
+     * and grows it for a larger record, so nothing is allocated or
+     * cleared here (this used to be 16 KB, allocated and zeroed for
+     * every aggregating read and scan).
      */
-    byteSize = MAX_AGG_RESULT_BATCH_BYTES;
+    byteSize = 0;
     m_column = nullptr;
     theAttrId = AttributeHeader::AGG_RESULT;
     m_size_in_bytes = -1;
@@ -92,6 +97,7 @@ NdbRecAttr::setup(Uint32 byteSize, char* aValue)
   if (aValue != nullptr) {
     theRef = (Uint64*)aValue;
     theMemorySource = EXT_MALLOC;
+    m_capacity_bytes = 0;
     return 0;
   }
 
@@ -100,6 +106,7 @@ NdbRecAttr::setup(Uint32 byteSize, char* aValue)
     theStorage[1] = 0;
     theRef = theStorage;
     theMemorySource = INT_STORAGE;
+    m_capacity_bytes = sizeof(theStorage);
     return 0;
   }
   Uint32 tSize = (byteSize + 7) >> 3;
@@ -108,6 +115,7 @@ NdbRecAttr::setup(Uint32 byteSize, char* aValue)
     memset(tRef, 0, 8 * tSize);
     theRef = tRef;
     theMemorySource = INT_MALLOC;
+    m_capacity_bytes = 8 * tSize;
     return 0;
   }
   init();
@@ -131,6 +139,7 @@ NdbRecAttr *NdbRecAttr::clone() const {
   if(n <= 16) {
     ret->theRef = ret->theStorage;
     ret->theMemorySource = INT_STORAGE;
+    ret->m_capacity_bytes = sizeof(ret->theStorage);
   } else {
     if (Int32(n) != -1) {
       ret->theRef = new Uint64[((n + 7) >> 3)];
@@ -143,6 +152,7 @@ NdbRecAttr *NdbRecAttr::clone() const {
       return nullptr;
     }
     ret->theMemorySource = INT_MALLOC;
+    ret->m_capacity_bytes = 8 * ((n + 7) >> 3);
   }
   memcpy(ret->theRef, theRef, n);
   return ret;
@@ -172,6 +182,31 @@ bool NdbRecAttr::receive_data(const Uint32 *data32, Uint32 sz) {
   }
 
   return setNULL();
+}
+
+bool NdbRecAttr::receive_agg_record(const Uint32 *data32, Uint32 sz) {
+  if (unlikely(sz > m_capacity_bytes) && theMemorySource != EXT_MALLOC) {
+    /* Grow at least twofold, so that a scan whose records keep growing
+     * reallocates a few times only.  The record in theRef is not kept:
+     * this one replaces it. */
+    Uint32 bytes = sz;
+    if (bytes / 2 < m_capacity_bytes) {
+      bytes = 2 * m_capacity_bytes;
+    }
+    const Uint32 words = (bytes + 7) >> 3;
+    Uint64 *tRef = new (std::nothrow) Uint64[words];
+    if (unlikely(tRef == nullptr)) {
+      setUNDEFINED();
+      return false;
+    }
+    release();
+    theRef = tRef;
+    theMemorySource = INT_MALLOC;
+    m_capacity_bytes = 8 * words;
+  }
+  memcpy(theRef, data32, sz);
+  m_size_in_bytes = sz;
+  return true;
 }
 
 static const NdbRecordPrintFormat default_print_format;

@@ -287,6 +287,12 @@ class NdbRecAttr {
       Uint32 sz); /* Set attribute (element) size in bytes. */
 
   bool receive_data(const Uint32 *, Uint32);
+  /* receive_data for the aggregation result record (theAttrId
+   * AGG_RESULT): theRef is allocated at the record's size, or grown,
+   * when the record does not fit; an application buffer given to
+   * getValue() is not, and must hold the record.  False, with the
+   * RecAttr undefined, when that allocation fails. */
+  bool receive_agg_record(const Uint32 *, Uint32);
 
   void release(); /* Release memory if allocated          */
   void init();    /* Initialise object when allocated     */
@@ -328,6 +334,9 @@ class NdbRecAttr {
     EXT_MALLOC = 3
   };
   Uint32 theMemorySource;
+  /* Bytes theRef can hold: theStorage, or the INT_MALLOC buffer; 0 for
+   * an application buffer (EXT_MALLOC), whose size is unknown. */
+  Uint32 m_capacity_bytes;
 
   // not-NULL means skip length bytes and store their value here
   Uint16 *m_getVarValue;
@@ -374,6 +383,7 @@ inline void NdbRecAttr::release() {
       break;
   }
   theMemorySource = NOT_INITIALISED;
+  m_capacity_bytes = 0;
 }
 
 inline void NdbRecAttr::init() {
@@ -383,6 +393,7 @@ inline void NdbRecAttr::init() {
   m_getVarValue = nullptr;
   m_size_in_bytes = 0;
   theMemorySource = NOT_INITIALISED;
+  m_capacity_bytes = 0;
   theStartPos = 0;
   theAttrId = 0xFFFF;
 }

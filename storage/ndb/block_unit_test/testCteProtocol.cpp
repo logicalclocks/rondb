@@ -2226,8 +2226,10 @@ id9(Ctx &c)
  * (virtual column 0) and the BIGINT SUM (column 1) alternately; each read
  * emits 3 words, so one row needs more than the buffer holds.  No
  * FLUSH_AI: nothing is sent before the overflow is detected.  SQL cannot
- * build this: one CTE group is at most 16 KB at declared sizes
- * (MAX_AGG_RESULT_BATCH_BYTES) and RonSQL reads each column once. */
+ * build this: RonSQL reads each column once, a CTE's GROUP BY key is at
+ * most 4092 bytes at declared sizes (check_cte_group_key_size) and its
+ * values at most 64 KB (MAX_AGG_GROUP_VALUE_BYTES), about half the
+ * buffer. */
 static const Uint32 OV_ROW_BUFFER_WORDS = 32768;
 static const Uint32 OV_READS = OV_ROW_BUFFER_WORDS / 3 + 64;
 

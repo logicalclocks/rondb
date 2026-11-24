@@ -8,8 +8,9 @@ call mtr.add_suppression("Participant timeout");
 # RONDB-1124: RonSQL aggregation with bounded result batches and
 # QueryMemory drains. A fragment keeps its groups resident until the scan
 # ends or QueryMemory runs short, then sends them in result records of at
-# most 16 KB, one per scan batch, and resumes scanning after a memory
-# drain. An IN list on the leading primary-key column runs as a
+# most 16 KB (a larger group goes alone in a record of its own, and the
+# API's receive buffers grow to it), one per scan batch, and resumes
+# scanning after a memory drain. An IN list on the leading primary-key column runs as a
 # multi-range scan whose aggregation state is carried across ranges, so
 # forced drains land inside and between ranges:
 #   ERROR_INSERT 4042 - drain on every 7th row
@@ -91,12 +92,12 @@ while ($i)
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo
---echo === MIN and MAX payloads could need 20 KB: a limit error ===
---exec printf '{"query":"SELECT g, MIN(s), MAX(s) FROM t_s10 GROUP BY g;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
---exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
---exec grep -oF '[limit] Caught exception: The GROUP BY columns and aggregate results of one group can need more than 16 KB, counted at the declared column sizes.' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected a limit error for a group over 16 KB"
---remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
---remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out
+--echo === MIN and MAX payloads of 10 KB each: each record above 16 KB ===
+# This was a limit error while the API received a record into a fixed
+# 16 KB buffer; a group of 20 KB now goes in a record of its own and the
+# receive buffers grow to it (ronsql_agg_large_groups has more).
+--let QUERY = SELECT g, MIN(s), MAX(s) FROM t_s10 GROUP BY g;
+--source suite/ronsql/include/ronsql_compare.inc
 
 # RONSQL-14: at most 127 GROUP BY columns and 255 aggregate results per
 # SELECT, and an aggregation program shorter than 1024 words. Exceeding

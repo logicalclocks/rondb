@@ -231,9 +231,15 @@ finalize_aggregator(NdbAggregator* agg, const char* msg)
   case kErrTooBigResult:
     throw RonSQLPermanentError(
         RonSQLErrorClass::LIMIT,
-        "The GROUP BY columns and aggregate results of one group can need "
-        "more than " + std::to_string(MAX_AGG_RESULT_BATCH_BYTES / 1024) +
-        " KB, counted at the declared column sizes.");
+        "The aggregate results of one group can need more than " +
+        std::to_string(MAX_AGG_GROUP_VALUE_BYTES) +
+        " bytes, counted at the declared column sizes.");
+  case kErrTooBigGroupKey:
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::LIMIT,
+        "The GROUP BY columns of one group can need more than " +
+        std::to_string(MAX_AGG_GROUP_KEY_BYTES) +
+        " bytes, counted at the declared column sizes.");
   case kErrTooManyGroupbyCols:
     throw RonSQLPermanentError(RonSQLErrorClass::LIMIT,
                                "GROUP BY has more than " +

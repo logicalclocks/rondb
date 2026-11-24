@@ -2121,6 +2121,15 @@ int NdbScanOperation::nextResult(const char **out_row_ptr, bool fetchAllowed,
       /* First take care of any getValue(). */
       if (getvalue_recattr != nullptr) {
         if (receiver->get_AttrValues(getvalue_recattr) == -1) {
+          /* The aggregation result record (the only getValue() of an
+           * aggregation scan) could not be stored: its receive buffer
+           * or its RecAttr could not grow to it
+           * (NdbReceiver::storeAggRecord, NdbRecAttr::receive_agg_record). */
+          if (m_aggregation_code != nullptr &&
+              m_aggregation_code->type() == NdbAggregator::kAggregation &&
+              theError.code == 0) {
+            setErrorCodeAbort(4000);
+          }
           DEB_TRACE();
           return -1;
         }
@@ -3133,12 +3142,35 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
   Uint32 full_rowsize =
       NdbReceiver::ndbrecord_rowsize(m_attribute_record, m_read_range_no);
 
-  if (m_aggregation_code != nullptr &&
-      m_aggregation_code->type() == NdbAggregator::kAggregation) {
-    // In aggregation mode, we redefine the batch
+  const bool agg_records =
+      m_aggregation_code != nullptr &&
+      m_aggregation_code->type() == NdbAggregator::kAggregation;
+  if (agg_records) {
+    /**
+     * In aggregation mode, we redefine the batch: a batch is one
+     * aggregation result record, received into a buffer that grows when
+     * the record does not fit (NdbReceiver::storeAggRecord).
+     *
+     * Without GROUP BY, the record is one group: the buffer starts at the
+     * typical size of one group, which assumes short strings.  With
+     * GROUP BY, the data node packs groups into a record up to
+     * DEF_AGG_RESULT_BATCH_BYTES, a constant of the data node that
+     * batch_byte_size does not change, and a fragment with more groups
+     * than fit in one record fills each record to it, which is the case
+     * the batches are for: that buffer starts at the batch target, or at
+     * one typical group if that is larger.  A record over the start size
+     * (a group larger than the batch target, or longer strings than
+     * assumed) grows that receiver's buffer, which keeps its new size
+     * for the later batches.
+     */
     batch_size = 1;
     batch_byte_size = DEF_AGG_RESULT_BATCH_BYTES;
-    bufsize = NdbReceiver::aggregation_bufsize();
+    Uint32 record_bytes = m_aggregation_code->typical_record_bytes();
+    if (m_aggregation_code->n_gb_cols() != 0 &&
+        record_bytes < DEF_AGG_RESULT_BATCH_BYTES) {
+      record_bytes = DEF_AGG_RESULT_BATCH_BYTES;
+    }
+    bufsize = NdbReceiver::aggregation_bufsize(record_bytes);
   }
 
   /**
@@ -3187,7 +3219,7 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
     NdbReceiverBuffer *recbuf =
         NdbReceiver::initReceiveBuffer(buf, bufsize, batch_size);
 
-    m_receivers[i]->prepareReceive(recbuf);
+    m_receivers[i]->prepareReceive(recbuf, agg_records);
     buf += bufsize / sizeof(Uint32);
   }
 

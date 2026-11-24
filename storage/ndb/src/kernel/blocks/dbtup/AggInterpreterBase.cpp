@@ -2195,16 +2195,27 @@ MemChunk* AggInterpreterBase::allocNewChunk() {
   return chunk;
 }
 
-char* AggInterpreterBase::allocGroupData(Uint32 len, Uint32 key_len) {
+char* AggInterpreterBase::allocGroupData(Uint32 len, Uint32 key_len,
+                                         Uint32* error_code) {
   Uint32 total = ((GROUP_LINK_OVERHEAD + len) + 7) & ~7u;
+  /* A chunk's capacity, as allocNewChunk sets it.  Checked before any
+   * chunk is allocated: a larger group fits no chunk, and booking or
+   * allocating one for it would only waste query memory. */
+  static constexpr Uint32 chunk_capacity = MEM_CHUNK_SIZE - sizeof(MemChunk);
+  if (unlikely(total > chunk_capacity)) {
+    *error_code = ZAGG_GROUP_TOO_LARGE;
+    return nullptr;
+  }
   MemChunk* chunk = m_current_chunk;
   if (chunk == nullptr || chunk->used + total > chunk->capacity) {
     chunk = allocNewChunk();
     if (chunk == nullptr) {
+      *error_code = ZAGG_ALLOC_MEM_FAILED;
       return nullptr;
     }
     m_current_chunk = chunk;
-    if (total > chunk->capacity) {
+    if (unlikely(total > chunk->capacity)) {
+      *error_code = ZAGG_GROUP_TOO_LARGE;
       return nullptr;
     }
   }

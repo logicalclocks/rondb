@@ -1649,10 +1649,18 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
       if (m_max_groups > 0 && m_n_groups >= m_max_groups) {
         return AGG_EVICT_NEEDED;
       }
+      Uint32 alloc_error = 0;
       agg_rec = allocGroupData(len_in_char +
                                m_n_agg_results * sizeof(AggResItem),
-                               len_in_char);
+                               len_in_char, &alloc_error);
       if (unlikely(agg_rec == nullptr)) {
+        if (alloc_error == ZAGG_GROUP_TOO_LARGE) {
+          /* The group does not fit one query memory chunk: no eviction
+           * makes room for it, so fail at once, with a permanent error,
+           * instead of evicting every group and then failing as out of
+           * query memory. */
+          return ZAGG_GROUP_TOO_LARGE;
+        }
         /* Nothing may change before this return: handleJoinAggRow
          * evicts a group and re-runs ProcessRec, whose entry check
          * requires read_length == 0. */
@@ -2597,16 +2605,19 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
     }
   } else {
     /* New key — allocate and insert */
-    char *new_group = allocGroupData(keyLen + v_len, keyLen);
+    Uint32 alloc_error = 0;
+    char *new_group = allocGroupData(keyLen + v_len, keyLen, &alloc_error);
     if (new_group == nullptr) {
-      /* Out of query memory: a temporary error, unlike the -1 returns
+      /* Out of query memory (ZAGG_ALLOC_MEM_FAILED), a temporary error,
+       * or a group larger than one query memory chunk
+       * (ZAGG_GROUP_TOO_LARGE), a permanent one; unlike the -1 returns
        * above for a malformed request. */
       if (payload_len > 0) {
         for (Uint32 i = 0; i < m_n_agg_results; i++) {
           freeStringAggSlot(&local_items[i]);
         }
       }
-      return ZAGG_ALLOC_MEM_FAILED;
+      return static_cast<Int32>(alloc_error);
     }
 
     memcpy(new_group, key, keyLen);

@@ -264,6 +264,10 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZAGG_ALLOC_MEM_FAILED 1870
 #define ZAGG_VS_TOO_BIG_RESULT 1871
 #define ZAGG_EMBEDDED_INTERP_ERROR 1872
+/* A group whose resident part (its GROUP BY key and aggregate slots)
+ * does not fit one query memory chunk (AggInterpreterBase::
+ * allocGroupData): permanent, unlike ZAGG_ALLOC_MEM_FAILED. */
+#define ZAGG_GROUP_TOO_LARGE 1873
 
 /* SOME WORD POSITIONS OF FIELDS IN SOME HEADERS */
 

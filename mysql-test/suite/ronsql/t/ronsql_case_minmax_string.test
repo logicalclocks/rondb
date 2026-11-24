@@ -25,20 +25,24 @@
 #   cm-4  ORDER BY the MIN, which sorts with the charset
 #   cm-5  cm-1 over a join (join aggregation in DBLQH)
 #   cm-6  ORDER BY the MAX of CHAR arms of different lengths
-#   cm-7  arms of 300 and 15000 bytes: MIN and MAX can need 30 KB, a
+#   cm-7  arms of 300 and 15000 bytes: MIN and MAX hold 30 KB, in a
+#         record over the 16 KB batch target
+#   cm-8  five such slots can need 75 KB, counted at the widest arm: a
 #         limit error
 #
 # Expected results come from mysqld (strict_diff).
 #
-# cm-7: NdbAggregator::Finalize refuses a program whose group record
-# can be over 16 KB, counted at the declared column sizes, since the
-# API receives one record into a buffer of that size.  It counted a
-# string MIN / MAX over a CASE at its THEN arm only.  Here the ELSE arm
-# is 15000 bytes, so MIN and MAX each hold 15000 bytes and the record
-# is 30 KB: the query ran, and the record overran the receive buffer
-# (NdbReceiverBuffer::allocRow only asserts that a row fits).  The slot
-# is now counted at its widest arm and the query is refused before it
-# runs.
+# cm-7: NdbAggregator::Finalize counted a string MIN / MAX over a CASE
+# at its THEN arm only.  Here the ELSE arm is 15000 bytes, so MIN and
+# MAX each hold 15000 bytes and the record is 30 KB: while the API
+# received a record into a fixed 16 KB buffer, the record overran it
+# (NdbReceiverBuffer::allocRow only asserts that a row fits).  The
+# receive buffers now grow to the record, so the query runs.
+#
+# cm-8: a slot is counted at its widest arm.  The values of one group
+# must fit the 16-bit length of a result record, 65535 bytes, at the
+# declared sizes: five slots of 15000 bytes are refused before the
+# query runs, while counted at the 300-byte THEN arm they would fit.
 
 --source include/have_ndb.inc
 
@@ -170,7 +174,7 @@ FROM cms GROUP BY g ORDER BY mx|
 DELIMITER ;|
 
 --echo
---echo === cm-7: arms of 300 and 15000 bytes, a 30 KB record: a limit error ===
+--echo === cm-7: arms of 300 and 15000 bytes, a 30 KB record ===
 --disable_query_log
 --disable_warnings
 CREATE TABLE cms_wide (
@@ -187,8 +191,13 @@ INSERT INTO cms_wide VALUES
   (1, 2, 2, 'fig',  CONCAT(REPEAT('b', 14999), 'c'));
 --enable_warnings
 --enable_query_log
+--let $QUERY = SELECT g, MIN(CASE WHEN k > 5 THEN a ELSE b END) AS mn, MAX(CASE WHEN k > 5 THEN a ELSE b END) AS mx FROM cms_wide GROUP BY g;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === cm-8: five slots with arms of 300 and 15000 bytes: a limit error ===
 --error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT g, MIN(CASE WHEN k > 5 THEN a ELSE b END) AS mn, MAX(CASE WHEN k > 5 THEN a ELSE b END) AS mx FROM cms_wide GROUP BY g;' 2>&1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT g, MIN(CASE WHEN k > 5 THEN a ELSE b END) AS mn1, MAX(CASE WHEN k > 5 THEN a ELSE b END) AS mx1, MIN(CASE WHEN k > 6 THEN a ELSE b END) AS mn2, MAX(CASE WHEN k > 6 THEN a ELSE b END) AS mx2, MIN(CASE WHEN k > 7 THEN a ELSE b END) AS mn3 FROM cms_wide GROUP BY g;' 2>&1
 
 --let $QUERY=
 

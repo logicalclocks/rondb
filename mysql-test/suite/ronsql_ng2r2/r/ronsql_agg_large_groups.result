@@ -1,0 +1,114 @@
+SELECT COUNT(*) AS data_nodes FROM ndbinfo.nodes;
+data_nodes
+4
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== lg-1: scan, GROUP BY, a 60 KB record per group ===
+== Query ==
+SELECT g, MIN(s), MAX(s), MIN(t), MAX(t) FROM lg_long GROUP BY g;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+
+=== lg-2: scan, no GROUP BY, a 60 KB record per fragment ===
+== Query ==
+SELECT COUNT(*), MIN(s), MAX(s), MIN(t), MAX(t) FROM lg_long;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lg-3: scan, GROUP BY two 15000-byte columns, a 30 KB key ===
+== Query ==
+SELECT s, t, COUNT(*) FROM lg_long GROUP BY s, t;
+
+Number of output lines, including header: 25
+
+== Diff ==
+==========
+
+
+
+
+=== lg-4: scan, GROUP BY, 2000 short groups and one of 60 KB ===
+== Query ==
+SELECT g, COUNT(*), MIN(s), MAX(s), MIN(t), MAX(t) FROM lg_mixed GROUP BY g;
+
+Number of output lines, including header: 2002
+
+== Diff ==
+==========
+
+
+
+
+=== lg-5: scan, no GROUP BY, short and long records ===
+== Query ==
+SELECT COUNT(*), MIN(s), MAX(s), MIN(t), MAX(t) FROM lg_mixed;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lg-6: primary-key reads, no GROUP BY, 60 KB and short records ===
+== Query ==
+SELECT COUNT(*), MIN(s), MAX(s), MIN(t), MAX(t) FROM lg_mixed WHERE pk IN (4000, 1, 4001, 2, 4002);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== lg-7: primary-key reads, GROUP BY the key ===
+== Query ==
+SELECT pk, MIN(s), MAX(s), MIN(t), MAX(t) FROM lg_mixed WHERE pk IN (4002, 3, 4000, 7) GROUP BY pk;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== lg-8: five string slots of 15000 bytes can need 75 KB: a limit error ===
+[limit] Caught exception: The aggregate results of one group can need more than 65535 bytes, counted at the declared column sizes.
+
+=== lg-9: a GROUP BY key of 33080 bytes does not fit a 32 KB query memory chunk: error 1873 at once ===
+== ronsql_cli: attempts, a permanent error, its code ==
+1
+NDB Permanent error 1873, Application error: Aggregation group too large: its GROUP BY key and aggregate slots exceed one query memory chunk
+== RDRS: attempts (each writes one error handling line), the NDB error ==
+1
+1873
+
+=== RDRS still answers ===
+== Query ==
+SELECT g, COUNT(*) FROM lg_long GROUP BY g;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+

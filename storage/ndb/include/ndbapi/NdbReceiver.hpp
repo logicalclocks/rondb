@@ -103,8 +103,13 @@ class NdbReceiver {
    * This buffer is later navigated, and retrieved from,
    * by either getNextRow() or setCurrentRow(). The row is
    * then 'unpacked' into 'row_buffer' set by do_setup_ndbrecord().
+   *
+   * 'agg_records': the receiver of an aggregation scan, whose batches
+   * are one aggregation result record each.  A record larger than 'buf'
+   * moves the receiver to a buffer of its own, grown to fit
+   * (storeAggRecord).
    */
-  void prepareReceive(NdbReceiverBuffer *buf);
+  void prepareReceive(NdbReceiverBuffer *buf, bool agg_records = false);
 
  private:
   Uint32 theMagicNumber;
@@ -158,8 +163,9 @@ class NdbReceiver {
       Uint32 &batch_bytes,    // In/Out: 'REQ' Argument to TC
       Uint32 &buffer_bytes);  // Out:     ReceiveBuffer size
 
-  // One aggregation result batch, including receive-buffer bookkeeping.
-  static Uint32 aggregation_bufsize();
+  // A receive buffer for one aggregation result record of 'record_bytes'
+  // wire bytes, including receive-buffer bookkeeping.
+  static Uint32 aggregation_bufsize(Uint32 record_bytes);
 
   /*
     Set up buffers for receiving TRANSID_AI and KEYINFO20 signals
@@ -215,6 +221,12 @@ class NdbReceiver {
    */
   bool m_read_range_no;
   bool m_read_key_info;
+
+  /**
+   * The receiver of an aggregation scan (prepareReceive): each batch is
+   * one aggregation result record, stored by storeAggRecord.
+   */
+  bool m_agg_records;
 
   /**
    * Holds the list of RecAttr defined by getValue()
@@ -322,6 +334,23 @@ class NdbReceiver {
   void release_long_row_ref(LongRowRef *row_ref,
                             Uint32 ref);
   void free_long_row_ref();
+
+  /**
+   * An aggregation scan's receive buffer (m_agg_records) holds one
+   * result record per batch, so it is empty when a record arrives.  The
+   * scan sizes it from NdbAggregator::typical_record_bytes(); a record
+   * that does not fit moves the receiver to a buffer of its own,
+   * m_agg_buffer, grown to fit and kept for the later batches.  It is
+   * freed when the receiver is released, or prepared for another scan.
+   * storeAggRecord runs in the thread that receives the signals, while
+   * the application thread does not read this receiver: a batch is
+   * requested for it only after the application has read the previous
+   * one (NdbScanOperation::send_next_scan).
+   */
+  Uint32 *m_agg_buffer;
+  void storeAggRecord(const Uint32 *data, Uint32 words);
+  bool growAggBuffer(Uint32 words);
+  void free_agg_buffer();
 
   /**
    * Unpack a packed stream of field values, whose presence and nullness
