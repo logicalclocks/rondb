@@ -20218,6 +20218,12 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   const Uint32 requestId = req->requestId;
   Uint32 aggStateKey = req->aggStateKey;
   const Uint32 maxBatchRows = req->maxBatchRows;
+  /* packIdentWord(queryTag, cteId, 0), which is never RNIL; RNIL when
+   * the request has none (a short request, or the keyed form of the
+   * block tests). */
+  const Uint32 identWord =
+      (signal->getLength() >= JoinAggCompleteReq::SignalLength)
+          ? req->identWord : RNIL;
 
   CRASH_INSERTION(5122);  // Crash node on COMPLETE_REQ for join agg NF testing
 
@@ -20229,9 +20235,6 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
      * fired.  Resolve node-locally; park until the local SETUP
      * processes (bounded: one COMPLETE per state); the rewritten key
      * lets the owner-forward below route to the owner LDM. */
-    const Uint32 identWord =
-        (signal->getLength() >= JoinAggCompleteReq::SignalLength)
-            ? req->identWord : RNIL;
     if (likely(identWord != RNIL)) {
       const Uint32 transid[2] = { req->transid[0], req->transid[1] };
       const Uint32 base = joinAggIdentityLookup(
@@ -20292,6 +20295,36 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
 
   JoinAggregationState *state =
       (aggStateKey != RNIL) ? getJoinAggState(aggStateKey) : nullptr;
+  /* The key names a pool slot, the transid and the identWord name the
+   * query. A COMPLETE whose identity is not the state's was not sent
+   * for this state: the late COMPLETE of a released query whose slot a
+   * new SETUP took (a coordinator that failed while its COMPLETE was
+   * still queued here), or a request from an API node, which a GSN
+   * without a signal scope admits. Accepting it started another
+   * query's merge and send, replying to the wrong sender, and that
+   * query's own COMPLETE then met the duplicate-REQ guard below. Refuse
+   * it as naming no state, with its own words; the state is untouched.
+   * The identWord is checked when the request has one: DBTC always
+   * sends it, the block tests' keyed form does not. A request resolved
+   * by identity above matches by construction. The identity fields are
+   * immutable after SETUP, and the owner checks again after a forward. */
+  if (state != nullptr &&
+      unlikely(state->m_transid[0] != req->transid[0] ||
+               state->m_transid[1] != req->transid[1] ||
+               (identWord != RNIL &&
+                identWord != JoinAggregationState::packIdentWord(
+                                 state->m_queryTag, state->m_cte_index,
+                                 0)))) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBLQH execJOIN_AGG_COMPLETE_REQ: aggStateKey=%u "
+                  "transid=0x%x:0x%x identWord=0x%x is not the state's "
+                  "query (0x%x:0x%x queryTag=%u cteIndex=%u): refuse",
+                  getThreadId(), aggStateKey, req->transid[0],
+                  req->transid[1], identWord, state->m_transid[0],
+                  state->m_transid[1], state->m_queryTag,
+                  state->m_cte_index));
+    state = nullptr;
+  }
   if (state == nullptr) {
     jam();
     DEB_JOIN_AGG(("(%u)DBLQH execJOIN_AGG_COMPLETE_REQ:"
@@ -20338,8 +20371,10 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
     SectionHandle handle(this, signal);
     BlockReference ownerRef =
       numberToRef(DBLQH, state->m_owner_instance, getOwnNodeId());
+    /* With the received length: a request without an identWord must
+     * not gain one from the signal buffer. */
     sendSignal(ownerRef, GSN_JOIN_AGG_COMPLETE_REQ, signal,
-	       JoinAggCompleteReq::SignalLength, JBB, &handle);
+               signal->getLength(), JBB, &handle);
     return;
   }
 
@@ -20351,9 +20386,14 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
    * begun (or finished) — the only correct action is to drop.  Every
    * Phase L commit retains this invariant.  See cte_filter_phase_l.md.
    *
-   * ndbassert in debug builds so any path that re-fires the REQ is
-   * caught loudly; the silent return is the production-build safety
-   * net. */
+   * Only this query's COMPLETE gets here (the identity check above),
+   * and DBTC sends one per state, so this is a duplicate: a late
+   * COMPLETE of a coordinator that failed (a CTE state is then
+   * NODE_FAIL_ABORT), or one from an API node. It gets no reply: the
+   * COMPLETE that started the work owns the one reply, and a REF with
+   * the same words would fail a healthy query. Drop it with a
+   * DEB_JOIN_AGG line, as execJOIN_AGG_SEND_CONF drops a CONF that
+   * answers no paused send; an ndbassert here stopped a debug node. */
   {
     JoinAggregationState::State curState = state->m_state.load();
     if (curState == JoinAggregationState::ERROR &&
@@ -20370,9 +20410,10 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
     if (curState != JoinAggregationState::SETUP_COMPLETE) {
       jam();
       DEB_JOIN_AGG(("(%u)DBLQH execJOIN_AGG_COMPLETE_REQ: aggStateKey=%u "
-                    "state=%u != SETUP_COMPLETE — drop duplicate REQ",
-                    getThreadId(), aggStateKey, (Uint32)curState));
-      ndbassert(false);
+                    "state=%u != SETUP_COMPLETE senderRef=0x%x "
+                    "senderData=%u requestId=%u: drop duplicate REQ",
+                    getThreadId(), aggStateKey, (Uint32)curState,
+                    senderRef, senderData, requestId));
       SectionHandle handle(this, signal);
       releaseSections(handle);
       return;
