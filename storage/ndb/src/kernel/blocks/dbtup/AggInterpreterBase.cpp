@@ -616,7 +616,9 @@ const char* AggInterpreterBase::checkProgram(const Uint32* prog,
       }
     }
   }
-  return nullptr;
+  /* Last, as it relies on the checks above: no slot may get both a
+   * string MIN / MAX and a number (bug 1c of the RonSQL analysis). */
+  return PushdownInterpreter::checkAggSlotKinds(prog, prog_len, start);
 }
 
 /**

@@ -1,0 +1,18 @@
+--source include/have_ndb.inc
+
+# P-38: a join aggregation leaf whose CASE puts a VARCHAR MIN in its THEN
+# arm and a BIGINT MIN (kOpMinBigint) in its ELSE arm, into one slot. The
+# string MIN keeps a pointer in the slot, the numeric MIN overwrote it,
+# and the next string compare or the result encoding crashed the data
+# node; checkProgram (checkAggSlotKinds) now rejects the program at
+# JOIN_AGG_SETUP_REQ.
+# The case first sends the CASE with a VARCHAR MIN in both arms, which
+# must still get SCAN_TABCONF, then a well-formed join aggregation, then
+# the malformed one, which must get SCAN_TABREF with every data node
+# still started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P38
+--let $spj_case_title = P-38: join aggregation string MIN and BIGINT MIN in one slot
+--source suite/ndb_spj/include/spj_malformed_case.inc

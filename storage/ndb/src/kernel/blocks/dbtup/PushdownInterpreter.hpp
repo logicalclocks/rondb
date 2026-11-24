@@ -103,6 +103,33 @@ class PushdownInterpreter {
   static void OptimizeProgramBuffer(Uint32* prog, Uint32 prog_len,
                                     Uint32 start_pos);
 
+  /**
+   * checkAggSlotKinds — refuse an aggregation program that may put a
+   * string and a value of another kind in one aggregate slot.
+   *
+   * A string MIN / MAX keeps in its slot a pointer to the data node's
+   * copy of the value (AggInterpreterBase::minMaxString), every other
+   * aggregate keeps a number there, and neither checks what the slot
+   * holds: a numeric MIN overwrote the pointer, minMaxString took a
+   * number for a pointer, and the data node crashed.
+   * NdbAggregator::RepeatAgg refuses a CASE whose arms mix them, but a
+   * raw program (NdbAggregator::EmitEmbeddedWord) can do it.
+   *
+   * The walk follows the jumps of the program (kOpSkip, the skips an
+   * embedded program writes to interpreter output 0) and tracks whether
+   * each register may hold a string (a kOpLoadCol of CHAR, VARCHAR or
+   * LONGVARCHAR, copied by kOpMov) or another value.  A kOpMax or kOpMin
+   * puts what its register may hold in its slot, every other aggregate
+   * a number.  Returns nullptr when no slot may get both, else the
+   * reason for the log.  No per-row cost.
+   *
+   * AggInterpreterBase::checkProgram calls it last, on a program whose
+   * header, instruction lengths and embedded programs it has checked;
+   * start_pos is the first word after the GROUP BY columns.
+   */
+  static const char* checkAggSlotKinds(const Uint32* prog, Uint32 prog_len,
+                                       Uint32 start_pos);
+
  protected:
   PushdownType m_type;
   Uint32 m_prog_len;

@@ -224,8 +224,8 @@ struct Statement
  * Walk the embedded interpreter program words[0, len) and collect the
  * skips it writes to interpreter output 0, which every RonSQL emitter
  * writes with a LOAD_CONST16 directly followed by
- * WRITE_INTERPRETER_OUTPUT (as the data nodes find them,
- * addEmbeddedJoinPoints).  False when its instructions do not take
+ * WRITE_INTERPRETER_OUTPUT (the data nodes find them with embeddedSkips,
+ * PushdownInterpreter.cpp).  False when its instructions do not take
  * exactly len words or a branch lands inside an instruction.
  */
 static bool

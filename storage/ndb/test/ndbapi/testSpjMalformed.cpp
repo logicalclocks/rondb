@@ -57,6 +57,8 @@
  * value with a constant of another length (BRANCH_MEM_OP_ARG_INLINE_TYPE):
  * CHAR values must compare padded, a VARCHAR length byte past its value
  * must fail the row (NdbSqlUtil::check_compare_values).
+ * P-38 and P-39 send CASE programs that put a string MIN / MAX and a
+ * number in one aggregate slot (checkAggSlotKinds).
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
  * re-send (passQueue), which only DBTC itself may set (RONDB-1124).
  * Each malformed request is built by taking a known-good, word-for-word
@@ -450,6 +452,84 @@ class SpjMalformedChecker {
     const std::vector<Uint32> count = countBody(0, 0);
     body.insert(body.end(), count.begin(), count.end());
     return aggProgram(1, body);
+  }
+
+  /* kOpLoadCol of column col, of type typeId (below 32, so without the
+   * 6th type bit), into reg. */
+  static Uint32 loadCol(Uint32 reg, Uint32 typeId, Uint32 col) {
+    return aggOp(kOpLoadCol) | (typeId << 21) | (reg << 16) | col;
+  }
+
+  /* kOpLoadConst of a BIGINT or DOUBLE into reg, the 64-bit constant in
+   * two words, low word first. */
+  static std::vector<Uint32> loadConst(Uint32 reg, Uint32 typeId,
+                                       Uint32 low, Uint32 high) {
+    return {aggOp(kOpLoadConst) | (typeId << 21) | (reg << 16), low, high};
+  }
+
+  /* An aggregate op of reg into slot. */
+  static Uint32 aggUpdate(Uint32 op, Uint32 reg, Uint32 slot) {
+    return aggOp(op) | (reg << 16) | slot;
+  }
+
+  /* A leaf with one slot whose rows run a CASE, laid out as RonSQL emits
+   * it, then the words of after:
+   *   kOpEmbeddedInterp of 8 words:
+   *     0 READ_ATTR_INTO_REG column 0 into register 1
+   *     1 BRANCH_REG_EQ_NULL of register 1 to word 5
+   *     2 LOAD_CONST16 0 into register 2         not NULL: the THEN arm
+   *     3 WRITE_INTERPRETER_OUTPUT 0 of register 2
+   *     4 EXIT_OK
+   *     5 LOAD_CONST16 (THEN arm + 1) into register 2   NULL: the ELSE arm
+   *     6 WRITE_INTERPRETER_OUTPUT 0 of register 2
+   *     7 EXIT_OK
+   *   the THEN arm, then kOpSkip over the ELSE arm
+   *   the ELSE arm
+   * Both skips are LOAD_CONST16 values, so the data node knows which
+   * words the rows of each arm run.  Used as leaf 1, which no row runs:
+   * the column numbers are not looked up. */
+  static std::vector<Uint32> caseLeaf(const std::vector<Uint32> &thenArm,
+                                      const std::vector<Uint32> &elseArm,
+                                      const std::vector<Uint32> &after) {
+    const Uint32 elseSkip = Uint32(thenArm.size()) + 1;
+    const std::vector<Uint32> emb = {
+        Interpreter::Read(0, 1),
+        Interpreter::Branch(Interpreter::BRANCH_REG_EQ_NULL, 0, 1) |
+            (4u << 16),
+        Interpreter::LoadConst16(2, 0),
+        Interpreter::WriteInterpreterOutput(2, 0),
+        Interpreter::ExitOK(),
+        Interpreter::LoadConst16(2, elseSkip),
+        Interpreter::WriteInterpreterOutput(2, 0),
+        Interpreter::ExitOK()};
+    std::vector<Uint32> body;
+    body.push_back(aggOp(kOpEmbeddedInterp) | Uint32(emb.size()));
+    body.insert(body.end(), emb.begin(), emb.end());
+    body.insert(body.end(), thenArm.begin(), thenArm.end());
+    body.push_back(aggOp(kOpSkip) | Uint32(elseArm.size()));
+    body.insert(body.end(), elseArm.begin(), elseArm.end());
+    body.insert(body.end(), after.begin(), after.end());
+    return aggProgram(1, body);
+  }
+
+  /* Arms of caseLeaf: a column of typeId loaded into reg, and then, when
+   * op is not kOpUnknown, op of reg into slot 0. */
+  static std::vector<Uint32> colArm(Uint32 reg, Uint32 typeId, Uint32 col,
+                                    Uint32 op) {
+    std::vector<Uint32> arm = {loadCol(reg, typeId, col)};
+    if (op != kOpUnknown) {
+      arm.push_back(aggUpdate(op, reg, 0));
+    }
+    return arm;
+  }
+
+  static std::vector<Uint32> constArm(Uint32 reg, Uint32 typeId,
+                                      Uint32 low, Uint32 high, Uint32 op) {
+    std::vector<Uint32> arm = loadConst(reg, typeId, low, high);
+    if (op != kOpUnknown) {
+      arm.push_back(aggUpdate(op, reg, 0));
+    }
+    return arm;
   }
 
   void makeJoinAggScan(SpjReq &r,
@@ -1292,6 +1372,58 @@ class SpjMalformedChecker {
     return NDBT_OK;
   }
 
+  /* ---- P-38 / P-39: a string MIN / MAX and a number in one slot ------- *
+   * A string MIN / MAX keeps in its slot a pointer to the data node's
+   * copy of the value; every other aggregate keeps a number there.  A
+   * CASE whose arms mix them (bug 1c of the RonSQL analysis) let a
+   * numeric MIN overwrite the pointer, or minMaxString take a number
+   * for a pointer, and the data node crashed.  NdbAggregator::RepeatAgg
+   * refuses such arms, but EmitEmbeddedWord takes raw words.
+   * PushdownInterpreter::checkAggSlotKinds (in checkProgram) refuses the
+   * program at JOIN_AGG_SETUP_REQ.  The program is leaf 1, which no row
+   * runs: before the check DblqhProxy accepted it and the scan got
+   * SCAN_TABCONF.  Each case first sends the same CASE with arms of one
+   * kind, which must still be accepted. */
+  int runP38() {  /* THEN: string MIN, ELSE: kOpMinBigint, one slot */
+    const int control = expectAggAccepted(
+        "P-38 control: CASE with VARCHAR MIN in both arms",
+        {countLeaf(),
+         caseLeaf(colArm(0, NDB_TYPE_VARCHAR, 1, kOpMin),
+                  colArm(1, NDB_TYPE_VARCHAR, 2, kOpMin), {})});
+    if (control != NDBT_OK) {
+      return control;
+    }
+    return expectAggRejected(
+        "P-38 join aggregation CASE with a VARCHAR MIN and a BIGINT MIN "
+        "in one slot",
+        {countLeaf(),
+         caseLeaf(colArm(0, NDB_TYPE_VARCHAR, 1, kOpMin),
+                  constArm(1, NDB_TYPE_BIGINT, 1, 0, kOpMinBigint), {})});
+  }
+
+  int runP39() {  /* THEN: a BIGINT, ELSE: a CHAR, one MAX after */
+    /* One kOpMax after the CASE reads a register that the THEN arm loads
+     * with a number and the ELSE arm with a string.  The control's arms
+     * are a BIGINT and a DOUBLE (1.0), numbers of two types, which
+     * OptimizeProgramBuffer leaves to the generic Max (bug 1). */
+    const int control = expectAggAccepted(
+        "P-39 control: CASE with a BIGINT and a DOUBLE, then MAX",
+        {countLeaf(),
+         caseLeaf(constArm(0, NDB_TYPE_BIGINT, 1, 0, kOpUnknown),
+                  constArm(0, NDB_TYPE_DOUBLE, 0, 0x3FF00000u, kOpUnknown),
+                  {aggUpdate(kOpMax, 0, 0)})});
+    if (control != NDBT_OK) {
+      return control;
+    }
+    return expectAggRejected(
+        "P-39 join aggregation MAX of a register that is a BIGINT or a "
+        "CHAR",
+        {countLeaf(),
+         caseLeaf(constArm(0, NDB_TYPE_BIGINT, 1, 0, kOpUnknown),
+                  colArm(0, NDB_TYPE_CHAR, 1, kOpUnknown),
+                  {aggUpdate(kOpMax, 0, 0)})});
+  }
+
   /* ---- Q cases: DBTC's rate queue re-send mark sent by the API -------- *
    * DBTC's rate queue handler re-sends a queued request to its own DBTC
    * instance with a mark: the passQueue flag of TCKEYREQ, TCINDXREQ and
@@ -1649,6 +1781,25 @@ class SpjMalformedChecker {
    * DbspjErr::InvalidRequest, for P-32 from the failed row (1868); the
    * error code is printed, not required, as an error of a fragment scan
    * reaching DBTC first would win. */
+  /* A join aggregation whose leaves the data node must accept: it must
+   * get SCAN_TABCONF, as the control of expectAggRejected.  Send it
+   * before any malformed request, which may disconnect us. */
+  int expectAggAccepted(const char *findingId,
+                        const std::vector<std::vector<Uint32>> &leaves) {
+    SpjReq r;
+    makeJoinAggScan(r, leaves);
+    const Reply rep = sendScanTabReq(r);
+    printReply(findingId, rep);
+    if (rep.gsn != GSN_SCAN_TABCONF) {
+      g_err << findingId << ": FAIL -- expected SCAN_TABCONF, got "
+            << gsnName(rep.gsn) << ", err " << rep.errorCode
+            << ": a well-formed aggregation program was rejected" << endl;
+      return clusterHealthy() ? NDBT_FAILED : failNodeDown(findingId);
+    }
+    g_info << findingId << ": PASS (SCAN_TABCONF)" << endl;
+    return NDBT_OK;
+  }
+
   int expectAggRejected(const char *findingId,
                         const std::vector<std::vector<Uint32>> &leaves) {
     SpjReq good;
@@ -1805,6 +1956,8 @@ CASE_STEP(runP41, runP41)
 CASE_STEP(runP43, runP43)
 CASE_STEP(runP44, runP44)
 CASE_STEP(runP45, runP45)
+CASE_STEP(runP38, runP38)
+CASE_STEP(runP39, runP39)
 CASE_STEP(runQ1, runQ1)
 CASE_STEP(runQ2, runQ2)
 CASE_STEP(runQ3, runQ3)
@@ -1925,6 +2078,14 @@ TESTCASE("P45",
          "join aggregation: inline-type compare of values of other "
          "lengths than the staged one") {
   STEP(runP45);
+}
+TESTCASE("P38",
+         "join aggregation: string MIN and BIGINT MIN in one slot") {
+  STEP(runP38);
+}
+TESTCASE("P39",
+         "join aggregation: MAX of a register that is a BIGINT or a CHAR") {
+  STEP(runP39);
 }
 TESTCASE("Q1", "TCKEYREQ with the rate queue flag from the API") {
   STEP(runQ1);

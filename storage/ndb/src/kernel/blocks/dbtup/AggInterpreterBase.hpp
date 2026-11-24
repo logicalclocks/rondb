@@ -294,7 +294,10 @@ class AggInterpreterBase : public PushdownInterpreter {
    *   - constants have a type executeStandardOpcode loads;
    *   - embedded programs pass validateEmbeddedProgram, which also
    *     checks the type and collation of each inline-type compare;
-   *   - a kOpSkip lands on an instruction or at the end.
+   *   - a kOpSkip lands on an instruction or at the end;
+   *   - no aggregate slot may get both a string MIN / MAX and a number
+   *     from another aggregate or a MIN / MAX of another type
+   *     (PushdownInterpreter::checkAggSlotKinds).
    * insn_starts (insnStartWords(prog_len) words) gets a bit set for
    * every word where an instruction starts, for embeddedSkipTarget.
    * *uses_avg, unless nullptr, tells whether the program has kOpAvg.
