@@ -1,0 +1,8 @@
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# P-37: join aggregation inline-type BINARY compare with a charset
+Running command
+Result of command: 0
+Test program success!

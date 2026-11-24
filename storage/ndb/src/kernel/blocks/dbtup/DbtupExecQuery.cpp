@@ -6062,11 +6062,11 @@ int Dbtup::evalBranchMemForJit(const Uint32 *inst) {
     const Uint32 meta = inst[2];
     attrLen = (meta >> 16) & 0xFFFF;
     const Uint32 csNumber = meta & 0xFFFF;
-    if (csNumber != 0) {
-      cs = NdbSqlUtil::get_collation(csNumber);
-      if (unlikely(cs == nullptr)) {
-        return -40;
-      }
+    /* As handleBranchMemOpArgInlineType: a string type needs a known
+     * collation, the other types none. */
+    if (unlikely(!NdbSqlUtil::get_compare_collation(typeId, csNumber,
+                                                    &cs))) {
+      return -40;
     }
     s2 = (const char *)&inst[3];
   }
@@ -9042,13 +9042,15 @@ struct Dbtup::InterpreterContext {
       return -40;
     }
 
+    /* The charset word comes from the program: a CHAR, VARCHAR or
+     * LONGVARCHAR with csNumber 0 would reach cmpChar / cmpVarchar with
+     * a null collation, and a BINARY with one would fail the assert of
+     * cmpBinary. */
     const CHARSET_INFO* cs = nullptr;
-    if (csNumber != 0) {
-      cs = NdbSqlUtil::get_collation(csNumber);
-      if (unlikely(cs == nullptr)) {
-        thrjam(ctx.tup->jamBuffer());
-        return -40;
-      }
+    if (unlikely(!NdbSqlUtil::get_compare_collation(typeId, csNumber,
+                                                    &cs))) {
+      thrjam(ctx.tup->jamBuffer());
+      return -40;
     }
 
     // Read column data from heap (written by READ_LINKED_TO_MEM)
@@ -9132,13 +9134,13 @@ struct Dbtup::InterpreterContext {
       return -40;
     }
 
+    /* As handleBranchMemOpArgInlineType: a string type needs a known
+     * collation, the other types none. */
     const CHARSET_INFO* cs = nullptr;
-    if (csNumber != 0) {
-      cs = NdbSqlUtil::get_collation(csNumber);
-      if (unlikely(cs == nullptr)) {
-        thrjam(ctx.tup->jamBuffer());
-        return -40;
-      }
+    if (unlikely(!NdbSqlUtil::get_compare_collation(typeId, csNumber,
+                                                    &cs))) {
+      thrjam(ctx.tup->jamBuffer());
+      return -40;
     }
 
     /* nullptr (no buffer, no such entry, a malformed buffer) is NULL. */

@@ -45,6 +45,8 @@
  * interpreted program, which DBLQH must refuse with SCAN_FRAGREF.
  * P-35 gives a join aggregation leaf a linked attribute buffer whose
  * entry runs past its end, which fails each row (RONDB-1124 bug 12).
+ * P-36 and P-37 send embedded programs whose inline-type compare has a
+ * charset that does not fit the type (validateEmbeddedProgram).
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
  * re-send (passQueue), which only DBTC itself may set (RONDB-1124).
  * Each malformed request is built by taking a known-good, word-for-word
@@ -75,6 +77,12 @@
 #include <HugoTransactions.hpp>
 #include <AttributeHeader.hpp>
 #include <CteLinkedAttr.hpp>
+/* ndb_opts.h, included through NDBT.hpp, defines NONE as an empty
+ * macro; Interpreter.hpp has an enumerator of that name. */
+#ifdef NONE
+#undef NONE
+#endif
+#include <Interpreter.hpp>
 #include <NdbSleep.h>
 #include <mgmapi.h>
 #include <signaldata/ScanFrag.hpp>
@@ -383,6 +391,39 @@ class SpjMalformedChecker {
   /* A well-formed leaf: one slot, COUNT(1). */
   static std::vector<Uint32> countLeaf() {
     return aggProgram(1, countBody(0, 0));
+  }
+
+  /* A leaf whose rows first run an embedded program, laid out as RonSQL
+   * emits a compare of a linked column with a constant, then COUNT(1):
+   *   0 READ_LINKED_TO_MEM of position 0
+   *   1 BRANCH_MEM_OP_ARG_INLINE_TYPE EQ to word 5, NULL continues
+   *   2 (typeId << 16) | 4         the constant has 4 bytes
+   *   3 (4 << 16) | csNumber       the column has 4 bytes
+   *   4 the constant "abcd"
+   *   5 LOAD_CONST16 0 into register 0
+   *   6 WRITE_INTERPRETER_OUTPUT 0 of register 0: go on after it
+   *   7 EXIT_OK
+   * The scanned table has no linked columns, so the staged value is
+   * NULL and the compare does not run here; the program is otherwise
+   * well formed, so only the check of the type word refuses it. */
+  static std::vector<Uint32> inlineTypeLeaf(Uint32 typeId, Uint32 csNumber) {
+    const Uint32 nulls = Interpreter::IF_NULL_CONTINUE;
+    const std::vector<Uint32> emb = {
+        Interpreter::READ_LINKED_TO_MEM | (0u << 16),
+        Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE | (nulls << 6) |
+            (Uint32(Interpreter::EQ) << 12) | (4u << 16),
+        Interpreter::BranchMem_2(typeId, 4),
+        (4u << 16) | csNumber,
+        0x64636261u,
+        Interpreter::LoadConst16(0, 0),
+        Interpreter::WriteInterpreterOutput(0, 0),
+        Interpreter::ExitOK()};
+    std::vector<Uint32> body;
+    body.push_back(aggOp(kOpEmbeddedInterp) | Uint32(emb.size()));
+    body.insert(body.end(), emb.begin(), emb.end());
+    const std::vector<Uint32> count = countBody(0, 0);
+    body.insert(body.end(), count.begin(), count.end());
+    return aggProgram(1, body);
   }
 
   void makeJoinAggScan(SpjReq &r,
@@ -850,6 +891,24 @@ class SpjMalformedChecker {
     return NDBT_OK;
   }
 
+  int runP36() {  /* inline-type CHAR compare with charset 0 */
+    /* Charset 0 left the collation nullptr, and cmpChar dereferenced it
+     * for a row with a linked value: a debug data node failed its
+     * assert, a release one crashed.  The NDB API (branch_linked_inline_*,
+     * NdbAggregator::EmitEmbeddedWord) sends the word as given. */
+    return expectAggRejected(
+        "P-36 join aggregation inline-type CHAR compare with charset 0",
+        {inlineTypeLeaf(NDB_TYPE_CHAR, 0), countLeaf()});
+  }
+
+  int runP37() {  /* inline-type BINARY compare with a charset */
+    /* latin1 (8) on a BINARY: cmpBinary asserts that it has no
+     * collation, so a debug data node stopped. */
+    return expectAggRejected(
+        "P-37 join aggregation inline-type BINARY compare with a charset",
+        {inlineTypeLeaf(NDB_TYPE_BINARY, 8), countLeaf()});
+  }
+
   /* ---- Q cases: DBTC's rate queue re-send mark sent by the API -------- *
    * DBTC's rate queue handler re-sends a queued request to its own DBTC
    * instance with a mark: the passQueue flag of TCKEYREQ, TCINDXREQ and
@@ -1304,6 +1363,8 @@ CASE_STEP(runP31, runP31)
 CASE_STEP(runP32, runP32)
 CASE_STEP(runP33, runP33)
 CASE_STEP(runP35, runP35)
+CASE_STEP(runP36, runP36)
+CASE_STEP(runP37, runP37)
 CASE_STEP(runQ1, runQ1)
 CASE_STEP(runQ2, runQ2)
 CASE_STEP(runQ3, runQ3)
@@ -1392,6 +1453,14 @@ TESTCASE("P35",
          "join aggregation: a linked attribute entry that runs past the "
          "linked buffer") {
   STEP(runP35);
+}
+TESTCASE("P36",
+         "join aggregation: inline-type CHAR compare with charset 0") {
+  STEP(runP36);
+}
+TESTCASE("P37",
+         "join aggregation: inline-type BINARY compare with a charset") {
+  STEP(runP37);
 }
 TESTCASE("Q1", "TCKEYREQ with the rate queue flag from the API") {
   STEP(runQ1);

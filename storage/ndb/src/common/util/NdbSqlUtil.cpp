@@ -1002,6 +1002,21 @@ const CHARSET_INFO *NdbSqlUtil::get_collation(Uint32 csNumber) {
   return mysql::collation::find_by_id(csNumber);
 }
 
+bool NdbSqlUtil::get_compare_collation(Uint32 typeId, Uint32 csNumber,
+                                       const CHARSET_INFO **cs) {
+  *cs = nullptr;
+  switch (typeId) {
+    case Type::Char:
+    case Type::Varchar:
+    case Type::Longvarchar:
+      /* nullptr for 0 and for an unknown id */
+      *cs = get_collation(csNumber);
+      return *cs != nullptr;
+    default:
+      return csNumber == 0;
+  }
+}
+
 #if defined(WORDS_BIGENDIAN) || defined(VM_TRACE)
 
 static void determineParams(Uint32 typeId, Uint32 typeLog2Size,
@@ -1847,6 +1862,23 @@ static void testcollation() {
   if (get_charset(2047, MYF(0)) == nullptr) {
     chk1(NdbSqlUtil::get_collation(2047) == nullptr);
   }
+
+  /* get_compare_collation: a string type needs a known collation, the
+   * other types none */
+  const CHARSET_INFO *cmp_cs = latin1;
+  chk1(!NdbSqlUtil::get_compare_collation(NdbSqlUtil::Type::Char, 0,
+                                          &cmp_cs));
+  chk1(cmp_cs == nullptr);
+  chk1(!NdbSqlUtil::get_compare_collation(NdbSqlUtil::Type::Varchar, 0xFFFF,
+                                          &cmp_cs));
+  chk1(NdbSqlUtil::get_compare_collation(NdbSqlUtil::Type::Longvarchar, 8,
+                                         &cmp_cs));
+  chk1(cmp_cs == latin1);
+  chk1(NdbSqlUtil::get_compare_collation(NdbSqlUtil::Type::Bigint, 0,
+                                         &cmp_cs));
+  chk1(cmp_cs == nullptr);
+  chk1(!NdbSqlUtil::get_compare_collation(NdbSqlUtil::Type::Binary, 8,
+                                          &cmp_cs));
 }
 
 static int testmain() {

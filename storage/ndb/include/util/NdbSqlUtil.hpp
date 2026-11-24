@@ -163,6 +163,20 @@ class NdbSqlUtil {
   static const CHARSET_INFO *get_collation(Uint32 csNumber);
 
   /**
+   * The collation for a compare of type typeId, from a collation id
+   * csNumber that came in a request (the inline type word of an
+   * interpreted program).  CHAR, VARCHAR and LONGVARCHAR compare with a
+   * collation, so they need a known one; the other types compare
+   * without one, so csNumber must be 0.  Sets *cs (nullptr for the other
+   * types) and returns true, or returns false: for a string type with 0
+   * or an unknown id, whose compare function would dereference a null
+   * collation, and for another type with an id, whose compare function
+   * asserts that it has none.
+   */
+  static bool get_compare_collation(Uint32 typeId, Uint32 csNumber,
+                                    const CHARSET_INFO **cs);
+
+  /**
    * Convert attribute data to/from network byte order
    * This method converts the passed data of the passed type
    * between host and network byte order.

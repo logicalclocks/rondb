@@ -981,8 +981,9 @@ static bool nullRowCondHolds(Uint32 cond, int res1) {
  * compare them as the DBTUP handlers do.  BRANCH_MEM_OP_ARG takes the
  * column type from the parent table's descriptor through meta_tup;
  * without it the program is EMB_NULL_ROW_UNSUPPORTED.  Init has
- * validated the opcodes, the instruction lengths and that every branch
- * goes forward within the program; the operand words are still bounded
+ * validated the opcodes, the instruction lengths, that every branch
+ * goes forward within the program and the type and collation of each
+ * BRANCH_MEM_OP_ARG_INLINE_TYPE; the operand words are still bounded
  * here.
  *
  * READ_AGG_REG_TO_REG copies one of agg_regs, the aggregation registers,
@@ -1313,9 +1314,11 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
           type_id = Interpreter::getBranchCol_AttrId(ins2);
           attr_len = emb_prog[pc + 1] >> 16;
           const Uint32 cs_number = emb_prog[pc + 1] & 0xFFFF;
-          if (cs_number != 0) {
-            cs = NdbSqlUtil::get_collation(cs_number);
-            if (unlikely(cs == nullptr)) return EMB_NULL_ROW_ERROR;
+          /* A string type needs a known collation, the other types
+           * none (validateEmbeddedProgram refused the others) */
+          if (unlikely(!NdbSqlUtil::get_compare_collation(type_id,
+                                                          cs_number, &cs))) {
+            return EMB_NULL_ROW_ERROR;
           }
         } else {
           if (meta_tup == nullptr) return EMB_NULL_ROW_UNSUPPORTED;
@@ -1377,9 +1380,9 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
             NdbSqlUtil::getType(type_word >> 16);
         if (unlikely(sql_type.m_cmp == nullptr)) return EMB_NULL_ROW_ERROR;
         const CHARSET_INFO* cs = nullptr;
-        if ((type_word & 0xFFFF) != 0) {
-          cs = NdbSqlUtil::get_collation(type_word & 0xFFFF);
-          if (unlikely(cs == nullptr)) return EMB_NULL_ROW_ERROR;
+        if (unlikely(!NdbSqlUtil::get_compare_collation(
+                         type_word >> 16, type_word & 0xFFFF, &cs))) {
+          return EMB_NULL_ROW_ERROR;
         }
         const Uint32* left = CteLinkedAttr::linkedEntryAH(
             linked_attr_data, linked_attr_len, pos_word >> 16);

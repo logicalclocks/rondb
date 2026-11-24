@@ -729,6 +729,30 @@ bool AggInterpreterBase::validateEmbeddedProgram(
       return false;
     }
     Uint32 instr_len = (Uint32)(next - &emb_prog[pc]);
+    if (opCode == Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE) {
+      /* [instr][typeId << 16 | argLen][size << 16 | csNumber][arg].  A
+       * CHAR, VARCHAR or LONGVARCHAR needs a known collation and the
+       * other types none: csNumber 0 on a string type reached cmpChar /
+       * cmpVarchar with a null collation in Dbtup's
+       * handleBranchMemOpArgInlineType and in evalEmbeddedForNullRow.
+       * Refused here once, before any row. */
+      if (instr_len > emb_len - pc) {
+        g_eventLogger->warning(
+            "validateEmbeddedProgram: instruction past the end at pc=%u",
+            pc);
+        return false;
+      }
+      const Uint32 type_id =
+          Interpreter::getBranchCol_AttrId(emb_prog[pc + 1]);
+      const Uint32 cs_number = emb_prog[pc + 2] & 0xFFFF;
+      const CHARSET_INFO* cs = nullptr;
+      if (!NdbSqlUtil::get_compare_collation(type_id, cs_number, &cs)) {
+        g_eventLogger->warning(
+            "validateEmbeddedProgram: type %u with collation %u at pc=%u",
+            type_id, cs_number, pc);
+        return false;
+      }
+    }
     pc += instr_len;
   }
   return true;

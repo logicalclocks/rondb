@@ -283,7 +283,8 @@ class AggInterpreterBase : public PushdownInterpreter {
    *   - DECIMAL precision and scale are those of a possible column
    *     (bin2decimal trusts them);
    *   - constants have a type executeStandardOpcode loads;
-   *   - embedded programs pass validateEmbeddedProgram;
+   *   - embedded programs pass validateEmbeddedProgram, which also
+   *     checks the type and collation of each inline-type compare;
    *   - a kOpSkip lands on an instruction or at the end.
    * insn_starts (insnStartWords(prog_len) words) gets a bit set for
    * every word where an instruction starts, for embeddedSkipTarget.
@@ -570,7 +571,10 @@ class AggInterpreterBase : public PushdownInterpreter {
    * enforced an opcode allow-list and rejected backward branches).  The
    * stricter JoinAgg form is adopted here for both — the allow-list
    * covers every opcode either path emits, and the backward-branch
-   * reject closes a potential infinite-loop class.  Pure function over
+   * reject closes a potential infinite-loop class.  A
+   * BRANCH_MEM_OP_ARG_INLINE_TYPE must lie inside the program and carry
+   * a collation exactly for a string type
+   * (NdbSqlUtil::get_compare_collation).  Pure function over
    * arguments; no instance state needed.
    */
   static bool validateEmbeddedProgram(const Uint32* emb_prog, Uint32 emb_len);
