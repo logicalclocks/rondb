@@ -1357,10 +1357,18 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
             /* The entry holds the column as stored; do not read past it */
             const Uint32 byte_size = AttributeHeader(*mem_entry).getByteSize();
             if (attr_len > byte_size) attr_len = byte_size;
-            res1 = (*sql_type.m_cmp)(
-                cs, reinterpret_cast<const char*>(mem_entry + 1), attr_len,
-                reinterpret_cast<const char*>(&emb_prog[pc + meta_words]),
-                arg_len);
+            /* As DBTUP: only values the compare function takes, CHAR
+             * values of different lengths padded */
+            const char* const val_l =
+                reinterpret_cast<const char*>(mem_entry + 1);
+            const char* const val_r =
+                reinterpret_cast<const char*>(&emb_prog[pc + meta_words]);
+            if (unlikely(!NdbSqlUtil::check_compare_values(
+                             type_id, val_l, attr_len, val_r, arg_len))) {
+              return EMB_NULL_ROW_ERROR;
+            }
+            res1 = (*NdbSqlUtil::getStringResultCmp(type_id))(
+                cs, val_l, attr_len, val_r, arg_len);
           }
           take_branch =
               nullRowCondHolds(Interpreter::getBinaryCondition(instr), res1);
@@ -1414,9 +1422,16 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
             if (size_r > AttributeHeader(*right).getByteSize()) {
               size_r = AttributeHeader(*right).getByteSize();
             }
-            res1 = (*sql_type.m_cmp)(
-                cs, reinterpret_cast<const char*>(left + 1), size_l,
-                reinterpret_cast<const char*>(right + 1), size_r);
+            const char* const val_l = reinterpret_cast<const char*>(left + 1);
+            const char* const val_r =
+                reinterpret_cast<const char*>(right + 1);
+            if (unlikely(!NdbSqlUtil::check_compare_values(
+                             type_word >> 16, val_l, size_l, val_r,
+                             size_r))) {
+              return EMB_NULL_ROW_ERROR;
+            }
+            res1 = (*NdbSqlUtil::getStringResultCmp(type_word >> 16))(
+                cs, val_l, size_l, val_r, size_r);
           }
           take_branch =
               nullRowCondHolds(Interpreter::getBinaryCondition(instr), res1);

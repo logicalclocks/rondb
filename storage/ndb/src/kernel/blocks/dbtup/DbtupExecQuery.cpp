@@ -6095,7 +6095,15 @@ int Dbtup::evalBranchMemForJit(const Uint32 *inst) {
     if (unlikely(sqlType.m_cmp == nullptr)) {
       return -40;
     }
-    res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+    /* As handleBranchMemOpArgInlineType: no more than was staged, and
+     * only values the compare function takes. */
+    if (attrLen > ah.getByteSize()) attrLen = ah.getByteSize();
+    if (unlikely(!NdbSqlUtil::check_compare_values(typeId, s1, attrLen, s2,
+                                                   argLen))) {
+      return -40;
+    }
+    res1 = (*NdbSqlUtil::getStringResultCmp(typeId))(cs, s1, attrLen, s2,
+                                                     argLen);
   }
 
   switch ((Interpreter::BinaryCondition)cond) {
@@ -9000,7 +9008,19 @@ struct Dbtup::InterpreterContext {
       if (unlikely(sqlType.m_cmp == 0)) {
         return -40;
       }
-      res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+      /* The staged entry is the linked column at a position the program
+       * chose, which need not be the column attrId describes: compare
+       * no more than was staged, and only values the compare function
+       * takes (a VARCHAR length byte past its value failed cmpVarchar's
+       * require). */
+      if (attrLen > ah.getByteSize()) attrLen = ah.getByteSize();
+      if (unlikely(!NdbSqlUtil::check_compare_values(typeId, s1, attrLen,
+                                                     s2, argLen))) {
+        thrjam(ctx.tup->jamBuffer());
+        return -40;
+      }
+      res1 = (*NdbSqlUtil::getStringResultCmp(typeId))(cs, s1, attrLen, s2,
+                                                       argLen);
     }
 
     bool res = false;
@@ -9042,7 +9062,7 @@ struct Dbtup::InterpreterContext {
     const Uint32 typeId = Interpreter::getBranchCol_AttrId(ins2);
     const Uint32 argLen = Interpreter::getBranchCol_Len(ins2);
     const Uint32 meta   = ctx.TcurrentProgram[ctx.TprogramCounter + 1];
-    const Uint32 attrLen  = (meta >> 16) & 0xFFFF;
+    Uint32 attrLen = (meta >> 16) & 0xFFFF;
     const Uint32 csNumber = meta & 0xFFFF;
 
     const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(typeId);
@@ -9094,7 +9114,20 @@ struct Dbtup::InterpreterContext {
     if (r1_null || r2_null) {
       res1 = r1_null && r2_null ? 0 : r1_null ? -1 : 1;
     } else {
-      res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+      /* The column size comes from the program: compare no more than
+       * was staged, and only values the compare function takes.  A CHAR
+       * column size or constant of another length than the staged value
+       * failed cmpChar's assert, and a VARCHAR length byte past its
+       * value cmpVarchar's require; CHAR values of different lengths
+       * now compare padded (cmpCharAnyLength). */
+      if (attrLen > ah.getByteSize()) attrLen = ah.getByteSize();
+      if (unlikely(!NdbSqlUtil::check_compare_values(typeId, s1, attrLen,
+                                                     s2, argLen))) {
+        thrjam(ctx.tup->jamBuffer());
+        return -40;
+      }
+      res1 = (*NdbSqlUtil::getStringResultCmp(typeId))(cs, s1, attrLen, s2,
+                                                       argLen);
     }
 
     bool res = false;
@@ -9191,7 +9224,17 @@ struct Dbtup::InterpreterContext {
        * words cannot read past the linked buffer. */
       if (sizeL > ahL.getByteSize()) sizeL = ahL.getByteSize();
       if (sizeR > ahR.getByteSize()) sizeR = ahR.getByteSize();
-      res1 = (*sqlType.m_cmp)(cs, s1, sizeL, s2, sizeR);
+      /* The two entries can be CHAR columns of different sizes (RonSQL
+       * compares CHAR(8) with CHAR(12)), which failed cmpChar's assert:
+       * they compare padded (cmpCharAnyLength).  Values the compare
+       * function cannot take fail the program. */
+      if (unlikely(!NdbSqlUtil::check_compare_values(typeId, s1, sizeL,
+                                                     s2, sizeR))) {
+        thrjam(ctx.tup->jamBuffer());
+        return -40;
+      }
+      res1 = (*NdbSqlUtil::getStringResultCmp(typeId))(cs, s1, sizeL, s2,
+                                                       sizeR);
     }
 
     bool res = false;

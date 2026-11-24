@@ -124,6 +124,84 @@ NdbSqlUtil::Cmp *NdbSqlUtil::getStringResultCmp(Uint32 typeId) {
   return getType(typeId).m_cmp;
 }
 
+bool NdbSqlUtil::check_compare_values(Uint32 typeId, const void *p1,
+                                      unsigned n1, const void *p2,
+                                      unsigned n2) {
+  unsigned size = 0;
+  switch (typeId) {
+    case Type::Tinyint:
+    case Type::Tinyunsigned:
+    case Type::Year:
+      size = 1;
+      break;
+    case Type::Smallint:
+    case Type::Smallunsigned:
+      size = 2;
+      break;
+    case Type::Mediumint:
+    case Type::Mediumunsigned:
+    case Type::Date:
+    case Type::Time:
+      size = 3;
+      break;
+    case Type::Int:
+    case Type::Unsigned:
+    case Type::Timestamp:
+      size = 4;
+      break;
+    case Type::Bigint:
+    case Type::Bigunsigned:
+    case Type::Datetime:
+      size = 8;
+      break;
+    case Type::Float: {
+      /* cmpFloat requires values that are not NaN */
+      if (n1 != 4 || n2 != 4) return false;
+      float v1, v2;
+      memcpy(&v1, p1, 4);
+      memcpy(&v2, p2, 4);
+      return !std::isnan(v1) && !std::isnan(v2);
+    }
+    case Type::Double: {
+      if (n1 != 8 || n2 != 8) return false;
+      double v1, v2;
+      memcpy(&v1, p1, 8);
+      memcpy(&v2, p2, 8);
+      return !std::isnan(v1) && !std::isnan(v2);
+    }
+    case Type::Olddecimal:
+    case Type::Olddecimalunsigned:
+    case Type::Decimal:
+    case Type::Decimalunsigned:
+    case Type::Binary:
+    case Type::Time2:
+    case Type::Datetime2:
+    case Type::Timestamp2:
+      return n1 == n2;
+    case Type::Char:
+      /* cmpCharAnyLength pads the shorter value */
+      return true;
+    case Type::Varchar:
+    case Type::Varbinary:
+    case Type::Longvarchar:
+    case Type::Longvarbinary: {
+      /* cmpVarchar and its siblings require the length in the prefix to
+       * fit the value */
+      Uint32 lb = 0;
+      Uint32 len = 0;
+      return get_var_length(typeId, p1, n1, lb, len) &&
+             get_var_length(typeId, p2, n2, lb, len);
+    }
+    case Type::Bit:
+      /* cmpBit compares the shorter length, which must not be 0 */
+      return n1 != 0 && n2 != 0;
+    default:
+      /* Undefined, Blob and Text have no compare function */
+      return false;
+  }
+  return n1 == size && n2 == size;
+}
+
 /*
  * Comparison functions.
  */
@@ -1476,6 +1554,7 @@ void NdbSqlUtil::pack_timestamp2(const Timestamp2 &s, uchar *d, uint prec) {
 #include <ndb_rand.h>
 #include <NdbOut.hpp>
 #include <util/NdbTap.hpp>
+#include <limits>
 
 #define chk1(x)                                          \
   do {                                                   \
@@ -1881,6 +1960,74 @@ static void testcollation() {
                                           &cmp_cs));
 }
 
+/*
+ * check_compare_values: the values of a compare that came in a request
+ * must be what the compare function asserts or requires.
+ * getStringResultCmp compares CHAR values of different lengths padded.
+ */
+static void testcomparevalues() {
+  ll0("testcomparevalues");
+  typedef NdbSqlUtil::Type T;
+  const Uint32 i1 = 1;
+  const Uint32 i2 = 2;
+  const Uint64 b1 = 1;
+  chk1(NdbSqlUtil::check_compare_values(T::Unsigned, &i1, 4, &i2, 4));
+  chk1(!NdbSqlUtil::check_compare_values(T::Unsigned, &i1, 4, &b1, 8));
+  chk1(!NdbSqlUtil::check_compare_values(T::Bigint, &b1, 8, &i1, 4));
+  chk1(NdbSqlUtil::check_compare_values(T::Bigint, &b1, 8, &b1, 8));
+  chk1(!NdbSqlUtil::check_compare_values(T::Mediumint, &i1, 4, &i2, 4));
+
+  const double d1 = 1.5;
+  const double dnan = std::numeric_limits<double>::quiet_NaN();
+  const float fnan = std::numeric_limits<float>::quiet_NaN();
+  const float f1 = 1.5f;
+  chk1(NdbSqlUtil::check_compare_values(T::Double, &d1, 8, &d1, 8));
+  chk1(!NdbSqlUtil::check_compare_values(T::Double, &d1, 8, &dnan, 8));
+  chk1(!NdbSqlUtil::check_compare_values(T::Float, &fnan, 4, &f1, 4));
+  chk1(NdbSqlUtil::check_compare_values(T::Float, &f1, 4, &f1, 4));
+
+  /* One length for BINARY, any lengths for CHAR */
+  const char abcd[] = "abcd        ";
+  chk1(NdbSqlUtil::check_compare_values(T::Binary, abcd, 8, abcd, 8));
+  chk1(!NdbSqlUtil::check_compare_values(T::Binary, abcd, 8, abcd, 12));
+  chk1(NdbSqlUtil::check_compare_values(T::Char, abcd, 8, abcd, 12));
+  chk1(NdbSqlUtil::check_compare_values(T::Char, abcd, 4, abcd, 0));
+
+  /* VARCHAR: the length prefix must fit the value */
+  const uchar v4[] = {4, 'a', 'b', 'c', 'd'};
+  const uchar v9[] = {9, 'a', 'b', 'c', 'd'};
+  chk1(NdbSqlUtil::check_compare_values(T::Varchar, v4, 5, v4, 5));
+  chk1(NdbSqlUtil::check_compare_values(T::Varchar, v4, 5, v4, 8));
+  chk1(!NdbSqlUtil::check_compare_values(T::Varchar, v4, 2, v4, 5));
+  chk1(!NdbSqlUtil::check_compare_values(T::Varchar, v4, 5, v9, 5));
+  chk1(!NdbSqlUtil::check_compare_values(T::Varchar, v4, 5, v4, 0));
+  const uchar lv3[] = {3, 0, 'a', 'b', 'c'};
+  chk1(NdbSqlUtil::check_compare_values(T::Longvarchar, lv3, 5, lv3, 5));
+  chk1(!NdbSqlUtil::check_compare_values(T::Longvarchar, lv3, 4, lv3, 5));
+  chk1(!NdbSqlUtil::check_compare_values(T::Varbinary, v9, 5, v4, 5));
+
+  /* No compare for BLOB, TEXT and an unknown type */
+  chk1(!NdbSqlUtil::check_compare_values(T::Blob, abcd, 8, abcd, 8));
+  chk1(!NdbSqlUtil::check_compare_values(T::Text, abcd, 8, abcd, 8));
+  chk1(!NdbSqlUtil::check_compare_values(T::Undefined, abcd, 8, abcd, 8));
+  chk1(!NdbSqlUtil::check_compare_values(200, abcd, 8, abcd, 8));
+  chk1(!NdbSqlUtil::check_compare_values(T::Bit, abcd, 0, abcd, 8));
+
+  /* CHAR(8) and CHAR(12) of one value compare equal under a PAD SPACE
+   * collation (latin1) and a NO PAD one (utf8mb4_0900_ai_ci) */
+  NdbSqlUtil::Cmp *const cmp = NdbSqlUtil::getStringResultCmp(T::Char);
+  chk1(cmp != nullptr && cmp != NdbSqlUtil::getType(T::Char).m_cmp);
+  const CHARSET_INFO *latin1 = NdbSqlUtil::get_collation(8);
+  const CHARSET_INFO *nopad = NdbSqlUtil::get_collation(255);
+  chk1(latin1 != nullptr && nopad != nullptr);
+  chk1((*cmp)(latin1, abcd, 8, abcd, 12) == 0);
+  chk1((*cmp)(nopad, abcd, 8, abcd, 12) == 0);
+  chk1((*cmp)(latin1, abcd, 4, abcd, 12) == 0);
+  const char abce[] = "abce        ";
+  chk1((*cmp)(latin1, abcd, 8, abce, 12) < 0);
+  chk1((*cmp)(latin1, abce, 12, abcd, 8) > 0);
+}
+
 static int testmain() {
   ndb_init();
 #ifdef NDB_USE_GET_ENV
@@ -1900,6 +2047,7 @@ static int testmain() {
   signal(SIGABRT, SIG_DFL);
 #endif
   testcollation();  // once: it checks first-time initialisation
+  testcomparevalues();
   if (seed == 0)
     ll0("random seed: loop number");
   else {

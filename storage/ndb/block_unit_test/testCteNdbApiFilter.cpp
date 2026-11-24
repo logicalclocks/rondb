@@ -42,9 +42,16 @@
  *     root, which keeps the one row or rejects it.
  *   - Test 33: an inline-type CHAR filter with charset 0 fails the query
  *     with error 1268 and leaves the data nodes running.
+ *   - Test 34: a linked-vs-linked filter compares a CHAR(8) with a
+ *     CHAR(12) CTE output, padded, and leaves the data nodes running.
+ *   - Test 35: an inline-type filter whose column size and constant are
+ *     not the length of the staged CHAR(8) key compares them padded; one
+ *     that reads the key as a VARCHAR whose length byte runs past it
+ *     fails with error 1268; the data nodes keep running.
  *
  * Schema (created via MySQL):
  *   filter_src(pk INT PK, grp INT, val BIGINT, tag CHAR(8))
+ *   cmp_len_src(pk INT PK, grp INT, t8 CHAR(8), t12 CHAR(12))  -- Test 34
  *   e23_g / e23_s / e23_w (id INT PK, v VARCHAR(6000) latin1)
  *   e23_n (id INT PK, v VARCHAR(4000) latin1)    -- Tests 30-31
  *
@@ -91,6 +98,8 @@ static const char *CTE_SRC_TABLE = "cte_src";
 static const char *CTE_VIRTUAL_TABLE = "cte_virtual";
 /* Test 32 (K-2): the virtual table of a CTE without GROUP BY. */
 static const char *CTE_SCALAR_VIRTUAL_TABLE = "cte_virtual_scalar";
+/* Test 34: CHAR columns of two sizes */
+static const char *CMP_LEN_TABLE = "cmp_len_src";
 /* Tests 30-31 (E-23): the CTE source and probe tables. */
 static const char *E23_WIDE_TABLE = "e23_g";    /* VARCHAR(6000), 5000 B */
 static const char *E23_NARROW_TABLE = "e23_n";  /* VARCHAR(4000), 3990 B */
@@ -141,6 +150,7 @@ createTestTables(MYSQL *conn)
   sqlExec(conn, "DROP TABLE IF EXISTS e23_n");
   sqlExec(conn, "DROP TABLE IF EXISTS e23_s");
   sqlExec(conn, "DROP TABLE IF EXISTS e23_w");
+  sqlExec(conn, "DROP TABLE IF EXISTS cmp_len_src");
 
   /* Flat table for the baseline scan-filter tests (Tests 1-5). */
   if (sqlExec(conn,
@@ -200,6 +210,15 @@ createTestTables(MYSQL *conn)
       "  v VARCHAR(6000) CHARACTER SET latin1 NOT NULL"
       ") ENGINE=NDB") != 0) return -1;
 
+  /* Test 34: two CHAR columns of different sizes.  The test seeds it. */
+  if (sqlExec(conn,
+      "CREATE TABLE cmp_len_src ("
+      "  pk INT NOT NULL PRIMARY KEY,"
+      "  grp INT NOT NULL,"
+      "  t8 CHAR(8) NOT NULL,"
+      "  t12 CHAR(12) NOT NULL"
+      ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
+
   return 0;
 }
 
@@ -231,6 +250,7 @@ dropTestTables(MYSQL *conn)
   sqlExec(conn, "DROP TABLE IF EXISTS e23_n");
   sqlExec(conn, "DROP TABLE IF EXISTS e23_s");
   sqlExec(conn, "DROP TABLE IF EXISTS e23_w");
+  sqlExec(conn, "DROP TABLE IF EXISTS cmp_len_src");
 }
 
 /* ------------------------------------------------------------------ */
@@ -3018,24 +3038,34 @@ testCteLookupFilterInlineTypeNumeric(Ndb *ndb, MYSQL *conn)
   return -1;
 }
 
+/* The compare of runInlineFilter's filter: the type, column size and
+ * collation of its inline type word, and its constant. */
+struct InlineCompare {
+  Uint32 typeId;
+  Uint32 columnSize;
+  Uint32 csNumber;
+  const char *value;
+  Uint32 valueLen;
+};
+
 /*
- * runInlineCharFilter — the query of Test 22:
+ * runInlineFilter — the query of Test 22:
  *   WITH c AS (SELECT tag, COUNT(*) AS n FROM filter_src GROUP BY tag)
  *   SELECT COUNT(*) FROM filter_src m JOIN c ON c.tag = m.tag
  *   WHERE c.tag = 'beta'
  * with the WHERE as a filter on the CTE_LOOKUP: branch_linked_inline_ne
- * of position 0 (the CHAR(8) GROUP BY key) with collation
- * filterCsNumber.  The virtual table's tag column has tagCharset, the
- * collation of filter_src.tag.
+ * of position 0 (the CHAR(8) GROUP BY key) as filterCmp says.  The
+ * virtual table's tag column has tagCharset, the collation of
+ * filter_src.tag.
  *
  * Returns 0 with *countOut set when the query succeeded, 1 with
  * *errorOut set when it failed, -1 when it could not be built (the
  * reason is printed).
  */
 static int
-runInlineCharFilter(Ndb *ndb, const NdbDictionary::Table *srcTab,
-                    CHARSET_INFO *tagCharset, Uint32 filterCsNumber,
-                    const char *label, Int64 *countOut, int *errorOut)
+runInlineFilter(Ndb *ndb, const NdbDictionary::Table *srcTab,
+                CHARSET_INFO *tagCharset, const InlineCompare &filterCmp,
+                const char *label, Int64 *countOut, int *errorOut)
 {
   /* Build the CTE virt-table in memory.  Schema mirrors the CTE
    * outputs: [tag CHAR(8) PK, n BIGINT].  No MySQL-side CREATE
@@ -3103,16 +3133,11 @@ runInlineCharFilter(Ndb *ndb, const NdbDictionary::Table *srcTab,
   Uint32 codeBuf[64];
   NdbInterpretedCode filterCode(/*table=*/nullptr, codeBuf,
                                 sizeof(codeBuf) / sizeof(codeBuf[0]));
-  char tagVal[8];
-  memset(tagVal, ' ', sizeof(tagVal));
-  memcpy(tagVal, "beta", 4);
   const Uint32 REJECT = 0;
-  const Uint32 typeId =
-      static_cast<Uint32>(NdbDictionary::Column::Char);
-  const Uint32 columnSizeBytes = 8;  /* CHAR(8) is fixed 8 bytes */
   if (filterCode.branch_linked_inline_ne(
-          /*position=*/0, typeId, columnSizeBytes, filterCsNumber,
-          tagVal, sizeof(tagVal), REJECT) != 0 ||
+          /*position=*/0, filterCmp.typeId, filterCmp.columnSize,
+          filterCmp.csNumber, filterCmp.value, filterCmp.valueLen,
+          REJECT) != 0 ||
       filterCode.interpret_exit_ok() != 0 ||
       filterCode.def_label(REJECT) != 0 ||
       filterCode.interpret_exit_nok() != 0 ||
@@ -3245,8 +3270,24 @@ runInlineCharFilter(Ndb *ndb, const NdbDictionary::Table *srcTab,
   return 0;
 }
 
-/* filter_src and the charset of its CHAR(8) column tag, for Tests 22
- * and 33.  Prints the reason and returns false when either is missing. */
+/* runInlineFilter with the filter of Test 22: tag = 'beta' as a CHAR(8)
+ * of collation filterCsNumber, the constant padded to 8 bytes. */
+static int
+runInlineCharFilter(Ndb *ndb, const NdbDictionary::Table *srcTab,
+                    CHARSET_INFO *tagCharset, Uint32 filterCsNumber,
+                    const char *label, Int64 *countOut, int *errorOut)
+{
+  const InlineCompare filterCmp = {
+      static_cast<Uint32>(NdbDictionary::Column::Char),
+      8,  /* CHAR(8) is fixed 8 bytes */
+      filterCsNumber, "beta    ", 8};
+  return runInlineFilter(ndb, srcTab, tagCharset, filterCmp, label,
+                         countOut, errorOut);
+}
+
+/* filter_src and the charset of its CHAR(8) column tag, for Tests 22,
+ * 33 and 35.  Prints the reason and returns false when either is
+ * missing. */
 static bool
 getFilterSrcTag(Ndb *ndb, const NdbDictionary::Table **srcTabOut,
                 CHARSET_INFO **tagCharsetOut)
@@ -5816,6 +5857,416 @@ testCteLookupFilterInlineTypeNoCharset(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 34: CTE_LOOKUP filter — BRANCH_LINKED_OP_LINKED, CHAR(8) with  */
+/*          CHAR(12)                                                   */
+/*                                                                     */
+/* CTE: SELECT grp, MIN(t8) AS mn, MAX(t12) AS mx                      */
+/*      FROM cmp_len_src GROUP BY grp                                  */
+/*   grp=1: mn 'alpha' (CHAR(8)), mx 'alpha' (CHAR(12)) -> equal       */
+/*   grp=2: mn 'beta', mx 'delta'                       -> mn < mx     */
+/*   grp=3: mn 'gamma', mx 'gamma'                      -> equal       */
+/* The main scan of cmp_len_src looks the CTE up by grp, with a filter */
+/* that compares positions 1 (mn, 8 bytes) and 2 (mx, 12 bytes) as     */
+/* CHAR, sizes 8 and 12 — the shape RonSQL emits for a string          */
+/* col-vs-col compare of CHAR columns of different sizes:              */
+/*   (a) accept mn = mx (reject via branch_linked_linked_ne): COUNT=3  */
+/*   (b) accept mn < mx (reject via branch_linked_linked_le): COUNT=2  */
+/* DBTUP's handleBranchLinkedOpLinked passed 8 and 12 to cmpChar,     */
+/* which asserts one length: a debug data node stopped on the first    */
+/* row.                                                                */
+/* The two now compare padded (cmpCharAnyLength), and every data node  */
+/* is still started.                                                   */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteLookupFilterLinkedLinkedCharSizes(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 34: CTE_LOOKUP filter (linked-vs-linked CHAR(8) / "
+         "CHAR(12)) ... ");
+  fflush(stdout);
+
+  /* getNumDbNodes() also connects restarter to the management server. */
+  NdbRestarter restarter(g_connectString);
+  if (restarter.getNumDbNodes() < 0) {
+    printf("FAILED (no data node count from the management server)\n");
+    return -1;
+  }
+  std::map<int, int> nodesBefore;
+  if (!readStartedNodeConnections(restarter, nodesBefore, "Test 34")) {
+    printf("FAILED (data nodes not started before the test)\n");
+    return -1;
+  }
+
+  if (sqlExec(conn, "DELETE FROM cmp_len_src") != 0 ||
+      sqlExec(conn,
+              "INSERT INTO cmp_len_src VALUES "
+              "(1,1,'alpha','alpha'),(2,1,'beta','alpha'),"
+              "(3,2,'beta','delta'),(4,2,'beta','beta'),"
+              "(5,3,'gamma','gamma')") != 0) {
+    printf("FAILED (seed cmp_len_src)\n");
+    return -1;
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CMP_LEN_TABLE);
+  const NdbDictionary::Table *srcTab = dict->getTable(CMP_LEN_TABLE);
+  if (srcTab == nullptr) {
+    printf("FAILED (cmp_len_src lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+  const NdbDictionary::Column *t8Col = srcTab->getColumn("t8");
+  const NdbDictionary::Column *t12Col = srcTab->getColumn("t12");
+  if (t8Col == nullptr || t12Col == nullptr ||
+      t8Col->getCharset() == nullptr || t12Col->getCharset() == nullptr) {
+    printf("FAILED (cmp_len_src.t8 / t12 or their charset)\n");
+    return -1;
+  }
+  CHARSET_INFO *charset = t8Col->getCharset();
+  const Uint32 csNumber = (Uint32)charset->number;
+  const Uint32 size8 = (Uint32)t8Col->getLength();
+  const Uint32 size12 = (Uint32)t12Col->getLength();
+  if (size8 != 8 || size12 != 12) {
+    printf("FAILED (t8 / t12 have %u / %u bytes, expected 8 / 12)\n",
+           size8, size12);
+    return -1;
+  }
+
+  /* In-memory virt table: [grp INT PK, mn CHAR(8), mx CHAR(12)], as
+   * Test 24. */
+  NdbDictionary::Table virtTabSyn("__cte_charsizes_virt");
+  {
+    NdbDictionary::Column grpCol;
+    grpCol.setName("grp");
+    grpCol.setType(NdbDictionary::Column::Int);
+    grpCol.setLength(1);
+    grpCol.setPrimaryKey(true);
+    grpCol.setNullable(false);
+    virtTabSyn.addColumn(grpCol);
+
+    NdbDictionary::Column mnCol;
+    mnCol.setName("mn");
+    mnCol.setType(NdbDictionary::Column::Char);
+    mnCol.setLength(size8);
+    mnCol.setCharset(charset);
+    mnCol.setPrimaryKey(false);
+    mnCol.setNullable(true);
+    virtTabSyn.addColumn(mnCol);
+
+    NdbDictionary::Column mxCol;
+    mxCol.setName("mx");
+    mxCol.setType(NdbDictionary::Column::Char);
+    mxCol.setLength(size12);
+    mxCol.setCharset(charset);
+    mxCol.setPrimaryKey(false);
+    mxCol.setNullable(true);
+    virtTabSyn.addColumn(mxCol);
+  }
+  {
+    NdbError vtErr;
+    if (virtTabSyn.aggregate(vtErr) != 0) {
+      printf("FAILED (virtTab aggregate: %d %s)\n",
+             vtErr.code, vtErr.message);
+      return -1;
+    }
+  }
+  const NdbDictionary::Table *virtTab = &virtTabSyn;
+
+  struct SubCase {
+    const char *name;
+    bool useLe;      /* true: reject via _le (accept mn < mx) */
+    Int64 expected;
+  };
+  const SubCase cases[] = {
+      { "mn=mx", false, 3 },
+      { "mn<mx", true, 2 },
+  };
+
+  for (const SubCase &sc : cases) {
+    /* CTE 0 = GROUP BY grp, MIN(t8), MAX(t12). */
+    NdbAggregator cteAgg(srcTab);
+    if (!cteAgg.GroupBy("grp") ||
+        !cteAgg.LoadColumn(t8Col->getAttrId(), 0) ||
+        !cteAgg.LoadColumn(t12Col->getAttrId(), 1) ||
+        !cteAgg.Min(0, 0) ||
+        !cteAgg.Max(1, 1) ||
+        !cteAgg.Finalize()) {
+      printf("FAILED (%s cteAgg: %s)\n", sc.name,
+             cteAgg.GetError().err_msg_);
+      return -1;
+    }
+
+    /* Main aggregator: COUNT(*) over surviving main rows. */
+    NdbAggregator mainAgg(srcTab);
+    if (!mainAgg.LoadUint64(1, 0) ||
+        !mainAgg.Count(0, 0) ||
+        !mainAgg.Finalize()) {
+      printf("FAILED (%s mainAgg: %s)\n", sc.name,
+             mainAgg.GetError().err_msg_);
+      return -1;
+    }
+
+    /* Filter: one BRANCH_LINKED_OP_LINKED comparing buffer positions
+     * 1 (mn, 8 bytes) and 2 (mx, 12 bytes); position 0 is the GB key. */
+    Uint32 codeBuf[64];
+    NdbInterpretedCode filterCode(/*table=*/nullptr, codeBuf,
+                                  sizeof(codeBuf) / sizeof(codeBuf[0]));
+    const Uint32 REJECT = 0;
+    const Uint32 typeId =
+        static_cast<Uint32>(NdbDictionary::Column::Char);
+    int rc = sc.useLe
+        ? filterCode.branch_linked_linked_le(1, 2, typeId, csNumber,
+                                             size8, size12, REJECT)
+        : filterCode.branch_linked_linked_ne(1, 2, typeId, csNumber,
+                                             size8, size12, REJECT);
+    if (rc != 0 ||
+        filterCode.interpret_exit_ok() != 0 ||
+        filterCode.def_label(REJECT) != 0 ||
+        filterCode.interpret_exit_nok() != 0 ||
+        filterCode.finalise() != 0) {
+      printf("FAILED (%s build filter: %s)\n", sc.name,
+             filterCode.getNdbError().message);
+      return -1;
+    }
+
+    NdbQueryBuilder *qb = NdbQueryBuilder::create();
+    if (qb == nullptr) { printf("FAILED (%s create)\n", sc.name); return -1; }
+
+    qb->beginCteSubtree(0);
+    const NdbQueryTableScanOperationDef *cteScanOp = qb->scanTable(srcTab);
+    if (cteScanOp == nullptr) {
+      printf("FAILED (%s CTE scan: %s)\n", sc.name,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *cteJoinKey[] = {
+        qb->linkedValue(cteScanOp, "pk"), nullptr
+    };
+    NdbQueryOptions cteLeafOpts;
+    cteLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+    cteLeafOpts.setAggregation(cteAgg);
+    if (qb->readTuple(srcTab, cteJoinKey, &cteLeafOpts) == nullptr) {
+      printf("FAILED (%s CTE leaf: %s)\n", sc.name,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    qb->endCteSubtree();
+    if (qb->defineCte(0, srcTab, cteAgg) != 0) {
+      printf("FAILED (%s defineCte)\n", sc.name);
+      qb->destroy();
+      return -1;
+    }
+
+    /* Main: scan cmp_len_src; lookupCte by grp with the filter. */
+    const NdbQueryTableScanOperationDef *mainScanOp = qb->scanTable(srcTab);
+    if (mainScanOp == nullptr) {
+      printf("FAILED (%s main scan: %s)\n", sc.name,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *cteKey[] = {
+        qb->linkedValue(mainScanOp, "grp"), nullptr
+    };
+    NdbQueryOptions cteLookupOpts;
+    cteLookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+    cteLookupOpts.setInterpretedCode(filterCode);
+    cteLookupOpts.setAggregation(mainAgg);
+    if (qb->lookupCte(0, 3, virtTab, cteKey, &cteLookupOpts) == nullptr) {
+      printf("FAILED (%s lookupCte: %s)\n", sc.name,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+
+    const NdbQueryDef *queryDef = qb->prepare(ndb);
+    if (queryDef == nullptr) {
+      printf("FAILED (%s prepare: %s)\n", sc.name,
+             qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+    qb->destroy();
+
+    NdbTransaction *trans = ndb->startTransaction();
+    if (trans == nullptr) {
+      printf("FAILED (%s startTransaction)\n", sc.name);
+      queryDef->destroy();
+      return -1;
+    }
+    NdbQuery *query = trans->createQuery(queryDef);
+    if (query == nullptr) {
+      printf("FAILED (%s createQuery: %s)\n", sc.name,
+             trans->getNdbError().message);
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+
+    if (trans->execute(NdbTransaction::NoCommit) != 0) {
+      const NdbError &tErr = trans->getNdbError();
+      const NdbError &qErr = query->getNdbError();
+      printf("FAILED (%s execute: trans %d:%s, query %d:%s)\n", sc.name,
+             tErr.code, tErr.message, qErr.code, qErr.message);
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+
+    NdbQuery::NextResultOutcome outcome;
+    while ((outcome = query->nextResult(true)) ==
+           NdbQuery::NextResult_gotRow) {
+      /* nothing — main aggregator carries the count */
+    }
+    if (outcome == NdbQuery::NextResult_error) {
+      printf("FAILED (%s nextResult drain: %d: %s)\n", sc.name,
+             query->getNdbError().code, query->getNdbError().message);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+
+    NdbAggregator *resultAgg = query->getAggregator();
+    if (resultAgg == nullptr) {
+      printf("FAILED (%s getAggregator)\n", sc.name);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+    Int64 count = -1;
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (!rec.end()) {
+      NdbAggregator::Result countRes = rec.FetchAggregationResult();
+      count = countRes.data_int64();
+    }
+
+    query->close();
+    trans->close();
+    queryDef->destroy();
+
+    if (count != sc.expected) {
+      printf("FAILED (%s: expected COUNT=%lld, got %lld)\n", sc.name,
+             (long long)sc.expected, (long long)count);
+      return -1;
+    }
+  }
+
+  std::map<int, int> nodesAfter;
+  if (!readStartedNodeConnections(restarter, nodesAfter, "Test 34")) {
+    printf("FAILED (a data node is not started)\n");
+    return -1;
+  }
+  if (nodesAfter != nodesBefore) {
+    printf("FAILED (a data node stopped or restarted)\n");
+    return -1;
+  }
+
+  printf("OK (mn=mx COUNT=3, mn<mx COUNT=2, data nodes up)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 35: CTE_LOOKUP filter — inline-type compare at other lengths   */
+/*          than the staged CHAR(8) group key                          */
+/*                                                                     */
+/* The query of Test 22 (tag = 'beta' on the CHAR(8) group key), with  */
+/* the inline type word and constant changed:                          */
+/*   (a) CHAR, column size 12, the 4-byte constant 'beta'.  DBTUP's    */
+/*       handleBranchMemOpArgInlineType passed 12 and 4 to cmpChar,    */
+/*       which asserts one length (a debug data node stopped), and     */
+/*       read 4 bytes past the staged key.  It now compares no more    */
+/*       than was staged, CHAR values padded: COUNT = 2.               */
+/*   (b) VARCHAR, column size 8, the constant [4]'beta'.  The staged   */
+/*       key is CHAR data, so its first byte, read as a VARCHAR length */
+/*       ('a' = 97), runs past the 8 bytes: cmpVarchar's require       */
+/*       stopped any data node.  NdbSqlUtil::check_compare_values now  */
+/*       refuses the compare, DBTUP fails the filter with error 40 and */
+/*       DBLQH the CTE_LOOKUP with ZCTE_LOOKUP_FILTER_ERROR (1268).    */
+/*   (c) every data node is still started, and none restarted.         */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteLookupFilterInlineTypeLengths(Ndb *ndb, MYSQL * /*conn*/)
+{
+  const int filterError = 1268;  /* ZCTE_LOOKUP_FILTER_ERROR */
+  printf("Test 35: CTE_LOOKUP filter (inline-type, other lengths than "
+         "the staged key) ... ");
+  fflush(stdout);
+
+  /* getNumDbNodes() also connects restarter to the management server. */
+  NdbRestarter restarter(g_connectString);
+  if (restarter.getNumDbNodes() < 0) {
+    printf("FAILED (no data node count from the management server)\n");
+    return -1;
+  }
+  std::map<int, int> nodesBefore;
+  if (!readStartedNodeConnections(restarter, nodesBefore, "Test 35")) {
+    printf("FAILED (data nodes not started before the test)\n");
+    return -1;
+  }
+
+  const NdbDictionary::Table *srcTab = nullptr;
+  CHARSET_INFO *tagCharset = nullptr;
+  if (!getFilterSrcTag(ndb, &srcTab, &tagCharset)) return -1;
+  const Uint32 csNumber = (Uint32)tagCharset->number;
+
+  /* (a) CHAR, column size 12, constant 'beta' of 4 bytes.  Every seed
+   * of filter_src has two 'beta' rows. */
+  const InlineCompare charLonger = {
+      static_cast<Uint32>(NdbDictionary::Column::Char), 12, csNumber,
+      "beta", 4};
+  Int64 count = -1;
+  int error = 0;
+  int rc = runInlineFilter(ndb, srcTab, tagCharset, charLonger,
+                           "CHAR size 12", &count, &error);
+  if (rc < 0) return -1;
+  if (rc != 0 || count != 2) {
+    printf("FAILED (CHAR size 12: error %d, COUNT=%lld, expected "
+           "COUNT=2)\n", rc != 0 ? error : 0, (long long)count);
+    return -1;
+  }
+  V("\n  CHAR size 12: COUNT=%lld as expected", (long long)count);
+
+  /* (b) VARCHAR, column size 8, constant [4]'beta' */
+  const char varcharBeta[] = {4, 'b', 'e', 't', 'a'};
+  const InlineCompare varcharOnChar = {
+      static_cast<Uint32>(NdbDictionary::Column::Varchar), 8, csNumber,
+      varcharBeta, sizeof(varcharBeta)};
+  rc = runInlineFilter(ndb, srcTab, tagCharset, varcharOnChar,
+                       "VARCHAR on CHAR", &count, &error);
+  if (rc < 0) return -1;
+  if (rc == 0) {
+    printf("FAILED (VARCHAR: the query completed, COUNT=%lld; expected "
+           "error %d)\n", (long long)count, filterError);
+    return -1;
+  }
+  if (error != filterError) {
+    printf("FAILED (VARCHAR: expected error %d, got %d)\n", filterError,
+           error);
+    return -1;
+  }
+  V("\n  VARCHAR on CHAR: error %d as expected", error);
+
+  /* (c) no data node stopped */
+  std::map<int, int> nodesAfter;
+  if (!readStartedNodeConnections(restarter, nodesAfter, "Test 35")) {
+    printf("FAILED (a data node is not started)\n");
+    return -1;
+  }
+  if (nodesAfter != nodesBefore) {
+    printf("FAILED (a data node stopped or restarted)\n");
+    return -1;
+  }
+
+  printf("OK (CHAR size 12: COUNT=2; VARCHAR: error %d; data nodes up)\n",
+         filterError);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -5858,6 +6309,8 @@ static const TestEntry g_tests[] = {
     { 31, testCteE23WideLookupKey },
     { 32, testCteScanFilterScalar },
     { 33, testCteLookupFilterInlineTypeNoCharset },
+    { 34, testCteLookupFilterLinkedLinkedCharSizes },
+    { 35, testCteLookupFilterInlineTypeLengths },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 
@@ -5883,7 +6336,8 @@ int main(int argc, char **argv)
       return 0;
     }
   }
-  g_connectString = connectString;  /* NdbRestarter in Tests 30-31, 33 */
+  /* NdbRestarter in Tests 30-31, 33-35 */
+  g_connectString = connectString;
 
   if (onlyTest != -1) {
     bool found = false;

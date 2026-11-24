@@ -130,9 +130,28 @@ class NdbSqlUtil {
    * The comparison method for string MIN/MAX results of type typeId.  As
    * getType(typeId).m_cmp, except that two CHAR values may have different
    * lengths: a MIN/MAX over a CASE takes its values from CHAR columns of
-   * different sizes, and cmpChar requires one length.
+   * different sizes, and cmpChar requires one length.  Also the method
+   * for a compare whose values came in a request (check_compare_values),
+   * and for GROUP BY keys.
    */
   static Cmp *getStringResultCmp(Uint32 typeId);
+
+  /**
+   * Whether getStringResultCmp(typeId) can compare the values p1 of n1
+   * bytes and p2 of n2 bytes, which came in a request (an operand of an
+   * interpreted program, an entry of a linked attribute buffer) and are
+   * not NULL.  The compare functions only assert or require what they
+   * need: a type of fixed size needs both values of that size, and
+   * FLOAT and DOUBLE values that are not NaN; BINARY, DECIMAL and the
+   * fractional-second temporal types need one length; VARCHAR,
+   * VARBINARY and their long forms need each length prefix inside its
+   * value; BIT needs two values of at least one byte.  CHAR takes any
+   * lengths (cmpCharAnyLength).  A type without a compare function
+   * (BLOB, TEXT, an unknown id) takes none.  The collation is checked
+   * by get_compare_collation.
+   */
+  static bool check_compare_values(Uint32 typeId, const void *p1,
+                                   unsigned n1, const void *p2, unsigned n2);
 
   /**
    * Check character set.

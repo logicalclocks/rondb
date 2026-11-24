@@ -53,7 +53,10 @@
  * header lengths wrap in 32 bits, which DBTUP refuses (RONDB-1124).
  * P-43 and P-44 send GROUP BY column metadata whose collation does not
  * fit its type, which JOIN_AGG_SETUP_REQ must refuse
- * (AggInterpreterBase::initGBColType).
+ * (AggInterpreterBase::initGBColType).  P-45 compares a staged linked
+ * value with a constant of another length (BRANCH_MEM_OP_ARG_INLINE_TYPE):
+ * CHAR values must compare padded, a VARCHAR length byte past its value
+ * must fail the row (NdbSqlUtil::check_compare_values).
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
  * re-send (passQueue), which only DBTC itself may set (RONDB-1124).
  * Each malformed request is built by taking a known-good, word-for-word
@@ -596,6 +599,46 @@ class SpjMalformedChecker {
     r.keyInfo.push_back(JOIN_AGG_META_VERSION);
     r.keyInfo.push_back(1);  /* one entry */
     r.keyInfo.insert(r.keyInfo.end(), entry.begin(), entry.end());
+  }
+
+  /* ---- inline-type compare of a staged value (P-45) -------------------- *
+   * A leaf whose rows compare linked position 0 with a constant and are
+   * counted when the two are equal.  A row that finds them unequal ends
+   * its embedded program without writing the output, which fails the
+   * row (ZAGG_EMBEDDED_INTERP_ERROR), as does a compare that DBTUP
+   * refuses (error 40):
+   *   0     READ_LINKED_TO_MEM of position 0
+   *   1     BRANCH_MEM_OP_ARG_INLINE_TYPE NE to the last word
+   *   2     (typeId << 16) | the constant's length
+   *   3     (columnSize << 16) | csNumber
+   *   4..   the constant
+   *   n-4   LOAD_CONST16 0 into register 0
+   *   n-3   WRITE_INTERPRETER_OUTPUT 0 of register 0: go on after it
+   *   n-2   EXIT_OK
+   *   n-1   EXIT_OK without an output */
+  static std::vector<Uint32> inlineCompareLeaf(
+      Uint32 typeId, Uint32 columnSize, Uint32 csNumber,
+      const std::vector<Uint32> &constant, Uint32 constantLen) {
+    const Uint32 nulls = Interpreter::IF_NULL_CONTINUE;
+    std::vector<Uint32> emb;
+    emb.push_back(Interpreter::READ_LINKED_TO_MEM | (0u << 16));
+    emb.push_back(0);  /* the branch, once its target is known */
+    emb.push_back(Interpreter::BranchMem_2(typeId, constantLen));
+    emb.push_back((columnSize << 16) | csNumber);
+    emb.insert(emb.end(), constant.begin(), constant.end());
+    emb.push_back(Interpreter::LoadConst16(0, 0));
+    emb.push_back(Interpreter::WriteInterpreterOutput(0, 0));
+    emb.push_back(Interpreter::ExitOK());
+    emb.push_back(Interpreter::ExitOK());
+    const Uint32 offset = Uint32(emb.size()) - 2;  /* from word 1 */
+    emb[1] = Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE | (nulls << 6) |
+             (Uint32(Interpreter::NE) << 12) | (offset << 16);
+    std::vector<Uint32> body;
+    body.push_back(aggOp(kOpEmbeddedInterp) | Uint32(emb.size()));
+    body.insert(body.end(), emb.begin(), emb.end());
+    const std::vector<Uint32> count = countBody(0, 0);
+    body.insert(body.end(), count.begin(), count.end());
+    return aggProgram(1, body);
   }
 
   /* ---------------------- the cases ----------------------------------- */
@@ -1181,6 +1224,74 @@ class SpjMalformedChecker {
         NDB_TYPE_UNSIGNED, 8);
   }
 
+  int runP45() {  /* inline-type compare: lengths other than the staged */
+    /* (a) The staged value is a CHAR(8) 'abcd    ', the constant the 4
+     * bytes 'abcd', and the column size of the compare 12.  DBTUP
+     * passed 12 and 4 to cmpChar, which asserts one length (a debug
+     * data node stopped), and read 4 bytes past the staged value.  It
+     * now compares no more than was staged, and CHAR values of
+     * different lengths padded (cmpCharAnyLength): the two are equal,
+     * every row is counted, SCAN_TABCONF.  This also shows that the
+     * raw request reaches the compare. */
+    const Uint32 w0Char = CteLinkedAttr::encodeWord0(NDB_TYPE_CHAR, 8);
+    const Uint32 w1 = CteLinkedAttr::encodeWord1(kLatin1);
+    SpjReq good;
+    makeJoinAggScanLookup(
+        good, {w0Char, w1, (0u << 16) | 8u, kAbcd, kFourSpaces},
+        inlineCompareLeaf(NDB_TYPE_CHAR, 12, kLatin1, {kAbcd}, 4));
+    good.waitForEnd = true;
+    const char *goodId =
+        "P-45a join aggregation CHAR(8) compared as CHAR(12) with 'abcd'";
+    const Reply control = sendScanTabReq(good);
+    printReply(goodId, control);
+    NdbSleep_MilliSleep(SettleMillis);
+    if (!clusterHealthy()) {
+      return failNodeDown(goodId);
+    }
+    if (control.gsn != GSN_SCAN_TABCONF) {
+      g_err << goodId << ": FAIL -- expected SCAN_TABCONF, got "
+            << gsnName(control.gsn) << ", err " << control.errorCode
+            << ": the compare did not find the padded values equal, or "
+               "the raw request is wrong" << endl;
+      return NDBT_FAILED;
+    }
+    g_info << goodId << ": PASS (all data nodes started; SCAN_TABCONF)"
+           << endl;
+
+    /* (b) The staged value is a VARCHAR(10) 'abcd' (length byte 4, 5
+     * bytes), the column size of the compare 2.  cmpVarchar requires
+     * the length byte to fit the size it is given, so every data node
+     * stopped, debug or release.  The compare is now refused (error 40),
+     * which fails the row: SCAN_TABREF. */
+    const Uint32 w0Varchar = CteLinkedAttr::encodeWord0(NDB_TYPE_VARCHAR, 11);
+    /* [4]'abc' 'd' */
+    const std::vector<Uint32> varcharAbcd = {0x63626104u, 0x00000064u};
+    SpjReq bad;
+    makeJoinAggScanLookup(
+        bad, {w0Varchar, w1, (0u << 16) | 5u, varcharAbcd[0],
+              varcharAbcd[1]},
+        inlineCompareLeaf(NDB_TYPE_VARCHAR, 2, kLatin1, varcharAbcd, 5));
+    bad.waitForEnd = true;
+    const char *badId =
+        "P-45b join aggregation VARCHAR 'abcd' compared with size 2";
+    const Reply rep = sendScanTabReq(bad);
+    printReply(badId, rep);
+    NdbSleep_MilliSleep(SettleMillis);
+    if (!clusterHealthy()) {
+      return failNodeDown(badId);
+    }
+    if (rep.gsn != GSN_SCAN_TABREF) {
+      g_err << badId << ": FAIL -- expected SCAN_TABREF, got "
+            << gsnName(rep.gsn)
+            << ": the compare of a value longer than its size was not "
+               "refused" << endl;
+      return NDBT_FAILED;
+    }
+    g_info << badId << ": PASS (all data nodes started; SCAN_TABREF "
+           << rep.errorCode << ")" << endl;
+    return NDBT_OK;
+  }
+
   /* ---- Q cases: DBTC's rate queue re-send mark sent by the API -------- *
    * DBTC's rate queue handler re-sends a queued request to its own DBTC
    * instance with a mark: the passQueue flag of TCKEYREQ, TCINDXREQ and
@@ -1275,6 +1386,9 @@ class SpjMalformedChecker {
   static constexpr Uint32 kBatchBytes = 32768;
   /* The cteIndex of the main program's column metadata block (RNIL) */
   static constexpr Uint32 kNoCteIndex = 0xFFFFFF00u;
+  static constexpr Uint32 kLatin1 = 8;     /* latin1_swedish_ci */
+  static constexpr Uint32 kAbcd = 0x64636261u;        /* "abcd" */
+  static constexpr Uint32 kFourSpaces = 0x20202020u;  /* "    " */
 
   struct Reply {
     Uint32 gsn{0};
@@ -1690,6 +1804,7 @@ CASE_STEP(runP40, runP40)
 CASE_STEP(runP41, runP41)
 CASE_STEP(runP43, runP43)
 CASE_STEP(runP44, runP44)
+CASE_STEP(runP45, runP45)
 CASE_STEP(runQ1, runQ1)
 CASE_STEP(runQ2, runQ2)
 CASE_STEP(runQ3, runQ3)
@@ -1805,6 +1920,11 @@ TESTCASE("P44",
          "join aggregation: GROUP BY Unsigned column metadata with a "
          "collation") {
   STEP(runP44);
+}
+TESTCASE("P45",
+         "join aggregation: inline-type compare of values of other "
+         "lengths than the staged one") {
+  STEP(runP45);
 }
 TESTCASE("Q1", "TCKEYREQ with the rate queue flag from the API") {
   STEP(runQ1);

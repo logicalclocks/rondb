@@ -1,0 +1,19 @@
+--source include/have_ndb.inc
+
+# P-45: a join aggregation whose embedded program compares the staged
+# linked value with a constant (BRANCH_MEM_OP_ARG_INLINE_TYPE) at
+# lengths other than the staged one.
+# (a) A CHAR(8) 'abcd    ' compared as CHAR(12) with the 4-byte 'abcd'
+#     failed cmpChar's assert (one length) in a debug data node. The
+#     compare now uses no more than was staged and pads CHAR values:
+#     they are equal, every row is counted, SCAN_TABCONF.
+# (b) A VARCHAR 'abcd' compared with column size 2 failed cmpVarchar's
+#     require in any data node. NdbSqlUtil::check_compare_values now
+#     refuses it, which fails the row: SCAN_TABREF.
+# Both must leave every data node started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P45
+--let $spj_case_title = P-45: join aggregation inline-type compare at other lengths than the staged value
+--source suite/ndb_spj/include/spj_malformed_case.inc
