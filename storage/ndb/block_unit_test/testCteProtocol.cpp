@@ -91,6 +91,15 @@
  *         1251, and the state fails with it (ERROR, peers told), so a
  *         late REDISTRIBUTE_REQ with the correct identity answers
  *         REDISTRIBUTE_REF 1251 instead of a CONF and a queued group.
+ *   ID-9  JOIN_AGG_SEND_CONF on a main aggregation whose keyed COMPLETE
+ *         (maxBatchRows 2) paused after two groups: a CONF before the
+ *         COMPLETE, CONFs with a wrong requestId, senderData or
+ *         senderRef, one to an LDM that does not own the state and one
+ *         naming no state are ignored (no row, no reply); the right CONF
+ *         and a duplicate behind it send every group once and one
+ *         COMPLETE_CONF; the same CONF after COMPLETE_CONF and after
+ *         RELEASE is ignored; a keyed COMPLETE naming no state answers
+ *         COMPLETE_REF 1251.
  *   OV-1  CTE_SCAN_REQ whose final-read section asks for more than
  *         ZATTR_BUFFER_SIZE words per group: CTE_SCAN_REF 1266 with no
  *         rows, on a first request and on a continuation; the
@@ -652,7 +661,7 @@ runScans(SignalSender &ss, const TableMeta &meta, Uint32 nodeId,
 
 static int
 sendCompleteReq(SignalSender &ss, Uint32 nodeId, Uint32 aggStateKey,
-                Uint32 ownerInstance)
+                Uint32 ownerInstance, Uint32 maxBatchRows = 1000)
 {
   SimpleSignal ssig;
   JoinAggCompleteReq *req =
@@ -663,7 +672,7 @@ sendCompleteReq(SignalSender &ss, Uint32 nodeId, Uint32 aggStateKey,
   req->transid[0] = FAKE_TRANS_ID1;
   req->transid[1] = FAKE_TRANS_ID2;
   req->aggStateKey = aggStateKey;
-  req->maxBatchRows = 1000;
+  req->maxBatchRows = maxBatchRows;
   req->heartbeatScanFragPtrI = RNIL;
   req->identWord = aggStateKey == RNIL
                        ? packIdentWord(FAKE_REQUEST_ID, RNIL) : RNIL;
@@ -693,6 +702,27 @@ sendSendConf(SignalSender &ss, const JoinAggSendReq *sendReq)
              ? 0 : -1;
 }
 
+/* Add the groups of one AGG_RESULT TRANSID_AI to groups. */
+static int
+addResultGroups(const SimpleSignal *resp, Uint32 &groups)
+{
+  const Uint32 *data;
+  Uint32 dataLen;
+  if (resp->header.m_noOfSections > 0) {
+    data = resp->ptr[0].p;
+    dataLen = resp->ptr[0].sz;
+  } else {
+    data = resp->getDataPtr() + TransIdAI::HeaderLength;
+    dataLen = resp->getLength() - TransIdAI::HeaderLength;
+  }
+  if (dataLen < 3 || data[0] != ((AGG_RESULT_ATTR << 16) | AGG_MAGIC)) {
+    fprintf(stderr, "Bad AGG_RESULT block (len %u)\n", dataLen);
+    return -1;
+  }
+  groups += data[2];
+  return 0;
+}
+
 /* Count the groups a COMPLETE streams back, answering its flow control. */
 static int
 receiveResults(SignalSender &ss, Uint32 &groupsOut)
@@ -703,20 +733,7 @@ receiveResults(SignalSender &ss, Uint32 &groupsOut)
     if (resp == nullptr) return -1;
     const int gsn = getGsn(resp);
     if (gsn == GSN_TRANSID_AI) {
-      const Uint32 *data;
-      Uint32 dataLen;
-      if (resp->header.m_noOfSections > 0) {
-        data = resp->ptr[0].p;
-        dataLen = resp->ptr[0].sz;
-      } else {
-        data = resp->getDataPtr() + TransIdAI::HeaderLength;
-        dataLen = resp->getLength() - TransIdAI::HeaderLength;
-      }
-      if (dataLen < 3 || data[0] != ((AGG_RESULT_ATTR << 16) | AGG_MAGIC)) {
-        fprintf(stderr, "Bad AGG_RESULT block (len %u)\n", dataLen);
-        return -1;
-      }
-      groupsOut += data[2];
+      if (addResultGroups(resp, groupsOut) != 0) return -1;
     } else if (gsn == GSN_JOIN_AGG_SEND_REQ) {
       const JoinAggSendReq *sendReq =
           reinterpret_cast<const JoinAggSendReq *>(resp->getDataPtr());
@@ -1978,6 +1995,232 @@ id8(Ctx &c)
   return checkLeaks(c.ss, c.restarter, "ID-8");
 }
 
+/* ID-9: the main-aggregation send pauses after this many groups. */
+static const Uint32 ID9_BATCH_ROWS = 2;
+/* Long enough for the first row of a resumed send, or a reply, to come. */
+static const Uint32 ID9_QUIET_MS = 300;
+
+/* The words of a JOIN_AGG_SEND_CONF and where it goes.  The coordinator's
+ * CONF echoes the paused state's SEND_REQ; a forgery changes one word. */
+struct SendConfWords {
+  Uint32 node;
+  BlockNumber block;  /* DBLQH block number with instance */
+  Uint32 senderRef;
+  Uint32 senderData;
+  Uint32 requestId;
+  Uint32 aggStateKey;
+};
+
+static int
+sendSendConfWords(SignalSender &ss, const SendConfWords &w)
+{
+  SimpleSignal ssig;
+  JoinAggSendConf *conf =
+      reinterpret_cast<JoinAggSendConf *>(ssig.getDataPtrSend());
+  conf->senderRef = w.senderRef;
+  conf->senderData = w.senderData;
+  conf->requestId = w.requestId;
+  conf->aggStateKey = w.aggStateKey;
+  conf->maxBatchRows = 1000;
+  ssig.set(ss, 0, w.block, GSN_JOIN_AGG_SEND_CONF,
+           JoinAggSendConf::SignalLength);
+  if (ss.sendSignal(w.node, &ssig) != SEND_OK) {
+    fprintf(stderr, "sendSignal SEND_CONF failed\n");
+    return -1;
+  }
+  return 0;
+}
+
+/* Nothing may arrive: no row of a resumed send and no reply.  A node
+ * that stopped fails the leak check (connection counters). */
+static int
+expectNoSignal(SignalSender &ss, const char *context)
+{
+  SimpleSignal *sig = ss.waitFor(ID9_QUIET_MS);
+  if (sig != nullptr) {
+    fprintf(stderr, "%s: got GSN %d, expected nothing\n", context,
+            getGsn(sig));
+    return -1;
+  }
+  V("%s: nothing came, as expected\n", context);
+  return 0;
+}
+
+static int
+sendIgnoredSendConf(SignalSender &ss, const SendConfWords &w,
+                    const char *context)
+{
+  if (sendSendConfWords(ss, w) != 0) return -1;
+  return expectNoSignal(ss, context);
+}
+
+/* Count the groups of a main-aggregation COMPLETE until it pauses
+ * (returns 1, its SEND_REQ in pausedOut) or completes (returns 0, with
+ * the COMPLETE_CONF echoing the COMPLETE_REQ).  -1 on anything else. */
+static int
+receiveSendBatch(SignalSender &ss, const char *context, Uint32 &groups,
+                 JoinAggSendReq &pausedOut, Uint32 &numResultRowsOut)
+{
+  for (;;) {
+    SimpleSignal *resp = waitForSignal(ss, context);
+    if (resp == nullptr) return -1;
+    const int gsn = getGsn(resp);
+    if (gsn == GSN_TRANSID_AI) {
+      if (addResultGroups(resp, groups) != 0) return -1;
+    } else if (gsn == GSN_JOIN_AGG_SEND_REQ) {
+      pausedOut =
+          *reinterpret_cast<const JoinAggSendReq *>(resp->getDataPtr());
+      return 1;
+    } else if (gsn == GSN_JOIN_AGG_COMPLETE_CONF) {
+      const JoinAggCompleteConf *conf =
+          reinterpret_cast<const JoinAggCompleteConf *>(resp->getDataPtr());
+      if (conf->senderData != FAKE_SENDER_DATA ||
+          conf->requestId != FAKE_REQUEST_ID) {
+        fprintf(stderr, "%s: COMPLETE_CONF senderData=%u requestId=%u\n",
+                context, conf->senderData, conf->requestId);
+        return -1;
+      }
+      numResultRowsOut = conf->numResultRows;
+      return 0;
+    } else if (gsn == GSN_JOIN_AGG_COMPLETE_REF) {
+      const JoinAggCompleteRef *ref =
+          reinterpret_cast<const JoinAggCompleteRef *>(resp->getDataPtr());
+      fprintf(stderr, "%s: COMPLETE_REF errorCode=%u errorLine=%u\n",
+              context, ref->errorCode, ref->errorLine);
+      return -1;
+    } else {
+      fprintf(stderr, "%s: unexpected GSN %d\n", context, gsn);
+      return -1;
+    }
+  }
+}
+
+/* ID-9: JOIN_AGG_SEND_CONF resumes only the paused send it answers.  A
+ * keyed main-aggregation COMPLETE with maxBatchRows 2 pauses after two
+ * groups (WAITING_SEND_CONF).  Before the fix every CONF naming the key
+ * resumed the send: a forged one streamed the groups and sent the
+ * COMPLETE_CONF to the forged words, one before the COMPLETE streamed
+ * groups that were not merged yet, a duplicate started a second send
+ * chain and a second COMPLETE_CONF, one after the COMPLETE_CONF sent
+ * another, and one naming no state (unknown or released key) stopped
+ * the node in an ndbrequire. */
+static int
+id9(Ctx &c)
+{
+  Uint32 key, owner, rows;
+  if (setupDefault(c, key, owner) != 0) return -1;
+  if (runScans(c.ss, c.meta, c.node, key, rows) != 0) return -1;
+  if (rows <= ID9_BATCH_ROWS) {
+    fprintf(stderr, "ID-9: node %u holds too few groups to pause a send\n",
+            c.node);
+    return -1;
+  }
+  /* The words of the coordinator's CONF. */
+  SendConfWords right = {c.node, numberToBlock(DBLQH, owner),
+                         c.ss.getOwnRef(), FAKE_SENDER_DATA, FAKE_REQUEST_ID,
+                         key};
+  /* The state has not paused, it is still SETUP_COMPLETE. */
+  if (sendIgnoredSendConf(c.ss, right, "ID-9 CONF before the COMPLETE") != 0)
+    return -1;
+
+  if (sendCompleteReq(c.ss, c.node, key, owner, ID9_BATCH_ROWS) != 0)
+    return -1;
+  Uint32 groups = 0;
+  Uint32 numResultRows = 0;
+  JoinAggSendReq paused = {};
+  if (receiveSendBatch(c.ss, "ID-9 first batch", groups, paused,
+                       numResultRows) != 1) {
+    fprintf(stderr, "ID-9: the COMPLETE did not pause\n");
+    return -1;
+  }
+  if (paused.senderData != FAKE_SENDER_DATA ||
+      paused.requestId != FAKE_REQUEST_ID || paused.aggStateKey != key ||
+      paused.numRowsSent != ID9_BATCH_ROWS || groups != ID9_BATCH_ROWS) {
+    fprintf(stderr, "ID-9: SEND_REQ senderData=%u requestId=%u key=%u "
+                    "numRowsSent=%u after %u groups\n",
+            paused.senderData, paused.requestId, paused.aggStateKey,
+            paused.numRowsSent, groups);
+    return -1;
+  }
+  /* The coordinator answers the LDM that sent the SEND_REQ. */
+  right.node = refToNode(paused.senderRef);
+  right.block = refToBlock(paused.senderRef);
+
+  {
+    SendConfWords w = right;
+    w.requestId = FAKE_REQUEST_ID + 1;
+    if (sendIgnoredSendConf(c.ss, w, "ID-9 wrong requestId") != 0) return -1;
+  }
+  {
+    SendConfWords w = right;
+    w.senderData = FAKE_SENDER_DATA + 1;
+    if (sendIgnoredSendConf(c.ss, w, "ID-9 wrong senderData") != 0)
+      return -1;
+  }
+  {
+    /* A coordinator that sent no COMPLETE. */
+    SendConfWords w = right;
+    w.senderRef = numberToRef(DBTC, c.node);
+    if (sendIgnoredSendConf(c.ss, w, "ID-9 wrong senderRef") != 0) return -1;
+  }
+  {
+    /* Another LDM of the node must not run the owner's send. */
+    Uint32 other = 0;
+    for (Uint32 f = 0; f < c.meta.fragCount && other == 0; f++) {
+      if (c.meta.fragNodes[f] == c.node && c.meta.fragInstances[f] != owner)
+        other = c.meta.fragInstances[f];
+    }
+    if (other != 0) {
+      SendConfWords w = right;
+      w.block = numberToBlock(DBLQH, other);
+      if (sendIgnoredSendConf(c.ss, w, "ID-9 CONF to a non-owner LDM") != 0)
+        return -1;
+    } else {
+      fprintf(stderr, "ID-9: [SKIPPED] node %u has no other LDM with a "
+                      "fragment for the non-owner CONF\n", c.node);
+    }
+  }
+  {
+    SendConfWords w = right;
+    w.aggStateKey = UNKNOWN_STATE_KEY;
+    if (sendIgnoredSendConf(c.ss, w, "ID-9 CONF naming no state") != 0)
+      return -1;
+  }
+
+  /* The coordinator's CONF and an exact duplicate right behind it on the
+   * same LDM: the duplicate meets the running send or its end. */
+  if (sendSendConfWords(c.ss, right) != 0 ||
+      sendSendConfWords(c.ss, right) != 0)
+    return -1;
+  const int rc = receiveSendBatch(c.ss, "ID-9 resumed send", groups, paused,
+                                  numResultRows);
+  if (rc != 0) {
+    if (rc == 1) fprintf(stderr, "ID-9: the resumed send paused again\n");
+    return -1;
+  }
+  if (groups != rows || numResultRows != rows) {
+    fprintf(stderr, "ID-9: %u groups, numResultRows=%u, expected %u\n",
+            groups, numResultRows, rows);
+    return -1;
+  }
+  if (expectNoSignal(c.ss, "ID-9 duplicate CONF") != 0) return -1;
+  if (sendIgnoredSendConf(c.ss, right, "ID-9 CONF after COMPLETE_CONF") != 0)
+    return -1;
+
+  if (releaseAndWait(c, key) != 0) return -1;
+  /* Let the teardown free the pool slot first. */
+  NdbSleep_MilliSleep(TEARDOWN_SETTLE_MS);
+  if (sendIgnoredSendConf(c.ss, right, "ID-9 CONF after RELEASE") != 0)
+    return -1;
+
+  /* A keyed COMPLETE naming no state is refused before any state access. */
+  if (sendCompleteReq(c.ss, c.node, UNKNOWN_STATE_KEY, owner) != 0 ||
+      expectRef(c.ss, GSN_JOIN_AGG_COMPLETE_REF, ZJOIN_AGG_STATE_NOT_FOUND,
+                "ID-9 keyed COMPLETE naming no state") != 0)
+    return -1;
+  return checkLeaks(c.ss, c.restarter, "ID-9");
+}
+
 /* OV-1: DBLQH builds one CTE row in a buffer of ZATTR_BUFFER_SIZE (32768)
  * words.  The final-read section below reads the BIGINT GROUP BY key
  * (virtual column 0) and the BIGINT SUM (column 1) alternately; each read
@@ -2983,6 +3226,7 @@ int main(int argc, char **argv)
           {"ID-5 CTE scan continuation tokens", id5},
           {"ID-6 consumer requests of a failed coordinator", id6},
           {"ID-8 late group after a refused COMPLETE", id8},
+          {"ID-9 SEND_CONF that answers no paused send", id9},
           {"OV-1 CTE scan row wider than the output buffer", ov1},
           {"PK-1a owner-plane signals parked and replayed", pk1OwnerPlane},
           {"PK-1b consumer feeds parked and replayed", pk1Feeds},

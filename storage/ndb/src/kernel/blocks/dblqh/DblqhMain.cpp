@@ -21219,7 +21219,10 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
   static const Uint32 MAX_BATCH_SIGNAL_BYTES = 64 * 1024;
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
-  ndbrequire(state != nullptr);
+  if (state == nullptr || state->isAborting()) {
+    jam();
+    return;  // Aborted or released while this continuation was queued.
+  }
   sendJoinAggCompleteHeartbeat(signal, state);
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
 
@@ -21387,6 +21390,21 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
              signal, JoinAggCompleteConf::SignalLength, JBB);
 }
 
+/**
+ * execJOIN_AGG_SEND_CONF — the coordinator lets a paused send continue.
+ *
+ * The CONF echoes the SEND_REQ, whose senderRef, senderData and
+ * requestId are those of the COMPLETE_REQ being answered. Accept it only
+ * for a state paused for it (WAITING_SEND_CONF) in this block, its owner
+ * LDM (the SEND_REQ went out from there, never from a query block), whose
+ * recorded COMPLETE has the same three words. Anything else is a
+ * duplicate or a stale CONF (released, reused, aborted or completed
+ * state, or a send still running): resuming it would start a second send
+ * chain, revive an aborted state or run on another thread, so drop it.
+ * The query's transid and identWord are not needed: a CONF that passes
+ * can only resume a paused send, with that state's own routing, which
+ * is what the coordinator's CONF does at once anyway.
+ */
 void Dblqh::execJOIN_AGG_SEND_CONF(Signal *signal) {
   jamEntry();
   const JoinAggSendConf *conf =
@@ -21399,7 +21417,23 @@ void Dblqh::execJOIN_AGG_SEND_CONF(Signal *signal) {
   const Uint32 maxBatchRows = conf->maxBatchRows;
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
-  ndbrequire(state != nullptr);
+  if (unlikely(state == nullptr ||
+               m_is_query_block ||
+               state->m_owner_instance != instance() ||
+               state->m_state.load() !=
+                   JoinAggregationState::WAITING_SEND_CONF ||
+               state->m_cte_complete_senderRef != senderRef ||
+               state->m_cte_complete_senderData != senderData ||
+               state->m_cte_complete_requestId != requestId)) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBLQH execJOIN_AGG_SEND_CONF: aggStateKey=%u "
+                  "state=%u senderRef=0x%x senderData=%u requestId=%u: "
+                  "no paused send for this CONF, drop it",
+                  getThreadId(), aggStateKey,
+                  (state != nullptr) ? (Uint32)state->m_state.load() : RNIL,
+                  senderRef, senderData, requestId));
+    return;
+  }
 
   state->m_max_batch_rows = maxBatchRows;
   state->m_state.store(JoinAggregationState::SENDING_RESULTS);
