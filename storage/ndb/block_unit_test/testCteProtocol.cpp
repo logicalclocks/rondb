@@ -124,6 +124,14 @@
  *         continuation's token is released (a reuse answers 1251), and
  *         a normal scan afterwards still returns every group.  Before
  *         the fix DBLQH dropped every row of the batch and answered CONF.
+ *   OV-2  CTE_SCAN_REQ with a filter whose subroutine region (the parent
+ *         linked columns) leaves too little of DBLQH's ZATTR_BUFFER_SIZE
+ *         linked-row buffer for the group's own columns: CTE_SCAN_REF
+ *         1268 with no rows; the same filter with a smaller region
+ *         returns every group, and so does a scan afterwards.  Before
+ *         the fix the aggregate column stopped the node (ndbrequire)
+ *         and a GROUP BY key wider than the buffer's 16 spare words was
+ *         copied past its end (RONDB-1124).
  *
  * Section 6, parking.  A consumer signal that arrives before its SETUP
  * parks on an identity placeholder; the SETUP's flush replays it, the 10
@@ -245,6 +253,7 @@ static const Uint32 AGG_RESULT_ATTR = 0xFF00;
 static const Uint32 ZNODEFAIL_BEFORE_COMMIT = 286;
 static const Uint32 ZJOIN_AGG_STATE_NOT_FOUND = 1251;
 static const Uint32 ZCTE_LOOKUP_OUTPUT_OVERFLOW = 1266;
+static const Uint32 ZCTE_LOOKUP_FILTER_ERROR = 1268;
 /* Temporary (TR): a race or a resource shortage a retry survives. */
 static const Uint32 ZJOIN_AGG_SETUP_NOT_RECEIVED = 1274;
 static const Uint32 ZJOIN_AGG_PARK_POOL_EXHAUSTED = 1275;
@@ -1223,14 +1232,17 @@ cteScanExpectRef(SignalSender &ss, const CteScanParams &p,
   return 0;
 }
 
-/* Every group on every listed node, scanned to EndOfData. */
+/* Every group on every listed node, scanned to EndOfData, each request
+ * with attrInfo when given. */
 static int
-cteScanGroups(Ctx &c, const std::vector<CteNode> &nodes, Uint32 &groupsOut)
+cteScanGroups(Ctx &c, const std::vector<CteNode> &nodes, Uint32 &groupsOut,
+              const std::vector<Uint32> *attrInfo = nullptr)
 {
   groupsOut = 0;
   for (const CteNode &n : nodes) {
     CteScanParams p(n, c.ss);
     p.batchSize = 1000;
+    p.attrInfo = attrInfo;
     bool endOfData = false;
     while (!endOfData) {
       Uint32 rows = 0;
@@ -2727,6 +2739,77 @@ ov1(Ctx &c)
   return checkLeaks(c.ss, c.restarter, "OV-1");
 }
 
+/* OV-2: a CTE filter (interpretLen > 1) reads a linked row that DBLQH
+ * builds in a buffer of ZATTR_BUFFER_SIZE (32768) words: the parent
+ * linked columns of the AttrInfo subroutine region, copied verbatim,
+ * then the group's GROUP BY key and SUM, 5 words each.  The section may
+ * hold up to 32768 words, so the parent columns can leave too little
+ * room: the SUM stopped the node (ndbrequire), and a GROUP BY key wider
+ * than the 16 spare words after the buffer was copied past its end
+ * (RONDB-1124).  DBSPJ builds the region from the parent row and from
+ * P_DATA tokens the API chose.  The filter is two EXIT_OKs; without a
+ * final-read section an accepted group comes back as a raw row.  The
+ * parent columns are zeros: NULL entries of table 0, which the filter
+ * never reads. */
+static const Uint32 OV2_FITS_WORDS = 32000;
+/* A section of ZATTR_BUFFER_SIZE words: 8 words of header, filter and
+ * paramLen, and parent columns that leave 8 words of the linked row for
+ * the group's 10. */
+static const Uint32 OV2_FILLS_WORDS = OV_ROW_BUFFER_WORDS - 8;
+
+static std::vector<Uint32>
+buildLinkedFilterAttrInfo(Uint32 parentWords)
+{
+  std::vector<Uint32> ai;
+  ai.push_back(0);                /* initReadLen */
+  ai.push_back(2);                /* interpretLen: the filter runs */
+  ai.push_back(0);                /* finalUpdateLen */
+  ai.push_back(0);                /* finalReadLen */
+  ai.push_back(1 + parentWords);  /* subLen */
+  ai.push_back(INTERPRETER_EXIT_OK);
+  ai.push_back(INTERPRETER_EXIT_OK);
+  ai.push_back(1 + parentWords);  /* paramLen, as DBSPJ writes it */
+  ai.resize(ai.size() + parentWords, 0);
+  return ai;
+}
+
+static int
+ov2(Ctx &c)
+{
+  std::vector<CteNode> nodes;
+  Uint32 rows = 0;
+  if (cteSetupAndScan(c, nodes, rows) != 0) return -1;
+  if (cteCompleteAll(c, nodes, 0, 0) != 0) return -1;
+
+  /* Control: the filter path with a large region that leaves room. */
+  const std::vector<Uint32> fits = buildLinkedFilterAttrInfo(OV2_FITS_WORDS);
+  Uint32 groups = 0;
+  if (cteScanGroups(c, nodes, groups, &fits) != 0) return -1;
+  if (groups != rows) {
+    fprintf(stderr, "OV-2: the filter accepted %u groups, expected %u\n",
+            groups, rows);
+    return -1;
+  }
+
+  const std::vector<Uint32> fills =
+      buildLinkedFilterAttrInfo(OV2_FILLS_WORDS);
+  {
+    CteScanParams p(nodes[0], c.ss);
+    p.attrInfo = &fills;
+    if (cteScanExpectRef(c.ss, p, "OV-2 linked row wider than the buffer",
+                         ZCTE_LOOKUP_FILTER_ERROR) != 0)
+      return -1;
+  }
+  /* The CTE itself is unharmed. */
+  if (cteScanGroups(c, nodes, groups) != 0) return -1;
+  if (groups != rows) {
+    fprintf(stderr, "OV-2: %u groups scanned, expected %u\n", groups, rows);
+    return -1;
+  }
+  if (cteReleaseAll(c, nodes) != 0) return -1;
+  return checkLeaks(c.ss, c.restarter, "OV-2");
+}
+
 /* ------------------------------------------------------------------ */
 /* Section 6: parking                                                  */
 /* ------------------------------------------------------------------ */
@@ -3740,6 +3823,7 @@ int main(int argc, char **argv)
           {"ID-10b a batch ends at its byte limit", id10b},
           {"ID-11 keyed COMPLETE of another query or a duplicate", id11},
           {"OV-1 CTE scan row wider than the output buffer", ov1},
+          {"OV-2 CTE filter row wider than the linked buffer", ov2},
           {"PK-1a owner-plane signals parked and replayed", pk1OwnerPlane},
           {"PK-1b consumer feeds parked and replayed", pk1Feeds},
           {"PK-2 identity-addressed COMPLETE", pk2},

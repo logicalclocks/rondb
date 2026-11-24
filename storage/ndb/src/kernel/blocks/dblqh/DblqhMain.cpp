@@ -21823,9 +21823,12 @@ emitCteOutputAggSlot(const JoinAggInterpreter *interp,
  *      AggResItem.type when set, falling back to BIGINT (8B) when
  *      undefined (all-null group).
  *
- * Writes up to ZATTR_BUFFER_SIZE words; overflow is ndbrequire-fatal.
- * lenOut receives the word count written.  Returns false, with nothing
- * written, when the AttrInfo regions run past attrInfoLen.
+ * Writes at most ZATTR_BUFFER_SIZE words; lenOut receives the word count
+ * written.  Returns false when the AttrInfo regions run past attrInfoLen,
+ * or when the row does not fit in ZATTR_BUFFER_SIZE words (outBuf then
+ * holds part of it).  The parent linked columns come from the request,
+ * so the latter is a malformed request too: it was ndbrequire-fatal, and
+ * the GROUP BY key was copied unchecked past the end of outBuf.
  *
  * Shared between cteLookupAggFeed (downstream agg feed) and the filter
  * gate in execCTE_LOOKUP_REQ (WHERE-clause evaluation pre-emit).
@@ -21859,7 +21862,12 @@ bool Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
       const Uint32 *parentLinked = &attrInfoBuf[regions.subStart + 1];
       const Uint32 parentLinkedLen = regions.subLen - 1;
 
-      ndbrequire(linkedPos + parentLinkedLen < ZATTR_BUFFER_SIZE);
+      /* Cannot fail while the section is at most ZATTR_BUFFER_SIZE
+       * words, as CTE_LOOKUP_REQ and CTE_SCAN_REQ require. */
+      if (unlikely(parentLinkedLen > ZATTR_BUFFER_SIZE)) {
+        jam();
+        return false;
+      }
       memcpy(&outBuf[linkedPos], parentLinked,
              parentLinkedLen * sizeof(Uint32));
       linkedPos += parentLinkedLen;
@@ -21872,12 +21880,22 @@ bool Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
    * which guarantees init.  Defensive null-check stays for safety. */
   const GBColTypeInfo *gbTypes = interp->gb_types();
 
-  /* Step 2: GROUP BY key columns from the group row */
+  /* Step 2: GROUP BY key columns from the group row.  The parent linked
+   * columns of step 1 can fill most of the buffer, and the GROUP BY key
+   * was copied after them without a check against its end (RONDB-1124).
+   * Each key entry must lie inside the key and fit in the buffer. */
   const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
   const Uint32 keyWords = keyLen >> 2;
   Uint32 kp = 0;
   Uint32 gbIdx = 0;
   while (kp < keyWords) {
+    const Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
+    const Uint32 words = 1 + dataSize;
+    if (unlikely(words > keyWords - kp ||
+                 2 + words > ZATTR_BUFFER_SIZE - linkedPos)) {
+      jam();
+      return false;
+    }
     Uint32 typeId = 0;
     Uint32 maxBytes = 0;
     Uint32 csNumber = 0;
@@ -21888,8 +21906,6 @@ bool Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
     }
     outBuf[linkedPos++] = CteLinkedAttr::encodeWord0(typeId, maxBytes);
     outBuf[linkedPos++] = CteLinkedAttr::encodeWord1(csNumber);
-    Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
-    Uint32 words = 1 + dataSize;
     memcpy(&outBuf[linkedPos], &keyData[kp], words * sizeof(Uint32));
     linkedPos += words;
     kp += words;
@@ -21905,9 +21921,14 @@ bool Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
       groupData + keyLen);
   for (Uint32 i = 0; i < n_agg_results; i++) {
     const Uint32 attrId = n_gb_cols + i;
-    bool ok = emitCteLinkedAggSlot(interp, accumulators[i], i, attrId,
-                                   outBuf, linkedPos, ZATTR_BUFFER_SIZE);
-    ndbrequire(ok);
+    if (unlikely(!emitCteLinkedAggSlot(interp, accumulators[i], i, attrId,
+                                       outBuf, linkedPos,
+                                       ZATTR_BUFFER_SIZE))) {
+      /* The slot does not fit after the parent linked columns (this was
+       * ndbrequire-fatal), or a string slot has no value. */
+      jam();
+      return false;
+    }
   }
 
   *lenOut = linkedPos;

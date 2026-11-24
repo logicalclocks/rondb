@@ -3654,8 +3654,9 @@ private:
    * CTE result entries use the CteLinkedAttr typed 2-word header followed
    * by [AttrHeader][data...].
    * Shared by cteLookupAggFeed (downstream agg feed) and the filter
-   * gate in execCTE_LOOKUP_REQ (WHERE-clause evaluation).  Returns false,
-   * with nothing built, when the AttrInfo regions run past its end. */
+   * gate in execCTE_LOOKUP_REQ (WHERE-clause evaluation).  Returns false
+   * when the AttrInfo regions run past its end or the row does not fit in
+   * ZATTR_BUFFER_SIZE words. */
   bool buildCteLinkedBuffer(const JoinAggInterpreter *interp,
                             const char *groupData, Uint32 keyLen,
                             const Uint32 *attrInfoBuf, Uint32 attrInfoLen,
