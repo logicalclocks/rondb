@@ -100,6 +100,11 @@
  *         COMPLETE_CONF; the same CONF after COMPLETE_CONF and after
  *         RELEASE is ignored; a keyed COMPLETE naming no state answers
  *         COMPLETE_REF 1251.
+ *   ID-10 the same main aggregation with maxBatchRows 3 in the COMPLETE
+ *         and 4 in each SEND_CONF: every batch that pauses holds exactly
+ *         its limit and its SEND_REQ counts every group sent so far; the
+ *         last batch holds the rest; ceil((groups - 3) / 4) SEND_REQs in
+ *         all (the limit counts the groups of one batch, not of the send).
  *   OV-1  CTE_SCAN_REQ whose final-read section asks for more than
  *         ZATTR_BUFFER_SIZE words per group: CTE_SCAN_REF 1266 with no
  *         rows, on a first request and on a continuation; the
@@ -2018,7 +2023,8 @@ struct SendConfWords {
 };
 
 static int
-sendSendConfWords(SignalSender &ss, const SendConfWords &w)
+sendSendConfWords(SignalSender &ss, const SendConfWords &w,
+                  Uint32 maxBatchRows = 1000)
 {
   SimpleSignal ssig;
   JoinAggSendConf *conf =
@@ -2027,7 +2033,7 @@ sendSendConfWords(SignalSender &ss, const SendConfWords &w)
   conf->senderData = w.senderData;
   conf->requestId = w.requestId;
   conf->aggStateKey = w.aggStateKey;
-  conf->maxBatchRows = 1000;
+  conf->maxBatchRows = maxBatchRows;
   ssig.set(ss, 0, w.block, GSN_JOIN_AGG_SEND_CONF,
            JoinAggSendConf::SignalLength);
   if (ss.sendSignal(w.node, &ssig) != SEND_OK) {
@@ -2225,6 +2231,87 @@ id9(Ctx &c)
                 "ID-9 keyed COMPLETE naming no state") != 0)
     return -1;
   return checkLeaks(c.ss, c.restarter, "ID-9");
+}
+
+/* ID-10: the batch limits.  The COMPLETE_REQ's maxBatchRows limits the
+ * first batch, each SEND_CONF's the batch it starts.  They differ so
+ * that a batch counted from the wrong start shows. */
+static const Uint32 ID10_FIRST_BATCH_ROWS = 3;
+static const Uint32 ID10_NEXT_BATCH_ROWS = 4;
+
+/* ID-10: a paused main-aggregation send sends full batches.  A keyed
+ * COMPLETE with maxBatchRows 3, then SEND_CONFs with maxBatchRows 4:
+ * every batch that pauses holds exactly its limit, its SEND_REQ reports
+ * every group sent so far, the last batch holds the rest (1 to 4) and the
+ * COMPLETE_CONF all of them, so there are ceil((groups - 3) / 4)
+ * SEND_REQs.  Before the fix the send compared the limit with the count
+ * of every group sent: the second batch and every later one held one
+ * group, one SEND_REQ / SEND_CONF round trip per group after the first
+ * batch. */
+static int
+id10(Ctx &c)
+{
+  Uint32 key, owner, rows;
+  if (setupDefault(c, key, owner) != 0) return -1;
+  if (runScans(c.ss, c.meta, c.node, key, rows) != 0) return -1;
+  if (rows <= ID10_FIRST_BATCH_ROWS + ID10_NEXT_BATCH_ROWS) {
+    fprintf(stderr, "ID-10: node %u holds %u groups, too few for three "
+                    "batches\n", c.node, rows);
+    return -1;
+  }
+  if (sendCompleteReq(c.ss, c.node, key, owner, ID10_FIRST_BATCH_ROWS) != 0)
+    return -1;
+  Uint32 groups = 0;
+  Uint32 numResultRows = 0;
+  Uint32 sendReqs = 0;
+  Uint32 batchStart = 0;
+  Uint32 limit = ID10_FIRST_BATCH_ROWS;
+  for (;;) {
+    JoinAggSendReq paused = {};
+    const int rc = receiveSendBatch(c.ss, "ID-10 batch", groups, paused,
+                                    numResultRows);
+    if (rc < 0) return -1;
+    const Uint32 batch = groups - batchStart;
+    if (rc == 0) {
+      if (batch == 0 || batch > limit) {
+        fprintf(stderr, "ID-10: the last batch held %u groups, limit %u\n",
+                batch, limit);
+        return -1;
+      }
+      break;
+    }
+    sendReqs++;
+    if (batch != limit || paused.numRowsSent != groups ||
+        paused.senderData != FAKE_SENDER_DATA ||
+        paused.requestId != FAKE_REQUEST_ID || paused.aggStateKey != key) {
+      fprintf(stderr, "ID-10: SEND_REQ %u after a batch of %u groups "
+                      "(limit %u): numRowsSent=%u of %u, senderData=%u "
+                      "requestId=%u key=%u\n",
+              sendReqs, batch, limit, paused.numRowsSent, groups,
+              paused.senderData, paused.requestId, paused.aggStateKey);
+      return -1;
+    }
+    batchStart = groups;
+    limit = ID10_NEXT_BATCH_ROWS;
+    /* The coordinator's CONF, to the LDM that sent the SEND_REQ. */
+    const SendConfWords w = {refToNode(paused.senderRef),
+                             refToBlock(paused.senderRef), c.ss.getOwnRef(),
+                             FAKE_SENDER_DATA, FAKE_REQUEST_ID, key};
+    if (sendSendConfWords(c.ss, w, ID10_NEXT_BATCH_ROWS) != 0) return -1;
+  }
+  const Uint32 expectedSendReqs =
+      (rows - ID10_FIRST_BATCH_ROWS + ID10_NEXT_BATCH_ROWS - 1) /
+      ID10_NEXT_BATCH_ROWS;
+  if (groups != rows || numResultRows != rows ||
+      sendReqs != expectedSendReqs) {
+    fprintf(stderr, "ID-10: %u groups, numResultRows=%u, %u SEND_REQs; "
+                    "expected %u groups and %u SEND_REQs\n",
+            groups, numResultRows, sendReqs, rows, expectedSendReqs);
+    return -1;
+  }
+  V("ID-10: %u groups, %u SEND_REQs\n", rows, sendReqs);
+  if (releaseAndWait(c, key) != 0) return -1;
+  return checkLeaks(c.ss, c.restarter, "ID-10");
 }
 
 /* OV-1: DBLQH builds one CTE row in a buffer of ZATTR_BUFFER_SIZE (32768)
@@ -3322,6 +3409,7 @@ int main(int argc, char **argv)
           {"ID-6 consumer requests of a failed coordinator", id6},
           {"ID-8 late group after a refused COMPLETE", id8},
           {"ID-9 SEND_CONF that answers no paused send", id9},
+          {"ID-10 full batches after a SEND_CONF", id10},
           {"OV-1 CTE scan row wider than the output buffer", ov1},
           {"PK-1a owner-plane signals parked and replayed", pk1OwnerPlane},
           {"PK-1b consumer feeds parked and replayed", pk1Feeds},

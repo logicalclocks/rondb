@@ -3850,7 +3850,7 @@ private:
   void continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
                            Uint32 num_result_rows, Uint32 total_bytes,
                            Uint32 senderRef, Uint32 senderData,
-                           Uint32 requestId);
+                           Uint32 requestId, Uint32 send_batch_rows);
   void execSCAN_NEXTREQ(Signal* signal);
   void execACC_SCANREF(Signal* signal, TcConnectionrecPtr);
   void execNEXT_SCANREF(Signal* signal);
