@@ -867,30 +867,20 @@ void JoinAggInterpreter::cacheMultiLeafAggOps(const LeafProgram* leaves,
 Int32 JoinAggInterpreter::readLinkedAttrIntoBuf(
     Uint32 position, Int64 load_program_offset,
     AttributeHeader **out_header, Uint32 *out_w0, Uint32 *out_w1) {
-  if (m_linked_attr_data == nullptr) {
-    return ZAGG_OTHER_ERROR;
-  }
-  const Uint32* p = m_linked_attr_data;
-  const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
-  Uint32 pos_count = 0;
-  while (p < p_end) {
-    if (pos_count == position) break;
-    p += 2;
-    p += 1 + AttributeHeader::getDataSize(*p);
-    pos_count++;
-  }
-  if (p + 2 >= p_end) {
+  const Uint32* ah = CteLinkedAttr::linkedEntryAH(
+      m_linked_attr_data, m_linked_attr_len, position);
+  if (unlikely(ah == nullptr)) {
     g_eventLogger->debug("JoinAggInterpreter::readLinkedAttrIntoBuf "
         "ZAGG_OTHER_ERROR: linked position %u not found in buffer "
-        "(linked_len=%u)", position, m_linked_attr_len);
+        "or malformed (linked_len=%u)", position, m_linked_attr_len);
     return ZAGG_OTHER_ERROR;
   }
-  Uint32 linked_word0 = p[0];
-  Uint32 linked_word1 = p[1];
+  Uint32 linked_word0 = ah[-2];
+  Uint32 linked_word1 = ah[-1];
   bool resolved = CteLinkedAttr::isCteMarker(linked_word0);
   if (!resolved) {
     const Uint32 linked_attr_id =
-        AttributeHeader(p[2]).getAttributeId();
+        AttributeHeader(*ah).getAttributeId();
     const ColumnMeta *column_meta =
         findColumnMeta(linked_word0, linked_word1, linked_attr_id);
     if (column_meta != nullptr) {
@@ -912,9 +902,11 @@ Int32 JoinAggInterpreter::readLinkedAttrIntoBuf(
       return ZAGG_OTHER_ERROR;
     }
   }
-  p += 2;
-  Uint32 words = 1 + AttributeHeader::getDataSize(*p);
-  memcpy(m_attr_read_buf + m_attr_read_pos, p, words * sizeof(Uint32));
+  const Uint32 words = 1 + AttributeHeader::getDataSize(*ah);
+  if (unlikely(words > g_attr_read_buf_len_ - m_attr_read_pos)) {
+    return ZAGG_OTHER_ERROR;
+  }
+  memcpy(m_attr_read_buf + m_attr_read_pos, ah, words * sizeof(Uint32));
   *out_header = reinterpret_cast<AttributeHeader*>(
       m_attr_read_buf + m_attr_read_pos);
   *out_w0 = linked_word0;
@@ -955,27 +947,6 @@ Int32 JoinAggInterpreter::jitMinMaxStringLinked(
     return lret;
   }
   return minMaxString(kScratchReg, agg_index, agg_res_ptr, is_max);
-}
-
-/*
- * E-4: the AttributeHeader word of entry `position` of a linked attribute
- * buffer ([tableId, schemaVersion, AttributeHeader, data] per entry), or
- * nullptr when the buffer has no such complete entry.  The callers read
- * nullptr as NULL, as Dbtup::readLinkedToMemBuffer does.
- */
-static const Uint32* nullRowLinkedEntry(const Uint32* linked,
-                                        Uint32 linked_len,
-                                        Uint32 position) {
-  if (linked == nullptr) return nullptr;
-  const Uint32* p = linked;
-  const Uint32* const p_end = linked + linked_len;
-  for (Uint32 pos = 0;; pos++) {
-    if (p_end - p < 3) return nullptr;
-    const Uint32 data_words = AttributeHeader::getDataSize(p[2]);
-    if (Uint32(p_end - p - 3) < data_words) return nullptr;
-    if (pos == position) return p + 2;
-    p += 3 + data_words;
-  }
 }
 
 /* E-4: whether a BRANCH_*_OP_ARG style compare branches, from res1 as
@@ -1092,12 +1063,13 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
         pc += 2;
         break;
       case Interpreter::READ_LINKED_TO_MEM:
-        mem_entry = nullRowLinkedEntry(linked_attr_data, linked_attr_len,
-                                       (instr >> 16) & 0xFF);
+        /* nullptr reads as NULL, as in Dbtup::readLinkedToMemBuffer */
+        mem_entry = CteLinkedAttr::linkedEntryAH(
+            linked_attr_data, linked_attr_len, (instr >> 16) & 0xFF);
         break;
       case Interpreter::READ_LINKED_COLUMN_TO_REG: {
         /* As Dbtup's handleReadLinkedColumnToReg */
-        const Uint32* entry = nullRowLinkedEntry(
+        const Uint32* entry = CteLinkedAttr::linkedEntryAH(
             linked_attr_data, linked_attr_len, (instr >> 16) & 0xFF);
         if (entry == nullptr || AttributeHeader(*entry).isNULL()) {
           reg_type[reg] = Interpreter::REG_TYPE_NULL;
@@ -1409,9 +1381,9 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
           cs = NdbSqlUtil::get_collation(type_word & 0xFFFF);
           if (unlikely(cs == nullptr)) return EMB_NULL_ROW_ERROR;
         }
-        const Uint32* left = nullRowLinkedEntry(
+        const Uint32* left = CteLinkedAttr::linkedEntryAH(
             linked_attr_data, linked_attr_len, pos_word >> 16);
-        const Uint32* right = nullRowLinkedEntry(
+        const Uint32* right = CteLinkedAttr::linkedEntryAH(
             linked_attr_data, linked_attr_len, pos_word & 0xFFFF);
         const bool l_null = (left == nullptr) || AttributeHeader(*left).isNULL();
         const bool r_null =
@@ -1586,27 +1558,23 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         Uint32 position = attr_id & 0x7FFF;
         thrjamDataDebug(jamBuf, position);
         thrjamDataDebug(jamBuf, m_linked_attr_len);
-        const Uint32* p = m_linked_attr_data;
-        const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
-        Uint32 pos_count = 0;
-        while (p < p_end) {
-          thrjamDebug(jamBuf);
-          if (pos_count == position) break;
-          p += 2;
-          Uint32 data_size = AttributeHeader::getDataSize(*p);
-          p += (1 + data_size);
-          pos_count++;
-          thrjamDataDebug(jamBuf, data_size);
-        }
-        if (p >= p_end) {
+        const Uint32* ah = CteLinkedAttr::linkedEntryAH(
+            m_linked_attr_data, m_linked_attr_len, position);
+        if (unlikely(ah == nullptr)) {
           g_eventLogger->debug("JoinAggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
               "Linked GROUP BY position %u not found in linked buffer "
-              "(linked_len=%u)", position, m_linked_attr_len);
+              "or malformed (linked_len=%u)", position, m_linked_attr_len);
           return ZAGG_OTHER_ERROR;
         }
-        p += 2;
-        Uint32 words = 1 + AttributeHeader::getDataSize(*p);
-        memcpy(m_attr_read_buf + m_attr_read_pos, p, words * sizeof(Uint32));
+        const Uint32 words = 1 + AttributeHeader::getDataSize(*ah);
+        thrjamDataDebug(jamBuf, words);
+        if (unlikely(words > g_attr_read_buf_len_ - m_attr_read_pos)) {
+          g_eventLogger->debug("JoinAggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
+              "Linked GROUP BY position %u does not fit the key buffer "
+              "(pos=%u words=%u)", position, m_attr_read_pos, words);
+          return ZAGG_OTHER_ERROR;
+        }
+        memcpy(m_attr_read_buf + m_attr_read_pos, ah, words * sizeof(Uint32));
         header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
         m_attr_read_pos += words;
       } else {
@@ -2758,18 +2726,11 @@ Int32 JoinAggInterpreter::initGBTypesForNullLocal(EmulatedJamBuffer *jamBuf) {
       if (unlikely(m_linked_attr_data == nullptr)) {
         return ZAGG_OTHER_ERROR;
       }
-      Uint32 position = attr_id & 0x7FFF;
-      const Uint32* p = m_linked_attr_data;
-      const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
-      Uint32 pos_count = 0;
-      while (p < p_end && pos_count < position) {
-        p += 2;
-        p += 1 + AttributeHeader::getDataSize(*p);
-        pos_count++;
-      }
-      if (p + 2 < p_end) {
-        Uint32 word0 = p[0];
-        Uint32 word1 = p[1];
+      const Uint32* ah = CteLinkedAttr::linkedEntryAH(
+          m_linked_attr_data, m_linked_attr_len, attr_id & 0x7FFF);
+      if (ah != nullptr) {
+        Uint32 word0 = ah[-2];
+        Uint32 word1 = ah[-1];
         if (CteLinkedAttr::isCteMarker(word0)) {
           thrjamDebug(jamBuf);
           info.typeId = CteLinkedAttr::decodeTypeId(word0);
@@ -2787,7 +2748,7 @@ Int32 JoinAggInterpreter::initGBTypesForNullLocal(EmulatedJamBuffer *jamBuf) {
           thrjamDebug(jamBuf);
           Uint32 tableId = word0;
           Uint32 tableVersion = word1;
-          Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
+          Uint32 linkedAttrId = AttributeHeader(*ah).getAttributeId();
           if (unlikely(tableId == 0 || tableId == RNIL)) {
             g_eventLogger->debug("initGBTypesForNullLocal: linked GROUP BY "
                 "column has untyped synthetic metadata prefix tableId=%u "

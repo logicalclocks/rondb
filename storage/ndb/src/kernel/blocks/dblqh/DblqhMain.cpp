@@ -16750,13 +16750,18 @@ bool Dblqh::feedOuterJoinAggNullRow(Signal *signal,
   if (attrInfoLen > 0 && regTcPtr->attrInfoIVal != RNIL) {
     copy(cattrInfoBuffer, regTcPtr->attrInfoIVal);
 
-    Uint32 RsubLen = cattrInfoBuffer[4];
-    if (RsubLen > 0) {
-      Uint32 sub_offset = 5 + cattrInfoBuffer[0] + cattrInfoBuffer[1] +
-                          cattrInfoBuffer[2] + cattrInfoBuffer[3];
-      ndbrequire(sub_offset + RsubLen <= attrInfoLen);
-      linked_data = &cattrInfoBuffer[sub_offset + 1];
-      linked_len = RsubLen - 1;
+    /* A section whose regions run past its end fails the row (it was
+     * ndbrequire-fatal, and read a stale header when shorter than 5). */
+    CteAttrInfoRegions regions;
+    if (unlikely(!parseCteAttrInfo(cattrInfoBuffer, attrInfoLen,
+                                   regions))) {
+      jam();
+      regTcPtr->errorCode = ZJOIN_AGG_PARENT_DATA_ERROR;
+      return false;
+    }
+    if (regions.subLen > 0) {
+      linked_data = &cattrInfoBuffer[regions.subStart + 1];
+      linked_len = regions.subLen - 1;
     }
   }
 
@@ -21672,12 +21677,13 @@ emitCteOutputAggSlot(const JoinAggInterpreter *interp,
  *      undefined (all-null group).
  *
  * Writes up to ZATTR_BUFFER_SIZE words; overflow is ndbrequire-fatal.
- * lenOut receives the word count written.
+ * lenOut receives the word count written.  Returns false, with nothing
+ * written, when the AttrInfo regions run past attrInfoLen.
  *
  * Shared between cteLookupAggFeed (downstream agg feed) and the filter
  * gate in execCTE_LOOKUP_REQ (WHERE-clause evaluation pre-emit).
  */
-void Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
+bool Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
                                  const char *groupData, Uint32 keyLen,
                                  const Uint32 *attrInfoBuf,
                                  Uint32 attrInfoLen,
@@ -21694,19 +21700,17 @@ void Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
    * (same format as LQHKEYREQ interpreter subroutine section). */
   if (attrInfoBuf != nullptr && attrInfoLen >= 5) {
     jam();
-    const Uint32 initReadLen = attrInfoBuf[0];
-    const Uint32 interpretLen = attrInfoBuf[1];
-    const Uint32 finalUpdateLen = attrInfoBuf[2];
-    const Uint32 finalReadLen = attrInfoBuf[3];
-    const Uint32 subLen = attrInfoBuf[4];
-
-    if (subLen > 1) {
+    CteAttrInfoRegions regions;
+    if (unlikely(!parseCteAttrInfo(attrInfoBuf, attrInfoLen, regions))) {
       jam();
-      const Uint32 subStart = 5 + initReadLen + interpretLen +
-                              finalUpdateLen + finalReadLen;
+      return false;
+    }
+
+    if (regions.subLen > 1) {
+      jam();
       /* Skip the paramLen word (same as prepareAndHandleJoinAggRow) */
-      const Uint32 *parentLinked = &attrInfoBuf[subStart + 1];
-      const Uint32 parentLinkedLen = subLen - 1;
+      const Uint32 *parentLinked = &attrInfoBuf[regions.subStart + 1];
+      const Uint32 parentLinkedLen = regions.subLen - 1;
 
       ndbrequire(linkedPos + parentLinkedLen < ZATTR_BUFFER_SIZE);
       memcpy(&outBuf[linkedPos], parentLinked,
@@ -21760,6 +21764,7 @@ void Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
   }
 
   *lenOut = linkedPos;
+  return true;
 }
 
 /**
@@ -21785,14 +21790,24 @@ Dblqh::runCteFilter(Signal *signal,
   if (attrInfoLen < 5 || cinBuf[1] <= 1) return CTE_FILTER_ACCEPT;
 
   jam();
-  const Uint32 initReadLen  = cinBuf[0];
-  const Uint32 interpretLen = cinBuf[1];
-  const Uint32 programStart = 5 + initReadLen;
-  ndbrequire(programStart + interpretLen <= attrInfoLen);
+  /* A section whose regions run past its end fails the filter (it was
+   * ndbrequire-fatal for the program region, and unchecked for the
+   * subroutine region buildCteLinkedBuffer copies). */
+  CteAttrInfoRegions regions;
+  if (unlikely(!parseCteAttrInfo(cinBuf, attrInfoLen, regions))) {
+    jam();
+    return CTE_FILTER_ERROR;
+  }
+  const Uint32 interpretLen = regions.interpretLen;
+  const Uint32 programStart = regions.interpretStart;
 
   Uint32 linkedLen = 0;
-  buildCteLinkedBuffer(interp, groupData, keyLen,
-                       cinBuf, attrInfoLen, cevictBuffer, &linkedLen);
+  if (unlikely(!buildCteLinkedBuffer(interp, groupData, keyLen, cinBuf,
+                                     attrInfoLen, cevictBuffer,
+                                     &linkedLen))) {
+    jam();
+    return CTE_FILTER_ERROR;
+  }
 
   Dbtup::KeyReqStruct filterReqStruct(c_tup);
   /* No scanned table row in a CTE filter (the row comes from the linked
@@ -21869,9 +21884,12 @@ Uint32 Dblqh::feedCteLinkedRow(Signal *signal,
   Uint32 *const linkedBuf = cevictBuffer;
   for (;;) {
     Uint32 linkedPos = 0;
-    buildCteLinkedBuffer(interp, groupData, keyLen,
-                         attrInfoBuf, attrInfoLen,
-                         linkedBuf, &linkedPos);
+    if (unlikely(!buildCteLinkedBuffer(interp, groupData, keyLen,
+                                       attrInfoBuf, attrInfoLen,
+                                       linkedBuf, &linkedPos))) {
+      jam();
+      return ZCTE_LOOKUP_ATTRINFO_MALFORMED;
+    }
     aggReq.no_exec_instructions = 0;
     const Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
         c_tup,
@@ -22271,22 +22289,19 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
           ? reinterpret_cast<const AggResItem *>(groupData + req.keyLen)
           : nullptr;
 
-  /* Parse 5-word AttrInfo header and skip to final-read section */
-  const Uint32 initReadLen = cinBuf[0];
-  const Uint32 execRegionLen = cinBuf[1];
-  const Uint32 finalUpdateLen = cinBuf[2];
-  const Uint32 finalRLen = cinBuf[3];
-
-  /* finalRLen may legitimately be 0 or 1: an intermediate CTE_LOOKUP
+  /* Parse 5-word AttrInfo header and skip to final-read section.
+   * finalRLen may legitimately be 0 or 1: an intermediate CTE_LOOKUP
    * with nothing referenced downstream reads nothing, or only the
    * CORR_FACTOR32 (no FLUSH_AI — its row goes to DBSPJ, not the API). */
-  const Uint32 finalRStart = 5 + initReadLen + execRegionLen + finalUpdateLen;
-  if (unlikely(finalRStart + finalRLen > attrInfoLen)) {
+  CteAttrInfoRegions regions;
+  if (unlikely(!parseCteAttrInfo(cinBuf, attrInfoLen, regions))) {
     jam();
     sendCteLookupRef(signal, req.senderRef, req.senderData,
                      ZCTE_LOOKUP_ATTRINFO_MALFORMED, req.correlation);
     return;
   }
+  const Uint32 finalRStart = regions.finalReadStart;
+  const Uint32 finalRLen = regions.finalReadLen;
 
   /* CTE_LOOKUP reads FLUSH_AI ref/data from the finalR section itself */
   CteOutputParams params;
@@ -23888,17 +23903,11 @@ void Dblqh::cteScanReqImpl(Signal *signal) {
    * (worker[0]) receiverId, so its FLUSH_AI words can NOT be trusted —
    * each fragment's request carries its own resultRef/resultData
    * (= per-worker API receiverId) in the signal header instead. */
-  if (attrInfoLen >= 5) {
-    const Uint32 initReadLen = cinBuf[0];
-    const Uint32 execRegionLen = cinBuf[1];
-    const Uint32 finalUpdateLen = cinBuf[2];
-    const Uint32 fr = cinBuf[3];
-    const Uint32 finalRStart = 5 + initReadLen + execRegionLen + finalUpdateLen;
-    if (finalRStart + fr <= attrInfoLen) {
-      finalR = &cinBuf[finalRStart];
-      finalRLen = fr;
-      haveFinalR = (fr > 0);
-    }
+  CteAttrInfoRegions regions;
+  if (parseCteAttrInfo(cinBuf, attrInfoLen, regions)) {
+    finalR = &cinBuf[regions.finalReadStart];
+    finalRLen = regions.finalReadLen;
+    haveFinalR = (finalRLen > 0);
   }
 
   /* Save transId for this scan (first or continuation) — used when

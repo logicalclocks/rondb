@@ -25,6 +25,8 @@
 #define CTE_LINKED_ATTR_HPP
 
 #include "ndb_types.h"
+#include "my_compiler.h"  // unlikely
+#include "AttributeHeader.hpp"
 
 /**
  * Inline encoding of CTE virtual-column type info in the per-entry
@@ -90,6 +92,32 @@ namespace CteLinkedAttr {
   /** Decode flags from a CTE-marked word 1. */
   static inline Uint32 decodeFlags(Uint32 word1) {
     return word1 & FLAGS_MASK;
+  }
+
+  /**
+   * The AttributeHeader word of entry `position` of the linked-attr
+   * buffer linked[0..linked_len), or nullptr when the buffer is absent
+   * or has no such complete entry: it ends before the entry, or an
+   * entry up to and including it runs past its end.  Words 0 and 1 of
+   * the entry are at [-2] and [-1] of the result, and all of its
+   * getDataSize() data words lie inside the buffer.
+   *
+   * The one walk of the buffer (RONDB-1124 bug 12).  Each caller
+   * decides what nullptr means: a NULL value, an error or a fallback.
+   */
+  static inline const Uint32* linkedEntryAH(const Uint32* linked,
+                                            Uint32 linked_len,
+                                            Uint32 position) {
+    if (unlikely(linked == nullptr)) return nullptr;
+    const Uint32* p = linked;
+    const Uint32* const p_end = linked + linked_len;
+    for (Uint32 pos = 0;; pos++) {
+      if (unlikely(p_end - p < 3)) return nullptr;
+      const Uint32 data_words = AttributeHeader::getDataSize(p[2]);
+      if (unlikely(Uint32((p_end - p) - 3) < data_words)) return nullptr;
+      if (pos == position) return p + 2;
+      p += 3 + data_words;
+    }
   }
 }
 

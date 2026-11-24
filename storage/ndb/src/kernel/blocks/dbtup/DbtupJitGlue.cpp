@@ -1496,25 +1496,16 @@ ndb_jit_h_load_linked_col(JitState *s, uint32_t pos_type,
   const Uint32 position = pos_type >> 8;
   const Uint32 type_id  = pos_type & 0xFF;
 
-  const Uint32 *linked = ctx->req_struct->m_linked_attr_data;
-  const Uint32 linked_len = ctx->req_struct->m_linked_attr_len;
-  const Uint32 *p = linked;
-  const Uint32 *p_end = linked + linked_len;
-  if (linked != nullptr) {
-    Uint32 pos_count = 0;
-    while (p < p_end) {
-      if (pos_count == position) break;
-      p += 2;  /* skip tableId, schemaVersion */
-      p += 1 + AttributeHeader::getDataSize(*p);
-      pos_count++;
-    }
-  }
-  if (linked == nullptr || p >= p_end) {
+  /* The interpreter's walk: no buffer, no such entry or a malformed
+   * buffer is NULL there, the per-row fallback here. */
+  const Uint32 *p = CteLinkedAttr::linkedEntryAH(
+      ctx->req_struct->m_linked_attr_data,
+      ctx->req_struct->m_linked_attr_len, position);
+  if (p == nullptr) {
     s->row_fallback = 1;
     s->regs_i64[dst_reg] = 0;
     return;
   }
-  p += 2;  /* skip tableId, schemaVersion */
   AttributeHeader ah(*p);
   if (ah.isNULL()) {
     s->row_fallback = 1;

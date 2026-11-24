@@ -3614,14 +3614,49 @@ private:
                       const Uint32 *cinBuf, Uint32 attrInfoLen,
                       const CteLookupReq *req);
 #endif
+  /* The regions of an interpreted AttrInfo section: the 5-word header
+   * [initReadLen][interpretLen][finalUpdateLen][finalReadLen][subLen]
+   * and then the regions in that order.  In a join aggregation or CTE
+   * request from DBSPJ the subroutine region is [paramLen] followed by
+   * the linked attribute buffer. */
+  struct CteAttrInfoRegions {
+    Uint32 interpretStart;
+    Uint32 interpretLen;
+    Uint32 finalReadStart;
+    Uint32 finalReadLen;
+    Uint32 subStart;
+    Uint32 subLen;
+  };
+
+  /* Parse the header of the interpreted AttrInfo attrInfo[0..attrInfoLen).
+   * Returns false when the section is shorter than the header or its
+   * regions run past its end; each caller decides between a REF and its
+   * fallback (RONDB-1124 bug 12). */
+  static bool parseCteAttrInfo(const Uint32 *attrInfo, Uint32 attrInfoLen,
+                               CteAttrInfoRegions &regions) {
+    if (unlikely(attrInfoLen < 5)) return false;
+    const Uint64 end = Uint64(5) + attrInfo[0] + attrInfo[1] +
+                       attrInfo[2] + attrInfo[3] + attrInfo[4];
+    if (unlikely(end > attrInfoLen)) return false;
+    regions.interpretStart = 5 + attrInfo[0];
+    regions.interpretLen = attrInfo[1];
+    regions.finalReadStart = regions.interpretStart + attrInfo[1] +
+                             attrInfo[2];
+    regions.finalReadLen = attrInfo[3];
+    regions.subStart = regions.finalReadStart + attrInfo[3];
+    regions.subLen = attrInfo[4];
+    return true;
+  }
+
   /* Assemble linked_attr_data for a CTE group row into outBuf.  Layout:
    * [optional parent linked columns from AttrInfo subroutine section]
    * followed by [GROUP BY key columns] and [aggregate result columns].
    * CTE result entries use the CteLinkedAttr typed 2-word header followed
    * by [AttrHeader][data...].
    * Shared by cteLookupAggFeed (downstream agg feed) and the filter
-   * gate in execCTE_LOOKUP_REQ (WHERE-clause evaluation). */
-  void buildCteLinkedBuffer(const JoinAggInterpreter *interp,
+   * gate in execCTE_LOOKUP_REQ (WHERE-clause evaluation).  Returns false,
+   * with nothing built, when the AttrInfo regions run past its end. */
+  bool buildCteLinkedBuffer(const JoinAggInterpreter *interp,
                             const char *groupData, Uint32 keyLen,
                             const Uint32 *attrInfoBuf, Uint32 attrInfoLen,
                             Uint32 *outBuf, Uint32 *lenOut);

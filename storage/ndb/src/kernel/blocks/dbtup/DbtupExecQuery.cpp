@@ -29,6 +29,7 @@
 #include <portlib/ndb_prefetch.h>
 #include <AttributeDescriptor.hpp>
 #include <AttributeHeader.hpp>
+#include <CteLinkedAttr.hpp>
 #include <KeyDescriptor.hpp>
 #include <Checksum.hpp>
 #include <Interpreter.hpp>
@@ -1292,68 +1293,24 @@ void Dbtup::readLinkedToMemBuffer(const Uint32 *linked,
                                     Uint32 position,
                                     Uint32 *dest,
                                     Uint32 dest_words) {
-  /* Helper: write a NULL AttributeHeader at dest[0] if there's
-   * room, and return. Caller is expected to provide dest_words ≥ 1
-   * so this branch is always safe in the well-behaved case;
-   * defensively skip the write if not. */
-  auto write_null_ah = [&]() {
-    if (likely(dest_words >= 1)) {
-      AttributeHeader null_ah(0, 0);
-      dest[0] = null_ah.m_value;
-    }
-  };
-
-  if (unlikely(linked == nullptr)) {
-    write_null_ah();
-    return;
-  }
-
-  const Uint32 *p = linked;
-  const Uint32 *p_end = linked + linked_len;
-  Uint32 pos_count = 0;
-  /* Skip-loop walks past entries 0..position-1. Each entry is
-   * { tableId, schemaVersion, AttrHeader, data... } — minimum 3
-   * words. Validate p+2 is in-range BEFORE dereferencing *(p+2)
-   * for the AttrHeader-derived size. */
-  while (pos_count < position) {
-    if (unlikely(p + 2 >= p_end)) {
-      /* Truncated entry — no AttrHeader word to read. */
-      write_null_ah();
+  /* The entry is checked against the end of the buffer by
+   * linkedEntryAH, and its copy against dest_words here. */
+  const Uint32 *ah = CteLinkedAttr::linkedEntryAH(linked, linked_len,
+                                                  position);
+  if (likely(ah != nullptr)) {
+    const Uint32 words = 1 + AttributeHeader::getDataSize(*ah);
+    if (likely(words <= dest_words)) {
+      memcpy(dest, ah, words * sizeof(Uint32));
       return;
     }
-    Uint32 entry_words = 2 + 1 + AttributeHeader::getDataSize(p[2]);
-    if (unlikely(entry_words < 3) ||
-        unlikely(p + entry_words > p_end)) {
-      /* Underflowed (impossible with the +3 base, but defensive
-       * against signed-arith assumptions) or entry payload runs
-       * past the buffer. */
-      write_null_ah();
-      return;
-    }
-    p += entry_words;
-    pos_count++;
   }
-
-  /* p now points at the requested entry's tableId. Validate the
-   * AttrHeader is in-range. */
-  if (unlikely(p + 2 >= p_end)) {
-    write_null_ah();
-    return;
+  /* No buffer, no such entry, a malformed buffer or no room in dest:
+   * fail closed with a NULL AttributeHeader.  The caller provides
+   * dest_words >= 1; defensively skip the write if not. */
+  if (likely(dest_words >= 1)) {
+    AttributeHeader null_ah(0, 0);
+    dest[0] = null_ah.m_value;
   }
-
-  /* Skip tableId + schemaVersion. The remaining bytes are
-   * { AttrHeader, data... }. */
-  p += 2;
-  Uint32 words = 1 + AttributeHeader::getDataSize(*p);
-  if (unlikely(words < 1) ||
-      unlikely(p + words > p_end) ||
-      unlikely(words > dest_words)) {
-    /* Source overrun OR destination overflow. Either is a
-     * caller / data bug — fail closed with NULL AH. */
-    write_null_ah();
-    return;
-  }
-  memcpy(dest, p, words * sizeof(Uint32));
 }
 
 void Dbtup::nextAttrInfoParam(Uint32 storedProcId) {
@@ -8601,31 +8558,17 @@ struct Dbtup::InterpreterContext {
     Uint32 position = (ctx.theInstruction >> 16) & 0xFF;
     Uint32 type     = (ctx.theInstruction >> 24) & 0xFF;
 
-    /* Walk the linked-attr buffer to the requested position.  Same
-     * loop shape as handleReadLinkedToMem (per-entry layout is
-     * tableId, schemaVersion, AttrHeader, data). */
-    const Uint32* linked = ctx.req_struct->m_linked_attr_data;
-    Uint32 linked_len = ctx.req_struct->m_linked_attr_len;
-    if (unlikely(linked == nullptr)) {
+    /* The entry at the requested position (per-entry layout is
+     * tableId, schemaVersion, AttrHeader, data), as for
+     * handleReadLinkedToMem.  No buffer, no such entry or a
+     * malformed buffer reads as NULL. */
+    const Uint32* p = CteLinkedAttr::linkedEntryAH(
+        ctx.req_struct->m_linked_attr_data,
+        ctx.req_struct->m_linked_attr_len, position);
+    if (unlikely(p == nullptr)) {
       ctx.TregMemBuffer[ctx.theRegister] = NULL_INDICATOR;
       return INTERP_CONTINUE;
     }
-    const Uint32* p = linked;
-    const Uint32* p_end = linked + linked_len;
-    Uint32 pos_count = 0;
-    while (p < p_end) {
-      if (pos_count == position) break;
-      p += 2;  /* skip tableId, schemaVersion */
-      p += 1 + AttributeHeader::getDataSize(*p);
-      pos_count++;
-    }
-    if (unlikely(p >= p_end)) {
-      ctx.TregMemBuffer[ctx.theRegister] = NULL_INDICATOR;
-      return INTERP_CONTINUE;
-    }
-
-    /* Skip tableId and schemaVersion. */
-    p += 2;
 
     /* Inspect the AttributeHeader. */
     AttributeHeader ah(*p);
@@ -9165,29 +9108,6 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
-  /* Walk the linked-attr buffer to the entry at `position` and return
-   * a pointer to its AttributeHeader word, or nullptr when the buffer
-   * is absent or the position lies beyond it.  Same walk as
-   * handleReadLinkedColumnToReg (per-entry layout: tableId,
-   * schemaVersion, AttrHeader, data). */
-  static inline const Uint32* lookupLinkedEntry(InterpreterContext& ctx,
-                                                Uint32 position) {
-    const Uint32* linked = ctx.req_struct->m_linked_attr_data;
-    const Uint32 linked_len = ctx.req_struct->m_linked_attr_len;
-    if (unlikely(linked == nullptr)) return nullptr;
-    const Uint32* p = linked;
-    const Uint32* p_end = linked + linked_len;
-    Uint32 pos_count = 0;
-    while (p < p_end) {
-      if (pos_count == position) break;
-      p += 2; /* skip tableId, schemaVersion */
-      p += 1 + AttributeHeader::getDataSize(*p);
-      pos_count++;
-    }
-    if (unlikely(p >= p_end)) return nullptr;
-    return p + 2; /* skip tableId, schemaVersion -> AttrHeader word */
-  }
-
   /* BRANCH_LINKED_OP_LINKED — compare two linked-buffer entries by
    * position with inline type metadata (string col-vs-col in CTE
    * filter mode).  Compare core mirrors handleBranchMemOpArgInlineType;
@@ -9221,8 +9141,13 @@ struct Dbtup::InterpreterContext {
       }
     }
 
-    const Uint32* ahWordL = lookupLinkedEntry(ctx, posL);
-    const Uint32* ahWordR = lookupLinkedEntry(ctx, posR);
+    /* nullptr (no buffer, no such entry, a malformed buffer) is NULL. */
+    const Uint32* linked = ctx.req_struct->m_linked_attr_data;
+    const Uint32 linkedLen = ctx.req_struct->m_linked_attr_len;
+    const Uint32* ahWordL =
+        CteLinkedAttr::linkedEntryAH(linked, linkedLen, posL);
+    const Uint32* ahWordR =
+        CteLinkedAttr::linkedEntryAH(linked, linkedLen, posR);
     const bool l_null =
         (ahWordL == nullptr) || AttributeHeader(*ahWordL).isNULL();
     const bool r_null =

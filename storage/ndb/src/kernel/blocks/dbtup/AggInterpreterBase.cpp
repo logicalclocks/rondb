@@ -2280,21 +2280,16 @@ Int32 AggInterpreterBase::initGBTypes(
         return ZAGG_OTHER_ERROR;
       }
       Uint32 position = attr_id & 0x7FFF;
-      const Uint32* p = linked_attr_data;
-      const Uint32* p_end = linked_attr_data + linked_attr_len;
-      Uint32 pos_count = 0;
-      while (p < p_end && pos_count < position) {
-        p += 2;
-        p += 1 + AttributeHeader::getDataSize(*p);
-        pos_count++;
-      }
-      if (unlikely(p + 2 >= p_end)) {
-        g_eventLogger->debug("initGBTypes: linked buffer too short for "
-            "position %u (linked_len=%u)", position, linked_attr_len);
+      const Uint32* ah = CteLinkedAttr::linkedEntryAH(
+          linked_attr_data, linked_attr_len, position);
+      if (unlikely(ah == nullptr)) {
+        g_eventLogger->debug("initGBTypes: linked buffer too short or "
+            "malformed for position %u (linked_len=%u)", position,
+            linked_attr_len);
         return ZAGG_OTHER_ERROR;
       }
-      Uint32 word0 = p[0];
-      Uint32 word1 = p[1];
+      Uint32 word0 = ah[-2];
+      Uint32 word1 = ah[-1];
 
       if (CteLinkedAttr::isCteMarker(word0)) {
         thrjamDebug(jamBuf);
@@ -2313,7 +2308,7 @@ Int32 AggInterpreterBase::initGBTypes(
         thrjamDebug(jamBuf);
         Uint32 tableId = word0;
         Uint32 tableVersion = word1;
-        Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
+        Uint32 linkedAttrId = AttributeHeader(*ah).getAttributeId();
         if (unlikely(tableId == 0 || tableId == RNIL)) {
           g_eventLogger->debug("initGBTypes: linked GROUP BY column has "
               "untyped synthetic metadata prefix tableId=%u schemaVersion=%u",

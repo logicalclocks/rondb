@@ -43,6 +43,8 @@
  * P-33 sends a SCAN_FRAGREQ straight to DBLQH, which only a debug data
  * node takes from an API node: an aggregation scan without an
  * interpreted program, which DBLQH must refuse with SCAN_FRAGREF.
+ * P-35 gives a join aggregation leaf a linked attribute buffer whose
+ * entry runs past its end, which fails each row (RONDB-1124 bug 12).
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
  * re-send (passQueue), which only DBTC itself may set (RONDB-1124).
  * Each malformed request is built by taking a known-good, word-for-word
@@ -72,6 +74,7 @@
 #include <NdbRestarter.hpp>
 #include <HugoTransactions.hpp>
 #include <AttributeHeader.hpp>
+#include <CteLinkedAttr.hpp>
 #include <NdbSleep.h>
 #include <mgmapi.h>
 #include <signaldata/ScanFrag.hpp>
@@ -404,6 +407,63 @@ class SpjMalformedChecker {
     }
   }
 
+  /* ---- the linked attribute buffer of an aggregation leaf (P-35) ------ *
+   * The scan+lookup request as a join aggregation: the root scan
+   * projects col0, the primary key, as its linked attribute, so every
+   * child lookup finds its row, and the child lookup is the aggregation
+   * leaf.  The leaf's NI_ATTR_LINKED pattern (optional part 3) is one
+   * P_DATA token.  DBSPJ copies its words verbatim into the subroutine
+   * section of every LQHKEYREQ of the leaf, and DBTUP takes them as the
+   * row's linked attribute buffer ([word 0][word 1][AttributeHeader]
+   * [data] per entry, CteLinkedAttr.hpp).  So the API chooses that
+   * buffer word for word. */
+  void makeJoinAggScanLookup(SpjReq &r, const std::vector<Uint32> &linked,
+                             const std::vector<Uint32> &leaf) {
+    makeWellFormedScanLookup(r);
+    ((QueryNode *)&r.tree[1])->requestInfo =
+        DABits::NI_LINKED_ATTR | DABits::NI_AGGREGATE;
+    /* Root linked attribute list: {cnt=1, item0=attr 0}. */
+    r.tree[1 + QN_ScanFragNode::NodeSize] = 1u | (0u << 16);
+    ((QueryNode *)&r.tree[m_childNodeTreeOffset])->requestInfo |=
+        DABits::NI_ATTR_LINKED | DABits::NI_AGGREGATE |
+        DABits::NI_AGGREGATE_LEAF;
+    /* Optional part 3 of the child, its last part: the header
+     * [pattern length << 16 | program length 0], then the pattern. */
+    const Uint32 patternLen = 1 + Uint32(linked.size());
+    r.tree.push_back(patternLen << 16);
+    r.tree.push_back(QueryPattern::data(Uint32(linked.size())));
+    r.tree.insert(r.tree.end(), linked.begin(), linked.end());
+    fixupTreeHeaderAndChildLen(r, 1 + patternLen);
+
+    r.joinAgg = true;
+    r.scanParallelism = m_fragmentCount;
+    r.rcvIds.clear();
+    for (Uint32 i = 0; i < m_fragmentCount; i++) {
+      r.rcvIds.push_back(kReceiverId + i);
+    }
+    r.keyInfo.clear();
+    r.keyInfo.push_back(0);  /* boundsLen */
+    r.keyInfo.push_back(kAggReceiverId);
+    r.keyInfo.push_back((0x0722u << 16) | 1u);  /* one leaf */
+    r.keyInfo.push_back(Uint32(leaf.size()));
+    r.keyInfo.insert(r.keyInfo.end(), leaf.begin(), leaf.end());
+  }
+
+  /* A leaf that groups by nGbCols linked columns, each of them linked
+   * position 0 as a BIGINT, and counts the rows. */
+  static std::vector<Uint32> linkedGroupByLeaf(Uint32 nGbCols) {
+    std::vector<Uint32> body;
+    for (Uint32 i = 0; i < nGbCols; i++) {
+      body.push_back((Uint32(AGG_LINKED_COL_FLAG | 0u) << 16) |
+                     (Uint32(NDB_TYPE_BIGINT) & AGG_GB_COL_TYPE_MASK));
+    }
+    const std::vector<Uint32> count = countBody(0, 0);
+    body.insert(body.end(), count.begin(), count.end());
+    std::vector<Uint32> p = aggProgram(1, body);
+    p[1] = (nGbCols << 16) | 1u;  /* (n_gb_cols << 16) | n_agg_results */
+    return p;
+  }
+
   /* ---------------------- the cases ----------------------------------- */
 
   int runPositiveControl() {
@@ -730,6 +790,63 @@ class SpjMalformedChecker {
     }
     g_info << findingId << ": PASS (all data nodes started; SCAN_FRAGREF "
            << reply[3] << ")" << endl;
+    return NDBT_OK;
+  }
+
+  int runP35() {  /* a linked entry that runs past the linked buffer */
+    /* The one entry of the buffer is a BIGINT CTE column (word 0 is the
+     * typed marker, so no column metadata is needed).  Its
+     * AttributeHeader says 0x7FFF bytes, 8192 data words, and the
+     * buffer ends after the header.  The GROUP BY walk copied 8193
+     * words per column from past the end of the linked buffer into the
+     * 18000-word DBTUP read buffer, so 16 columns overran the read
+     * buffer by 113 088 words; the other walks read past the linked
+     * buffer too.  The entry is now checked against the end of the
+     * buffer (CteLinkedAttr::linkedEntryAH), and each row fails with
+     * 1869.  The control is the same request with a well-formed entry,
+     * the value 7, which must get SCAN_TABCONF (without it a harness
+     * that never reaches the leaf rows would pass). */
+    constexpr Uint32 kGbCols = 16;
+    const std::vector<Uint32> leaf = linkedGroupByLeaf(kGbCols);
+    const Uint32 w0 = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
+    const Uint32 w1 = CteLinkedAttr::encodeWord1(0);
+
+    SpjReq good;
+    makeJoinAggScanLookup(good, {w0, w1, (0u << 16) | 8u, 7u, 0u}, leaf);
+    const Reply control = sendScanTabReq(good);
+    printReply("CONTROL (join aggregation, well-formed linked entry)",
+               control);
+    if (control.gsn != GSN_SCAN_TABCONF) {
+      g_err << "P-35 CONTROL did not get SCAN_TABCONF (got "
+            << gsnName(control.gsn) << ", err " << control.errorCode
+            << ").  The raw scan+lookup join aggregation encoding is "
+               "wrong; fix this before trusting the result of P-35."
+            << endl;
+      return clusterHealthy() ? NDBT_FAILED
+                              : failNodeDown("P-35 control");
+    }
+
+    SpjReq bad;
+    makeJoinAggScanLookup(bad, {w0, w1, (0u << 16) | 0x7FFFu}, leaf);
+    bad.waitForEnd = true;
+    const char *findingId = "P-35 linked entry past the linked buffer";
+    const Reply rep = sendScanTabReq(bad);
+    printReply(findingId, rep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (rep.gsn != GSN_SCAN_TABREF) {
+      g_err << findingId << ": FAIL -- expected SCAN_TABREF, got "
+            << gsnName(rep.gsn)
+            << ": the malformed linked buffer was not rejected" << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId << ": PASS (all data nodes started; SCAN_TABREF "
+           << rep.errorCode << ")" << endl;
     return NDBT_OK;
   }
 
@@ -1186,6 +1303,7 @@ CASE_STEP(runP30, runP30)
 CASE_STEP(runP31, runP31)
 CASE_STEP(runP32, runP32)
 CASE_STEP(runP33, runP33)
+CASE_STEP(runP35, runP35)
 CASE_STEP(runQ1, runQ1)
 CASE_STEP(runQ2, runQ2)
 CASE_STEP(runQ3, runQ3)
@@ -1269,6 +1387,11 @@ TESTCASE("P33",
          "aggregation SCAN_FRAGREQ without an interpreted program, sent "
          "straight to DBLQH (debug data nodes only)") {
   STEP(runP33);
+}
+TESTCASE("P35",
+         "join aggregation: a linked attribute entry that runs past the "
+         "linked buffer") {
+  STEP(runP35);
 }
 TESTCASE("Q1", "TCKEYREQ with the rate queue flag from the API") {
   STEP(runQ1);
