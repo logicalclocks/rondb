@@ -123,6 +123,11 @@
  *         fifth consumer takes the resource-error path and the query
  *         fails with the temporary 1275; the four parked are replayed
  *         after the release into the aborting request; pools clean.
+ *   PK-4b a success FINAL_REP that cannot park (5148 with a cap of 0 on
+ *         a node without the state) is answered with an error FINAL_REP:
+ *         the sender's COMPLETE fails with 1275 instead of waiting at its
+ *         FINAL_REP barrier.  Needs two data nodes (suite
+ *         ndb_push_agg_dist runs it with -n PK-4b); skipped on one.
  *   PK-5  5149 refuses every SETUP as if the identity table were full:
  *         the query fails with OutOfQueryMemory (20008).
  *   PK-6  8313 delays a SETUP_CONF addressed to an absent DBTC scan:
@@ -147,7 +152,8 @@
  * automatic restart cannot hide a crash. A RELEASE's teardown runs as a
  * CONTINUEB chain after its CONF; allow it time to drain before checking.
  *
- * Usage: testCteProtocol [-c connectstring] [-m mysql_port] [-v]
+ * Usage: testCteProtocol [-c connectstring] [-m mysql_port] [-n case_id] [-v]
+ * -n runs only the case with that id (e.g. PK-4b).
  * Prints PASSED or FAILED on stdout (the MTR wrapper diffs that);
  * everything else goes to stderr.
  */
@@ -184,6 +190,9 @@ static bool verbose = false;
 
 static const char *connectString = nullptr;
 static int mysqlPort = 3306;
+/* -n: run only the case with this id (the case name up to its first
+ * space, e.g. PK-4b); null runs every case. */
+static const char *onlyCase = nullptr;
 
 static const char *TABLE_NAME = "ctep_test";
 static const Uint32 FAKE_TRANS_ID1 = 0x1120c7e0;
@@ -2616,6 +2625,87 @@ pk4(Ctx &c)
   return checkLeaks(c.ss, c.restarter, "PK-4");
 }
 
+/* PK-4b: a success FINAL_REP that cannot park is answered, not dropped.
+ * A peer node P gets a CTE-mode SETUP whose owner list names P and
+ * c.node; c.node gets no SETUP.  The COMPLETE on P gives c.node no key,
+ * so P's FINAL_REP reaches c.node by identity and finds no state, and
+ * 5148 with a cap of 0 refuses every park there.  Nothing is scanned:
+ * P has no group to redistribute, so that FINAL_REP is all P sends to
+ * c.node.  Before the fix c.node dropped it and P waited at its FINAL_REP
+ * barrier with the COMPLETE unanswered (here a 30 s timeout; with DBTC
+ * the query hung).  Now c.node answers P with an error FINAL_REP and
+ * P's COMPLETE fails with the temporary 1275.  Needs two data nodes. */
+static int
+pk4b(Ctx &c)
+{
+  if (c.restarter.getNumDbNodes() < 2) {
+    fprintf(stderr, "PK-4b: [SKIPPED] a FINAL_REP needs two data nodes\n");
+    return 0;
+  }
+  CteNode peer = {0, RNIL, 0};
+  for (int i = 0; i < c.restarter.getNumDbNodes(); i++) {
+    const Uint32 node = (Uint32)c.restarter.getDbNodeId(i);
+    if (node != c.node) {
+      peer.node = node;
+      break;
+    }
+  }
+  ErrorInsertGuard guard = {c.restarter, c.node, true};
+  if (!setErrorInsert(c.restarter, c.node, 5148, 0)) return -1;
+  {
+    SetupParams p;
+    p.strategy |= JoinAggSetupReq::CTE_MODE_FLAG;
+    p.cteIndex = CTE_INDEX;
+    p.fullLength = true;
+    p.setupNodes.set(c.node);
+    p.setupNodes.set(peer.node);
+    Uint32 refCode = 0;
+    if (sendSetupReq(c.ss, peer.node, c.prog, c.meta, p, peer.key,
+                     peer.owner, refCode) != 0) {
+      fprintf(stderr, "PK-4b: CTE SETUP on node %u not accepted (code=%u)\n",
+              peer.node, refCode);
+      return -1;
+    }
+  }
+  {
+    /* c.node's triple has no key: P addresses it by identity. */
+    const Uint32 triples[] = {c.node, RNIL, 0,
+                              peer.node, peer.key, peer.owner};
+    SimpleSignal ssig;
+    JoinAggCompleteReq *req =
+        reinterpret_cast<JoinAggCompleteReq *>(ssig.getDataPtrSend());
+    req->senderRef = c.ss.getOwnRef();
+    req->senderData = FAKE_SENDER_DATA;
+    req->requestId = FAKE_REQUEST_ID;
+    req->transid[0] = FAKE_TRANS_ID1;
+    req->transid[1] = FAKE_TRANS_ID2;
+    req->aggStateKey = peer.key;
+    req->maxBatchRows = 1000;
+    req->heartbeatScanFragPtrI = RNIL;
+    req->identWord = RNIL;  /* keyed form */
+    ssig.set(c.ss, 0, numberToBlock(DBLQH, peer.owner),
+             GSN_JOIN_AGG_COMPLETE_REQ, JoinAggCompleteReq::SignalLength);
+    ssig.header.m_noOfSections = 1;
+    ssig.ptr[0].p = triples;
+    ssig.ptr[0].sz = NDB_ARRAY_SIZE(triples);
+    if (c.ss.sendSignal(peer.node, &ssig) != SEND_OK) {
+      fprintf(stderr, "sendSignal CTE COMPLETE_REQ failed\n");
+      return -1;
+    }
+  }
+  int rc = expectRef(c.ss, GSN_JOIN_AGG_COMPLETE_REF,
+                     ZJOIN_AGG_PARK_POOL_EXHAUSTED,
+                     "PK-4b COMPLETE of the peer whose FINAL_REP could "
+                     "not park");
+  if (!guard.clear()) rc = -1;
+  if (sendReleaseReq(c.ss, peer.node, peer.key, FAKE_REQUEST_ID,
+                     FAKE_TRANS_ID1, FAKE_TRANS_ID2, 0) != 0 ||
+      waitReleaseConf(c.ss, "PK-4b RELEASE_CONF") != 0)
+    rc = -1;
+  if (rc != 0) return -1;
+  return checkLeaks(c.ss, c.restarter, "PK-4b");
+}
+
 /* PK-5: 5149 refuses every SETUP as if the identity table were full. */
 static int
 pk5(Ctx &c)
@@ -2789,7 +2879,8 @@ int main(int argc, char **argv)
 {
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-      printf("Usage: %s [-c connectstring] [-m mysql_port] [-v]\n", argv[0]);
+      printf("Usage: %s [-c connectstring] [-m mysql_port] [-n case_id] "
+             "[-v]\n", argv[0]);
       return 0;
     } else if (strcmp(argv[i], "-v") == 0 ||
                strcmp(argv[i], "--verbose") == 0) {
@@ -2798,6 +2889,8 @@ int main(int argc, char **argv)
       connectString = argv[++i];
     } else if (strcmp(argv[i], "-m") == 0 && i + 1 < argc) {
       mysqlPort = atoi(argv[++i]);
+    } else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
+      onlyCase = argv[++i];
     }
   }
   if (connectString == nullptr) connectString = "localhost:1186";
@@ -2896,12 +2989,21 @@ int main(int argc, char **argv)
           {"PK-2 identity-addressed COMPLETE", pk2},
           {"PK-3 sweeper REFs after a lost SETUP", pk3},
           {"PK-4 park pool exhaustion", pk4},
+          {"PK-4b FINAL_REP refused a park record", pk4b},
           {"PK-5 identity table exhaustion", pk5},
           {"PK-6 stale SETUP_CONF reclaim", pk6},
           {"PK-7 duplicate identity refused", pk7},
           {"PK-9 SETUP_CONF after a cancel, fragments closing", pk9},
       };
+      unsigned run = 0;
       for (unsigned i = 0; i < NDB_ARRAY_SIZE(cases); i++) {
+        if (onlyCase != nullptr) {
+          const size_t len = strlen(onlyCase);
+          if (strncmp(cases[i].name, onlyCase, len) != 0 ||
+              cases[i].name[len] != ' ')
+            continue;
+        }
+        run++;
         const int rc = cases[i].fn(c);
         fprintf(stderr, "%s: %s\n", cases[i].name,
                 rc == 0 ? "PASSED" : "FAILED");
@@ -2912,6 +3014,10 @@ int main(int argc, char **argv)
           fprintf(stderr, "Stopping after %s failed\n", cases[i].name);
           break;
         }
+      }
+      if (run == 0) {
+        fprintf(stderr, "No case with id %s\n", onlyCase);
+        result = 1;
       }
       ss.unlock();
     }

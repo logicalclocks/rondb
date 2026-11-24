@@ -25409,12 +25409,40 @@ void Dblqh::execJOIN_AGG_FINAL_REP(Signal *signal) {
           aggStateKey = keyOut;
         } else {
           jam();
-          /* Park pool exhausted — fire-and-forget signal, nothing to
-           * REF; the query dies via the redistribute/COMPLETE REFs
-           * and DBTC's heartbeat timers.  Log loudly. */
+          /* Park pool or identity table exhausted, and this node has no
+           * state for the identity yet (its SETUP has not run), so there
+           * is nothing here to abort.  Dropping a success report would
+           * leave that state, once it exists, waiting at the
+           * checkCteReady barrier for a FINAL_REP that never comes, and
+           * DBTC waiting for its COMPLETE reply.  FINAL_REP has no REF:
+           * answer the sender, whose state exists and waits for our
+           * FINAL_REP, with an error FINAL_REP by identity.  It aborts
+           * and its COMPLETE_REF fails the query with the temporary
+           * 1275.  An error report is not answered: its origin has
+           * already failed the query, and this keeps the answer from
+           * bouncing back. */
           g_eventLogger->info(
-              "(%u)DBLQH FINAL_REP park FAILED: senderNode=%u",
-              instance(), senderNodeId);
+              "(%u)DBLQH FINAL_REP park FAILED: senderNode=%u "
+              "errorCode=%u",
+              instance(), senderNodeId, errorCode);
+          if (errorCode == 0 && senderNodeId != getOwnNodeId() &&
+              getNodeInfo(senderNodeId).getType() == NodeInfo::DB &&
+              getNodeInfo(senderNodeId).m_connected) {
+            jam();
+            JoinAggFinalRep *fail =
+                (JoinAggFinalRep *)signal->getDataPtrSend();
+            fail->aggStateKey = RNIL;
+            fail->senderNodeId = getOwnNodeId();
+            fail->identWord = identWord;
+            fail->transid[0] = transid[0];
+            fail->transid[1] = transid[1];
+            fail->redistributeCountLo = 0;
+            fail->redistributeCountHi = 0;
+            fail->errorCode = ZJOIN_AGG_PARK_POOL_EXHAUSTED;
+            sendSignal(numberToRef(DBLQH, 1, senderNodeId),
+                       GSN_JOIN_AGG_FINAL_REP, signal,
+                       JoinAggFinalRep::SignalLength, JBB);
+          }
           return;
         }
       }

@@ -173,7 +173,9 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
       instead capping the join-agg park pool: once it holds at least
       `extra` records a consumer is refused as if the pool were exhausted
       (parkJoinAggConsumer / joinAggResolveOrParkGeneric) and takes its
-      normal resource-error path, the temporary 1275 (PK-4).
+      normal resource-error path, the temporary 1275 (PK-4). With extra 0
+      every park is refused; PK-4b uses it on a node without the state to
+      refuse a peer's identity-addressed FINAL_REP.
 5149: Refuse JOIN_AGG_SETUP_REQ with OutOfQueryMemory once the identity
       table holds at least `extra` entries (DblqhProxy), as if the table
       were full (PK-5).

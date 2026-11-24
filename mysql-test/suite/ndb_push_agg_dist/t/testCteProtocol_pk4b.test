@@ -1,0 +1,16 @@
+# RONDB-1124 bug 11, testCteProtocol case PK-4b: a success
+# JOIN_AGG_FINAL_REP that cannot park on a node that has no state for its
+# identity yet is answered with an error FINAL_REP (1275), so the sender
+# aborts and its COMPLETE fails with the temporary 1275 instead of waiting
+# at the FINAL_REP barrier until DBTC times out.  Error insert 5148 with a
+# cap of 0 refuses every park on the receiving node.  FINAL_REP goes
+# between data nodes only, so the case needs two; suite ndb_push_agg runs
+# the whole program on one data node, where PK-4b is skipped.  Needs the
+# leak-check DUMPs 2361 / 2362 / 2363, which crash a node on a leak; the
+# program prints PASSED or FAILED.
+--source include/have_ndb.inc
+--source include/have_debug.inc
+--source include/have_ndb_debug.inc
+
+--echo Running testCteProtocol PK-4b (multi-node)
+--exec $NDB_PUSH_AGG_DIR/testCteProtocol -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT -n PK-4b
