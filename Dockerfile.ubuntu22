@@ -186,6 +186,12 @@ COPY --from=build-all /root/rondb-tarball .
 # Intermediate Image for RDRS ####
 ##################################
 
+# rdrs2 links the NDB API and the MySQL client statically, so it needs
+# neither librondbclient nor libmysqlclient. It does need the
+# prometheus-cpp libraries, OpenSSL 3 from lib/private, and libuuid or
+# libossp-uuid when the build bundled them, and libcurl, which the rdrs
+# stage installs. bin/rdrs is the link to rdrs2 that the release installs.
+
 FROM ubuntu:22.04 AS rdrs-intermediate
 
 ENV MYSQL_HOME=/srv/hops/mysql
@@ -204,9 +210,13 @@ COPY --from=build-all /root/rondb-tarball .
 RUN --mount=type=bind,source=.,target=rondb-src \
    mkdir distro && \
    tar xzf *.tar.gz -C distro --strip-components=1 && \
-   cp distro/bin/rdrs $MYSQL_HOME/bin && \
-   cp distro/lib/librondbclient.so.7.0.0 $MYSQL_HOME/lib/ && \
-   cp distro/lib/librdrclient.so $MYSQL_HOME/lib/ && \
+   cp distro/bin/rdrs2 $MYSQL_HOME/bin && \
+   ln -s rdrs2 $MYSQL_HOME/bin/rdrs && \
+   cp -L distro/lib/libprometheus-cpp-core.so.1.3 $MYSQL_HOME/lib/ && \
+   cp -L distro/lib/libprometheus-cpp-push.so.1.3 $MYSQL_HOME/lib/ && \
+   for f in libuuid.so.1 libossp-uuid.so.16; do \
+     if [ -e distro/lib/$f ]; then cp -L distro/lib/$f $MYSQL_HOME/lib/; fi; \
+   done && \
    cp distro/lib/private/libcrypto.so.3 $MYSQL_HOME/lib/private && \
    cp distro/lib/private/libssl.so.3 $MYSQL_HOME/lib/private && \
    echo '{}' > $MYSQL_CONF/rdrs_config.json
@@ -216,6 +226,11 @@ RUN --mount=type=bind,source=.,target=rondb-src \
 ##################################
 
 FROM ubuntu:22.04 AS rdrs
+
+# libcurl.so.4, needed by libprometheus-cpp-push.
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends libcurl4 \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=rdrs-intermediate /srv /srv
 
@@ -229,7 +244,10 @@ RUN ldconfig -v
 # Also setting LD_LIBRARY_PATH
 ENV LD_LIBRARY_PATH=/srv/hops/mysql/lib:/srv/hops/mysql/lib/private
 
-CMD ["/srv/hops/mysql/bin/rdrs", "-config", "/srv/hops/mysql-cluster/rdrs_config.json"]
+# The image build fails here if a library rdrs2 needs is missing.
+RUN /srv/hops/mysql/bin/rdrs2 --version
+
+CMD ["/srv/hops/mysql/bin/rdrs", "--config", "/srv/hops/mysql-cluster/rdrs_config.json"]
 
 
 
