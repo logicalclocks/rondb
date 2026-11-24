@@ -16,7 +16,9 @@ set_property(TARGET sqlite3_failed_commit_test PROPERTY CXX_STANDARD ${DROGON_CX
 set_property(TARGET sqlite3_failed_commit_test PROPERTY CXX_STANDARD_REQUIRED ON)
 set_property(TARGET sqlite3_failed_commit_test PROPERTY CXX_EXTENSIONS OFF)
 add_test(NAME sqlite3_failed_commit COMMAND sqlite3_failed_commit_test)
-set_tests_properties(sqlite3_failed_commit PROPERTIES TIMEOUT 30)
+set_tests_properties(sqlite3_failed_commit PROPERTIES
+                     TIMEOUT 30
+                     SKIP_RETURN_CODE 77)
 
 add_executable(sqlite3_disconnect_test Sqlite3DisconnectTest.cc)
 set_property(TARGET sqlite3_disconnect_test

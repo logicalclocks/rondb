@@ -1,0 +1,72 @@
+# This file is part of the RonDB REST API Server
+# Copyright (c) 2026 Hopsworks AB
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+Skip drogon's sqlite3_failed_commit test on Apple's system SQLite
+
+The test, new in drogon 1.9.14, injects faults by registering a SQL
+function with sqlite3_auto_extension(). Apple's system SQLite does not
+support process-global auto extensions (its sqlite3.h deprecates
+sqlite3_auto_extension on Apple platforms), so on macOS, where drogon
+links /usr/lib/libsqlite3.dylib, the call fails and the test failed with
+"Could not install SQLite fault injection".
+
+On Apple platforms the test now exits with 77, which its ctest
+SKIP_RETURN_CODE reports as a skip. Upstream drogon (master after
+1.9.14) uses the same exit code to skip the test when the function is
+not visible to drogon's SQLite; it still fails on Apple's system SQLite.
+With another SQLite, such as Homebrew's, the call succeeds and the test
+runs.
+
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/orm_lib/src/sqlite3_impl/test/CMakeLists.txt b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/orm_lib/src/sqlite3_impl/test/CMakeLists.txt
+index 66ffb53dde3..1a6078bded9 100644
+--- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/orm_lib/src/sqlite3_impl/test/CMakeLists.txt
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/orm_lib/src/sqlite3_impl/test/CMakeLists.txt
+@@ -16,7 +16,9 @@ set_property(TARGET sqlite3_failed_commit_test PROPERTY CXX_STANDARD ${DROGON_CX
+ set_property(TARGET sqlite3_failed_commit_test PROPERTY CXX_STANDARD_REQUIRED ON)
+ set_property(TARGET sqlite3_failed_commit_test PROPERTY CXX_EXTENSIONS OFF)
+ add_test(NAME sqlite3_failed_commit COMMAND sqlite3_failed_commit_test)
+-set_tests_properties(sqlite3_failed_commit PROPERTIES TIMEOUT 30)
++set_tests_properties(sqlite3_failed_commit PROPERTIES
++                     TIMEOUT 30
++                     SKIP_RETURN_CODE 77)
+ 
+ add_executable(sqlite3_disconnect_test Sqlite3DisconnectTest.cc)
+ set_property(TARGET sqlite3_disconnect_test
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/orm_lib/src/sqlite3_impl/test/failed_commit_test.cc b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/orm_lib/src/sqlite3_impl/test/failed_commit_test.cc
+index d080ac580f8..c8ac81aac04 100644
+--- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/orm_lib/src/sqlite3_impl/test/failed_commit_test.cc
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.14/orm_lib/src/sqlite3_impl/test/failed_commit_test.cc
+@@ -319,8 +319,21 @@ int main(int argc, char **argv)
+     const auto entry = reinterpret_cast<void (*)()>(installFaults);
+     if (sqlite3_auto_extension(entry) != SQLITE_OK)
+     {
++#ifdef __APPLE__
++        // Apple's system SQLite does not support process-global auto
++        // extensions (sqlite3.h deprecates sqlite3_auto_extension on Apple
++        // platforms), so the faults cannot be installed. Report a skip
++        // (SKIP_RETURN_CODE in CMakeLists.txt) instead of a failure. With
++        // another SQLite, such as Homebrew's, the call succeeds and the
++        // test runs.
++        std::cout << "skipping: sqlite3_auto_extension() is not supported "
++                     "by this SQLite (Apple's system SQLite)"
++                  << std::endl;
++        return 77;
++#else
+         std::cerr << "Could not install SQLite fault injection\n";
+         return 1;
++#endif
+     }
+     const int result = drogon::test::run(argc, argv);
+     sqlite3_cancel_auto_extension(entry);
