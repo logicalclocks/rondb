@@ -9612,7 +9612,7 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
   const Uint32 queryTag = signal->theData[3];
   const Uint32 cteId = signal->theData[4];
   if (ERROR_INSERTED(5145) || ERROR_INSERTED(5138) || ERROR_INSERTED(5148) ||
-      ERROR_INSERTED(5150)) {
+      ERROR_INSERTED(5150) || ERROR_INSERTED(5160)) {
     jam();
     /* Test hooks. 5145 (NF-11, NF-12): hold until this instance
      * processes NODE_FAILREP or the test clears the insert. The failure
@@ -9621,8 +9621,9 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
      * normally. 5138 / 5148 (PK-1, PK-4): hold while SETUP is held.
      * For guaranteed replay, switch 5138 to extra 0xFFFE first: SETUP
      * runs while sweepers stay held. Clear after the query completes.
-     * 5150 (PK-8): hold while the proxy waits for a NULL_ROW to park;
-     * the SETUP then fills the placeholder before this runs again. */
+     * 5150 (PK-8) / 5160 (PK-8b): hold while the proxy waits for a
+     * NULL_ROW / SCAN_FRAGREQ to park; the SETUP then fills the
+     * placeholder before this runs again. */
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 20, 5);
     return;
   }
@@ -9737,26 +9738,35 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
 void Dblqh::joinAggFlushParked(Signal *signal, Uint32 parkRecI) {
   JoinAggParkRec *const rec = joinAggGetParkRec(parkRecI);
 #ifdef ERROR_INSERT
-  if (ERROR_INSERTED(5150)) {
+  if (ERROR_INSERTED(5150) || ERROR_INSERTED(5160)) {
     jam();
-    /* Test hook (PK-8): the SETUP succeeded and detached this record for
-     * replay.  Keep it on this instance's held chain until NODE_FAILREP
-     * clears the insert (the coordinator died), so the replay runs
-     * against a failed coordinator and must be rejected by the guards.
-     * One timer per instance re-checks the chain every 20 ms.  The
-     * event selects one held NULL_ROW per instance and arming. */
+    /* Test hook (PK-8, PK-8b): the SETUP succeeded and detached this
+     * record for replay.  Keep it on this instance's held chain until
+     * NODE_FAILREP clears the insert (the coordinator died), so the
+     * replay runs against a failed coordinator and must be rejected by
+     * the guards.  One timer per instance re-checks the chain every
+     * 20 ms.  The event selects one held NULL_ROW (5150) or SCAN_FRAGREQ
+     * (5160) per instance and arming.  A SCAN_FRAGREQ does not carry its
+     * coordinator, so its event reports coordinator 0. */
     rec->m_next = m_join_agg_held_flush_head;
     m_join_agg_held_flush_head = parkRecI;
-    if (rec->m_gsn == GSN_JOIN_AGG_NULL_ROW_REQ &&
+    const Uint32 observedGsn = ERROR_INSERTED(5160)
+                                   ? GSN_SCAN_FRAGREQ
+                                   : GSN_JOIN_AGG_NULL_ROW_REQ;
+    if (rec->m_gsn == observedGsn &&
         (c_error_insert_extra & (1u << 16)) == 0) {
-      const JoinAggNullRowReq *req =
-          reinterpret_cast<const JoinAggNullRowReq *>(rec->m_theData);
-      m_join_agg_observed_null_row = parkRecI;
+      Uint32 coordinator = 0;
+      if (observedGsn == GSN_JOIN_AGG_NULL_ROW_REQ) {
+        const JoinAggNullRowReq *req =
+            reinterpret_cast<const JoinAggNullRowReq *>(rec->m_theData);
+        coordinator = refToNode(req->coordinatorRef);
+      }
+      m_join_agg_observed_park = parkRecI;
       m_join_agg_observed_iteration = c_error_insert_extra & 0xFFFF;
       infoEvent("[CTE_PK8_REPLAY_HELD node=%u iteration=%u instance=%u "
                 "park=%u coordinator=%u]",
                 getOwnNodeId(), m_join_agg_observed_iteration, instance(),
-                parkRecI, refToNode(req->coordinatorRef));
+                parkRecI, coordinator);
       c_error_insert_extra |= (1u << 16);
     }
     if (!m_join_agg_held_flush_timer) {
@@ -9785,14 +9795,13 @@ void Dblqh::joinAggFlushParked(Signal *signal, Uint32 parkRecI) {
     jam();
 #ifdef ERROR_INSERT
     // The synchronous handler sees the token only for this exact replay.
-    m_join_agg_observed_replay =
-        (parkRecI == m_join_agg_observed_null_row);
+    m_join_agg_observed_replay = (parkRecI == m_join_agg_observed_park);
 #endif
     execJOIN_AGG_NULL_ROW_REQ(signal);
 #ifdef ERROR_INSERT
     if (m_join_agg_observed_replay) {
       m_join_agg_observed_replay = false;
-      m_join_agg_observed_null_row = RNIL;
+      m_join_agg_observed_park = RNIL;
     }
 #endif
   } else if (gsn == GSN_JOIN_AGG_COMPLETE_REQ) {
@@ -9806,17 +9815,28 @@ void Dblqh::joinAggFlushParked(Signal *signal, Uint32 parkRecI) {
     execJOIN_AGG_FINAL_REP(signal);
   } else {
     jam();
+#ifdef ERROR_INSERT
+    // PK-8b: as for the NULL_ROW above, only for this exact replay.
+    m_join_agg_observed_replay = (parkRecI == m_join_agg_observed_park);
+#endif
     execSCAN_FRAGREQ(signal);
+#ifdef ERROR_INSERT
+    if (m_join_agg_observed_replay) {
+      m_join_agg_observed_replay = false;
+      m_join_agg_observed_park = RNIL;
+    }
+#endif
   }
 }
 
 #ifdef ERROR_INSERT
-/* Test hook 5150 (PK-8): while the insert is set, re-check in 20 ms;
- * once NODE_FAILREP cleared it, hand every held record back to the
- * normal flush path, one job each, so the replays run after this
- * instance marked the coordinator down. */
+/* Test hooks 5150 (PK-8) and 5160 (PK-8b): while the insert is set,
+ * re-check in 20 ms; once NODE_FAILREP cleared it, hand every held
+ * record back to the normal flush path, one job each, so the replays
+ * run after this instance marked the coordinator down.  For 5160,
+ * NODE_FAILREP calls this itself, see there. */
 void Dblqh::joinAggReleaseHeldFlush(Signal *signal) {
-  if (ERROR_INSERTED(5150)) {
+  if (ERROR_INSERTED(5150) || ERROR_INSERTED(5160)) {
     jam();
     signal->theData[0] = ZCONTINUE_JOIN_AGG_FLUSH_HELD;
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 20, 1);
@@ -9835,7 +9855,7 @@ void Dblqh::joinAggReleaseHeldFlush(Signal *signal) {
     released++;
     i = next;
   }
-  g_eventLogger->info("DBLQH %u: error insert 5150 released %u held "
+  g_eventLogger->info("DBLQH %u: error insert 5150/5160 released %u held "
                       "parked replays", instance(), released);
 }
 #endif
@@ -10438,8 +10458,12 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
         getJoinAggState(
             JoinAggregationState::decodeBaseKey(
                 regTcPtr->m_join_agg_state_key));
+    /* A feed or a parked replay can arrive after this instance processed
+     * NODE_FAILREP and the proxy started to release the state; check the
+     * host record, not only m_connected (joinAggCoordinatorDown). */
     if (aggState != nullptr &&
-        !getNodeInfo(refToNode(aggState->m_senderRef)).m_connected) {
+        unlikely(joinAggCoordinatorDown(aggState->m_senderRef))) {
+      jam();
       earlyKeyReqAbort_simple(signal, lqhKeyReq,
                               ZNODEFAIL_BEFORE_COMMIT,
                               __LINE__, tcConnectptr);
@@ -17465,7 +17489,7 @@ void Dblqh::execNODE_FAILREP(Signal *signal) {
     // coordinator status first, after this handler marks failed nodes down.
     CLEAR_ERROR_INSERT_VALUE;
   }
-  if (ERROR_INSERTED(5145) || ERROR_INSERTED(5150)) {
+  if (ERROR_INSERTED(5145) || ERROR_INSERTED(5150) || ERROR_INSERTED(5160)) {
     jam();
     /* End the parking hold on every LDM/query instance at node failure.
      * Keep it off even after the original placeholder has been swept:
@@ -17473,7 +17497,19 @@ void Dblqh::execNODE_FAILREP(Signal *signal) {
      * The proxy's separate SETUP hold is unaffected.  For 5150 (PK-8)
      * the held replays are released by the next re-check, after this
      * handler marked the failed coordinator down below. */
+    const bool releaseHeldNow = ERROR_INSERTED(5160);
     CLEAR_ERROR_INSERT_VALUE;
+    if (releaseHeldNow) {
+      jam();
+      /* 5160 (PK-8b): queue the held replays now, ahead of this
+       * instance's node-failure handling (ZHANDLE_TC_FAILED_SCANS below),
+       * so they run before its NF_COMPLETEREP and so before
+       * JOIN_AGG_NODE_FAIL_REP can release the state. A held SCAN_FRAGREQ
+       * meets the coordinator guard only after its identity lookup;
+       * replayed after the release it would park again instead. The
+       * replays still run after the host record below says ZNODE_DOWN. */
+      joinAggReleaseHeldFlush(signal);
+    }
   }
 #endif
 
@@ -20421,14 +20457,64 @@ static inline Uint32 joinAggCoordinatorNodeId(Uint32 coordinatorRef) {
   return refToMain(coordinatorRef) == DBTC ? refToNode(coordinatorRef) : 0;
 }
 
-bool Dblqh::isJoinAggCoordinatorFailed(Uint32 coordinatorRef) {
-  // Direct API callers may use their own reference. NODE_FAILREP
-  // applies to DBTC coordinators, which DBSPJ carries in the request.
+/* The one coordinator-liveness rule of join aggregation: every site that
+ * accepts work for a state, or continues work on it, asks this. The
+ * coordinator is down when this instance's host record says ZNODE_DOWN,
+ * or when its transporter is no longer connected.
+ *
+ * ZNODE_DOWN is the condition that is ordered with reclamation. This
+ * instance sets it in its own NODE_FAILREP, before its node-failure
+ * handling and so before its NF_COMPLETEREP. DBDIH sends
+ * JOIN_AGG_NODE_FAIL_REP, and DblqhProxy releases the coordinator's
+ * states, only after every LDM and query instance has reported
+ * NF_COMPLETEREP. A feed, a parked replay or a continuation that runs
+ * here once reclamation may have started therefore always sees
+ * ZNODE_DOWN.
+ *
+ * m_connected alone is not enough: it clears on DISCONNECT_REP, which
+ * TRPMAN sends when the transporter has finished disconnecting. That is
+ * not ordered with NODE_FAILREP (CLOSE_COMCONF does not wait for it),
+ * and when QMGR declares the node dead first, for example on missed
+ * heartbeats, it can come after the whole node-failure protocol. A guard
+ * on m_connected only lets a late feed into a state that the proxy is
+ * already tearing down. m_connected is still part of the rule because,
+ * when the socket closes first, it is false before NODE_FAILREP arrives:
+ * QMGR declares a running data node failed when its transporter
+ * disconnects, so the query can only fail and stopping early is safe.
+ *
+ * After the coordinator restarts, m_connected is true again but the host
+ * record stays ZNODE_DOWN until INCL_NODEREQ, so the rule holds through
+ * the restart too.
+ *
+ * Only DBTC references are subject to the rule. DBSPJ carries the DBTC
+ * coordinator in its requests, and DBTC is the only block that sends
+ * JOIN_AGG_SETUP_REQ. Direct API callers (block unit tests) use their own
+ * reference; their states are never tied to node failure. A DBTC
+ * reference outside the host records cannot name a live data node (the
+ * reference travels in signal data), so it counts as down instead of
+ * failing ptrCheckGuard. Node 0 is ZNODE_DOWN in every host record, so
+ * getNodeInfo sees only node ids 1 .. MAX_NDB_NODES - 1. */
+bool Dblqh::joinAggCoordinatorDown(Uint32 coordinatorRef) {
   if (refToMain(coordinatorRef) != DBTC) return false;
-  HostRecordPtr hostPtr;
-  hostPtr.i = refToNode(coordinatorRef);
-  ptrCheckGuard(hostPtr, chostFileSize, hostRecord);
-  return hostPtr.p->nodestatus == ZNODE_DOWN;
+  const Uint32 nodeId = refToNode(coordinatorRef);
+  if (unlikely(nodeId >= chostFileSize)) {
+    jam();
+    return true;
+  }
+  if (get_node_status(nodeId) == ZNODE_DOWN) {
+    jam();
+    return true;
+  }
+  bool disconnected = !getNodeInfo(nodeId).m_connected;
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5154) || m_join_agg_observed_replay) {
+    /* NF-14 (5154) and the observed replay of PK-8 / PK-8b (5150 /
+     * 5160): simulate a DISCONNECT_REP that lags the whole node-failure
+     * protocol, so that only ZNODE_DOWN can stop the work. */
+    disconnected = false;
+  }
+#endif
+  return disconnected;
 }
 
 /* Identity resolution and parked replay can reorder COMPLETE and CANCEL.
@@ -20519,22 +20605,13 @@ void Dblqh::execJOIN_AGG_CANCEL_REQ(Signal *signal) {
  */
 bool Dblqh::checkJoinAggNodeFailed(Signal*, Uint32 aggStateKey,
                                    Uint32 senderRef) {
-  /* Test this instance's host record too, not only m_connected.
-   * JOIN_AGG_NODE_FAIL_REP reclaims the failed coordinator's states only
+  /* JOIN_AGG_NODE_FAIL_REP reclaims the failed coordinator's states only
    * after every LDM finished its NODE_FAILREP handling, and it skips
    * FINALIZING / SENDING_RESULTS: a continuation still running then is
    * never reclaimed. ZNODE_DOWN is set in this instance's NODE_FAILREP,
-   * so the next slice (queued ahead of the rest of that handling) stops.
-   * m_connected clears on DISCONNECT_REP, which is not ordered with
-   * NODE_FAILREP and can come after the whole node-failure protocol. */
-  bool disconnected = !getNodeInfo(refToNode(senderRef)).m_connected;
-#ifdef ERROR_INSERT
-  if (ERROR_INSERTED(5154)) {
-    // NF-14: simulate a DISCONNECT_REP that lags the whole protocol.
-    disconnected = false;
-  }
-#endif
-  if (disconnected || isJoinAggCoordinatorFailed(senderRef)) {
+   * so the next slice (queued ahead of the rest of that handling) stops
+   * (joinAggCoordinatorDown). */
+  if (joinAggCoordinatorDown(senderRef)) {
     jam();
     // Stop this continuation, but do not release shared state while
     // other workers may still use it. JOIN_AGG_NODE_FAIL_REP performs
@@ -20671,7 +20748,7 @@ void Dblqh::joinAggNullRowReqImpl(Signal *signal) {
 
   // The local DBSPJ or a parked replay may outlive the coordinator.
   // Reject before resolving or dereferencing shared aggregation state.
-  if (unlikely(isJoinAggCoordinatorFailed(req->coordinatorRef))) {
+  if (unlikely(joinAggCoordinatorDown(req->coordinatorRef))) {
     jam();
     SectionHandle handle(this, signal);
     releaseSections(handle);
@@ -20683,7 +20760,7 @@ void Dblqh::joinAggNullRowReqImpl(Signal *signal) {
                 "iteration=%u instance=%u park=%u]",
                 getOwnNodeId(), refToNode(req->coordinatorRef),
                 m_join_agg_observed_iteration, instance(),
-                m_join_agg_observed_null_row);
+                m_join_agg_observed_park);
     }
 #endif
     JoinAggNullRowRef *ref =
@@ -22624,7 +22701,7 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
 
   // DBSPJ may still be alive after its DBTC coordinator fails.
   // Check the request's coordinator before dereferencing shared state.
-  if (unlikely(isJoinAggCoordinatorFailed(req.routeRef))) {
+  if (unlikely(joinAggCoordinatorDown(req.routeRef))) {
     jam();
     sendCteLookupRef(signal, req.senderRef, req.senderData,
                      ZNODEFAIL_BEFORE_COMMIT, req.correlation, &handle);
@@ -22972,16 +23049,16 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
   ndbrequire(c_cteScanIterStatePool.getValidPtr(feedPtr));
   ndbrequire(feedPtr.p->aggFeed);
   if (feedPtr.p->coordinatorNodeId != 0) {  // 0: non-DBTC caller
-    hostPtr.i = feedPtr.p->coordinatorNodeId;
-    ptrCheckGuard(hostPtr, chostFileSize, hostRecord);
-    if (unlikely(hostPtr.p->nodestatus == ZNODE_DOWN)) {
+    if (unlikely(joinAggCoordinatorDown(
+            numberToRef(DBTC, feedPtr.p->coordinatorNodeId)))) {
       jam();
       // DBSPJ is alive and still needs its terminal reply. Stop before
       // accessing either interpreter; NF cleanup waits for this release.
       /* Cluster-log evidence that the feed answered its live requester
        * after the coordinator's failure; the NF-7 test waits for it. */
       infoEvent("[CTE_AGG_FEED_REFUSED node=%u failed=%u requester=%u]",
-                getOwnNodeId(), hostPtr.i, refToNode(senderRef));
+                getOwnNodeId(), feedPtr.p->coordinatorNodeId,
+                refToNode(senderRef));
       releaseCteScanIterState(aggFeedStateI);
       sendCteScanRef(signal, senderRef, senderData,
                      ZNODEFAIL_BEFORE_COMMIT);
@@ -23756,7 +23833,7 @@ void Dblqh::cteScanReqImpl(Signal *signal) {
   }
   // Close above remains valid even after coordinator failure: it
   // releases only the worker-local iterator, without touching CTE state.
-  if (unlikely(isJoinAggCoordinatorFailed(req.coordinatorRef))) {
+  if (unlikely(joinAggCoordinatorDown(req.coordinatorRef))) {
     jam();
     releaseCteScanIterState(scanIterI);
     sendCteScanRef(signal, req.senderRef, req.senderData,
@@ -28283,9 +28360,23 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
         getJoinAggState(
             JoinAggregationState::decodeBaseKey(
                 scanPtr->m_join_agg_state_key));
+    /* As in execLQHKEYREQ: the host record orders this check with the
+     * proxy's release of the state (joinAggCoordinatorDown). */
     if (aggState != nullptr &&
-        !getNodeInfo(refToNode(aggState->m_senderRef)).m_connected) {
+        unlikely(joinAggCoordinatorDown(aggState->m_senderRef))) {
       jam();
+#ifdef ERROR_INSERT
+      if (m_join_agg_observed_replay) {
+        /* PK-8b (5160): the selected parked SCAN_FRAGREQ, replayed after
+         * NODE_FAILREP with m_connected ignored, was refused here, so
+         * execSCAN_FRAGREQ answers SCAN_FRAGREF 286. */
+        infoEvent("[JOIN_AGG_SCAN_FRAGREQ_REJECTED node=%u failed=%u "
+                  "iteration=%u instance=%u park=%u]",
+                  getOwnNodeId(), refToNode(aggState->m_senderRef),
+                  m_join_agg_observed_iteration, instance(),
+                  m_join_agg_observed_park);
+      }
+#endif
       return ZNODEFAIL_BEFORE_COMMIT;
     }
   }

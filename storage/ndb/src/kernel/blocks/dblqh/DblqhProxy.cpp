@@ -2840,17 +2840,19 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                         signal->getLength(), &handle);
     return;
   }
-  if (ERROR_INSERTED(5150) &&
+  if ((ERROR_INSERTED(5150) || ERROR_INSERTED(5160)) &&
       getNodeInfo(refToNode(senderRef)).m_connected &&
       (joinAggIdentityParkedClasses(req->transid, queryTag, cteIndex) &
-       (1u << JAI_PARK_CLASS_NULLROW)) == 0) {
+       (1u << (ERROR_INSERTED(5160) ? JAI_PARK_CLASS_SCANFRAG
+                                    : JAI_PARK_CLASS_NULLROW))) == 0) {
     jam();
-    /* Test hook (PK-8): hold the SETUP, 20 ms at a time, until a
-     * JOIN_AGG_NULL_ROW_REQ has parked on its identity (the LDM / query
-     * instances hold the sweepers meanwhile), then let it succeed: the
-     * flush detaches the parked consumers and the instances hold their
-     * replay until the coordinator fails.  A SETUP whose coordinator is
-     * already gone proceeds to the normal rejection below. */
+    /* Test hook (PK-8, PK-8b): hold the SETUP, 20 ms at a time, until a
+     * JOIN_AGG_NULL_ROW_REQ (5150) or a SCAN_FRAGREQ (5160) has parked
+     * on its identity (the LDM / query instances hold the sweepers
+     * meanwhile), then let it succeed: the flush detaches the parked
+     * consumers and the instances hold their replay until the
+     * coordinator fails.  A SETUP whose coordinator is already gone
+     * proceeds to the normal rejection below. */
     SectionHandle handle(this, signal);
     sendSignalWithDelay(reference(), GSN_JOIN_AGG_SETUP_REQ, signal, 20,
                         signal->getLength(), &handle);

@@ -190,7 +190,10 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
       Replaying that record into the failed-coordinator guard emits
       "[JOIN_AGG_NULL_ROW_REJECTED node=N failed=C iteration=I instance=B
       park=R]". Ordinary late requests do not emit this event. PK-8
-      requires the matching pair. The proxy's insert is cleared by the test.
+      requires the matching pair. The coordinator guard ignores
+      m_connected for that one replay (a DISCONNECT_REP lagging the
+      node-failure protocol), so only the host record's ZNODE_DOWN can
+      reject it. The proxy's insert is cleared by the test.
 5151: Delay ONE JOIN_AGG_SETUP_REQ 20 ms (DblqhProxy, cleared after use;
       RONDB-1120 P2c). Consumers race ahead and park on the identity
       placeholder, the delayed SETUP flushes them on their original
@@ -201,7 +204,8 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
 5153: As 5152, but crash the non-coordinator node on CANCEL.
 5154: Hold the owner's merge continuation of a main aggregation with a
       remote coordinator (re-queued without delay) until cleared, and ignore
-      m_connected in checkJoinAggNodeFailed (a DISCONNECT_REP lagging the
+      m_connected in the coordinator-liveness rule joinAggCoordinatorDown
+      (every join-aggregation coordinator guard; a DISCONNECT_REP lagging the
       node-failure protocol); emits [JOIN_AGG_MERGE_HELD node=N iteration=I
       coordinator=C] (extra = iteration, top bit = event sent). NF-14: the
       host record's ZNODE_DOWN must stop it
@@ -218,7 +222,22 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
       5155-5157 with an extra value ("<node> ERROR 5155 <table id>") act
       only on requests for that table id; other reads and scans on the node
       neither take the token nor clear the insert.
-Next DBLQH 5158
+5160: PK-8b, 5150 for a SCAN_FRAGREQ feed (RONDB-1124 bug 8): hold every
+      JOIN_AGG_SETUP_REQ, 20 ms at a time, until a SCAN_FRAGREQ has parked
+      on its identity (DblqhProxy; the sweepers are held meanwhile), then
+      let it succeed and hold the replay of the parked consumers on each
+      instance until the instance processes NODE_FAILREP, which clears its
+      insert and queues the held replays ahead of its own node-failure
+      handling, so they run before JOIN_AGG_NODE_FAIL_REP can release the
+      state. Emits "[CTE_PK8_REPLAY_HELD node=N iteration=I instance=B
+      park=R coordinator=0]" for one held SCAN_FRAGREQ per instance and
+      arming (the request does not name its coordinator). The coordinator
+      guard in initScanrec ignores m_connected for that one replay, so only
+      the host record's ZNODE_DOWN can refuse it, with SCAN_FRAGREF 286;
+      it then emits "[JOIN_AGG_SCAN_FRAGREQ_REJECTED node=N failed=C
+      iteration=I instance=B park=R]". The proxy's insert is cleared by
+      the test.
+Next DBLQH 5161
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8135

@@ -396,7 +396,8 @@ class FsReadWriteReq;
  * 60 is ZCONTINUE_JOIN_AGG_FLUSH_HELD, 61 ZCONTINUE_JOIN_AGG_SEND. */
 #define ZCONTINUE_CTE_DROP_ZERO_FINALIZE 62
 #ifdef ERROR_INSERT
-/* Test hook 5150: one timer per instance re-checks the held replays. */
+/* Test hooks 5150 / 5160: one timer per instance re-checks the held
+ * replays. */
 #define ZCONTINUE_JOIN_AGG_FLUSH_HELD 60
 #endif
 
@@ -3803,7 +3804,7 @@ private:
                               Uint32 aggStateKey, Uint32 senderAggStateKey,
                               Uint32 identWord, const Uint32 transid[2],
                               BlockReference replyRef);
-  bool isJoinAggCoordinatorFailed(Uint32 coordinatorRef);
+  bool joinAggCoordinatorDown(Uint32 coordinatorRef);
   bool joinAggParkCapReached();
   bool checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
                               Uint32 senderRef);
@@ -4803,20 +4804,23 @@ public:
    */
   Uint32 m_delay_copy_park_tc = RNIL;
   /**
-   * ERROR_INSERT 5150 (PK-8): park records whose replay this instance
-   * holds until NODE_FAILREP clears the insert, chained through m_next,
-   * and whether the single re-check timer is scheduled.  One timer per
-   * instance, never one per record: the time queue holds 512 entries.
+   * ERROR_INSERT 5150 (PK-8) and 5160 (PK-8b): park records whose replay
+   * this instance holds until NODE_FAILREP clears the insert, chained
+   * through m_next, and whether the single re-check timer is scheduled.
+   * One timer per instance, never one per record: the time queue holds
+   * 512 entries.
    */
   Uint32 m_join_agg_held_flush_head = RNIL;
   bool m_join_agg_held_flush_timer = false;
   /**
-   * PK-8 selects one held NULL_ROW per instance and arming. The park
-   * record index identifies that request until replay; the iteration
-   * distinguishes later uses of the same pool slot or coordinator.
-   * The guard may report rejection only during this record's replay.
+   * PK-8 selects one held NULL_ROW, PK-8b one held SCAN_FRAGREQ, per
+   * instance and arming. The park record index identifies that request
+   * until replay; the iteration distinguishes later uses of the same
+   * pool slot or coordinator. The guard may report rejection only during
+   * this record's replay, and joinAggCoordinatorDown ignores m_connected
+   * for it.
    */
-  Uint32 m_join_agg_observed_null_row = RNIL;
+  Uint32 m_join_agg_observed_park = RNIL;
   Uint32 m_join_agg_observed_iteration = 0;
   bool m_join_agg_observed_replay = false;
 #endif

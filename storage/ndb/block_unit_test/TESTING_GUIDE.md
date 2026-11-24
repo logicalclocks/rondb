@@ -170,11 +170,11 @@ matter when writing such a test:
   to `senderRef`; a paused batch's CONF carries the continuation token,
   bound to the requesting node and freed by EndOfData or a close request
   (`SignalLengthClose`, `CloseFlag`).
-- `isJoinAggCoordinatorFailed` checks only DBTC references against
-  `hostRecord`, where every node id that never started stays
-  ZNODE_DOWN: `numberToRef(DBTC, <unused node id>)` models a failed
-  coordinator without restarting anything; the test's own reference is
-  never checked.
+- `joinAggCoordinatorDown` checks only DBTC references, against
+  `hostRecord` (ZNODE_DOWN) and `m_connected`; every node id that never
+  started stays ZNODE_DOWN in `hostRecord`: `numberToRef(DBTC, <unused
+  node id>)` models a failed coordinator without restarting anything;
+  the test's own reference is never checked.
 
 ### AttrInfo / Aggregation Programs
 
