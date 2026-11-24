@@ -105,6 +105,10 @@
  *         its limit and its SEND_REQ counts every group sent so far; the
  *         last batch holds the rest; ceil((groups - 3) / 4) SEND_REQs in
  *         all (the limit counts the groups of one batch, not of the send).
+ *   ID-10b the same with maxBatchRows 1000 and error insert 5162 setting
+ *         the batch byte limit to 1 byte: every group fills its batch, so
+ *         every batch that pauses holds one group and its SEND_REQ the
+ *         bytes of that group only; groups - 1 SEND_REQs in all.
  *   ID-11 keyed JOIN_AGG_COMPLETE_REQ identity and phase on a main
  *         aggregation: another transid, another query's identWord or a
  *         CTE's answers COMPLETE_REF 1251 and leaves the state alone (the
@@ -2077,10 +2081,13 @@ sendIgnoredSendConf(SignalSender &ss, const SendConfWords &w,
 
 /* Count the groups of a main-aggregation COMPLETE until it pauses
  * (returns 1, its SEND_REQ in pausedOut) or completes (returns 0, with
- * the COMPLETE_CONF echoing the COMPLETE_REQ).  -1 on anything else. */
+ * the COMPLETE_CONF echoing the COMPLETE_REQ).  -1 on anything else.
+ * With batchBytes, add the bytes of the group records received to it, as
+ * DBLQH counts them in the SEND_REQ's resultBytes. */
 static int
 receiveSendBatch(SignalSender &ss, const char *context, Uint32 &groups,
-                 JoinAggSendReq &pausedOut, Uint32 &numResultRowsOut)
+                 JoinAggSendReq &pausedOut, Uint32 &numResultRowsOut,
+                 Uint32 *batchBytes = nullptr)
 {
   for (;;) {
     SimpleSignal *resp = waitForSignal(ss, context);
@@ -2088,6 +2095,13 @@ receiveSendBatch(SignalSender &ss, const char *context, Uint32 &groups,
     const int gsn = getGsn(resp);
     if (gsn == GSN_TRANSID_AI) {
       if (addResultGroups(resp, groups) != 0) return -1;
+      if (batchBytes != nullptr) {
+        const Uint32 words =
+            (resp->header.m_noOfSections > 0)
+                ? resp->ptr[0].sz
+                : resp->getLength() - TransIdAI::HeaderLength;
+        *batchBytes += words * Uint32(sizeof(Uint32));
+      }
     } else if (gsn == GSN_JOIN_AGG_SEND_REQ) {
       pausedOut =
           *reinterpret_cast<const JoinAggSendReq *>(resp->getDataPtr());
@@ -2321,6 +2335,76 @@ id10(Ctx &c)
   V("ID-10: %u groups, %u SEND_REQs\n", rows, sendReqs);
   if (releaseAndWait(c, key) != 0) return -1;
   return checkLeaks(c.ss, c.restarter, "ID-10");
+}
+
+/* ID-10b: the row limit of every batch, far above the groups held. */
+static const Uint32 ID10B_BATCH_ROWS = 1000;
+
+/* ID-10b: a batch also ends at its byte limit.  Error insert 5162 sets
+ * the limit to 1 byte, so the first group of every batch fills it, while
+ * the row limits (1000) are never reached.  Every batch that pauses must
+ * hold one group; its SEND_REQ must report the bytes of that batch only,
+ * as received (the bytes start at 0 with each batch), and every group
+ * sent so far; the last batch holds one group; groups - 1 SEND_REQs in
+ * all.  Without the byte limit the whole result was one batch. */
+static int
+id10b(Ctx &c)
+{
+  Uint32 key, owner, rows;
+  if (setupDefault(c, key, owner) != 0) return -1;
+  if (runScans(c.ss, c.meta, c.node, key, rows) != 0) return -1;
+  if (rows < 3 || rows >= ID10B_BATCH_ROWS) {
+    fprintf(stderr, "ID-10b: node %u holds %u groups, need 3 to %u\n",
+            c.node, rows, ID10B_BATCH_ROWS - 1);
+    return -1;
+  }
+  ErrorInsertGuard guard = {c.restarter, c.node, true};
+  if (!setErrorInsert(c.restarter, c.node, 5162, 1)) return -1;
+  if (sendCompleteReq(c.ss, c.node, key, owner, ID10B_BATCH_ROWS) != 0)
+    return -1;
+  Uint32 groups = 0;
+  Uint32 numResultRows = 0;
+  Uint32 sendReqs = 0;
+  for (;;) {
+    JoinAggSendReq paused = {};
+    const Uint32 batchStart = groups;
+    Uint32 batchBytes = 0;
+    const int rc = receiveSendBatch(c.ss, "ID-10b batch", groups, paused,
+                                    numResultRows, &batchBytes);
+    if (rc < 0) return -1;
+    const Uint32 batch = groups - batchStart;
+    if (rc == 0) {
+      if (batch != 1) {
+        fprintf(stderr, "ID-10b: the last batch held %u groups, expected "
+                        "1\n", batch);
+        return -1;
+      }
+      break;
+    }
+    sendReqs++;
+    if (batch != 1 || paused.numRowsSent != groups ||
+        batchBytes == 0 || paused.resultBytes != batchBytes) {
+      fprintf(stderr, "ID-10b: SEND_REQ %u after a batch of %u groups and "
+                      "%u bytes: numRowsSent=%u of %u, resultBytes=%u\n",
+              sendReqs, batch, batchBytes, paused.numRowsSent, groups,
+              paused.resultBytes);
+      return -1;
+    }
+    const SendConfWords w = {refToNode(paused.senderRef),
+                             refToBlock(paused.senderRef), c.ss.getOwnRef(),
+                             FAKE_SENDER_DATA, FAKE_REQUEST_ID, key};
+    if (sendSendConfWords(c.ss, w, ID10B_BATCH_ROWS) != 0) return -1;
+  }
+  if (groups != rows || numResultRows != rows || sendReqs != rows - 1) {
+    fprintf(stderr, "ID-10b: %u groups, numResultRows=%u, %u SEND_REQs; "
+                    "expected %u groups and %u SEND_REQs\n",
+            groups, numResultRows, sendReqs, rows, rows - 1);
+    return -1;
+  }
+  V("ID-10b: %u groups, %u SEND_REQs\n", rows, sendReqs);
+  if (!guard.clear()) return -1;
+  if (releaseAndWait(c, key) != 0) return -1;
+  return checkLeaks(c.ss, c.restarter, "ID-10b");
 }
 
 /* The words of a keyed JOIN_AGG_COMPLETE_REQ from this SignalSender.
@@ -3653,6 +3737,7 @@ int main(int argc, char **argv)
           {"ID-8 late group after a refused COMPLETE", id8},
           {"ID-9 SEND_CONF that answers no paused send", id9},
           {"ID-10 full batches after a SEND_CONF", id10},
+          {"ID-10b a batch ends at its byte limit", id10b},
           {"ID-11 keyed COMPLETE of another query or a duplicate", id11},
           {"OV-1 CTE scan row wider than the output buffer", ov1},
           {"PK-1a owner-plane signals parked and replayed", pk1OwnerPlane},

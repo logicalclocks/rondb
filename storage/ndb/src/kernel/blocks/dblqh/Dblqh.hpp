@@ -3848,7 +3848,7 @@ private:
                             Uint32 senderRef, Uint32 senderData,
                             Uint32 requestId);
   void continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
-                           Uint32 num_result_rows, Uint32 total_bytes,
+                           Uint32 num_result_rows, Uint32 send_batch_bytes,
                            Uint32 senderRef, Uint32 senderData,
                            Uint32 requestId, Uint32 send_batch_rows);
   void execSCAN_NEXTREQ(Signal* signal);

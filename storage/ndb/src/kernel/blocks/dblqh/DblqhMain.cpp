@@ -21390,8 +21390,8 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
     return;
   }
 
-  /* The first batch starts here: groups evicted during the scan are in
-   * m_rows_sent, not in this batch. */
+  /* The first batch starts here, with no rows and no bytes: groups
+   * evicted during the scan are in m_rows_sent, not in this batch. */
   continueJoinAggSend(signal, aggStateKey,
                       state->m_rows_sent, 0,
                       senderRef, senderData, requestId, 0);
@@ -21402,14 +21402,16 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
  *
  * num_result_rows counts every group this state has sent, evicted ones
  * included: the SEND_REQ and the COMPLETE_CONF report it. The flow
- * control counts send_batch_rows instead, the groups of the current
- * batch, which the COMPLETE_REQ or the SEND_CONF that resumed the send
- * started at 0: each batch holds up to m_max_batch_rows groups. The
- * CONTINUEB slices of a batch (GROUPS_PER_BATCH, MAX_BATCH_SIGNAL_BYTES)
- * carry both counts.
+ * control counts the current batch instead: send_batch_rows groups of
+ * send_batch_bytes bytes, which the COMPLETE_REQ or the SEND_CONF that
+ * started the batch set to 0. A batch ends when it holds m_max_batch_rows
+ * groups or MAX_SEND_BATCH_BYTES bytes, whichever comes first, and always
+ * holds at least one group. The CONTINUEB slices of a batch
+ * (GROUPS_PER_BATCH, MAX_BATCH_SIGNAL_BYTES) carry the counts.
  */
 void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
-                                Uint32 num_result_rows, Uint32 total_bytes,
+                                Uint32 num_result_rows,
+                                Uint32 send_batch_bytes,
                                 Uint32 senderRef, Uint32 senderData,
                                 Uint32 requestId, Uint32 send_batch_rows) {
   if (checkJoinAggNodeFailed(signal, aggStateKey, senderRef)) {
@@ -21423,6 +21425,18 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
   static const Uint32 GROUPS_PER_BATCH = 256;
 #endif
   static const Uint32 MAX_BATCH_SIGNAL_BYTES = 64 * 1024;
+  /* The byte limit of a batch: the most a scan batch carries. Without it
+   * maxBatchRows groups of up to 64 KB of key and 64 KB of values each
+   * made a batch of megabytes, all of which the API buffers until the
+   * application has read it. */
+  static const Uint32 MAX_SEND_BATCH_BYTES = MAX_SCAN_BATCH_SIZE;
+  Uint32 max_send_batch_bytes = MAX_SEND_BATCH_BYTES;
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5162)) {
+    /* ID-10b: the byte limit from the insert's extra value. */
+    max_send_batch_bytes = ERROR_INSERT_EXTRA;
+  }
+#endif
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (state == nullptr || state->isAborting()) {
@@ -21507,7 +21521,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
 
       DEB_JOIN_AGG(("(%u)DBLQH 2:Sending TRANSID_AI to 0x%x, receiverId: %u,"
                     " size: %u aggStateKey=%u keyLen=%u keyWords=%u"
-                    " key[0]=0x%x key[1]=0x%x rowNo=%u totalBytes=%u"
+                    " key[0]=0x%x key[1]=0x%x rowNo=%u batchBytes=%u"
                     " processed_rows=%llu gb_map_size=%u",
         getThreadId(),
         state->m_resultRef,
@@ -21519,7 +21533,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
         key0ForDebug,
         key1ForDebug,
         num_result_rows,
-        total_bytes,
+        send_batch_bytes,
         interp->processed_rows(),
         gb_map->size()));
 
@@ -21528,7 +21542,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
 
       num_result_rows++;
       send_batch_rows++;
-      total_bytes += pos * sizeof(Uint32);
+      send_batch_bytes += pos * sizeof(Uint32);
       batch_count++;
       batch_signal_bytes +=
           (3 + TransIdAI::HeaderLength + 1 + pos) * sizeof(Uint32);
@@ -21543,15 +21557,18 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
         break;
       }
 
-      if (state->m_max_batch_rows > 0 &&
-          send_batch_rows >= state->m_max_batch_rows) {
+      if ((state->m_max_batch_rows > 0 &&
+           send_batch_rows >= state->m_max_batch_rows) ||
+          send_batch_bytes >= max_send_batch_bytes) {
         /*
-         * This batch is full (maxBatchRows of the COMPLETE_REQ or of
-         * the SEND_CONF that started it). Pause sending and ask the
+         * This batch is full: it holds maxBatchRows groups (of the
+         * COMPLETE_REQ or of the SEND_CONF that started it), or
+         * MAX_SEND_BATCH_BYTES bytes. Pause sending and ask the
          * coordinator (DBTC) to continue with JOIN_AGG_SEND_REQ; its
-         * JOIN_AGG_SEND_CONF starts the next batch. The limit is per
-         * batch, not on num_result_rows: against that cumulative count
-         * every group after the first batch would cost a round trip.
+         * JOIN_AGG_SEND_CONF starts the next batch with both counts at
+         * 0. The limits are per batch, not on num_result_rows: against
+         * that cumulative count every group after the first batch would
+         * cost a round trip.
          */
         jam();
         state->m_rows_sent = num_result_rows;
@@ -21563,7 +21580,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
         sendReq->requestId = requestId;
         sendReq->aggStateKey = aggStateKey;
         sendReq->numRowsSent = num_result_rows;
-        sendReq->resultBytes = total_bytes;
+        sendReq->resultBytes = send_batch_bytes;
         sendSignal(senderRef, GSN_JOIN_AGG_SEND_REQ,
                    signal, JoinAggSendReq::SignalLength, JBB);
         return;
@@ -21575,7 +21592,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
         signal->theData[0] = ZCONTINUE_JOIN_AGG_SEND;
         signal->theData[1] = aggStateKey;
         signal->theData[2] = num_result_rows;
-        signal->theData[3] = total_bytes;
+        signal->theData[3] = send_batch_bytes;
         signal->theData[4] = senderRef;
         signal->theData[5] = senderData;
         signal->theData[6] = requestId;
@@ -21595,7 +21612,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
   conf->senderData = senderData;
   conf->requestId = requestId;
   conf->numResultRows = num_result_rows;
-  conf->resultBytes = total_bytes;
+  conf->resultBytes = send_batch_bytes;  // the last batch
   sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_CONF,
              signal, JoinAggCompleteConf::SignalLength, JBB);
 }
@@ -21648,7 +21665,8 @@ void Dblqh::execJOIN_AGG_SEND_CONF(Signal *signal) {
   state->m_max_batch_rows = maxBatchRows;
   state->m_state.store(JoinAggregationState::SENDING_RESULTS);
 
-  /* The CONF starts a new batch of up to maxBatchRows groups. */
+  /* The CONF starts a new batch, with no rows and no bytes, of up to
+   * maxBatchRows groups. */
   continueJoinAggSend(signal, aggStateKey,
                       state->m_rows_sent, 0,
                       senderRef, senderData, requestId, 0);

@@ -237,7 +237,10 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
       it then emits "[JOIN_AGG_SCAN_FRAGREQ_REJECTED node=N failed=C
       iteration=I instance=B park=R]". The proxy's insert is cleared by
       the test.
-Next DBLQH 5162
+5162: ID-10b: a main join aggregation's send batch ends at the insert's
+      extra value in bytes instead of MAX_SCAN_BATCH_SIZE (Dblqh
+      continueJoinAggSend).
+Next DBLQH 5163
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8135

@@ -33,7 +33,7 @@ continues both lists. Their status is in `../ronsql_executor/README.md`.
 - **Error inserts.** These numbers are free next, as recorded on the "Next"
   lines in `storage/ndb/src/kernel/blocks/ERROR_codes.txt`:
   - DBTUP 4047;
-  - DBLQH 5162. A DBLQH number can also be taken by an entry outside
+  - DBLQH 5163. A DBLQH number can also be taken by an entry outside
     the RONDB-1124 block of `ERROR_codes.txt`: check with
     `git grep -w <n> storage/ndb/src/kernel` before taking one;
   - DBTC 8135 / 8320 (RonDB);
