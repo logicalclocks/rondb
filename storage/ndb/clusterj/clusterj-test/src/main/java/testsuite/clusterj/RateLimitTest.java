@@ -142,9 +142,10 @@ public class RateLimitTest extends AbstractClusterJTest {
         refused(session, repeat('a', 129), "129 bytes");
         errorIfNotEqual("a refused name keeps the one before",
                         name126, session.getRateLimitUser());
-        // The limit counts UTF-8 bytes: 63 two-byte characters fit, 64 not.
-        session.setRateLimitUser(repeat('å', 63));
-        refused(session, repeat('å', 64), "128 bytes in 64 characters");
+        // The limit counts UTF-8 bytes: 63 two-byte characters (a-ring, U+00E5) fit, 64 not. Escaped, since the
+        // release build's javac runs under the POSIX locale and reads the source as US-ASCII.
+        session.setRateLimitUser(repeat('\u00e5', 63));
+        refused(session, repeat('\u00e5', 64), "128 bytes in 64 characters");
         refused(session, "", "an empty name");
         session.setRateLimitUser(null);
         errorIfNotEqual("null clears the name", null, session.getRateLimitUser());
