@@ -8909,6 +8909,21 @@ void Dbdih::execSTART_TOCONF(Signal *signal) {
   c_activeThreadTakeOverPtr.i = RNIL;
   check_take_over_completed_correctly();
 
+  for (Uint32 tableId = 0; tableId < ctabFileSize; tableId++)
+  {
+    TabRecordPtr tabPtr;
+    tabPtr.i = tableId;
+    ptrAss(tabPtr, tabRecord);
+    if (tabPtr.p->tabStatus == TabRecord::TS_ACTIVE)
+    {
+      tabPtr.p->m_calc_primary_replicas = true;
+    }
+    else
+    {
+      tabPtr.p->m_calc_primary_replicas = false;
+    }
+  }
+
   for (Uint32 i = 0; i < c_max_takeover_copy_threads; i++)
   {
     /**
@@ -8995,6 +9010,21 @@ void Dbdih::startNextCopyFragment(Signal *signal, Uint32 takeOverPtrI) {
       takeOverPtr.p->toCurrentTabref++;
       continue;
     }//if
+    if (tabPtr.p->m_calc_primary_replicas)
+    {
+      jam();
+      /**
+       * Prepare calculation of new primary after new node
+       * have been added. This will take effect in the
+       * execution of UPDATE_FRAG_STATEREQ on all nodes
+       * in the cluster.
+       */
+      tabPtr.p->m_calc_primary_replicas = false;
+      calc_primary_replicas(tabPtr.p,
+                            0,
+                            tabPtr.p->totalfragments,
+                            __LINE__);
+    }
     Uint32 fragId = takeOverPtr.p->toCurrentFragid;
     if (fragId >= tabPtr.p->totalfragments) {
       jam();
@@ -9378,13 +9408,7 @@ void Dbdih::sendUpdateFragStateReq(Signal *signal, Uint32 startGci,
   if (replicaType == UpdateFragStateReq::COMMIT_STORED)
   {
     jam();
-    /**
-     * Keep the current primary. Switching the primary, or the order of
-     * the replicas, while transactions run lets a later operation of a
-     * transaction overtake an earlier one on the same row in some
-     * replica, see make_table_use_new_replica().
-     */
-    req->primaryNode = fragPtr.p->activeNodes[0];
+    req->primaryNode = fragPtr.p->primaryNode;
     fragPtr.p->primaryNode = 0;
   }
 
@@ -17598,29 +17622,17 @@ Dbdih::make_table_use_new_replica(Signal *signal,
       jam();
       CRASH_INSERTION(7139);
       /**
-       * The node restart of a fragment is completed, the new replica
-       * becomes a stored replica.
+       * The node restart of a fragment is completed, now change to use
+       * the preferred new distribution of primary replicas. The primary
+       * replica isn't required to be durable at this change.
        *
-       * Keep the replica chain used during the copy, with the new replica
-       * right after the primary. DBTC gets the chain separately for each
-       * operation, so changing it here sends the operations of a running
-       * transaction on one row along different chains: a delete on
-       * 2 -> 3 -> 4 and the following insert of the same row on
-       * 2 -> 4 -> 3 reach node 4 in the wrong order. That gives a false
-       * error (630), or for two updates of the same column a replica that
-       * commits another value than the primary.
-       *
-       * So the stored replicas are linked in activeNodes order, which
-       * updateNodeInfo() rebuilds unchanged when primaryNode is the
-       * current primary, which a starting node of this version sends.
-       * An older starting node sends the primary it calculated, and
-       * without dynamic primary replicas updateNodeInfo() switches to the
-       * preferred primary; both still switch here, so that all nodes
-       * agree on the primary.
+       * We also update the order of the replicas here so that we use the
+       * specified primary node as primary.
+       * If any node is using preferredPrimary as primary node this is
+       * preferred if the node is alive.
        */
       removeOldStoredReplica(fragPtr, replicaPtr);
       linkStoredReplica(fragPtr, replicaPtr);
-      orderStoredReplicasAsActiveNodes(fragPtr);
       fragPtr.p->primaryNode = primaryNode;
       fragPtr.p->onlineSynchOngoing = 0;
       updateNodeInfo(signal, tabPtr, fragPtr);
@@ -26147,56 +26159,6 @@ void Dbdih::linkStoredReplica(FragmentstorePtr fragPtr,
   }//if
   lsrReplicaPtr.p->nextPool = replicatePtr.i;
 }  // Dbdih::linkStoredReplica()
-
-/**
- * Relink the stored replicas in the order of activeNodes, so that
- * updateNodeInfo() rebuilds the same replica chain. Stored replicas not
- * in activeNodes keep their order at the end.
- */
-void Dbdih::orderStoredReplicasAsActiveNodes(FragmentstorePtr fragPtr) {
-  Uint64 newFirst = RNIL64;
-  ReplicaRecordPtr newLast;
-  newLast.i = RNIL64;
-  newLast.p = nullptr;
-  for (Uint32 i = 0; i < fragPtr.p->fragReplicas; i++) {
-    jam();
-    ndbrequire(i < MAX_REPLICAS);
-    const Uint32 nodeId = fragPtr.p->activeNodes[i];
-    ReplicaRecordPtr prevPtr;
-    prevPtr.i = RNIL64;
-    prevPtr.p = nullptr;
-    ReplicaRecordPtr replicaPtr;
-    replicaPtr.i = fragPtr.p->storedReplicas;
-    while (replicaPtr.i != RNIL64) {
-      ndbrequire(c_replicaRecordPool.getPtr(replicaPtr));
-      if (replicaPtr.p->procNode == nodeId) break;
-      prevPtr = replicaPtr;
-      replicaPtr.i = replicaPtr.p->nextPool;
-    }
-    if (replicaPtr.i == RNIL64) {
-      jam();
-      continue;
-    }
-    if (prevPtr.i == RNIL64) {
-      fragPtr.p->storedReplicas = replicaPtr.p->nextPool;
-    } else {
-      prevPtr.p->nextPool = replicaPtr.p->nextPool;
-    }
-    replicaPtr.p->nextPool = RNIL64;
-    if (newLast.i == RNIL64) {
-      newFirst = replicaPtr.i;
-    } else {
-      newLast.p->nextPool = replicaPtr.i;
-    }
-    newLast = replicaPtr;
-  }
-  if (newLast.i == RNIL64) {
-    jam();
-    return;
-  }
-  newLast.p->nextPool = fragPtr.p->storedReplicas;
-  fragPtr.p->storedReplicas = newFirst;
-}
 
 /*************************************************************************/
 /*        MAKE NODE GROUPS BASED ON THE LIST OF NODES RECEIVED FROM CNTR */

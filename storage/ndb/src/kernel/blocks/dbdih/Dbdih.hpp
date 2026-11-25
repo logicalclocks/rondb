@@ -755,6 +755,7 @@ class Dbdih : public SimulatedBlock {
 
     Uint8 noOfBackups;
     Uint8 kvalue;
+    bool m_calc_primary_replicas;
 
     Uint16 noPages;
     Uint16 tableType;
@@ -1751,7 +1752,6 @@ class Dbdih : public SimulatedBlock {
                             ReplicaRecordPtr replicaPtr);
   void linkStoredReplica(FragmentstorePtr regFragptr,
                          ReplicaRecordPtr replicaPtr);
-  void orderStoredReplicasAsActiveNodes(FragmentstorePtr regFragptr);
   void prepareReplicas(FragmentstorePtr regFragptr);
   void removeNodeFromStored(Uint32 nodeId, FragmentstorePtr regFragptr,
                             ReplicaRecordPtr replicaPtr, bool temporary);
