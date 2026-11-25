@@ -324,8 +324,6 @@ class DumpStateOrd {
     DihDisplayPauseState = 7034,
     // 7035 DIH Dump graceful stop permission state (master and proxy)
     DihDumpStopPermInfo = 7035,
-    // 7036 DIH master: rebalance the primary replicas on all nodes now
-    DihRebalancePrimaries = 7036,
     // 7037 <mode> DIH rebalance test mode, error insert builds: 0 normal,
     // 1 no rebalance in start phase 120 of this node, 2 act as if a data
     // node did not support the rebalance (set it on all nodes)

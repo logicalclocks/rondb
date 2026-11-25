@@ -44,5 +44,5 @@ args: -l 2 -n ChainSwitchDoubleUpdateOldDih T1
 max-time: 1800
 
 cmd: testNodeRestart
-args: -l 2 -n ChainSwitchRebalanceOnDemand T1
+args: -l 2 -n ChainSwitchRebalanceAtRestart T1
 max-time: 1800

@@ -173,13 +173,11 @@ primary recalculation at node failure (`removeNodeFromTable()`).
   barrier, so the requester had completed its copy. Otherwise
   `rebalance_master_check()`:
   - not supported by all alive nodes: answer, no run;
-  - busy: LCP master take-over, `c_nodeStartMaster.activeState`/`wait`
-    (start inclusion, graceful-stop switch), a graceful stop permission,
-    a take-over in `c_masterActiveTakeOverList`, or
-    `Ndbcntr::is_any_node_below_restart_barrier()`: answer, and keep a
-    pending run retried every second (`ZREBALANCE_PENDING`), since a
-    starting node that fails before it is alive in DBDIH neither
-    rebalances nor makes failure handling do it;
+  - The master skips a busy request during LCP master take-over, start
+    inclusion, a graceful stop, a fragment take-over, or while a node is
+    below the restart barrier. The requester can finish phase 120 and
+    release its restart lock. If another starting node fails before
+    becoming alive in DIH, the restarted node may retain zero primaries.
   - node failure handling in progress (`m_remove_node_from_table_ongoing`):
     answer, it recomputes every table.
   
@@ -225,8 +223,6 @@ primary recalculation at node failure (`removeNodeFromTable()`).
   builds also stop on such a signal (`ndbassert`) to catch the bug in the
   sender; production builds only disconnect it. Such a signal from this
   node itself is a bug here (`ndbrequire`).
-- DUMP 7036 (`DihRebalancePrimaries`): the master runs a rebalance now
-  (`ALL DUMP 7036` works, only the master acts).
 - Version gate: `ndbd_support_rebalance_primaries()` (26.10.1) for every
   alive data node; the same gate decides whether COMMIT_STORED keeps the
   chain (step 1).
@@ -244,7 +240,7 @@ replicas and node groups.
 
 - `ndb_rebalance_primaries` (MTR, debug build, 2 data nodes): node 2
   restarts with DUMP 7037 1 and must come back primary for no fragment
-  of t1; DUMP 7036 must balance the primaries; a normal restart of node 2
+  of t1. A subsequent normal restart of node 2
   must leave them balanced as soon as it has started (start phase 120
   runs before the start completes). Each check also requires both data
   nodes to see the same primaries in `ndbinfo.ndb$table_fragments_all`.
@@ -268,11 +264,9 @@ replicas and node groups.
   checked. The steps count the 1204 errors.
 - `ChainSwitchDoubleUpdateOldDih`: the same with DUMP 7037 mode 2; only
   checks that all data nodes see the same primaries.
-- `ChainSwitchRebalanceOnDemand`: each data node in turn restarts with
-  DUMP 7037 mode 1 (no rebalance in start phase 120) and must come back
-  primary for no fragment (step 1). Then DUMP 7036 moves the primaries
-  while double updates and scan updates run, and the primaries must get
-  balanced. Afterwards `verifyTableReplicas` and the Hugo check.
+- `ChainSwitchRebalanceAtRestart` restarts each node during double updates and
+  scan updates. It checks primary placement after each restart and verifies
+  the replicas and Hugo values at the end.
 - `ndb_security` (MTR): the catalog row of `VT_DIH_REBALANCE_PROTOCOL`.
   Injecting it with DUMP 9100 would disconnect a data node, and a real
   faulty signal stops the receiver in debug builds (`ndbassert`), so no
