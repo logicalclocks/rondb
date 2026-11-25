@@ -253,7 +253,6 @@
 #define ZUNLOCKED_IVAL_TOO_HIGH 294
 #define ZBAD_DIST_KEY 298
 #define ZTRANS_TOO_BIG 261
-#define ZDISTRIBUTION_CHANGED_ERROR 1204
 #define ZLQH_NO_SUCH_FRAGMENT_ID 1235
 #define ZLQHKEY_PROTOCOL_ERROR 1237
 #define ZDIRTY_OPERATION_ERROR 2200
@@ -1225,14 +1224,6 @@ class Dbtc : public SimulatedBlock {
     Uint32 m_exec_count;
     Uint32 m_exec_write_count;
     Uint32 m_simple_read_count;
-    /**
-     * DiGetNodesConf chainClock of the first key operation of the
-     * transaction that was not a committed read, 0 if none yet. A later
-     * such operation on a fragment whose chainStamp is larger is refused:
-     * its replica chain changed after the transaction started, see
-     * Dbdih::m_chain_clock.
-     */
-    Uint64 m_chain_start_clock;
     Uint32 m_concurrent_overtakeable_operations;
     Uint32 m_tc_hbrep_timer;
     ReturnSignal returnsignal;

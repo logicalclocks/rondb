@@ -59,34 +59,6 @@ struct DiGetNodesConf {
   Uint32 fragChangeNumber;
   Uint32 tabChangeNumber;
   Uint32 nodes[MAX_REPLICAS + (3 + MAX_REPLICAS)]; //+1
-  /**
-   * Only for callers executing DIGETNODESREQ directly, never sent, see
-   * Dbdih::m_chain_clock. 64-bit values in two words, low word first.
-   *
-   * chainStamp: the largest Fragmentstore::m_chain_stamp of the fragments
-   *   returned, i.e. the clock value when one of their replica chains
-   *   last changed.
-   * chainClock: Dbdih::m_chain_clock when the replica chains were read.
-   */
-  Uint32 chainStampLow;
-  Uint32 chainStampHigh;
-  Uint32 chainClockLow;
-  Uint32 chainClockHigh;
-
-  void setChainStamp(Uint64 stamp) {
-    chainStampLow = Uint32(stamp);
-    chainStampHigh = Uint32(stamp >> 32);
-  }
-  Uint64 getChainStamp() const {
-    return (Uint64(chainStampHigh) << 32) | chainStampLow;
-  }
-  void setChainClock(Uint64 clock) {
-    chainClockLow = Uint32(clock);
-    chainClockHigh = Uint32(clock >> 32);
-  }
-  Uint64 getChainClock() const {
-    return (Uint64(chainClockHigh) << 32) | chainClockLow;
-  }
 };
 /**
  *

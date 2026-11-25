@@ -3624,7 +3624,6 @@ void Dbtc::initApiConnectRec(Signal *signal, ApiConnectRecord *const regApiPtr,
   regApiPtr->m_write_count = 0;
   regApiPtr->m_exec_count = 0;
   regApiPtr->m_simple_read_count = 0;
-  regApiPtr->m_chain_start_clock = 0;
   regApiPtr->m_firstTcConnectPtrI_FT = RNIL;
   regApiPtr->m_lastTcConnectPtrI_FT = RNIL;
   regApiPtr->m_concurrent_overtakeable_operations = 0;
@@ -5376,27 +5375,6 @@ void Dbtc::tckeyreq050Lab(Signal *signal, CacheRecordPtr const cachePtr,
   if (unlikely(TerrorIndicator != 0)) {
     execDIGETNODESREF(signal, apiConnectptr);
     return;
-  }
-
-  if (!regTcPtr->dirtyOp) {
-    /**
-     * The operations of a transaction that are not committed reads must
-     * not use a fragment's replica chain from both before and after a
-     * change of its primary or replica order: an operation sent along the
-     * new chain can overtake an earlier one on the same row in some
-     * replica. Refuse an operation on a fragment whose chain changed after
-     * the transaction started, see Dbdih::m_chain_clock. Committed reads
-     * do not lock and read only committed rows.
-     */
-    if (regApiPtr->m_chain_start_clock == 0) {
-      regApiPtr->m_chain_start_clock = conf->getChainClock();
-    } else if (unlikely(conf->getChainStamp() >
-                        regApiPtr->m_chain_start_clock)) {
-      jam();
-      terrorCode = ZDISTRIBUTION_CHANGED_ERROR;
-      releaseAtErrorLab(signal, apiConnectptr);
-      return;
-    }
   }
 
   /****************>>*/
