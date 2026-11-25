@@ -1,0 +1,8 @@
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# P-48: join aggregation linked attribute entry shorter than its type, outer join NULL row
+Running command
+Result of command: 0
+Test program success!

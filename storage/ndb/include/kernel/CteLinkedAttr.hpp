@@ -125,7 +125,9 @@ namespace CteLinkedAttr {
    * NDB column type ndbType, or 0 for a type it does not load.  An
    * entry whose AttributeHeader holds fewer bytes is too short for the
    * type: its data words end before the value does, and for the last
-   * entry the buffer does too.  Dbtup's handler reads such an entry as
+   * entry the buffer does too.  Dbtup's handler and the evaluator of
+   * an outer join's NULL-extended row
+   * (JoinAggInterpreter::evalEmbeddedForNullRow) read such an entry as
    * NULL and the JIT helper takes the per-row fallback, as for a
    * missing entry (RONDB-1124).
    */

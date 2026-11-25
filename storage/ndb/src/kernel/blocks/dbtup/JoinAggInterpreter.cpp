@@ -1069,83 +1069,75 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
             linked_attr_data, linked_attr_len, (instr >> 16) & 0xFF);
         break;
       case Interpreter::READ_LINKED_COLUMN_TO_REG: {
-        /* As Dbtup's handleReadLinkedColumnToReg */
+        /* As Dbtup's handleReadLinkedColumnToReg: a missing entry, a
+         * NULL one and one with fewer bytes than the type decodes
+         * (CteLinkedAttr::linkedColumnBytes) read as NULL, so each arm
+         * below has the bytes it reads.  A type the handler does not
+         * load has 0 there and fails the row below. */
+        const Uint32 ndb_type = (instr >> 24) & 0xFF;
         const Uint32* entry = CteLinkedAttr::linkedEntryAH(
             linked_attr_data, linked_attr_len, (instr >> 16) & 0xFF);
-        if (entry == nullptr || AttributeHeader(*entry).isNULL()) {
+        if (entry == nullptr || AttributeHeader(*entry).isNULL() ||
+            AttributeHeader(*entry).getByteSize() <
+                CteLinkedAttr::linkedColumnBytes(ndb_type)) {
           reg_type[reg] = Interpreter::REG_TYPE_NULL;
           break;
         }
-        const Uint32 byte_size = AttributeHeader(*entry).getByteSize();
         const char* data = reinterpret_cast<const char*>(entry + 1);
         Uint32 type = Interpreter::REG_TYPE_INT;
         Int64 value = 0;
-        Uint32 need = 0;
-        switch ((instr >> 24) & 0xFF) {
+        switch (ndb_type) {
           case NDB_TYPE_TINYINT:
-            need = 1;
-            if (byte_size >= need) value = *reinterpret_cast<const Int8*>(data);
+            value = *reinterpret_cast<const Int8*>(data);
             break;
           case NDB_TYPE_TINYUNSIGNED:
-            need = 1;
             type = Interpreter::REG_TYPE_UINT;
-            if (byte_size >= need) value = *reinterpret_cast<const Uint8*>(data);
+            value = *reinterpret_cast<const Uint8*>(data);
             break;
           case NDB_TYPE_SMALLINT:
-            need = 2;
-            if (byte_size >= need) value = sint2korr(data);
+            value = sint2korr(data);
             break;
           case NDB_TYPE_SMALLUNSIGNED:
-            need = 2;
             type = Interpreter::REG_TYPE_UINT;
-            if (byte_size >= need) value = uint2korr(data);
+            value = uint2korr(data);
             break;
           case NDB_TYPE_MEDIUMINT:
-            need = 3;
-            if (byte_size >= need) value = sint3korr(data);
+            value = sint3korr(data);
             break;
           case NDB_TYPE_MEDIUMUNSIGNED:
           case NDB_TYPE_DATE:
-            need = 3;
             type = Interpreter::REG_TYPE_UINT;
-            if (byte_size >= need) value = uint3korr(data);
+            value = uint3korr(data);
             break;
           case NDB_TYPE_INT:
-            need = 4;
-            if (byte_size >= need) value = sint4korr(data);
+            value = sint4korr(data);
             break;
           case NDB_TYPE_UNSIGNED:
-            need = 4;
             type = Interpreter::REG_TYPE_UINT;
-            if (byte_size >= need) value = uint4korr(data);
+            value = uint4korr(data);
             break;
           case NDB_TYPE_BIGINT:
           case NDB_TYPE_BIGUNSIGNED:
           case NDB_TYPE_DOUBLE:
-            need = 8;
-            if (((instr >> 24) & 0xFF) == NDB_TYPE_BIGUNSIGNED) {
+            if (ndb_type == NDB_TYPE_BIGUNSIGNED) {
               type = Interpreter::REG_TYPE_UINT;
-            } else if (((instr >> 24) & 0xFF) == NDB_TYPE_DOUBLE) {
+            } else if (ndb_type == NDB_TYPE_DOUBLE) {
               type = Interpreter::REG_TYPE_DOUBLE;
             }
-            if (byte_size >= need) memcpy(&value, data, 8);
+            memcpy(&value, data, 8);
             break;
           case NDB_TYPE_FLOAT: {
-            need = 4;
             type = Interpreter::REG_TYPE_DOUBLE;
-            if (byte_size >= need) {
-              float f;
-              memcpy(&f, data, 4);
-              const double d = static_cast<double>(f);
-              memcpy(&value, &d, 8);
-            }
+            float f;
+            memcpy(&f, data, 4);
+            const double d = static_cast<double>(f);
+            memcpy(&value, &d, 8);
             break;
           }
           default:
             /* ZNO_INSTRUCTION_ERROR in DBTUP */
             return EMB_NULL_ROW_ERROR;
         }
-        if (unlikely(byte_size < need)) return EMB_NULL_ROW_ERROR;
         reg_type[reg] = type;
         reg_value[reg] = value;
         break;

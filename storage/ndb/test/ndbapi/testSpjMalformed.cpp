@@ -61,6 +61,9 @@
  * ranges whose parameter blocks run past the parameter area of the
  * program, or whose header lengths wrap in 32 bits, which DBTUP refuses
  * (RONDB-1124).
+ * P-48 reads a linked attribute entry shorter than its type, as P-40
+ * does, for the NULL-extended row of an outer join, which failed the
+ * row; it reads as NULL there too (RONDB-1124).
  * P-38 and P-39 send CASE programs that put a string MIN / MAX and a
  * number in one aggregate slot (checkAggSlotKinds).
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
@@ -661,6 +664,24 @@ class SpjMalformedChecker {
         Interpreter::WriteInterpreterOutput(0, 0),
         Interpreter::ExitOK()};
     return embeddedCountLeaf(emb);
+  }
+
+  /* The join aggregation of makeJoinAggScanLookup with its leaf
+   * outer-joined (P-48), and keyed on the root's KOL2 instead of its
+   * primary key.  Hugo loads KOL2 with values above 10^8, none of them
+   * the key of a loaded row, so every lookup of the leaf misses, and
+   * DBLQH runs the leaf program for a NULL-extended row
+   * (Dblqh::feedOuterJoinAggNullRow,
+   * JoinAggInterpreter::evalEmbeddedForNullRow) with the linked buffer
+   * of the P_DATA token, as DBTUP runs it for a row that was found. */
+  void makeOuterJoinAggScanLookup(SpjReq &r,
+                                  const std::vector<Uint32> &linked,
+                                  const std::vector<Uint32> &leaf) {
+    makeJoinAggScanLookup(r, linked, leaf);
+    /* Root linked attribute list: {cnt=1, item0=attr 1}. */
+    r.tree[1 + QN_ScanFragNode::NodeSize] = 1u | (1u << 16);
+    ((QueryNode *)&r.tree[m_childNodeTreeOffset])->requestInfo &=
+        ~Uint32(DABits::NI_INNER_JOIN);
   }
 
   /* ---- GROUP BY column metadata (P-43, P-44) --------------------------- *
@@ -1508,6 +1529,81 @@ class SpjMalformedChecker {
     return result;
   }
 
+  int runP48() {  /* a short linked entry on an outer join's NULL row */
+    /* P-40 tests that DBTUP reads a linked entry shorter than its type
+     * as NULL for a row that was found.  P-48 tests the evaluator of an
+     * outer join's NULL-extended row, with a 4-byte entry read as a
+     * BIGINT, and with the controls of a NULL entry and an 8-byte one
+     * (without them a harness whose rows never reach the program would
+     * pass).
+     *
+     * The outer join (linkedNullLeaf, the leaf of P-40, on parent rows
+     * that have no match, makeOuterJoinAggScanLookup): DBLQH runs the
+     * program for NULL-extended rows.  Its evaluator failed the row for
+     * the short entry (EMB_NULL_ROW_ERROR, 1872); it reads it as NULL
+     * now, so the request must get SCAN_TABCONF, as for a NULL entry,
+     * while the 8-byte entry gets SCAN_TABREF.  NULL-extended rows
+     * never run on the JIT.
+     *
+     * Requests expected to succeed run first, so that none of them
+     * follows a failed scan. */
+    const std::vector<Uint32> nullLeaf = linkedNullLeaf();
+    const Uint32 w0 = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
+    const Uint32 w1 = CteLinkedAttr::encodeWord1(0);
+    const std::vector<Uint32> nullEntry = {w0, w1, (0u << 16) | 0u};
+    const std::vector<Uint32> shortEntry = {w0, w1, (0u << 16) | 4u, 7u};
+    const std::vector<Uint32> valueEntry = {w0, w1, (0u << 16) | 8u, 7u,
+                                            0u};
+    const char *ojId =
+        "P-48 outer join NULL row, linked entry shorter than its type";
+
+    SpjReq ojNull;
+    makeOuterJoinAggScanLookup(ojNull, nullEntry, nullLeaf);
+    ojNull.waitForEnd = true;
+    const Reply ojNullRep = sendScanTabReq(ojNull);
+    printReply("CONTROL (outer join NULL row, NULL linked entry)",
+               ojNullRep);
+
+    SpjReq ojShort;
+    makeOuterJoinAggScanLookup(ojShort, shortEntry, nullLeaf);
+    ojShort.waitForEnd = true;
+    const Reply ojRep = sendScanTabReq(ojShort);
+    printReply(ojId, ojRep);
+
+    SpjReq ojValue;
+    makeOuterJoinAggScanLookup(ojValue, valueEntry, nullLeaf);
+    ojValue.waitForEnd = true;
+    const Reply ojValueRep = sendScanTabReq(ojValue);
+    printReply("CONTROL (outer join NULL row, 8-byte linked entry)",
+               ojValueRep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown("P-48");
+    }
+    if (ojNullRep.gsn != GSN_SCAN_TABCONF ||
+        ojValueRep.gsn != GSN_SCAN_TABREF) {
+      g_err << "P-48 CONTROLS (outer join NULL row): expected SCAN_TABCONF "
+               "for the NULL entry and SCAN_TABREF for the 8-byte one, got "
+            << gsnName(ojNullRep.gsn) << " and " << gsnName(ojValueRep.gsn)
+            << ".  The NULL-extended rows do not reach the leaf program; "
+               "fix this before trusting the result of P-48." << endl;
+      return NDBT_FAILED;
+    }
+    if (ojRep.gsn != GSN_SCAN_TABCONF) {
+      g_err << ojId << ": FAIL -- expected SCAN_TABCONF (the entry "
+            << "reads as NULL), got " << gsnName(ojRep.gsn) << " "
+            << ojRep.errorCode << ": the NULL-row evaluator failed the row"
+            << endl;
+      return NDBT_FAILED;
+    }
+    g_info << ojId << ": PASS (all data nodes started; the entry read "
+           << "as NULL)" << endl;
+    return NDBT_OK;
+  }
+
   /* ---- P-38 / P-39: a string MIN / MAX and a number in one slot ------- *
    * A string MIN / MAX keeps in its slot a pointer to the data node's
    * copy of the value; every other aggregate keeps a number there.  A
@@ -2235,6 +2331,7 @@ CASE_STEP(runP41, runP41)
 CASE_STEP(runP43, runP43)
 CASE_STEP(runP44, runP44)
 CASE_STEP(runP45, runP45)
+CASE_STEP(runP48, runP48)
 CASE_STEP(runP38, runP38)
 CASE_STEP(runP39, runP39)
 CASE_STEP(runQ1, runQ1)
@@ -2401,6 +2498,11 @@ TESTCASE("P46",
          "interpreted range scan with two ranges whose parameter blocks "
          "run past the parameter area") {
   STEP(runP46);
+}
+TESTCASE("P48",
+         "join aggregation: a linked attribute entry shorter than its "
+         "type on an outer join's NULL-extended row") {
+  STEP(runP48);
 }
 TESTCASE("P38",
          "join aggregation: string MIN and BIGINT MIN in one slot") {

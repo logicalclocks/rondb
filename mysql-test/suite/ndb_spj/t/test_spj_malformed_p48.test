@@ -1,0 +1,19 @@
+--source include/have_ndb.inc
+
+# P-48: a join aggregation leaf that reads a linked attribute entry as a
+# type wider than the entry, for the NULL-extended row of an outer join
+# (RONDB-1124). The leaf is outer-joined and keyed on a column that holds
+# no primary key, so every lookup misses and DBLQH runs the leaf's
+# embedded program for a NULL-extended row
+# (JoinAggInterpreter::evalEmbeddedForNullRow). It reads a 4-byte entry
+# as a BIGINT, which failed the row there, where DBTUP reads it as NULL
+# for a row that was found (test_spj_malformed_p40). It reads as NULL
+# there too now. The program goes on only for a NULL, so the 4-byte
+# entry must get SCAN_TABCONF, as a NULL entry does, while an 8-byte
+# entry gets SCAN_TABREF, with every data node still started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P48
+--let $spj_case_title = P-48: join aggregation linked attribute entry shorter than its type, outer join NULL row
+--source suite/ndb_spj/include/spj_malformed_case.inc
