@@ -28057,12 +28057,6 @@ void Dbdih::check_chain_change(FragmentstorePtr fragPtr,
  * recomputes the primary replicas of every table instead.
  */
 bool Dbdih::is_rebalance_primaries_supported() {
-#ifdef ERROR_INSERT
-  if (c_rebalance_test_mode == 2) {
-    jam();
-    return false;
-  }
-#endif
   NodeRecordPtr nodePtr;
   nodePtr.i = cfirstAliveNode;
   do {
@@ -28098,20 +28092,6 @@ void Dbdih::rebalance_start_phase(Signal *signal) {
     rebalance_requester_done(signal, DihRebalanceConf::SkippedNotSupported);
     return;
   }
-#ifdef ERROR_INSERT
-  if (c_rebalance_test_mode == 1) {
-    jam();
-    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_REBALANCE, 0,
-                       cstarttype, "completed",
-                       (Int64)c_nsl_timer.elapsed_sec(),
-                       "not rebalanced: DUMP 7037 1 (test), this node is"
-                       " primary for no fragment until DUMP 7036 or a node"
-                       " failure");
-    nsl_stop_step();
-    sendSTTORRY(signal);
-    return;
-  }
-#endif
   ndbrequire(!c_rebalanceRequester.m_waiting);
   c_rebalanceRequester.m_waiting = true;
   c_rebalanceRequester.m_master_node = refToNode(cmasterdihref);
@@ -28797,24 +28777,6 @@ void Dbdih::execDEBUG_SIG(Signal *signal) {
 void Dbdih::execDUMP_STATE_ORD(Signal *signal) {
   DumpStateOrd *const &dumpState = (DumpStateOrd *)&signal->theData[0];
   Uint32 arg = dumpState->args[0];
-
-  if (arg == DumpStateOrd::DihRebalanceTestMode) {
-#ifdef ERROR_INSERT
-    /**
-     * First, since tests send it to a node held in no-start, before
-     * READ_CONFIG_REQ. See Dbdih::c_rebalance_test_mode.
-     */
-    if (signal->getLength() >= 2 && signal->theData[1] <= 2) {
-      jam();
-      c_rebalance_test_mode = signal->theData[1];
-      g_eventLogger->info("DIH rebalance test mode set to %u",
-                          c_rebalance_test_mode);
-    } else {
-      g_eventLogger->info("DUMP 7037 needs a mode: 0, 1 or 2");
-    }
-#endif
-    return;
-  }
 
   if (arg == DumpStateOrd::DihFragmentsPerNode) {
     infoEvent("Fragments per node = %u", getFragmentsPerNode());

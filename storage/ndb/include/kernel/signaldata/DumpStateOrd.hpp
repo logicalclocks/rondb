@@ -326,10 +326,6 @@ class DumpStateOrd {
     DihDumpStopPermInfo = 7035,
     // 7036 DIH master: rebalance the primary replicas on all nodes now
     DihRebalancePrimaries = 7036,
-    // 7037 <mode> DIH rebalance test mode, error insert builds: 0 normal,
-    // 1 no rebalance in start phase 120 of this node, 2 act as if a data
-    // node did not support the rebalance (set it on all nodes)
-    DihRebalanceTestMode = 7037,
     EnableUndoDelayDataWrite = 7080, // DIH+ACC+TUP
     DihSetTimeBetweenGcp = 7090,
     DihStartLcpImmediately = 7099,

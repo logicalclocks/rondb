@@ -411,13 +411,6 @@ Dbdih::Dbdih(Block_context &ctx)
   } else {
     c_diverify_queue_cnt = globalData.ndbMtTcWorkers;
   }
-#ifdef ERROR_INSERT
-  /**
-   * Here, not in initData(): tests send DUMP 7037 to a node held in
-   * no-start, before READ_CONFIG_REQ.
-   */
-  c_rebalance_test_mode = 0;
-#endif
 }  // Dbdih::Dbdih()
 
 Dbdih::~Dbdih() {

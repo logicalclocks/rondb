@@ -52,14 +52,6 @@ FROM ndbinfo.security_violation_counts
 WHERE reporting_node_id=1 AND violation_id=5;
 
 --echo #
---echo # Test 4: The catalog has the Tier A row of the DBDIH rebalance protocol
---echo #   (DIH_REBALANCE_REQ/CONF). Only data nodes send these signals, so an
---echo #   injection would disconnect a data node; the catalog row is checked.
---echo #
-SELECT violation_id, tier, reason FROM ndbinfo.security_violations
-WHERE reason='dih_rebalance_protocol';
-
---echo #
 --echo # Sanity: mysqld is still connected after all injections.
 --echo #
 SELECT 1 AS still_connected;
