@@ -1,5 +1,12 @@
-ERROR HY000: Lock wait timeout exceeded; try restarting transaction
-Level	Code	Message
-Warning	1297	Got temporary error 1204 'Temporary failure, distribution changed' from NDB
-b
-10
+neighbour	a	b
+1	1	2
+scanned_in
+1
+neighbour	a	b
+2	1	2
+scanned_in
+2
+neighbour	a	b
+3	1	2
+scanned_in
+3
