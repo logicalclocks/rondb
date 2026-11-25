@@ -132,6 +132,16 @@
  *         the fix the aggregate column stopped the node (ndbrequire)
  *         and a GROUP BY key wider than the buffer's 16 spare words was
  *         copied past its end (RONDB-1124).
+ *   OV-3  the GROUP BY key bound of the same linked row, on a CTE that
+ *         groups by two BIGINT columns and has no aggregate, so that the
+ *         key ends the row: with a region that leaves the key exactly
+ *         the room it takes every group comes back; with one word more
+ *         CTE_SCAN_REF 1268 and no rows (the second key entry would end
+ *         past the buffer).  Error insert 5164 takes each group's key
+ *         one word short, so its last entry claims more data than the
+ *         key holds: CTE_SCAN_REF 1268 again, and every group once the
+ *         insert is cleared.  Without the key check (before RONDB-1124)
+ *         DBLQH accepted both rows.
  *
  * Section 6, parking.  A consumer signal that arrives before its SETUP
  * parks on an identity placeholder; the SETUP's flush replays it, the 10
@@ -294,6 +304,22 @@ buildAggProgram_SumGroupBy(Uint32 gbColId, Uint32 sumColId)
   prog[9] = (kOpLoadCol << 26) | (COL_TYPE_BIGINT << 21) | (0 << 16) |
             sumColId;
   prog[10] = (kOpSum << 26) | (0 << 16) | 0;
+  return prog;
+}
+
+/* SELECT a, b FROM t GROUP BY a, b (OV-3): two GROUP BY columns and no
+ * aggregate slot, so a group is its key and nothing follows it. */
+static std::vector<Uint32>
+buildAggProgram_GroupByOnly(Uint32 gbColId1, Uint32 gbColId2)
+{
+  const Uint32 PROG_LEN = 10;
+  std::vector<Uint32> prog(PROG_LEN);
+  prog[0] = (AGG_MAGIC << 16) | PROG_LEN;
+  prog[1] = (2u << 16) | 0u;  /* n_gb_cols=2, n_agg_results=0 */
+  prog[2] = PUSHDOWN_AGGREGATION_VERSION;
+  prog[3] = prog[4] = prog[5] = prog[6] = prog[7] = 0;
+  prog[8] = gbColId1 << 16;
+  prog[9] = gbColId2 << 16;
   return prog;
 }
 
@@ -2810,6 +2836,88 @@ ov2(Ctx &c)
   return checkLeaks(c.ss, c.restarter, "OV-2");
 }
 
+/* OV-3: the GROUP BY key bound of the linked row of OV-2.  OV-2's key is
+ * one BIGINT, 5 words of the row, and the full section leaves 8 words,
+ * so its key always fits and only the SUM reaches the end of the
+ * buffer.  This CTE groups by a and b and has no aggregate: two key
+ * entries of 5 words each (the two type words, the AttributeHeader and
+ * the BIGINT), and nothing after them, so the key check alone decides
+ * whether a row fits.  (The NDB API sends a program without aggregates
+ * only for a single-row CTE; DBLQH takes one for any CTE.)  With the
+ * region of OV3_FITS_WORDS the key ends on the last word of the buffer
+ * and every group comes back; one word more leaves 4 words for the
+ * second entry, which must fail the filter with 1268.  Before the fix
+ * that entry was copied 1 word past the buffer, into its 16 spare words
+ * (a wider key went past them), and the row was accepted.
+ * Error insert 5164 takes each group's key one word short in
+ * buildCteLinkedBuffer, so the AttributeHeader of its second entry
+ * claims 2 data words where the key holds 1, the corrupt group record
+ * the check also refuses; with no parent region the buffer has room, so
+ * only that check can fail the filter.  Neither failure may harm the
+ * CTE. */
+static const Uint32 OV3_KEY_WORDS = 2 * (2 + 3);
+static const Uint32 OV3_FITS_WORDS = OV_ROW_BUFFER_WORDS - OV3_KEY_WORDS;
+static const Uint32 OV3_SHORT_WORDS = OV3_FITS_WORDS + 1;
+
+static int
+ov3(Ctx &c)
+{
+  const std::vector<Uint32> prog =
+      buildAggProgram_GroupByOnly(c.meta.attrIdA, c.meta.attrIdB);
+  Ctx g = {c.ss, c.con, c.restarter, c.meta, prog, c.node, c.con2, c.ndbq};
+  std::vector<CteNode> nodes;
+  Uint32 rows = 0;
+  if (cteSetupAndScan(g, nodes, rows) != 0) return -1;
+  if (cteCompleteAll(g, nodes, 0, 0) != 0) return -1;
+
+  /* Control: the key ends on the last word of the buffer. */
+  const std::vector<Uint32> fits = buildLinkedFilterAttrInfo(OV3_FITS_WORDS);
+  Uint32 groups = 0;
+  if (cteScanGroups(g, nodes, groups, &fits) != 0) return -1;
+  if (groups != rows) {
+    fprintf(stderr, "OV-3: the filter accepted %u groups whose key just "
+                    "fits, expected %u\n", groups, rows);
+    return -1;
+  }
+
+  const std::vector<Uint32> shortOfRoom =
+      buildLinkedFilterAttrInfo(OV3_SHORT_WORDS);
+  {
+    CteScanParams p(nodes[0], c.ss);
+    p.attrInfo = &shortOfRoom;
+    if (cteScanExpectRef(c.ss, p, "OV-3 GROUP BY key past the linked buffer",
+                         ZCTE_LOOKUP_FILTER_ERROR) != 0)
+      return -1;
+  }
+
+  const std::vector<Uint32> noParent = buildLinkedFilterAttrInfo(0);
+  {
+    ErrorInsertGuard guard = {c.restarter, nodes[0].node, true};
+    if (!setErrorInsert(c.restarter, nodes[0].node, 5164, 0)) return -1;
+    CteScanParams p(nodes[0], c.ss);
+    p.attrInfo = &noParent;
+    if (cteScanExpectRef(c.ss, p, "OV-3 GROUP BY key entry past the key",
+                         ZCTE_LOOKUP_FILTER_ERROR) != 0)
+      return -1;
+    if (!guard.clear()) return -1;
+  }
+  /* The same filter once the insert is cleared. */
+  if (cteScanGroups(g, nodes, groups, &noParent) != 0) return -1;
+  if (groups != rows) {
+    fprintf(stderr, "OV-3: the filter accepted %u groups after 5164, "
+                    "expected %u\n", groups, rows);
+    return -1;
+  }
+  /* The CTE itself is unharmed. */
+  if (cteScanGroups(g, nodes, groups) != 0) return -1;
+  if (groups != rows) {
+    fprintf(stderr, "OV-3: %u groups scanned, expected %u\n", groups, rows);
+    return -1;
+  }
+  if (cteReleaseAll(g, nodes) != 0) return -1;
+  return checkLeaks(c.ss, c.restarter, "OV-3");
+}
+
 /* ------------------------------------------------------------------ */
 /* Section 6: parking                                                  */
 /* ------------------------------------------------------------------ */
@@ -3824,6 +3932,7 @@ int main(int argc, char **argv)
           {"ID-11 keyed COMPLETE of another query or a duplicate", id11},
           {"OV-1 CTE scan row wider than the output buffer", ov1},
           {"OV-2 CTE filter row wider than the linked buffer", ov2},
+          {"OV-3 CTE filter GROUP BY key past the linked buffer", ov3},
           {"PK-1a owner-plane signals parked and replayed", pk1OwnerPlane},
           {"PK-1b consumer feeds parked and replayed", pk1Feeds},
           {"PK-2 identity-addressed COMPLETE", pk2},

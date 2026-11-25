@@ -245,7 +245,13 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
       continueJoinAggSend), once per insert on each LQH instance: the API
       is promised more rows than arrive and its wait for them ends in its
       receive timeout (testJoinAggNdbApi --only 25).
-Next DBLQH 5164
+5164: Take the GROUP BY key of a CTE group one word short when Dblqh
+      buildCteLinkedBuffer builds its linked row, so that the last key
+      entry's AttributeHeader claims a data word more than the key holds,
+      as in a corrupt group record: a CTE filter (CTE_SCAN_REQ,
+      CTE_LOOKUP_REQ) answers 1268 and a CTE feed 1265. Cleared by the
+      test (testCteProtocol OV-3).
+Next DBLQH 5165
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8135

@@ -21901,7 +21901,16 @@ bool Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
    * was copied after them without a check against its end (RONDB-1124).
    * Each key entry must lie inside the key and fit in the buffer. */
   const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
-  const Uint32 keyWords = keyLen >> 2;
+  Uint32 keyWords = keyLen >> 2;
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5164) && keyWords > 0) {
+    /* testCteProtocol OV-3: the key one word short, so that its last
+     * entry claims a data word more than the key holds, as in a
+     * corrupt group record. */
+    jam();
+    keyWords--;
+  }
+#endif
   Uint32 kp = 0;
   Uint32 gbIdx = 0;
   while (kp < keyWords) {
