@@ -1559,6 +1559,10 @@ void Dbtc::execREAD_CONFIG_REQ(Signal *signal) {
   ndb_mgm_get_int_parameter(p, CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION, &val);
   c_proactive_deadlock_detect = (val != 0);
 
+  val = 0;
+  ndb_mgm_get_int_parameter(p, CFG_DB_DISALLOW_DIRTY_WRITES, &val);
+  m_disallow_dirty_writes = (val != 0);
+
   val = 1500;
   ndb_mgm_get_int_parameter(p, CFG_DB_HEARTBEAT_INTERVAL, &val);
   cDbHbInterval = (val < 10) ? 10 : val;
@@ -3804,6 +3808,24 @@ bool Dbtc::hasOp(ApiConnectRecordPtr transPtr, Uint32 opPtrI) {
   return false;
 }
 
+bool Dbtc::abort_if_dirty_write(Signal *signal, ApiConnectRecordPtr transPtr,
+                                SectionHandle &handle, Uint32 requestInfo) {
+  if (!TcKeyReq::getDirtyFlag(requestInfo) ||
+      TcKeyReq::getOperationType(requestInfo) != ZWRITE) {
+    return false;
+  }
+  jam();
+  releaseSections(handle);
+  /* The last request in a batch must trigger the abort reply, including
+   * when we reject an index request before its index lookup. */
+  if (TcKeyReq::getExecuteFlag(requestInfo)) {
+    transPtr.p->m_flags |= ApiConnectRecord::TF_EXEC_FLAG;
+  }
+  terrorCode = ZDIRTY_WRITES_DISABLED;
+  abortErrorLab(signal, transPtr);
+  return true;
+}
+
 /*****************************************************************************/
 /*                               T C K E Y R E Q                             */
 /* AFTER HAVING ESTABLISHED THE CONNECT, THE APPLICATION BLOCK SENDS AN      */
@@ -4509,6 +4531,11 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     TCKEY_abort(signal, 3, apiConnectptr);
     return;
   }  // if
+
+  if (unlikely(m_disallow_dirty_writes) &&
+      abort_if_dirty_write(signal, apiConnectptr, handle, Treqinfo)) {
+    return;
+  }
 
   if (unlikely(seizeTcRecord(signal, apiConnectptr) != 0)) {
     releaseSections(handle);
@@ -24784,6 +24811,11 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
       transPtr.i,
       __LINE__));
     abortErrorLab(signal, transPtr);
+    return;
+  }
+
+  if (unlikely(m_disallow_dirty_writes) &&
+      abort_if_dirty_write(signal, transPtr, handle, tcIndxRequestInfo)) {
     return;
   }
 

@@ -317,7 +317,7 @@
   CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION in the 26.10 merge (and 705
   by upstream before that): a duplicate id makes the DBLQH proxy read the
   OTHER parameter as the JIT mode -> JIT silently OFF node-wide. Keep
-  this the highest DB id; check for duplicates after every merge.
+  assigned IDs stable and check for duplicates after every merge.
   2026-09-18: 707 went to NodeStartLogReportFrequency (released 25.10,
   lower version wins), so 707/708/709 above moved to 708/709/710. */
 /* Values for CFG_DB_COMPILED_INTERPRETER (CompiledInterpreter enum param):
@@ -326,6 +326,8 @@
 #define NDB_COMPILED_INTERPRETER_OFF   0  /* JIT disabled (interpreter only) — default */
 #define NDB_COMPILED_INTERPRETER_AUTO  1  /* JIT every eligible program (x86_64 / aarch64 only) */
 #define NDB_COMPILED_INTERPRETER_ON    2  /* force JIT (reserved; == AUTO today) */
+
+#define CFG_DB_DISALLOW_DIRTY_WRITES 711
 
 /* End RonDB only configuration parameters */
 

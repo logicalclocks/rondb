@@ -583,6 +583,7 @@ ErrorBundle ErrorCodes[] = {
   { 2202,  DMEC, AE, "Parallel Ordered Index scan flag set requires ReadCommittedMode" },
   { 2204,  DMEC, AE, "Scan pruned to one partition is not supported on table with partition hash fanout" },
   { 2207,  DMEC, AE, "A request names another rate limit user than its transaction" },
+  { 2208,  DMEC, AE, "Dirty writes are disabled by DisallowDirtyWrites" },
 
   /** 
    * Scan application errors

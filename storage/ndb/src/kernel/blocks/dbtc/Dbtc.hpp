@@ -257,6 +257,7 @@
 #define ZLQH_NO_SUCH_FRAGMENT_ID 1235
 #define ZLQHKEY_PROTOCOL_ERROR 1237
 #define ZDIRTY_OPERATION_ERROR 2200
+#define ZDIRTY_WRITES_DISABLED 2207
 #endif
 
 class Dbdih;
@@ -3960,6 +3961,7 @@ class Dbtc : public SimulatedBlock {
   // detection); only the timeout backstop resolves deadlocks.  Config:
   // EnableProactiveDeadlockDetection (default false; MTR enables it).
   bool c_proactive_deadlock_detect = false;
+  bool m_disallow_dirty_writes = false;
 
   bool m_dbinfo_full_apiconnectrecord;
 
@@ -3971,6 +3973,8 @@ class Dbtc : public SimulatedBlock {
                       bool to_start,
                       Uint32 user_id,
                       Uint32 user_id_version);
+  bool abort_if_dirty_write(Signal *, ApiConnectRecordPtr, SectionHandle &,
+                            Uint32 requestInfo);
   bool check_tckey_queueing(Signal *signal,
                             DatabaseRecordPtr &databaserRecordPtr,
                             SectionHandle &handle,
