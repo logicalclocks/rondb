@@ -366,9 +366,8 @@ class Dbdih : public SimulatedBlock {
    * fragment and sends more along the new one can see a later operation
    * overtake an earlier one in some replica.
    *
-   * m_chain_clock is a logical clock that ticks whenever the primary of a
-   * fragment, or the order of the replicas the fragment already had,
-   * changes; adding or removing a replica alone does not count. The
+   * m_chain_clock ticks when a fragment changes primary or when a backup
+   * present in both chains starts receiving writes from a different node. The
    * changed fragment gets the new value as Fragmentstore::m_chain_stamp.
    * Both are written inside the table's write lock section, after the
    * lock is taken.

@@ -26188,7 +26188,10 @@ void Dbdih::insertAlive(NodeRecordPtr newNodePtr) {
  * not in recovery.
  */
 void Dbdih::insertBackup(FragmentstorePtr fragPtr, Uint32 nodeId) {
-  for (Uint32 i = fragPtr.p->fragReplicas; i > 1; i--) {
+  const Uint32 oldCount = fragPtr.p->fragReplicas;
+  Uint16 oldNodes[MAX_REPLICAS];
+  memcpy(oldNodes, fragPtr.p->activeNodes, sizeof(oldNodes));
+  for (Uint32 i = oldCount; i > 1; i--) {
     jam();
     ndbrequire(i < MAX_REPLICAS && i > 0);
     Uint16 newNode = fragPtr.p->activeNodes[i - 1];
@@ -26196,6 +26199,8 @@ void Dbdih::insertBackup(FragmentstorePtr fragPtr, Uint32 nodeId) {
   }//for
   fragPtr.p->activeNodes[1] = nodeId;
   fragPtr.p->fragReplicas++;
+  check_chain_change(fragPtr, oldNodes, oldCount, fragPtr.p->activeNodes,
+                     fragPtr.p->fragReplicas);
 }  // Dbdih::insertBackup()
 
 void Dbdih::insertDeadNode(NodeRecordPtr newNodePtr) {
@@ -27984,19 +27989,11 @@ void Dbdih::updateNodeInfo(Signal *signal, TabRecordPtr tabPtr, FragmentstorePtr
                     fragPtr.p->changeNumber));
 }//Dbdih::updateNodeInfo()
 
-static bool node_in_chain(const Uint16 *nodes, Uint32 count, Uint16 nodeId) {
-  for (Uint32 k = 0; k < count; k++) {
-    if (nodes[k] == nodeId) return true;
-  }
-  return false;
-}
-
 /**
  * Tick m_chain_clock and stamp the fragment with it if its replica chain
  * changed in a way that lets a later operation of a transaction overtake
- * an earlier one in some replica: another primary, or the replicas present
- * in both chains in another order. A replica added or removed alone does
- * not count, nor a fragment that had no chain before (a new table).
+ * an earlier one. This can happen when the primary changes or an existing
+ * backup receives the two operations from different predecessors.
  * Called inside the table's write lock section.
  */
 void Dbdih::check_chain_change(FragmentstorePtr fragPtr,
@@ -28007,22 +28004,13 @@ void Dbdih::check_chain_change(FragmentstorePtr fragPtr,
     return;
   }
   bool changed = (oldNodes[0] != newNodes[0]);
-  Uint32 i = 0;
-  Uint32 j = 0;
-  while (!changed) {
-    while (i < oldCount && !node_in_chain(newNodes, newCount, oldNodes[i])) {
-      i++;
+  for (Uint32 i = 1; i < oldCount && !changed; i++) {
+    for (Uint32 j = 1; j < newCount; j++) {
+      if (oldNodes[i] == newNodes[j]) {
+        changed = (oldNodes[i - 1] != newNodes[j - 1]);
+        break;
+      }
     }
-    while (j < newCount && !node_in_chain(oldNodes, oldCount, newNodes[j])) {
-      j++;
-    }
-    if (i == oldCount || j == newCount) {
-      /* Both lists hold the same common nodes, so both end together */
-      break;
-    }
-    changed = (oldNodes[i] != newNodes[j]);
-    i++;
-    j++;
   }
   if (changed) {
     jam();

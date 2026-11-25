@@ -116,20 +116,14 @@ primary recalculation at node failure (`removeNodeFromTable()`).
 ### Step 2: chain clock and fragment stamps in DBDIH, check in DBTC (implemented)
 
 - DBDIH keeps a node-wide 64-bit logical clock, `m_chain_clock`, and each
-  fragment a 64-bit stamp, `Fragmentstore::m_chain_stamp`. When the primary
-  or the order of existing replicas of a fragment changes, the clock ticks
-  and the fragment gets the new value as its stamp. Adding a replica at
-  STORED and removing a failed node do not count (the distribution key
-  covers the first, DBTC aborts transactions with operations on a failed
-  node). A new fragment has stamp 0.
-- The tick is in `check_chain_change()`, called by `updateNodeInfo()` and
-  `make_table_use_new_node_order()` inside the table's write lock section.
-  It compares the old and new chain: another primary, or the nodes present
-  in both in another order. A fragment with no chain before (a new table)
-  does not count. Any code that changes chains only has to follow this
-  rule, so the graceful-stop switch (one fragment per section), the
-  recalculation at node failure and the rebalance in step 3 (any batch
-  size) need nothing else.
+  fragment a 64-bit stamp, `Fragmentstore::m_chain_stamp`. The clock ticks
+  when the primary changes or a backup present in both chains receives
+  writes from a different predecessor. The fragment gets the new clock
+  value. A new fragment has stamp 0.
+- `insertBackup()`, `updateNodeInfo()` and `make_table_use_new_node_order()`
+  call `check_chain_change()` under the table write lock. At STORED,
+  changing `[2,4]` to `[2,3,4]` stamps the fragment because node 4 now
+  receives writes from node 3. Growing `[2]` to `[2,3]` preserves the stamp.
 - `execDIGETNODESREQ` returns the fragment's stamp (the larger of the two
   while a reorg moves rows, DBTC writes both) and the clock in
   `DiGetNodesConf` (two words each, only for direct execution), read inside
