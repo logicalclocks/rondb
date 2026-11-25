@@ -172,6 +172,7 @@ void Dblqh::initData()
   tablerec = 0;
   c_send_database_quota_rec = 0;
   m_num_send_database_quota_rep = 0;
+  m_num_deferred_quota_reports = 0;
   tcNodeFailRecord = 0;
 
   // Records with constant sizes

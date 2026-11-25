@@ -6088,6 +6088,21 @@ void Dblqh::execSEND_PACKED(Signal *signal) {
                DatabaseQuotaRep::SignalLength, JBB);
   }
   m_num_send_database_quota_rep = 0;
+  if (unlikely(m_num_deferred_quota_reports > 0)) {
+    /* Reports the full buffer turned away: appended now, into the emptied
+     * buffer, and sent at the next drain. The hash walk runs only while
+     * such a record exists. */
+    jam();
+    NDB_TICKS now = getHighResTimer();
+    DatabaseRecordPtr dbPtr;
+    for (bool more = m_databaseRecordHash.first(dbPtr);
+         more && m_num_deferred_quota_reports > 0;
+         more = m_databaseRecordHash.next(dbPtr)) {
+      if (dbPtr.p->m_report_deferred) {
+        send_database_quota_rep(dbPtr, now);
+      }
+    }
+  }
   if (lock_drain) {
     unlock_database_hash();
   }
@@ -40208,6 +40223,7 @@ Dblqh::execCREATE_DB_REQ(Signal *signal) {
   dbPtr.p->m_last_rep_disk_space_page32k = 0;
   dbPtr.p->m_is_memory_quota_exceeded = false;
   dbPtr.p->m_is_disk_quota_exceeded = false;
+  dbPtr.p->m_report_deferred = false;
   dbPtr.p->m_continue_delay = 0;
   dbPtr.p->m_is_user = req.isUser;
   change_report_limits(dbPtr.p,
@@ -40401,6 +40417,10 @@ Dblqh::execDROP_DB_REQ(Signal *signal) {
     instance(), dbPtr.p->m_is_user));
   ndbrequire(dbPtr.p->m_is_user == req.isUser);
   lock_database_hash();
+  if (dbPtr.p->m_report_deferred) {
+    ndbrequire(m_num_deferred_quota_reports > 0);
+    m_num_deferred_quota_reports--;
+  }
   m_databaseRecordHash.remove(dbPtr);
   m_databaseRecordPool.release(dbPtr);
   unlock_database_hash();
@@ -40652,10 +40672,22 @@ Dblqh::send_database_quota_rep(DatabaseRecordPtr dbPtr,
    * threads fill it between two drains. A full buffer keeps the record's
    * usage pending: its baselines, its rate counter and its report time are
    * left as they are, so the next charge or update reports the whole
-   * difference, instead of the guard below stopping the node. */
+   * difference, instead of the guard below stopping the node. The record is
+   * remembered, so that execSEND_PACKED retries it after the drain even if
+   * nothing touches it again: a release that should clear an exceeded quota
+   * must not wait for the next update. */
   if (unlikely(m_num_send_database_quota_rep >=
                c_send_database_quota_rep_file_size)) {
+    if (!dbPtr.p->m_report_deferred) {
+      dbPtr.p->m_report_deferred = true;
+      m_num_deferred_quota_reports++;
+    }
     return;
+  }
+  if (unlikely(dbPtr.p->m_report_deferred)) {
+    dbPtr.p->m_report_deferred = false;
+    ndbrequire(m_num_deferred_quota_reports > 0);
+    m_num_deferred_quota_reports--;
   }
   Uint32 requestInfo = 0;
   Uint32 before_memory_value_sent = dbPtr.p->m_last_rep_in_memory_page8k;
