@@ -6052,10 +6052,11 @@ void Dblqh::execSEND_PACKED(Signal *signal) {
   cpackedListIndex = 0;
 
   /* Send buffered DATABASE_QUOTA_REP signals. With query workers
-   * configured, query threads append user-rate reports to this buffer
-   * under the database hash mutex (update_rate_usage), so the drain holds
-   * it too: an append landing between the count read and the reset below
-   * would otherwise be wiped unsent. */
+   * configured, every producer (update_rate_usage, update_memory_usage,
+   * update_disk_space_usage, execCONNECT_TABLE_DB_REQ) appends to this
+   * buffer from any thread under the database hash mutex, so the drain
+   * holds it too: an append landing between the count read and the reset
+   * below would otherwise be wiped unsent. */
   const bool lock_drain = globalData.ndbMtQueryWorkers > 0;
   if (lock_drain) {
     lock_database_hash();
@@ -40302,9 +40303,10 @@ Dblqh::execCONNECT_TABLE_DB_REQ(Signal *signal) {
   /* Transfer statistics from table to database record */
   dbPtr.p->m_in_memory_page8k += tabPtr.p->m_in_memory_page8k;
   dbPtr.p->m_disk_space_page32k += tabPtr.p->m_disk_space_page32k;
-  unlock_database_hash();
+  /* The report joins the buffer under the mutex, as every producer's does. */
   NDB_TICKS now = getHighResTimer();
   send_database_quota_rep(dbPtr, now);
+  unlock_database_hash();
 
   ConnectTableDbConf* conf = (ConnectTableDbConf*)signal->getDataPtrSend();
   conf->senderRef = reference();
@@ -40430,7 +40432,14 @@ Dblqh::update_memory_usage(Uint32 tableId,
    * Keep updating the table statistics, this means we can handle the
    * situation where a database is created, dropped and created again.
    */
-  if (unlikely(m_is_query_block)) {
+  /* Called on the owning LDM instance from any thread (DBTUP and DBACC
+   * reach it through m_ldm_instance_used), so m_is_query_block is never set
+   * here. With query workers configured the owning thread and the query
+   * threads update these records and append quota reports concurrently,
+   * so the hash mutex is taken under the rule update_rate_usage and the
+   * execSEND_PACKED drain follow. */
+  const bool need_lock = globalData.ndbMtQueryWorkers > 0;
+  if (need_lock) {
     lock_database_hash();
   }
   Uint32 tab_in_memory_page8k =
@@ -40475,7 +40484,7 @@ Dblqh::update_memory_usage(Uint32 tableId,
       send_database_quota_rep(dbPtr, now);
     }
   }
-  if (unlikely(m_is_query_block)) {
+  if (need_lock) {
     unlock_database_hash();
   }
 }
@@ -40495,7 +40504,9 @@ Dblqh::update_disk_space_usage(Uint32 tableId,
    * Keep updating the table statistics, this means we can handle the
    * situation where a database is created, dropped and created again.
    */
-  if (unlikely(m_is_query_block)) {
+  /* Same rule as update_memory_usage: the owning instance, any thread. */
+  const bool need_lock = globalData.ndbMtQueryWorkers > 0;
+  if (need_lock) {
     lock_database_hash();
   }
   Uint32 tab_disk_space_page32k =
@@ -40539,7 +40550,7 @@ Dblqh::update_disk_space_usage(Uint32 tableId,
       send_database_quota_rep(dbPtr, now);
     }
   }
-  if (unlikely(m_is_query_block)) {
+  if (need_lock) {
     unlock_database_hash();
   }
 }
