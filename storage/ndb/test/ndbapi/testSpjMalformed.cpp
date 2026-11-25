@@ -62,8 +62,9 @@
  * program, or whose header lengths wrap in 32 bits, which DBTUP refuses
  * (RONDB-1124).
  * P-48 reads a linked attribute entry shorter than its type, as P-40
- * does, for the NULL-extended row of an outer join, which failed the
- * row; it reads as NULL there too (RONDB-1124).
+ * does, on the JIT (test_spj_malformed_p48_jit), which decoded it as a
+ * value, and for the NULL-extended row of an outer join, which failed
+ * the row; it reads as NULL there too (RONDB-1124).
  * P-38 and P-39 send CASE programs that put a string MIN / MAX and a
  * number in one aggregate slot (checkAggSlotKinds).
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
@@ -660,6 +661,35 @@ class SpjMalformedChecker {
         Interpreter::ReadLinkedColumnIntoReg(1, 0, NDB_TYPE_BIGINT),
         Interpreter::BRANCH_REG_EQ_NULL | (1u << 6) | (2u << 16),
         Interpreter::ExitOK(),
+        Interpreter::LoadConst16(0, 0),
+        Interpreter::WriteInterpreterOutput(0, 0),
+        Interpreter::ExitOK()};
+    return embeddedCountLeaf(emb);
+  }
+
+  /* A leaf (P-48) whose rows load linked position 0 as a BIGINT and
+   * compare it with 7, then COUNT(1):
+   *   0 READ_LINKED_COLUMN_TO_REG of position 0, BIGINT, into register 1
+   *   1 LOAD_CONST16 7 into register 2
+   *   2 BRANCH_EQ_REG_REG of registers 1 and 2 to word 3
+   *   3 LOAD_CONST16 0 into register 0
+   *   4 WRITE_INTERPRETER_OUTPUT 0 of register 0: go on after it
+   *   5 EXIT_OK
+   * Both outcomes of the compare go on, so a row that reads a value is
+   * counted, while DBTUP fails a row that reads NULL: a compare with a
+   * NULL register is ZREGISTER_INIT_ERROR, and the row 1872.  So the
+   * scan gets SCAN_TABCONF when every row reads a value and SCAN_TABREF
+   * when they read NULL.  The JIT compiles the program
+   * (ndb_jit_bridge.c: OP_LOAD_LINKED_COL, a constant and an integer
+   * compare, without a NULL guard); its registers hold no NULL, and a
+   * row whose load would give NULL takes the per-row fallback, which
+   * runs it on DBTUP's interpreter. */
+  static std::vector<Uint32> linkedCompareLeaf() {
+    const std::vector<Uint32> emb = {
+        Interpreter::ReadLinkedColumnIntoReg(1, 0, NDB_TYPE_BIGINT),
+        Interpreter::LoadConst16(2, 7),
+        Interpreter::Branch(Interpreter::BRANCH_EQ_REG_REG, 2, 1) |
+            (1u << 16),
         Interpreter::LoadConst16(0, 0),
         Interpreter::WriteInterpreterOutput(0, 0),
         Interpreter::ExitOK()};
@@ -1529,13 +1559,22 @@ class SpjMalformedChecker {
     return result;
   }
 
-  int runP48() {  /* a short linked entry on an outer join's NULL row */
+  int runP48() {  /* a short linked entry: the JIT, an outer join */
     /* P-40 tests that DBTUP reads a linked entry shorter than its type
-     * as NULL for a row that was found.  P-48 tests the evaluator of an
-     * outer join's NULL-extended row, with a 4-byte entry read as a
-     * BIGINT, and with the controls of a NULL entry and an 8-byte one
-     * (without them a harness whose rows never reach the program would
-     * pass).
+     * as NULL, but on the interpreter only, and for a row that was
+     * found.  P-48 tests the two other readers of such an entry, each
+     * with a 4-byte entry read as a BIGINT, and with the controls of a
+     * NULL entry and an 8-byte one (without them a harness whose rows
+     * never reach the program would pass).
+     *
+     * The compare (linkedCompareLeaf), on rows that are found: with the
+     * JIT on (test_spj_malformed_p48_jit) the program runs compiled.
+     * ndb_jit_h_load_linked_col decoded 8 bytes from the entry, and the
+     * row was counted; it now takes the per-row fallback, where DBTUP
+     * reads NULL and fails the row, so the request must get
+     * SCAN_TABREF, as for a NULL entry, while the 8-byte entry gets
+     * SCAN_TABCONF.  With the JIT off the rows run on DBTUP's
+     * interpreter, with the same results.
      *
      * The outer join (linkedNullLeaf, the leaf of P-40, on parent rows
      * that have no match, makeOuterJoinAggScanLookup): DBLQH runs the
@@ -1547,6 +1586,7 @@ class SpjMalformedChecker {
      *
      * Requests expected to succeed run first, so that none of them
      * follows a failed scan. */
+    const std::vector<Uint32> compareLeaf = linkedCompareLeaf();
     const std::vector<Uint32> nullLeaf = linkedNullLeaf();
     const Uint32 w0 = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
     const Uint32 w1 = CteLinkedAttr::encodeWord1(0);
@@ -1554,8 +1594,15 @@ class SpjMalformedChecker {
     const std::vector<Uint32> shortEntry = {w0, w1, (0u << 16) | 4u, 7u};
     const std::vector<Uint32> valueEntry = {w0, w1, (0u << 16) | 8u, 7u,
                                             0u};
+    const char *cmpId = "P-48 compare of a linked entry shorter than its type";
     const char *ojId =
         "P-48 outer join NULL row, linked entry shorter than its type";
+
+    SpjReq cmpValue;
+    makeJoinAggScanLookup(cmpValue, valueEntry, compareLeaf);
+    cmpValue.waitForEnd = true;
+    const Reply cmpValueRep = sendScanTabReq(cmpValue);
+    printReply("CONTROL (compare, 8-byte linked entry)", cmpValueRep);
 
     SpjReq ojNull;
     makeOuterJoinAggScanLookup(ojNull, nullEntry, nullLeaf);
@@ -1577,11 +1624,32 @@ class SpjMalformedChecker {
     printReply("CONTROL (outer join NULL row, 8-byte linked entry)",
                ojValueRep);
 
+    SpjReq cmpNull;
+    makeJoinAggScanLookup(cmpNull, nullEntry, compareLeaf);
+    cmpNull.waitForEnd = true;
+    const Reply cmpNullRep = sendScanTabReq(cmpNull);
+    printReply("CONTROL (compare, NULL linked entry)", cmpNullRep);
+
+    SpjReq cmpShort;
+    makeJoinAggScanLookup(cmpShort, shortEntry, compareLeaf);
+    cmpShort.waitForEnd = true;
+    const Reply cmpRep = sendScanTabReq(cmpShort);
+    printReply(cmpId, cmpRep);
+
     /* Give a crash time to surface, then check status. */
     NdbSleep_MilliSleep(SettleMillis);
 
     if (!clusterHealthy()) {
       return failNodeDown("P-48");
+    }
+    if (cmpValueRep.gsn != GSN_SCAN_TABCONF ||
+        cmpNullRep.gsn != GSN_SCAN_TABREF) {
+      g_err << "P-48 CONTROLS (compare): expected SCAN_TABCONF for the "
+               "8-byte entry and SCAN_TABREF for the NULL one, got "
+            << gsnName(cmpValueRep.gsn) << " and " << gsnName(cmpNullRep.gsn)
+            << ".  The rows do not reach the leaf program; fix this before "
+               "trusting the result of P-48." << endl;
+      return NDBT_FAILED;
     }
     if (ojNullRep.gsn != GSN_SCAN_TABCONF ||
         ojValueRep.gsn != GSN_SCAN_TABREF) {
@@ -1592,6 +1660,13 @@ class SpjMalformedChecker {
                "fix this before trusting the result of P-48." << endl;
       return NDBT_FAILED;
     }
+    if (cmpRep.gsn != GSN_SCAN_TABREF) {
+      g_err << cmpId << ": FAIL -- expected SCAN_TABREF (the entry reads "
+            << "as NULL), got " << gsnName(cmpRep.gsn)
+            << ": the entry was decoded as a value (with the JIT on, by "
+               "ndb_jit_h_load_linked_col)" << endl;
+      return NDBT_FAILED;
+    }
     if (ojRep.gsn != GSN_SCAN_TABCONF) {
       g_err << ojId << ": FAIL -- expected SCAN_TABCONF (the entry "
             << "reads as NULL), got " << gsnName(ojRep.gsn) << " "
@@ -1599,8 +1674,8 @@ class SpjMalformedChecker {
             << endl;
       return NDBT_FAILED;
     }
-    g_info << ojId << ": PASS (all data nodes started; the entry read "
-           << "as NULL)" << endl;
+    g_info << "P-48: PASS (all data nodes started; the entry read as NULL "
+           << "on found rows and on NULL-extended rows)" << endl;
     return NDBT_OK;
   }
 
@@ -2501,7 +2576,8 @@ TESTCASE("P46",
 }
 TESTCASE("P48",
          "join aggregation: a linked attribute entry shorter than its "
-         "type on an outer join's NULL-extended row") {
+         "type, compared (on the JIT when it is on) and on an outer "
+         "join's NULL-extended row") {
   STEP(runP48);
 }
 TESTCASE("P38",
