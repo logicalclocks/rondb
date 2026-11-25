@@ -283,8 +283,8 @@ capacity number is per cluster: each cluster has its own cap, its own thread cou
 its own allocated total, so a single global bar is meaningful only on a one-cluster
 deployment. Each cluster&rsquo;s section header shows, once, <em>cap · groups · other ·
 free</em>: the configured cap (section 14), the sum of the budgets desired on that
-cluster (the section 11 sum, so a fully overridden group does not appear or count
-there), the budget held outside groups, operator <code>USER</code> entries and database
+cluster (the section 11 sum, so a fully overridden group does not count there and is
+listed only as a note, which still selects it), the budget held outside groups, operator <code>USER</code> entries and database
 quotas carrying a <code>rate-per-sec</code>, and what remains, all read live per data
 node through <code>USER CAPACITY</code> (13.3). Under the header sit the groups desired
 on that cluster, an every-cluster group appearing in each section with that
@@ -315,7 +315,9 @@ rows and marks the group row deleted, and the immediate pass drops the group&rsq
 targeted cluster; an account another group still covers is repointed there, and one no
 group covers runs unmetered afterwards (<a href="#rules">section 11</a>).
 Delete group first opens a confirmation naming the aliases and the <code>USER</code> it
-drops and whose work goes unmetered; once confirmed, the group leaves the list at once,
+drops, whose work goes unmetered on which cluster, and each cluster&rsquo;s groups
+total before and after, which rises when a named override goes and the every-cluster
+group it overrode comes back; once confirmed, the group leaves the list at once,
 because the list skips deleted rows. A cluster the immediate pass cannot reach is
 cleaned by a later pass (section 10).
 Membership churn never passes through this page: when someone joins or leaves a covered
@@ -968,7 +970,7 @@ USER ALIAS SET Recommender2_rosa9e1f --target=recommender2_rl</code></pre>
     order so a cap refusal always lands on the same group. One state is not repairable
     by ordering: a total already past the cap, from database quotas and operator entries
     sharing the pool or from a restart onto fewer threads (a restart never refuses);
-    the pass then records <em>refused</em> (error 1235) and the page shows it,
+    the pass then records <em>refused</em> (error 1235 for a create, 1236 for an alter) and the page shows it,
     rather than retrying silently forever. The single cap decided in section 14 keeps
     legality history-independent: every configuration the cluster accepts can be
     reinstalled from scratch, and under section 11&rsquo;s sum rule Hopsworks never

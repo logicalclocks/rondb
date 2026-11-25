@@ -150,10 +150,12 @@ Hopsworks (`<repos>/hopsworks`):
   decisions; ask before resolving any.
 - RonDB per-name metering (apikey mode in RDRS, mysqld account tagging): merged on 26.02-main.
 - RDRS username mode: merged onto the `RONDB-1158` branch (from `origin/RONDB-978-Cont`).
-- A v1.0 implementation (scoped kernel aliases, RDRS sync loop, FG/FS admin page) exists
-  as five draft PRs (rondb#1234, rondb#1235, hopsworks-ee#3776, hopsworks-front#2280,
-  rondb-helm#270); it is being reshaped to v2.0. The query-thread fix (rondb#1235) is
-  design-independent and stands.
-- Next: rework the branches to v2.0 (shrink the kernel alias to one target, drop the
-  RDRS sync series, move provisioning into hopsworks-ee, simplify the admin page and
-  helm values), and refresh the JIRA description.
+- The v2.0 implementation is built and in review as six draft PRs: rondb#1234 (kernel
+  `USER ALIAS` with one target, rate cap, `USER CAPACITY`, `MaxNoOfUserObjects`,
+  capability gate, ClusterJ tagging), rondb#1235 (the query-thread charge fix, design
+  independent), hopsworks-ee#3776 (tables, save rules, installer, admin API),
+  hopsworks-front#2280 (admin page), rondb-helm#270 (chart keys) and loadtest#1324
+  (the end-to-end workflow). Deployed together on a test cluster on 2026-11-24, where
+  the workflow ran green. Section 16 lists what stays open.
+- Next: the review cycles, then the kernel reviewer's call on the id-reuse window of
+  the query-thread fix (rondb#1235) and on the pool-exhaustion crash (section 16).
