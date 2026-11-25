@@ -786,6 +786,16 @@ void Dbdih::execCONTINUEB(Signal *signal) {
       rebalance_tables(signal, signal->theData[1], signal->theData[2]);
       return;
     }
+    case DihContinueB::ZREBALANCE_PENDING: {
+      jam();
+      c_rebalanceMaster.m_pending_armed = false;
+      if (isMaster() && c_rebalanceMaster.m_pending &&
+          !c_rebalanceMaster.m_running) {
+        jam();
+        rebalance_master_request(signal, 0, true);
+      }
+      return;
+    }
     case DihContinueB::ZDICT_LOCK_TAKEOVER_RETRY: {
       jam();
       if (signal->theData[1] != c_dictLockTakeoverGen) {
@@ -28083,7 +28093,8 @@ void Dbdih::rebalance_start_phase(Signal *signal) {
                        cstarttype, "completed",
                        (Int64)c_nsl_timer.elapsed_sec(),
                        "not rebalanced: DUMP 7037 1 (test), this node is"
-                       " primary for no fragment");
+                       " primary for no fragment until DUMP 7036 or a node"
+                       " failure");
     nsl_stop_step();
     sendSTTORRY(signal);
     return;
@@ -28122,8 +28133,9 @@ void Dbdih::rebalance_requester_done(Signal *signal, Uint32 result) {
       jam();
       NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_REBALANCE, 0,
                          cstarttype, "completed", elapsed,
-                         "rebalance skipped during node start, node stop or"
-                         " master take-over");
+                         "not rebalanced yet: a node start, node stop or"
+                         " master take-over is in progress, the master"
+                         " rebalances when it has completed");
       break;
     case DihRebalanceConf::SkippedNodeFailure:
       jam();
@@ -28341,7 +28353,12 @@ void Dbdih::execDIH_REBALANCE_CONF(Signal *signal) {
   rebalance_master_answer(signal, DihRebalanceConf::Completed);
 }
 
-/* Check whether the master can start a rebalance now. */
+/**
+ * Whether the master can run a rebalance now. Every reason to skip is
+ * covered by another rebalance: a starting node rebalances in its own
+ * phase 120, node stop and node failure handling recompute the primary
+ * replicas of every table.
+ */
 Uint32 Dbdih::rebalance_master_check() {
   if (!is_rebalance_primaries_supported()) {
     jam();
@@ -28369,8 +28386,13 @@ Uint32 Dbdih::rebalance_master_check() {
   return DihRebalanceConf::Completed;
 }
 
+/**
+ * A request from a restarted node, or from DUMP 7036 or the retry of a
+ * pending run when requesterRef is 0.
+ */
 void Dbdih::rebalance_master_request(Signal *signal,
-                                     BlockReference requesterRef) {
+                                     BlockReference requesterRef,
+                                     bool pendingRetry) {
   const NodeId requester = refToNode(requesterRef);
   if (!isMaster()) {
     jam();
@@ -28386,34 +28408,60 @@ void Dbdih::rebalance_master_request(Signal *signal,
      * The run started when no node was below the restart barrier, so the
      * requester had completed its copy; the run covers it.
      */
-    c_rebalanceMaster.m_requesters.set(requester);
+    if (requesterRef != 0) {
+      c_rebalanceMaster.m_requesters.set(requester);
+    }
     return;
   }
   const Uint32 result = rebalance_master_check();
   if (result != DihRebalanceConf::Completed) {
     jam();
+    if (result == DihRebalanceConf::SkippedBusy) {
+      jam();
+      /* Retry until the start or stop in progress has completed */
+      c_rebalanceMaster.m_pending = true;
+      if (!c_rebalanceMaster.m_pending_armed) {
+        jam();
+        c_rebalanceMaster.m_pending_armed = true;
+        signal->theData[0] = DihContinueB::ZREBALANCE_PENDING;
+        sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 1000, 1);
+      }
+    } else {
+      jam();
+      /* Node failure handling rebalances, or it cannot be done */
+      c_rebalanceMaster.m_pending = false;
+    }
+    if (pendingRetry) {
+      jam();
+      return;
+    }
     g_eventLogger->info(
-        "Rebalance of the primary replicas requested by node %u skipped,"
-        " reason %u (1 = node start, stop or master"
-        " take-over in progress, 2 = node failure"
+        "Rebalance of the primary replicas requested by node %u (0 = DUMP"
+        " 7036) not run now, reason %u (1 = node start, stop or master"
+        " take-over in progress, retried every second, 2 = node failure"
         " handling in progress, it rebalances, 3 = not supported by all"
         " nodes)",
         requester, result);
-    DihRebalanceConf *conf = (DihRebalanceConf *)signal->getDataPtrSend();
-    conf->senderRef = reference();
-    conf->confType = DihRebalanceConf::Done;
-    conf->runId = 0;
-    conf->result = result;
-    conf->changedFragments = 0;
-    sendSignal(requesterRef, GSN_DIH_REBALANCE_CONF, signal,
-               DihRebalanceConf::SignalLength, JBB);
+    if (requesterRef != 0) {
+      DihRebalanceConf *conf = (DihRebalanceConf *)signal->getDataPtrSend();
+      conf->senderRef = reference();
+      conf->confType = DihRebalanceConf::Done;
+      conf->runId = 0;
+      conf->result = result;
+      conf->changedFragments = 0;
+      sendSignal(requesterRef, GSN_DIH_REBALANCE_CONF, signal,
+                 DihRebalanceConf::SignalLength, JBB);
+    }
     return;
   }
 
   c_rebalanceMaster.m_running = true;
+  c_rebalanceMaster.m_pending = false;
   c_rebalanceMaster.m_run_id++;
   c_rebalanceMaster.m_requesters.clear();
-  c_rebalanceMaster.m_requesters.set(requester);
+  if (requesterRef != 0) {
+    c_rebalanceMaster.m_requesters.set(requester);
+  }
   c_rebalanceMaster.m_waiting.clear();
   NodeRecordPtr nodePtr;
   nodePtr.i = cfirstAliveNode;
@@ -28427,7 +28475,7 @@ void Dbdih::rebalance_master_request(Signal *signal,
   char buf[NdbNodeBitmask::TextLength + 1];
   g_eventLogger->info(
       "Rebalance %u of the primary replicas started, requested by node %u"
-      ", on nodes %s",
+      " (0 = DUMP 7036), on nodes %s",
       c_rebalanceMaster.m_run_id, requester,
       c_rebalanceMaster.m_waiting.getText(buf));
 
@@ -28792,6 +28840,28 @@ void Dbdih::execDUMP_STATE_ORD(Signal *signal) {
         (Uint32)c_nodeStartMaster.activeState,
         c_DIH_SWITCH_REPLICA_REQ_Counter.getCount());
   }  // if
+  if (arg == DumpStateOrd::DihRebalancePrimaries) {
+    /**
+     * Rebalance the primary replicas on all nodes, as a node restart does
+     * in start phase 120. Only the master acts, so ALL DUMP 7036 works.
+     */
+    if (isMaster()) {
+      jam();
+      if (c_rebalanceMaster.m_running) {
+        infoEvent("Rebalance of the primary replicas already running");
+      } else {
+        const Uint32 result = rebalance_master_check();
+        if (result == DihRebalanceConf::Completed) {
+          infoEvent("Rebalance of the primary replicas started");
+        } else {
+          infoEvent("Rebalance of the primary replicas not run, reason %u",
+                    result);
+        }
+        rebalance_master_request(signal, 0);
+      }
+    }
+    return;
+  }
   if (arg == DumpStateOrd::DihDumpNodeStatusInfo) {
     NodeRecordPtr localNodePtr;
     infoEvent("Printing nodeStatus of all nodes");

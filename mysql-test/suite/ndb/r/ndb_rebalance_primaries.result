@@ -41,7 +41,27 @@ SELECT COUNT(*), SUM(b) FROM t1;
 COUNT(*)	SUM(b)
 100	5050
 #
-# Test 2: Node 2 restarts normally. Start phase 120 rebalances the
+# Test 2: DUMP 7036 makes the master rebalance the primary replicas.
+#   Only the master acts, so it goes to all data nodes.
+#
+SELECT COUNT(*) AS fragments_seen_differently FROM (
+SELECT fragment_id FROM t1_fragments
+GROUP BY fragment_id HAVING COUNT(DISTINCT current_primary) > 1) AS d;
+fragments_seen_differently
+0
+SELECT node_id AS seen_by_node,
+SUM(current_primary = 2) = 0 AS node_2_primary_for_none,
+SUM(current_primary = 1) = SUM(current_primary = 2) AS balanced
+FROM t1_fragments GROUP BY node_id ORDER BY node_id;
+seen_by_node	node_2_primary_for_none	balanced
+1	0	1
+2	0	1
+UPDATE t1 SET b = b + 1;
+SELECT COUNT(*), SUM(b) FROM t1;
+COUNT(*)	SUM(b)
+100	5150
+#
+# Test 3: Node 2 restarts normally. Start phase 120 rebalances the
 #   primary replicas before the restart completes, so they are
 #   balanced as soon as the node has started, without any DUMP.
 #
@@ -60,6 +80,6 @@ seen_by_node	node_2_primary_for_none	balanced
 UPDATE t1 SET b = b + 1;
 SELECT COUNT(*), SUM(b) FROM t1;
 COUNT(*)	SUM(b)
-100	5150
+100	5250
 DROP VIEW t1_fragments;
 DROP TABLE t1;

@@ -2782,11 +2782,18 @@ class Dbdih : public SimulatedBlock {
    * arriving while a run is going on are answered when it completes:
    * the run started when no node was copying fragments, so it covers
    * them. While a run is going on, the master refuses start and stop
-   * permission. The master skips a busy request.
+   * permission. A request that finds a node start or stop in progress
+   * leaves a pending run, retried every second: a starting node that
+   * fails before it is alive in DBDIH neither rebalances nor makes node
+   * failure handling do it.
    */
   struct RebalanceMasterRecord {
-    RebalanceMasterRecord() : m_running(false), m_run_id(0) {}
+    RebalanceMasterRecord()
+        : m_running(false), m_pending(false), m_pending_armed(false),
+          m_run_id(0) {}
     bool m_running;
+    bool m_pending;
+    bool m_pending_armed;
     Uint32 m_run_id;
     NdbNodeBitmask m_requesters;
     NdbNodeBitmask m_waiting;  // participants that have not answered
@@ -2817,7 +2824,8 @@ class Dbdih : public SimulatedBlock {
   void rebalance_start_phase(Signal *);
   void rebalance_requester_done(Signal *, Uint32 result);
   Uint32 rebalance_master_check();
-  void rebalance_master_request(Signal *, BlockReference requesterRef);
+  void rebalance_master_request(Signal *, BlockReference requesterRef,
+                                bool pendingRetry = false);
   void rebalance_master_answer(Signal *, Uint32 result);
   void rebalance_participant_run(Signal *, BlockReference masterRef,
                                  Uint32 runId);
@@ -2833,7 +2841,7 @@ class Dbdih : public SimulatedBlock {
    * NOSTART.
    *   0  normal
    *   1  this node does not ask for a rebalance in start phase 120: it
-   *      can remain primary for zero fragments until a later restart or failure
+   *      stays primary for no fragment until DUMP 7036 or a node failure
    *   2  this node acts as if some data node did not support the
    *      rebalance, the behaviour with an older data node in the cluster.
    *      Set it on all data nodes, they must agree.
