@@ -1,0 +1,59 @@
+--source include/have_ndb.inc
+--disable_query_log
+
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT NOT NULL)
+  ENGINE=NDB PARTITION BY KEY(a) PARTITIONS 1;
+INSERT INTO t1 VALUES (1, 0);
+
+# Observe the fragment on both possible transaction coordinators.
+CREATE VIEW surviving_chains AS
+  SELECT * FROM ndbinfo.ndb$table_fragments_all WHERE node_id IN (1, 2);
+SELECT id INTO @tab FROM ndbinfo.dict_obj_info WHERE fq_name = 'test/def/t1';
+
+--exec $NDB_MGM -e "3 RESTART -n -i" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --wait-nodes=3 --not-started >> $NDB_TOOLS_OUTPUT
+let $wait_condition =
+  SELECT COUNT(*) = 2 AND MIN(current_primary) = MAX(current_primary)
+  FROM surviving_chains WHERE table_id = @tab AND no_of_replicas = 2;
+--source include/wait_condition.inc
+if (!$success)
+{
+  --die The surviving nodes did not agree on the two-replica chain
+}
+SELECT MIN(current_primary) INTO @p FROM surviving_chains WHERE table_id = @tab;
+
+connect (writer, localhost, root,, test);
+BEGIN;
+UPDATE t1 SET b = b + 1 WHERE a = 1;
+
+connection default;
+--exec $NDB_MGM -e "3 START" >> $NDB_TOOLS_OUTPUT
+# STORED has inserted node 3. The copy needs the writer's row lock,
+# so COMMIT_STORED and the phase-120 rebalance cannot run yet.
+let $wait_timeout = 240;
+let $wait_condition =
+  SELECT COUNT(*) = 2 FROM surviving_chains
+  WHERE table_id = @tab AND current_primary = @p AND current_first_backup = 3
+    AND no_of_replicas = 3 AND num_alive_replicas = 2;
+--source include/wait_condition.inc
+if (!$success)
+{
+  --die The surviving nodes did not see node 3 inserted as first backup
+}
+
+connection writer;
+--error ER_LOCK_WAIT_TIMEOUT
+UPDATE t1 SET b = b + 1 WHERE a = 1;
+SHOW WARNINGS LIMIT 1;
+ROLLBACK;
+disconnect writer;
+
+connection default;
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+# The first update rolled back. A fresh transaction can update the same row.
+UPDATE t1 SET b = b + 10 WHERE a = 1;
+SELECT b FROM t1 WHERE a = 1;
+DROP VIEW surviving_chains;
+DROP TABLE t1;
+--remove_file $NDB_TOOLS_OUTPUT
+--enable_query_log
