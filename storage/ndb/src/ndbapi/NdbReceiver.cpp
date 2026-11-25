@@ -1516,7 +1516,7 @@ NdbReceiver::first_long_row_ref(Uint32 ref,
   DBUG_ENTER("NdbReceiver::first_long_row_ref");
   if (m_num_long_row_allocated == 0) {
     LongRowRef *alloc_ref =
-      (LongRowRef*)calloc(sizeof(LongRowRef), LONG_ROW_ALLOC_START);
+      (LongRowRef*)calloc(LONG_ROW_ALLOC_START, sizeof(LongRowRef));
     if (alloc_ref == nullptr) {
       DBUG_RETURN(nullptr);
     }
@@ -1529,7 +1529,7 @@ NdbReceiver::first_long_row_ref(Uint32 ref,
       m_num_long_row_allocated == m_num_long_row_current_used) {
     Uint32 current_alloced = m_num_long_row_allocated;
     LongRowRef *alloc_ref =
-      (LongRowRef*)calloc(sizeof(LongRowRef), 2 * current_alloced);
+      (LongRowRef*)calloc(2 * current_alloced, sizeof(LongRowRef));
     if (alloc_ref == nullptr) {
       DBUG_RETURN(nullptr);
     }
