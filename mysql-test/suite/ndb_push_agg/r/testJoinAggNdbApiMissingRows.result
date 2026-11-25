@@ -1,0 +1,4 @@
+Running testJoinAggNdbApi --only 25
+Test 25: promised aggregate rows missing (ERROR_INSERT 5163) ... OK (nextResult failed with 4008, cluster up, next query correct)
+All tests PASSED
+DROP DATABASE IF EXISTS test_db;

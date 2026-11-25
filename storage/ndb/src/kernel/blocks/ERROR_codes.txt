@@ -240,7 +240,12 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
 5162: ID-10b: a main join aggregation's send batch ends at the insert's
       extra value in bytes instead of MAX_SCAN_BATCH_SIZE (Dblqh
       continueJoinAggSend).
-Next DBLQH 5163
+5163: Count one aggregate group of a main join aggregation in the
+      COMPLETE_CONF but do not send its TRANSID_AI to the API (Dblqh
+      continueJoinAggSend), once per insert on each LQH instance: the API
+      is promised more rows than arrive and its wait for them ends in its
+      receive timeout (testJoinAggNdbApi --only 25).
+Next DBLQH 5164
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8135

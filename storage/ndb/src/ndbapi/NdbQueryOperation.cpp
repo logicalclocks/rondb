@@ -3492,12 +3492,13 @@ NdbQueryImpl::FetchResult NdbQueryImpl::awaitMoreResults(bool forceSend) {
                                 forceSend,
                                 &ndb->m_start_time));
 
-        if (ndb->getNodeSequence(nodeId) != seq)
-          setFetchTerminated(Err_NodeFailCausedAbort, false);
-        else if (likely(waitResult == FetchResult_ok))
-          continue;
-        else if (waitResult == FetchResult_timeOut) {
+        const bool nodeFailed = (ndb->getNodeSequence(nodeId) != seq);
+        if (!nodeFailed && likely(waitResult == FetchResult_ok)) continue;
+
+        const bool timedOut =
+            !nodeFailed && waitResult == FetchResult_timeOut;
 #ifdef DEBUG_QUERY_RECEIVE
+        if (timedOut) {
           const Uint64 transId = m_scanTransaction->getTransactionId();
           DEB_QUERY_RECEIVE(("Query receive timeout: transid=(0x%x,0x%x) "
                              "tcNode=%u workers=%u pending=%u final=%u "
@@ -3510,10 +3511,21 @@ NdbQueryImpl::FetchResult NdbQueryImpl::awaitMoreResults(bool forceSend) {
           for (Uint32 i = 0; i < m_workerCount; i++) {
             m_workers[i].traceReceiveState();
           }
+        }
 #endif
-          setFetchTerminated(Err_ReceiveTimedOut, true);
-        } else
-          setFetchTerminated(Err_NodeFailCausedAbort, false);
+        const int waitError =
+            timedOut ? Err_ReceiveTimedOut : Err_NodeFailCausedAbort;
+        if (m_finalWorkers < getWorkerCount()) {
+          setFetchTerminated(waitError, timedOut);
+        } else {
+          /* Every worker is final: the pure EndOfData has come and DBTC
+           * has closed the scan, and only aggregate rows that the
+           * aggregate SCAN_TABCONF promised are missing.  There is no
+           * cursor left to terminate or close (setFetchTerminated()
+           * requires one), so only report the error. */
+          assert(m_pendingWorkers == 0);
+          m_errorReceived = waitError;
+        }
 
         assert(m_state != Failed);
       }  // while(!hasReceivedError())

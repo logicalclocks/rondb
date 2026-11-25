@@ -1,0 +1,26 @@
+# RONDB-1124: a join aggregation whose promised aggregate rows do not
+# arrive (testJoinAggNdbApi Test 25).  DBLQH error insert 5163 counts one
+# group in the JOIN_AGG_COMPLETE_CONF without sending it, and the DBUG
+# keyword ndb_reduced_api_protocol_timeout cuts the API's wait for it to
+# 3 x 2 s.  The query must fail with 4008; before the fix a debug NDB API
+# aborted on assert(m_finalWorkers < getWorkerCount()) in
+# NdbQueryImpl::setFetchTerminated().  Debug only: the DBUG keyword needs
+# a debug NDB API, and the error insert debug data nodes.
+#
+# A debug NDB API prints receive-timeout traces with timestamps while the
+# query waits, so the program's output goes to a file and only its result
+# lines are compared.  A crash fails the --exec; a failed check prints a
+# FAILED line and "Some tests FAILED", which differ from the result file.
+--source include/have_ndb.inc
+--source include/have_debug.inc
+--source include/have_ndb_debug.inc
+
+--let $missing_rows_out = $MYSQLTEST_VARDIR/tmp/testJoinAggNdbApiMissingRows.out
+--echo Running testJoinAggNdbApi --only 25
+--error 0,1
+--exec $NDB_PUSH_AGG_DIR/testJoinAggNdbApi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --only 25 > $missing_rows_out 2>&1
+--exec grep -E "^(Test 25|All tests|Some tests)" $missing_rows_out
+--remove_file $missing_rows_out
+
+# Clean up database created by test program
+DROP DATABASE IF EXISTS test_db;

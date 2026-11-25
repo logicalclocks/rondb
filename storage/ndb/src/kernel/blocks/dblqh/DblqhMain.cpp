@@ -21537,8 +21537,24 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
         interp->processed_rows(),
         gb_map->size()));
 
-      sendTransIdAIRow(signal, state->m_resultRef, receiverData,
-                       state->m_transid, buf, pos, /*corrAtEnd=*/false);
+      bool sendGroup = true;
+#ifdef ERROR_INSERT
+      if (ERROR_INSERTED(5163)) {
+        /* Count this group but do not send it: the COMPLETE_CONF, and
+         * so DBTC's aggregate SCAN_TABCONF, promises the API one more
+         * row than it gets.  Once per insert on each instance. */
+        jam();
+        CLEAR_ERROR_INSERT_VALUE;
+        sendGroup = false;
+        g_eventLogger->info("DBLQH(%u): error insert 5163: aggregate group "
+                            "%u of aggStateKey %u counted but not sent",
+                            instance(), num_result_rows, aggStateKey);
+      }
+#endif
+      if (likely(sendGroup)) {
+        sendTransIdAIRow(signal, state->m_resultRef, receiverData,
+                         state->m_transid, buf, pos, /*corrAtEnd=*/false);
+      }
 
       num_result_rows++;
       send_batch_rows++;
