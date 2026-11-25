@@ -40647,6 +40647,16 @@ void
 Dblqh::send_database_quota_rep(DatabaseRecordPtr dbPtr,
                                NDB_TICKS now) {
   if (!m_restart_completed) return;
+  /* The buffer holds one report per record until the owning thread's next
+   * execSEND_PACKED drains it, and with query workers configured several
+   * threads fill it between two drains. A full buffer keeps the record's
+   * usage pending: its baselines, its rate counter and its report time are
+   * left as they are, so the next charge or update reports the whole
+   * difference, instead of the guard below stopping the node. */
+  if (unlikely(m_num_send_database_quota_rep >=
+               c_send_database_quota_rep_file_size)) {
+    return;
+  }
   Uint32 requestInfo = 0;
   Uint32 before_memory_value_sent = dbPtr.p->m_last_rep_in_memory_page8k;
   Uint32 after_memory_value = dbPtr.p->m_in_memory_page8k;
