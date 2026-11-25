@@ -6,6 +6,12 @@ old behaviour with older data nodes) and 4 (tests) implemented. The MTR
 tests `ndb_rebalance_primaries` and `ndb_security` pass (2026-11-24);
 the testNodeRestart test cases have not run yet.
 
+2026-11-25: a replacement is proposed in `same_row_serialization.md`:
+DBTC holds back an operation while an earlier operation of the same
+transaction on the same row is in flight, and steps 1-3 are rolled back.
+The Problem section below stays valid; the Design sections describe the
+current code until that replacement is implemented.
+
 ## Problem
 
 `testNodeRestart -n InplaceCharPkChange*` fails now and then with 630 (tuple
