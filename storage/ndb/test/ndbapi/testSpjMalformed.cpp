@@ -256,6 +256,16 @@ class SpjMalformedChecker {
         m_schemaVersion(tab->getObjectVersion()),
         m_fragmentCount(tab->getFragmentCount()) {}
 
+  /* The answer to one request: its GSN and error code, or a disconnect.
+   * Declared first: a member function's return type is looked up where
+   * the function is declared, and P-41's sendInterpretedRead, among
+   * others, comes before the send helpers below. */
+  struct Reply {
+    Uint32 gsn{0};
+    Uint32 errorCode{0};
+    bool disconnected{false};
+  };
+
   /* ---- the AttrInfo of a well-formed single-node leaf scan ------------ *
    * Root QN_SCAN_FRAG, no parent, no key, user projection {col0,
    * CORR_FACTOR64}.  This mirrors what NdbQueryBuilder serializes for a
@@ -1626,12 +1636,6 @@ class SpjMalformedChecker {
   static constexpr Uint32 kLatin1 = 8;     /* latin1_swedish_ci */
   static constexpr Uint32 kAbcd = 0x64636261u;        /* "abcd" */
   static constexpr Uint32 kFourSpaces = 0x20202020u;  /* "    " */
-
-  struct Reply {
-    Uint32 gsn{0};
-    Uint32 errorCode{0};
-    bool disconnected{false};
-  };
 
   static const char *gsnName(Uint32 gsn) {
     switch (gsn) {
