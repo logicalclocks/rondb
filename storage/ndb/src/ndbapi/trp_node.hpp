@@ -27,6 +27,7 @@
 #ifndef trp_node_hpp
 #define trp_node_hpp
 
+#include <atomic>
 #include <ndb_global.h>
 #include <kernel/NodeInfo.hpp>
 #include <kernel/NodeState.hpp>
@@ -35,6 +36,20 @@ class NdbOut;
 NdbOut &operator<<(NdbOut &, const struct trp_node &);
 
 struct trp_node {
+  // ClusterMgr updates this flag while mgmd reads it through getNodeInfo().
+  // Copying a trp_node takes a snapshot of the flag.
+  struct FailureCompleteFlag : std::atomic<bool> {
+    using std::atomic<bool>::atomic;
+    using std::atomic<bool>::operator=;
+
+    FailureCompleteFlag(const FailureCompleteFlag &other)
+        : std::atomic<bool>(other.load()) {}
+    FailureCompleteFlag &operator=(const FailureCompleteFlag &other) {
+      store(other.load());
+      return *this;
+    }
+  };
+
   NodeInfo  m_info;
   NodeState m_state{NodeState::SL_NOTHING};
 
@@ -42,7 +57,7 @@ struct trp_node {
   Uint32 minApiVersion = 0;
   bool defined = false;
   bool compatible = true;        // Version is compatible
-  bool nfCompleteRep = true;     // NF Complete Rep has arrived
+  FailureCompleteFlag nfCompleteRep{true};
   bool m_alive = false;          // Node is alive
   bool m_node_fail_rep = false;  // NodeFailRep has arrived
   bool m_node_active = false;    // Is node activated
