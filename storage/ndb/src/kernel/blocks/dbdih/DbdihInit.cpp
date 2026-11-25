@@ -95,7 +95,6 @@ void Dbdih::initData() {
   c_lcpState.m_lcp_trylock_timeout = 0;
   cwaitLcpSr = false;
   m_chain_clock.store(1, std::memory_order_relaxed);
-  c_takeover_keep_chain = false;
   c_nsl_active_step = 0;
   c_nsl_perm_retries = 0;
   c_nsl_last_perm_ref = 0;
@@ -349,8 +348,6 @@ Dbdih::Dbdih(Block_context &ctx)
   addRecSignal(GSN_STOP_PERM_REF, &Dbdih::execSTOP_PERM_REF);
   addRecSignal(GSN_STOP_PERM_CONF, &Dbdih::execSTOP_PERM_CONF);
   addRecSignal(GSN_STOP_PERM_REL, &Dbdih::execSTOP_PERM_REL);
-  addRecSignal(GSN_DIH_REBALANCE_REQ, &Dbdih::execDIH_REBALANCE_REQ);
-  addRecSignal(GSN_DIH_REBALANCE_CONF, &Dbdih::execDIH_REBALANCE_CONF);
 
   addRecSignal(GSN_STOP_ME_REQ, &Dbdih::execSTOP_ME_REQ);
   addRecSignal(GSN_STOP_ME_REF, &Dbdih::execSTOP_ME_REF);

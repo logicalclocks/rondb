@@ -790,12 +790,6 @@ class Dbdih : public SimulatedBlock {
 
     Uint8 noOfBackups;
     Uint8 kvalue;
-    /**
-     * Starting node in a cluster with older data nodes: calculate the new
-     * primary replicas when the copy of this table starts, see
-     * c_takeover_keep_chain.
-     */
-    bool m_calc_primary_replicas;
 
     Uint16 noPages;
     Uint16 tableType;
@@ -1344,9 +1338,6 @@ class Dbdih : public SimulatedBlock {
   void execSTOP_PERM_CONF(Signal *);
   void execSTOP_PERM_REL(Signal *);
   void releaseStopPermMaster(Signal *, NodeId nodeId);
-
-  void execDIH_REBALANCE_REQ(Signal *);
-  void execDIH_REBALANCE_CONF(Signal *);
 
   void execSTOP_ME_REQ(Signal *);
   void execSTOP_ME_REF(Signal *);
@@ -2129,14 +2120,6 @@ class Dbdih : public SimulatedBlock {
   TakeOverRecord_list c_completed_copy_threads_list;
   TakeOverRecordPtr c_mainTakeOverPtr;
   TakeOverRecordPtr c_activeThreadTakeOverPtr;
-  /**
-   * Starting node: whether COMMIT_STORED keeps the replica chain of the
-   * copy (every data node supports the rebalance of the primary replicas
-   * in start phase 120) or, as older versions do, switches each fragment
-   * to the primary calculated when the copy of its table started.
-   * Decided once when the copy starts (execSTART_TOCONF).
-   */
-  bool c_takeover_keep_chain;
 
   /* List used in takeover handling in master part. */
   TakeOverRecord_list c_masterActiveTakeOverList;
@@ -2760,80 +2743,6 @@ class Dbdih : public SimulatedBlock {
   void checkStopPermMaster(Signal *, NodeRecordPtr failedNodePtr);
 
   void switchReplica(Signal *, Uint32 nodeId, Uint32 tableId, Uint32 fragNo);
-
-  /**
-   * Rebalance of the primary replicas after node restarts (start phase
-   * 120, after the restart barrier), see DihRebalanceReq and
-   * claude_files/replica_chain_switch/design.md. Since the end of a
-   * fragment copy keeps the replica chain, a restarted node is primary
-   * for no fragment until this has run.
-   *
-   * Requester: the DIH of a restarted node asks the master and continues
-   * its start phases when the master answers, or when the master fails.
-   */
-  struct RebalanceRequesterRecord {
-    RebalanceRequesterRecord() : m_waiting(false), m_master_node(0) {}
-    bool m_waiting;
-    Uint32 m_master_node;
-  };
-  RebalanceRequesterRecord c_rebalanceRequester;
-
-  /**
-   * Master: runs one rebalance at a time over all alive DIHs. Requests
-   * arriving while a run is going on are answered when it completes:
-   * the run started when no node was copying fragments, so it covers
-   * them. While a run is going on, the master refuses start and stop
-   * permission. A request that finds a node start or stop in progress
-   * leaves a pending run, retried every second: a starting node that
-   * fails before it is alive in DBDIH neither rebalances nor makes node
-   * failure handling do it.
-   */
-  struct RebalanceMasterRecord {
-    RebalanceMasterRecord()
-        : m_running(false), m_pending(false), m_pending_armed(false),
-          m_run_id(0) {}
-    bool m_running;
-    bool m_pending;
-    bool m_pending_armed;
-    Uint32 m_run_id;
-    NdbNodeBitmask m_requesters;
-    NdbNodeBitmask m_waiting;  // participants that have not answered
-    NDB_TICKS m_start;
-  };
-  RebalanceMasterRecord c_rebalanceMaster;
-
-  /**
-   * Participant: recomputes the primary replicas of every table, a few
-   * tables per CONTINUEB step. Stops when an alive node fails: failure
-   * handling then recomputes the primary replicas of every table.
-   */
-  struct RebalanceParticipantRecord {
-    RebalanceParticipantRecord()
-        : m_running(false), m_gen(0), m_run_id(0), m_master_ref(0),
-          m_tables(0), m_changed_fragments(0) {}
-    bool m_running;
-    Uint32 m_gen;  // ends the CONTINUEB chain of a stopped run
-    Uint32 m_run_id;
-    BlockReference m_master_ref;
-    Uint32 m_tables;
-    Uint32 m_changed_fragments;
-    NDB_TICKS m_start;
-  };
-  RebalanceParticipantRecord c_rebalanceParticipant;
-
-  bool is_rebalance_primaries_supported();
-  void rebalance_start_phase(Signal *);
-  void rebalance_requester_done(Signal *, Uint32 result);
-  Uint32 rebalance_master_check();
-  void rebalance_master_request(Signal *, BlockReference requesterRef,
-                                bool pendingRetry = false);
-  void rebalance_master_answer(Signal *, Uint32 result);
-  void rebalance_participant_run(Signal *, BlockReference masterRef,
-                                 Uint32 runId);
-  void rebalance_tables(Signal *, Uint32 gen, Uint32 tableId);
-  void rebalance_table(Signal *, TabRecordPtr tabPtr);
-  void rebalance_node_failed(Signal *, NodeId failedNodeId);
-  void rebalance_report_sender(Signal *, NodeId offender);
 
   void switchReplicaReply(Signal *, NodeId nodeId);
 

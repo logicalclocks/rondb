@@ -324,8 +324,6 @@ class DumpStateOrd {
     DihDisplayPauseState = 7034,
     // 7035 DIH Dump graceful stop permission state (master and proxy)
     DihDumpStopPermInfo = 7035,
-    // 7036 DIH master: rebalance the primary replicas on all nodes now
-    DihRebalancePrimaries = 7036,
     EnableUndoDelayDataWrite = 7080, // DIH+ACC+TUP
     DihSetTimeBetweenGcp = 7090,
     DihStartLcpImmediately = 7099,

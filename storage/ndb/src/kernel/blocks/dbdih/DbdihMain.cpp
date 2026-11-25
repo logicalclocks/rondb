@@ -50,7 +50,6 @@
 #include <signaldata/DihContinueB.hpp>
 #include <signaldata/DihStartTab.hpp>
 #include <signaldata/DihSwitchReplica.hpp>
-#include <kernel/ViolationType.hpp>
 #include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/EventReport.hpp>
 #include <signaldata/FsConf.hpp>
@@ -779,21 +778,6 @@ void Dbdih::execCONTINUEB(Signal *signal) {
       tabPtr.i = tableId;
       ptrCheckGuard(tabPtr, ctabFileSize, tabRecord);
       removeNodeFromTable(signal, nodeId, tabPtr);
-      return;
-    }
-    case DihContinueB::ZREBALANCE_TABLES: {
-      jam();
-      rebalance_tables(signal, signal->theData[1], signal->theData[2]);
-      return;
-    }
-    case DihContinueB::ZREBALANCE_PENDING: {
-      jam();
-      c_rebalanceMaster.m_pending_armed = false;
-      if (isMaster() && c_rebalanceMaster.m_pending &&
-          !c_rebalanceMaster.m_running) {
-        jam();
-        rebalance_master_request(signal, 0, true);
-      }
       return;
     }
     case DihContinueB::ZDICT_LOCK_TAKEOVER_RETRY: {
@@ -1986,10 +1970,6 @@ void Dbdih::execSTTOR(Signal *signal) {
       signal->theData[0] = reference();
       sendSignal(NDBCNTR_REF, GSN_READ_NODESREQ, signal, 1, JBB);
       return;
-    case 120:
-      jam();
-      rebalance_start_phase(signal);
-      return;
   }
 
   sendSTTORRY(signal);
@@ -2001,9 +1981,8 @@ void Dbdih::sendSTTORRY(Signal *signal, Uint32 senderData, Uint32 retVal) {
   signal->theData[2] = 0;
   signal->theData[3] = 1;  // Next start phase
   signal->theData[4] = 3;
-  signal->theData[5] = 120;  // Rebalance after the restart barrier (110)
-  signal->theData[6] = 255;  // Next start phase
-  sendSignal(NDBCNTR_REF, GSN_STTORRY, signal, 7, JBB);
+  signal->theData[5] = 255;  // Next start phase
+  sendSignal(NDBCNTR_REF, GSN_STTORRY, signal, 6, JBB);
   return;
 }
 
@@ -2401,20 +2380,6 @@ void Dbdih::nsl_report_progress(Signal *signal) {
           }
           break;
       }
-      if (c_nsl_timer.escalate_due()) {
-        jam();
-        infoEvent("%s", buf);
-      }
-      break;
-    }
-    case NodeStartLog::NSL_REBALANCE: {
-      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_REBALANCE, 1,
-                         cstarttype, "waiting", elapsed,
-                         "master node %u has not yet reported the primary"
-                         " replicas rebalanced on all nodes, %u tables done"
-                         " here",
-                         c_rebalanceRequester.m_master_node,
-                         c_rebalanceParticipant.m_tables);
       if (c_nsl_timer.escalate_due()) {
         jam();
         infoEvent("%s", buf);
@@ -3538,11 +3503,7 @@ void Dbdih::execSTART_PERMREQ(Signal *signal) {
     return;
   }
   if ((c_nodeStartMaster.activeState) || (c_nodeStartMaster.wait != ZFALSE) ||
-      c_rebalanceMaster.m_running || ERROR_INSERTED_CLEAR(7175)) {
-    /**
-     * A rebalance of the primary replicas must not run while a node
-     * copies fragments, so no node starts while one runs.
-     */
+      ERROR_INSERTED_CLEAR(7175)) {
     jam();
     signal->theData[0] = nodeId;
     signal->theData[1] = StartPermRef::ZNODE_ALREADY_STARTING_ERROR;
@@ -8925,33 +8886,6 @@ void Dbdih::execSTART_TOCONF(Signal *signal) {
 
   c_mainTakeOverPtr = takeOverPtr;
   c_mainTakeOverPtr.p->m_number_of_copy_threads = c_max_takeover_copy_threads;
-
-  /**
-   * COMMIT_STORED keeps the replica chain of the copy only when every
-   * data node supports the rebalance of the primary replicas in start
-   * phase 120, which then moves primary replicas to this node. With an
-   * older data node in the cluster this node does as the older versions
-   * do: it calculates the new primary replicas when the copy of a table
-   * starts, and COMMIT_STORED of each fragment switches to them on all
-   * nodes. DBTC refuses transactions that straddle such a switch (the
-   * fragment gets a new chain stamp) on nodes of this version.
-   */
-  c_takeover_keep_chain = is_rebalance_primaries_supported();
-  g_eventLogger->info(
-      "%s",
-      c_takeover_keep_chain
-          ? "Copy of fragments keeps the replica chains, primary replicas"
-            " move to this node in start phase 120"
-          : "Older data nodes in the cluster: each fragment switches to"
-            " its new primary replica when its copy completes");
-  for (Uint32 tableId = 0; tableId < ctabFileSize; tableId++) {
-    TabRecordPtr tabPtr;
-    tabPtr.i = tableId;
-    ptrAss(tabPtr, tabRecord);
-    tabPtr.p->m_calc_primary_replicas =
-        !c_takeover_keep_chain &&
-        tabPtr.p->tabStatus == TabRecord::TS_ACTIVE;
-  }
   c_mainTakeOverPtr.p->m_copy_threads_completed = 0;
   if (c_nsl_active_step == NodeStartLog::NSL_SYNCHRONIZE &&
       c_nsl_sync_sub == 1) {
@@ -9061,20 +8995,6 @@ void Dbdih::startNextCopyFragment(Signal *signal, Uint32 takeOverPtrI) {
       takeOverPtr.p->toCurrentTabref++;
       continue;
     }//if
-    if (tabPtr.p->m_calc_primary_replicas)
-    {
-      jam();
-      /**
-       * Older data nodes in the cluster, see execSTART_TOCONF: calculate
-       * the new primary replicas with this node included.
-       * COMMIT_STORED of each fragment switches to them on all nodes.
-       */
-      tabPtr.p->m_calc_primary_replicas = false;
-      calc_primary_replicas(tabPtr.p,
-                            0,
-                            tabPtr.p->totalfragments,
-                            __LINE__);
-    }
     Uint32 fragId = takeOverPtr.p->toCurrentFragid;
     if (fragId >= tabPtr.p->totalfragments) {
       jam();
@@ -9462,12 +9382,9 @@ void Dbdih::sendUpdateFragStateReq(Signal *signal, Uint32 startGci,
      * Keep the current primary. Switching the primary, or the order of
      * the replicas, while transactions run lets a later operation of a
      * transaction overtake an earlier one on the same row in some
-     * replica, see make_table_use_new_replica(). With older data nodes
-     * in the cluster, switch to the primary calculated when the copy of
-     * the table started, as they do (c_takeover_keep_chain).
+     * replica, see make_table_use_new_replica().
      */
-    req->primaryNode = c_takeover_keep_chain ? fragPtr.p->activeNodes[0]
-                                             : fragPtr.p->primaryNode;
+    req->primaryNode = fragPtr.p->activeNodes[0];
     fragPtr.p->primaryNode = 0;
   }
 
@@ -11299,12 +11216,6 @@ void Dbdih::startRemoveFailedNode(Signal *signal, NodeRecordPtr failedNodePtr) {
      */
     return;
   }
-
-  /**
-   * The node was alive: removing it from the tables below recomputes the
-   * primary replicas of every table, so a rebalance stops here.
-   */
-  rebalance_node_failed(signal, nodeId);
 
   /**
    * If node has node complete LCP
@@ -17712,24 +17623,14 @@ Dbdih::make_table_use_new_replica(Signal *signal,
        * So the stored replicas are linked in activeNodes order, which
        * updateNodeInfo() rebuilds unchanged when primaryNode is the
        * current primary, which a starting node of this version sends.
-       * The rebalance in start phase 120 moves primary replicas to the
-       * restarted node afterwards.
-       *
-       * Both need every data node to support that rebalance. With an
-       * older data node in the cluster, all nodes do as the older
-       * versions do: append the new replica to the stored replicas and
-       * switch to the primary the starting node sends (it calculated it
-       * when the copy of the table started); without dynamic primary
-       * replicas updateNodeInfo() switches to the preferred primary. The
-       * chain changes, so the fragment gets a new stamp and DBTC on nodes
-       * of this version refuses transactions that straddle the switch.
+       * An older starting node sends the primary it calculated, and
+       * without dynamic primary replicas updateNodeInfo() switches to the
+       * preferred primary; both still switch here, so that all nodes
+       * agree on the primary.
        */
       removeOldStoredReplica(fragPtr, replicaPtr);
       linkStoredReplica(fragPtr, replicaPtr);
-      if (is_rebalance_primaries_supported()) {
-        jam();
-        orderStoredReplicasAsActiveNodes(fragPtr);
-      }
+      orderStoredReplicasAsActiveNodes(fragPtr);
       fragPtr.p->primaryNode = primaryNode;
       fragPtr.p->onlineSynchOngoing = 0;
       updateNodeInfo(signal, tabPtr, fragPtr);
@@ -28033,605 +27934,6 @@ void Dbdih::check_chain_change(FragmentstorePtr fragPtr,
   }
 }
 
-/*****************************************************************************/
-/*  REBALANCE OF THE PRIMARY REPLICAS AFTER NODE RESTARTS                    */
-/*****************************************************************************/
-/**
- * Since the end of a fragment copy keeps the replica chain (COMMIT_STORED),
- * a restarted node is primary for no fragment when it has synchronised.
- * In start phase 120, after the restart barrier, its DIH asks the master,
- * which makes every alive DIH recompute the primary replicas of all tables
- * with calc_primary_replicas() and updateNodeInfo(), the computation of
- * node failure handling. Each DIH computes the same result from the same
- * fragment layout, alive nodes and stored replica order. Every fragment
- * whose chain changes gets a new stamp, so DBTC refuses a transaction
- * that would use both its old and its new chain (see m_chain_clock).
- *
- * The run must not overlap a fragment copy: the copy relies on the chain
- * staying as STORED set it. The master runs it only when no node is below
- * the restart barrier, starting or stopping, and refuses start and stop
- * permission while it runs. Schema operations cannot run: the restarted
- * node holds its NodeRestartLock until it has started.
- *
- * A failure of an alive node stops the run everywhere; failure handling
- * recomputes the primary replicas of every table instead.
- */
-bool Dbdih::is_rebalance_primaries_supported() {
-  NodeRecordPtr nodePtr;
-  nodePtr.i = cfirstAliveNode;
-  do {
-    ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
-    if (!ndbd_support_rebalance_primaries(getNodeInfo(nodePtr.i).m_version)) {
-      jam();
-      jamLine(Uint16(nodePtr.i));
-      return false;
-    }
-    nodePtr.i = nodePtr.p->nextNode;
-  } while (nodePtr.i != RNIL);
-  return true;
-}
-
-/* Start phase 120 of this node */
-void Dbdih::rebalance_start_phase(Signal *signal) {
-  char buf[NodeStartLog::BUF_SIZE];
-  if (cstarttype != NodeState::ST_NODE_RESTART &&
-      cstarttype != NodeState::ST_INITIAL_NODE_RESTART) {
-    jam();
-    /* System restart and initial start compute the primaries themselves */
-    NodeStartLog::skipped(buf, sizeof(buf), NodeStartLog::NSL_REBALANCE,
-                          cstarttype);
-    sendSTTORRY(signal);
-    return;
-  }
-  nsl_start_step(signal, NodeStartLog::NSL_REBALANCE);
-  NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_REBALANCE, 0,
-                     cstarttype, "started", -1, "asking master node %u",
-                     refToNode(cmasterdihref));
-  if (!is_rebalance_primaries_supported()) {
-    jam();
-    rebalance_requester_done(signal, DihRebalanceConf::SkippedNotSupported);
-    return;
-  }
-  ndbrequire(!c_rebalanceRequester.m_waiting);
-  c_rebalanceRequester.m_waiting = true;
-  c_rebalanceRequester.m_master_node = refToNode(cmasterdihref);
-
-  DihRebalanceReq *req = (DihRebalanceReq *)signal->getDataPtrSend();
-  req->senderRef = reference();
-  req->requestType = DihRebalanceReq::Request;
-  req->runId = 0;
-  req->failNo = cfailurenr;
-  sendSignal(cmasterdihref, GSN_DIH_REBALANCE_REQ, signal,
-             DihRebalanceReq::SignalLength, JBB);
-}
-
-void Dbdih::rebalance_requester_done(Signal *signal, Uint32 result) {
-  c_rebalanceRequester.m_waiting = false;
-  c_rebalanceRequester.m_master_node = 0;
-
-  char buf[NodeStartLog::BUF_SIZE];
-  const Int64 elapsed = (Int64)c_nsl_timer.elapsed_sec();
-  switch (result) {
-    case DihRebalanceConf::Completed:
-      jam();
-      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_REBALANCE, 0,
-                         cstarttype, "completed", elapsed,
-                         "primary replicas rebalanced, %u fragments of %u"
-                         " tables changed primary here",
-                         c_rebalanceParticipant.m_changed_fragments,
-                         c_rebalanceParticipant.m_tables);
-      break;
-    case DihRebalanceConf::SkippedBusy:
-      jam();
-      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_REBALANCE, 0,
-                         cstarttype, "completed", elapsed,
-                         "not rebalanced yet: a node start, node stop or"
-                         " master take-over is in progress, the master"
-                         " rebalances when it has completed");
-      break;
-    case DihRebalanceConf::SkippedNodeFailure:
-      jam();
-      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_REBALANCE, 0,
-                         cstarttype, "completed", elapsed,
-                         "not rebalanced: a node failed, its failure"
-                         " handling rebalances");
-      break;
-    case DihRebalanceConf::SkippedNotSupported:
-    default:
-      jam();
-      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_REBALANCE, 0,
-                         cstarttype, "completed", elapsed,
-                         "not rebalanced: some data node does not support"
-                         " it, %s",
-                         c_takeover_keep_chain
-                             ? "this node is primary for no fragment until"
-                               " a later rebalance or node failure"
-                             : "primary replicas moved to this node as"
-                               " each fragment copy completed");
-      break;
-  }
-  nsl_stop_step();
-  sendSTTORRY(signal);
-}
-
-/**
- * A DIH_REBALANCE signal that no correct data node sends: the sender is
- * reported as faulty and QMGR disconnects it (Tier A, see
- * claude_files/data_node_security). The caller has logged what is wrong
- * and ignores the signal. A faulty signal from this node itself is a bug
- * here. Debug builds stop here as well, to catch the bug in the sender;
- * production builds only disconnect the sender.
- */
-void Dbdih::rebalance_report_sender(Signal *signal, NodeId offender) {
-  ndbrequire(offender != getOwnNodeId());
-  ndbassert(false);
-  reportMaliciousSignal(signal, offender, VT_DIH_REBALANCE_PROTOCOL);
-}
-
-/**
- * A Request goes to the master, a Run comes from the master. Both carry
- * the sender's failure number, so that a signal that overtook a node
- * failure here is told apart from a protocol error.
- */
-void Dbdih::execDIH_REBALANCE_REQ(Signal *signal) {
-  jamEntry();
-  const DihRebalanceReq req = *(const DihRebalanceReq *)signal->getDataPtr();
-  const NodeId senderNodeId = refToNode(req.senderRef);
-  const NodeId signalNodeId = refToNode(signal->getSendersBlockRef());
-  if (signalNodeId != getOwnNodeId() && signalNodeId != senderNodeId) {
-    jam();
-    /* Our own delayed resend below keeps the original senderRef */
-    g_eventLogger->error(
-        "DIH_REBALANCE_REQ from node %u names node %u as its sender,"
-        " ignored, disconnecting node %u",
-        signalNodeId, senderNodeId, signalNodeId);
-    rebalance_report_sender(signal, signalNodeId);
-    return;
-  }
-  const Uint32 failuresAhead = req.failNo - cfailurenr;
-  if ((Int32)failuresAhead > 0) {
-    if (failuresAhead > MAX_NDB_NODES) {
-      jam();
-      g_eventLogger->error(
-          "DIH_REBALANCE_REQ from node %u with node failure number %u,"
-          " this node is at %u, ignored, disconnecting node %u",
-          senderNodeId, req.failNo, cfailurenr, senderNodeId);
-      rebalance_report_sender(signal, senderNodeId);
-      return;
-    }
-    jam();
-    /**
-     * The sender has handled a node failure that this node has not, e.g.
-     * a new master's Run, or a request to this node as the new master,
-     * that overtook NODE_FAILREP here. Execute it once this node has
-     * handled the failure as well.
-     */
-    sendSignalWithDelay(reference(), GSN_DIH_REBALANCE_REQ, signal, 100,
-                        DihRebalanceReq::SignalLength);
-    return;
-  }
-  switch (req.requestType) {
-    case DihRebalanceReq::Request:
-      jam();
-      if (!isMaster()) {
-        jam();
-        /**
-         * The requester has handled no node failure that this node has
-         * not, so it knows the same master. (Before a failure of this
-         * node as master is handled here, signals from it no longer
-         * arrive.)
-         */
-        g_eventLogger->error(
-            "DIH_REBALANCE_REQ(Request) from node %u, but this node is not"
-            " the master (node %u), ignored, disconnecting node %u",
-            senderNodeId, cmasterNodeId, senderNodeId);
-        rebalance_report_sender(signal, senderNodeId);
-        return;
-      }
-      rebalance_master_request(signal, req.senderRef);
-      return;
-    case DihRebalanceReq::Run:
-      jam();
-      if (senderNodeId != cmasterNodeId) {
-        if (req.failNo != cfailurenr) {
-          jam();
-          /**
-           * A run of a master that has failed since; its failure stopped
-           * the run and failure handling recomputes the primary replicas.
-           */
-          g_eventLogger->info(
-              "DIH_REBALANCE_REQ(Run) %u from node %u, master before node"
-              " failure %u, ignored",
-              req.runId, senderNodeId, cfailurenr);
-          return;
-        }
-        jam();
-        /* Same node failures handled, so the same master */
-        g_eventLogger->error(
-            "DIH_REBALANCE_REQ(Run) %u from node %u, which is not the"
-            " master (node %u), ignored, disconnecting node %u",
-            req.runId, senderNodeId, cmasterNodeId, senderNodeId);
-        rebalance_report_sender(signal, senderNodeId);
-        return;
-      }
-      rebalance_participant_run(signal, req.senderRef, req.runId);
-      return;
-  }
-  jam();
-  g_eventLogger->error(
-      "DIH_REBALANCE_REQ from node %u with unknown request type %u,"
-      " ignored, disconnecting node %u",
-      senderNodeId, req.requestType, senderNodeId);
-  rebalance_report_sender(signal, senderNodeId);
-}
-
-void Dbdih::execDIH_REBALANCE_CONF(Signal *signal) {
-  jamEntry();
-  const DihRebalanceConf conf = *(const DihRebalanceConf *)signal->getDataPtr();
-  const NodeId nodeId = refToNode(conf.senderRef);
-  const NodeId signalNodeId = refToNode(signal->getSendersBlockRef());
-  if (signalNodeId != nodeId) {
-    jam();
-    g_eventLogger->error(
-        "DIH_REBALANCE_CONF from node %u names node %u as its sender,"
-        " ignored, disconnecting node %u",
-        signalNodeId, nodeId, signalNodeId);
-    rebalance_report_sender(signal, signalNodeId);
-    return;
-  }
-  switch (conf.confType) {
-    case DihRebalanceConf::Done:
-      jam();
-      if (conf.result > DihRebalanceConf::SkippedNotSupported) {
-        jam();
-        g_eventLogger->error(
-            "DIH_REBALANCE_CONF(Done) from node %u with unknown result %u,"
-            " ignored, disconnecting node %u",
-            nodeId, conf.result, nodeId);
-        rebalance_report_sender(signal, nodeId);
-        return;
-      }
-      if (!c_rebalanceRequester.m_waiting) {
-        jam();
-        /* Already continued after a failure of the master */
-        return;
-      }
-      if (nodeId != c_rebalanceRequester.m_master_node) {
-        jam();
-        /**
-         * Only the master that was asked answers; when it fails the
-         * requester continues without an answer.
-         */
-        g_eventLogger->error(
-            "DIH_REBALANCE_CONF(Done) from node %u, but master node %u was"
-            " asked, ignored, disconnecting node %u",
-            nodeId, c_rebalanceRequester.m_master_node, nodeId);
-        rebalance_report_sender(signal, nodeId);
-        return;
-      }
-      rebalance_requester_done(signal, conf.result);
-      return;
-    case DihRebalanceConf::RunDone:
-      jam();
-      break;
-    default:
-      jam();
-      g_eventLogger->error(
-          "DIH_REBALANCE_CONF from node %u with unknown type %u, ignored,"
-          " disconnecting node %u",
-          nodeId, conf.confType, nodeId);
-      rebalance_report_sender(signal, nodeId);
-      return;
-  }
-  if (!isMaster() || !c_rebalanceMaster.m_running ||
-      conf.runId != c_rebalanceMaster.m_run_id ||
-      !c_rebalanceMaster.m_waiting.get(nodeId)) {
-    jam();
-    /* A run stopped by a node failure */
-    return;
-  }
-  c_rebalanceMaster.m_waiting.clear(nodeId);
-  if (!c_rebalanceMaster.m_waiting.isclear()) {
-    jam();
-    return;
-  }
-  g_eventLogger->info(
-      "Rebalance %u of the primary replicas completed on all nodes,"
-      " elapsed=%llums",
-      c_rebalanceMaster.m_run_id,
-      (unsigned long long)NdbTick_Elapsed(c_rebalanceMaster.m_start,
-                                          NdbTick_getCurrentTicks())
-          .milliSec());
-  rebalance_master_answer(signal, DihRebalanceConf::Completed);
-}
-
-/**
- * Whether the master can run a rebalance now. Every reason to skip is
- * covered by another rebalance: a starting node rebalances in its own
- * phase 120, node stop and node failure handling recompute the primary
- * replicas of every table.
- */
-Uint32 Dbdih::rebalance_master_check() {
-  if (!is_rebalance_primaries_supported()) {
-    jam();
-    return DihRebalanceConf::SkippedNotSupported;
-  }
-  if (c_lcpMasterTakeOverState.state != LMTOS_IDLE ||
-      c_nodeStartMaster.activeState ||  // start, or graceful-stop switch
-      c_nodeStartMaster.wait != ZFALSE ||
-      c_stopPermMaster.clientRef != 0 ||
-      !c_stopPermMaster.stoppingNodes.isclear() ||
-      !c_masterActiveTakeOverList.isEmpty() ||
-      c_ndbcntr->is_any_node_below_restart_barrier()) {
-    jam();
-    return DihRebalanceConf::SkippedBusy;
-  }
-  for (Uint32 nodeId = 1; nodeId <= m_max_node_id; nodeId++) {
-    NodeRecordPtr nodePtr;
-    nodePtr.i = nodeId;
-    ptrAss(nodePtr, nodeRecord);
-    if (nodePtr.p->m_remove_node_from_table_ongoing) {
-      jam();
-      return DihRebalanceConf::SkippedNodeFailure;
-    }
-  }
-  return DihRebalanceConf::Completed;
-}
-
-/**
- * A request from a restarted node, or from DUMP 7036 or the retry of a
- * pending run when requesterRef is 0.
- */
-void Dbdih::rebalance_master_request(Signal *signal,
-                                     BlockReference requesterRef,
-                                     bool pendingRetry) {
-  const NodeId requester = refToNode(requesterRef);
-  if (!isMaster()) {
-    jam();
-    /**
-     * The master the requester asked has failed; the requester continues
-     * when it sees that failure.
-     */
-    return;
-  }
-  if (c_rebalanceMaster.m_running) {
-    jam();
-    /**
-     * The run started when no node was below the restart barrier, so the
-     * requester had completed its copy; the run covers it.
-     */
-    if (requesterRef != 0) {
-      c_rebalanceMaster.m_requesters.set(requester);
-    }
-    return;
-  }
-  const Uint32 result = rebalance_master_check();
-  if (result != DihRebalanceConf::Completed) {
-    jam();
-    if (result == DihRebalanceConf::SkippedBusy) {
-      jam();
-      /* Retry until the start or stop in progress has completed */
-      c_rebalanceMaster.m_pending = true;
-      if (!c_rebalanceMaster.m_pending_armed) {
-        jam();
-        c_rebalanceMaster.m_pending_armed = true;
-        signal->theData[0] = DihContinueB::ZREBALANCE_PENDING;
-        sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 1000, 1);
-      }
-    } else {
-      jam();
-      /* Node failure handling rebalances, or it cannot be done */
-      c_rebalanceMaster.m_pending = false;
-    }
-    if (pendingRetry) {
-      jam();
-      return;
-    }
-    g_eventLogger->info(
-        "Rebalance of the primary replicas requested by node %u (0 = DUMP"
-        " 7036) not run now, reason %u (1 = node start, stop or master"
-        " take-over in progress, retried every second, 2 = node failure"
-        " handling in progress, it rebalances, 3 = not supported by all"
-        " nodes)",
-        requester, result);
-    if (requesterRef != 0) {
-      DihRebalanceConf *conf = (DihRebalanceConf *)signal->getDataPtrSend();
-      conf->senderRef = reference();
-      conf->confType = DihRebalanceConf::Done;
-      conf->runId = 0;
-      conf->result = result;
-      conf->changedFragments = 0;
-      sendSignal(requesterRef, GSN_DIH_REBALANCE_CONF, signal,
-                 DihRebalanceConf::SignalLength, JBB);
-    }
-    return;
-  }
-
-  c_rebalanceMaster.m_running = true;
-  c_rebalanceMaster.m_pending = false;
-  c_rebalanceMaster.m_run_id++;
-  c_rebalanceMaster.m_requesters.clear();
-  if (requesterRef != 0) {
-    c_rebalanceMaster.m_requesters.set(requester);
-  }
-  c_rebalanceMaster.m_waiting.clear();
-  NodeRecordPtr nodePtr;
-  nodePtr.i = cfirstAliveNode;
-  do {
-    ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
-    c_rebalanceMaster.m_waiting.set(nodePtr.i);
-    nodePtr.i = nodePtr.p->nextNode;
-  } while (nodePtr.i != RNIL);
-  c_rebalanceMaster.m_start = NdbTick_getCurrentTicks();
-
-  char buf[NdbNodeBitmask::TextLength + 1];
-  g_eventLogger->info(
-      "Rebalance %u of the primary replicas started, requested by node %u"
-      " (0 = DUMP 7036), on nodes %s",
-      c_rebalanceMaster.m_run_id, requester,
-      c_rebalanceMaster.m_waiting.getText(buf));
-
-  DihRebalanceReq *req = (DihRebalanceReq *)signal->getDataPtrSend();
-  req->senderRef = reference();
-  req->requestType = DihRebalanceReq::Run;
-  req->runId = c_rebalanceMaster.m_run_id;
-  req->failNo = cfailurenr;
-  NodeReceiverGroup rg(DBDIH, c_rebalanceMaster.m_waiting);
-  sendSignal(rg, GSN_DIH_REBALANCE_REQ, signal, DihRebalanceReq::SignalLength,
-             JBB);
-}
-
-void Dbdih::rebalance_master_answer(Signal *signal, Uint32 result) {
-  NdbNodeBitmask requesters = c_rebalanceMaster.m_requesters;
-  c_rebalanceMaster.m_running = false;
-  c_rebalanceMaster.m_requesters.clear();
-  c_rebalanceMaster.m_waiting.clear();
-  for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
-    if (requesters.get(nodeId) &&
-        getNodeStatus(nodeId) != NodeRecord::ALIVE) {
-      jam();
-      requesters.clear(nodeId);
-    }
-  }
-  if (requesters.isclear()) {
-    jam();
-    return;
-  }
-  DihRebalanceConf *conf = (DihRebalanceConf *)signal->getDataPtrSend();
-  conf->senderRef = reference();
-  conf->confType = DihRebalanceConf::Done;
-  conf->runId = c_rebalanceMaster.m_run_id;
-  conf->result = result;
-  conf->changedFragments = 0;
-  NodeReceiverGroup rg(DBDIH, requesters);
-  sendSignal(rg, GSN_DIH_REBALANCE_CONF, signal,
-             DihRebalanceConf::SignalLength, JBB);
-}
-
-void Dbdih::rebalance_participant_run(Signal *signal, BlockReference masterRef,
-                                      Uint32 runId) {
-  /**
-   * A new run replaces one that a node failure stopped; the generation
-   * ends the CONTINUEB chain of the old one.
-   */
-  c_rebalanceParticipant.m_running = true;
-  c_rebalanceParticipant.m_gen++;
-  c_rebalanceParticipant.m_run_id = runId;
-  c_rebalanceParticipant.m_master_ref = masterRef;
-  c_rebalanceParticipant.m_tables = 0;
-  c_rebalanceParticipant.m_changed_fragments = 0;
-  c_rebalanceParticipant.m_start = NdbTick_getCurrentTicks();
-  rebalance_tables(signal, c_rebalanceParticipant.m_gen, 0);
-}
-
-void Dbdih::rebalance_tables(Signal *signal, Uint32 gen, Uint32 tableId) {
-  if (!c_rebalanceParticipant.m_running ||
-      gen != c_rebalanceParticipant.m_gen) {
-    jam();
-    /* Stopped by a node failure, or replaced by a newer run */
-    return;
-  }
-  /**
-   * Bound the work per signal: one unit per table record, plus one per
-   * fragment of a rebalanced table, so small tables share a step.
-   */
-  const Uint32 StepBudget = 1024;
-  Uint32 work = 0;
-  while (tableId < ctabFileSize && work < StepBudget) {
-    TabRecordPtr tabPtr;
-    tabPtr.i = tableId;
-    ptrAss(tabPtr, tabRecord);
-    work++;
-    if (tabPtr.p->tabStatus == TabRecord::TS_ACTIVE) {
-      if (tabPtr.p->tabCopyStatus != TabRecord::CS_IDLE) {
-        jam();
-        /* The table description is in use, retry the table shortly */
-        signal->theData[0] = DihContinueB::ZREBALANCE_TABLES;
-        signal->theData[1] = gen;
-        signal->theData[2] = tableId;
-        sendSignalWithDelay(reference(), GSN_CONTINUEB, signal,
-                            WaitTableStateChangeMillis, 3);
-        return;
-      }
-      rebalance_table(signal, tabPtr);
-      work += tabPtr.p->totalfragments;
-    }
-    tableId++;
-  }
-  if (tableId < ctabFileSize) {
-    jam();
-    signal->theData[0] = DihContinueB::ZREBALANCE_TABLES;
-    signal->theData[1] = gen;
-    signal->theData[2] = tableId;
-    sendSignal(reference(), GSN_CONTINUEB, signal, 3, JBB);
-    return;
-  }
-  c_rebalanceParticipant.m_running = false;
-  g_eventLogger->info(
-      "Rebalance %u of the primary replicas done here: %u tables,"
-      " %u fragments changed primary, elapsed=%llums",
-      c_rebalanceParticipant.m_run_id, c_rebalanceParticipant.m_tables,
-      c_rebalanceParticipant.m_changed_fragments,
-      (unsigned long long)NdbTick_Elapsed(c_rebalanceParticipant.m_start,
-                                          NdbTick_getCurrentTicks())
-          .milliSec());
-
-  DihRebalanceConf *conf = (DihRebalanceConf *)signal->getDataPtrSend();
-  conf->senderRef = reference();
-  conf->confType = DihRebalanceConf::RunDone;
-  conf->runId = c_rebalanceParticipant.m_run_id;
-  conf->result = DihRebalanceConf::Completed;
-  conf->changedFragments = c_rebalanceParticipant.m_changed_fragments;
-  sendSignal(c_rebalanceParticipant.m_master_ref, GSN_DIH_REBALANCE_CONF,
-             signal, DihRebalanceConf::SignalLength, JBB);
-}
-
-/**
- * Recompute the primary replicas of all fragments of a table, as node
- * failure handling does (removeNodeFromTable()), in one write section.
- */
-void Dbdih::rebalance_table(Signal *signal, TabRecordPtr tabPtr) {
-  calc_primary_replicas(tabPtr.p, 0, tabPtr.p->totalfragments, __LINE__);
-  DIH_TAB_WRITE_LOCK(tabPtr.p);
-  for (Uint32 fragNo = 0; fragNo < tabPtr.p->totalfragments; fragNo++) {
-    jam();
-    FragmentstorePtr fragPtr;
-    getFragstore(tabPtr.p, fragNo, fragPtr);
-    const Uint64 stamp = fragPtr.p->m_chain_stamp;
-    updateNodeInfo(signal, tabPtr, fragPtr);
-    if (fragPtr.p->m_chain_stamp != stamp) {
-      jam();
-      c_rebalanceParticipant.m_changed_fragments++;
-    }
-  }
-  DIH_TAB_WRITE_UNLOCK(tabPtr.p);
-  c_rebalanceParticipant.m_tables++;
-}
-
-/* An alive node failed, its failure handling recomputes the primaries */
-void Dbdih::rebalance_node_failed(Signal *signal, NodeId failedNodeId) {
-  if (c_rebalanceParticipant.m_running) {
-    jam();
-    c_rebalanceParticipant.m_running = false;
-    c_rebalanceParticipant.m_gen++;
-    g_eventLogger->info(
-        "Rebalance %u of the primary replicas stopped by the failure of"
-        " node %u after %u tables, node failure handling recomputes the"
-        " primary replicas",
-        c_rebalanceParticipant.m_run_id, failedNodeId,
-        c_rebalanceParticipant.m_tables);
-  }
-  if (c_rebalanceMaster.m_running) {
-    jam();
-    rebalance_master_answer(signal, DihRebalanceConf::SkippedNodeFailure);
-  }
-  if (c_rebalanceRequester.m_waiting &&
-      c_rebalanceRequester.m_master_node == failedNodeId) {
-    jam();
-    rebalance_requester_done(signal, DihRebalanceConf::SkippedNodeFailure);
-  }
-}
-
 void Dbdih::writeFragment(RWFragment *wf, FragmentstorePtr fragPtr) {
   writePageWord(wf, wf->fragId);
   writePageWord(wf, fragPtr.p->preferredPrimary);
@@ -28814,28 +28116,6 @@ void Dbdih::execDUMP_STATE_ORD(Signal *signal) {
         (Uint32)c_nodeStartMaster.activeState,
         c_DIH_SWITCH_REPLICA_REQ_Counter.getCount());
   }  // if
-  if (arg == DumpStateOrd::DihRebalancePrimaries) {
-    /**
-     * Rebalance the primary replicas on all nodes, as a node restart does
-     * in start phase 120. Only the master acts, so ALL DUMP 7036 works.
-     */
-    if (isMaster()) {
-      jam();
-      if (c_rebalanceMaster.m_running) {
-        infoEvent("Rebalance of the primary replicas already running");
-      } else {
-        const Uint32 result = rebalance_master_check();
-        if (result == DihRebalanceConf::Completed) {
-          infoEvent("Rebalance of the primary replicas started");
-        } else {
-          infoEvent("Rebalance of the primary replicas not run, reason %u",
-                    result);
-        }
-        rebalance_master_request(signal, 0);
-      }
-    }
-    return;
-  }
   if (arg == DumpStateOrd::DihDumpNodeStatusInfo) {
     NodeRecordPtr localNodePtr;
     infoEvent("Printing nodeStatus of all nodes");
@@ -29785,12 +29065,8 @@ void Dbdih::execSTOP_PERM_REQ(Signal *signal) {
       return;
     }
 
-    if (c_nodeStartMaster.activeState || c_rebalanceMaster.m_running) {
+    if (c_nodeStartMaster.activeState) {
       jam();
-      /**
-       * A rebalance of the primary replicas is part of a node start; it
-       * would move primaries back to a node whose stop moved them away.
-       */
       ref->senderData = senderData;
       ref->errorCode = StopPermRef::NodeStartInProgress;
       sendSignal(senderRef, GSN_STOP_PERM_REF, signal,
