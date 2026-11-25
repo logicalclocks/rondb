@@ -207,7 +207,9 @@ primary recalculation at node failure (`removeNodeFromTable()`).
   for every failed node that was alive in DBDIH. Participants stop their
   loop, the master answers the requesters (SkippedNodeFailure), a
   requester whose master failed continues. Failure handling recomputes
-  the primaries of every table (`removeNodeFromTables()`).
+  the primaries of every table (`removeNodeFromTables()`). Each participant
+  records the failure number and ignores a delayed `Run` issued before the
+  most recent failure of an alive node, even when the master survives.
 - Signal checks (`execDIH_REBALANCE_REQ/CONF`): both requests carry the
   sender's `cfailurenr`. One that overtook a node failure here (sender's
   number larger, e.g. a new master's Run before this node's NODE_FAILREP)

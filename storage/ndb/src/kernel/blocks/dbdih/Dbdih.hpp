@@ -2805,6 +2805,7 @@ class Dbdih : public SimulatedBlock {
           m_tables(0), m_changed_fragments(0) {}
     bool m_running;
     Uint32 m_gen;  // ends the CONTINUEB chain of a stopped run
+    Uint32 m_last_alive_failure_no = 0;
     Uint32 m_run_id;
     BlockReference m_master_ref;
     Uint32 m_tables;

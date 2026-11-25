@@ -28250,6 +28250,11 @@ void Dbdih::execDIH_REBALANCE_REQ(Signal *signal) {
         rebalance_report_sender(signal, senderNodeId);
         return;
       }
+      if (req.failNo < c_rebalanceParticipant.m_last_alive_failure_no) {
+        jam();
+        /* The failure cancelled this run even though the master survived. */
+        return;
+      }
       rebalance_participant_run(signal, req.senderRef, req.runId);
       return;
   }
@@ -28570,6 +28575,8 @@ void Dbdih::rebalance_table(Signal *signal, TabRecordPtr tabPtr) {
 
 /* An alive node failed, its failure handling recomputes the primaries */
 void Dbdih::rebalance_node_failed(Signal *signal, NodeId failedNodeId) {
+  /* The master's Run may still be in flight when NODE_FAILREP arrives. */
+  c_rebalanceParticipant.m_last_alive_failure_no = cfailurenr;
   if (c_rebalanceParticipant.m_running) {
     jam();
     c_rebalanceParticipant.m_running = false;
