@@ -57,6 +57,10 @@
  * value with a constant of another length (BRANCH_MEM_OP_ARG_INLINE_TYPE):
  * CHAR values must compare padded, a VARCHAR length byte past its value
  * must fail the row (NdbSqlUtil::check_compare_values).
+ * P-46 is a plain interpreted range scan, not through DBSPJ, with two
+ * ranges whose parameter blocks run past the parameter area of the
+ * program, or whose header lengths wrap in 32 bits, which DBTUP refuses
+ * (RONDB-1124).
  * P-38 and P-39 send CASE programs that put a string MIN / MAX and a
  * number in one aggregate slot (checkAggSlotKinds).
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
@@ -211,6 +215,18 @@ struct SpjMalformedSignals {
     Uint32 ri = req->requestInfo;
     TcKeyReq::setViaSPJFlag(ri, 0);
     TcKeyReq::setInterpretedFlag(ri, 1);
+    req->requestInfo = ri;
+  }
+
+  /* A plain range scan of an ordered index (P-46): not ViaSPJ, not a
+   * TUP scan, and the AttrInfo section is an interpreted program with
+   * its 5-word header (DBTC never sets the not-interpreted flag). */
+  static void setScanTabReqPlainRangeScan(Uint32 *data) {
+    ScanTabReq *req = (ScanTabReq *)data;
+    Uint32 ri = req->requestInfo;
+    ScanTabReq::setViaSPJFlag(ri, 0);
+    ScanTabReq::setTupScanFlag(ri, 0);
+    ScanTabReq::setRangeScanFlag(ri, 1);
     req->requestInfo = ri;
   }
 
@@ -1387,6 +1403,111 @@ class SpjMalformedChecker {
     return NDBT_OK;
   }
 
+  /* ---- P-46: the parameter blocks of a multi-range scan --------------- *
+   * A SCAN_TABREQ, not ViaSPJ, for a read-committed range scan of an
+   * ordered index on column 0 (T1's KOL1) with two EQ ranges, KOL1 = 1
+   * and KOL1 = 2, and one receiver, so DBTC scans one fragment at a
+   * time.  Its AttrInfo section is an interpreted program, which DBTC
+   * and DBLQH pass on as the API sent it:
+   *   [0][1][0][1][paramLen] EXIT_OK, read KOL1, the parameter area
+   * Every fragment scans both ranges.  For the second one DBLQH has
+   * DBTUP move on to the next parameter block (nextAttrInfoParam) and
+   * copy it to the start of the parameter area (scanCopyAttrinfo).
+   * DBSPJ writes one block per range, [blockLen][blockLen - 1 words];
+   * here the API writes the block lengths. */
+  static std::vector<Uint32> rangeScanProgram(
+      const std::vector<Uint32> &params) {
+    std::vector<Uint32> ai = {0, 1, 0, 1, Uint32(params.size()),
+                              Interpreter::ExitOK(),
+                              AttributeHeader(0, 0).m_value};
+    ai.insert(ai.end(), params.begin(), params.end());
+    return ai;
+  }
+
+  /* An EQ range on index column 0, as NdbIndexScanOperation writes it:
+   * [range length << 16 | range number << 4 | bound type], then the
+   * bound, 4 bytes. */
+  static void appendEqRange(std::vector<Uint32> &keyInfo, Uint32 rangeNo,
+                            Uint32 value) {
+    keyInfo.push_back((3u << 16) | (rangeNo << 4) |
+                      Uint32(NdbIndexScanOperation::BoundEQ));
+    keyInfo.push_back(AttributeHeader(0, 4).m_value);
+    keyInfo.push_back(value);
+  }
+
+  int runP46(Uint32 indexId, Uint32 indexVersion) {
+    /* For each range after the first, DBTUP read the length of its
+     * parameter block at the offset reached by adding up the lengths of
+     * the blocks before it, and copied that many words to the start of
+     * the area.  Only ndbassert checked the offset and the length, so a
+     * release data node read and wrote out of DBTUP's interpreter
+     * buffer (8 GB here) and a debug one failed the assert.  The header
+     * was summed in 32 bits, so the area itself could start 8 GB past
+     * the buffer (RONDB-1124).  The header must now fit the section and
+     * each block lie within the area, or the scan fails with
+     * ZTOTAL_LEN_ERROR before it reads a row of the range.  The
+     * control, two well-formed blocks of 2 and 3 words, must get
+     * SCAN_TABCONF: without it a harness whose scan never reaches the
+     * second range would pass. */
+    const char *findingId = "P-46 parameter blocks of a multi-range scan";
+    const Reply control = sendInterpretedRangeScan(
+        indexId, indexVersion,
+        rangeScanProgram({2, 0x11111111u, 3, 0x22222222u, 0x33333333u}));
+    printReply("CONTROL (two ranges, two well-formed parameter blocks)",
+               control);
+    if (control.gsn != GSN_SCAN_TABCONF) {
+      g_err << "P-46 CONTROL did not get SCAN_TABCONF (got "
+            << gsnName(control.gsn) << ", err " << control.errorCode
+            << ").  The raw range scan is wrong; fix this before trusting "
+               "the result of P-46." << endl;
+      return clusterHealthy() ? NDBT_FAILED : failNodeDown(findingId);
+    }
+
+    const char *const ids[3] = {
+        /* nextAttrInfoParam moved the offset 8 GB past the buffer. */
+        "P-46a the parameter block of the first range runs past the area",
+        /* scanCopyAttrinfo copied 8 GB into the buffer. */
+        "P-46b the parameter block of the second range runs past the area",
+        /* The area starts at word 0x80000005 and 0x80000005 +
+         * 0x80000001 is 6 in 32 bits, which passed the ndbassert of
+         * the 7-word section.  Each row fails in interpreterStartLab
+         * (P-41), but for a fragment without KOL1 = 1 nextAttrInfoParam
+         * read the first block 8 GB past the cached section. */
+        "P-46c header lengths that wrap in 32 bits"};
+    const std::vector<Uint32> programs[3] = {
+        rangeScanProgram({0x7FFFFFFFu}),
+        rangeScanProgram({2, 0x11111111u, 0x7FFFFFFFu}),
+        {0, 0x80000000u, 0, 0, 0x80000001u, Interpreter::ExitOK(),
+         AttributeHeader(0, 0).m_value}};
+    Reply reps[3];
+    for (int i = 0; i < 3; i++) {
+      reps[i] = sendInterpretedRangeScan(indexId, indexVersion, programs[i]);
+      printReply(ids[i], reps[i]);
+    }
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    int result = NDBT_OK;
+    for (int i = 0; i < 3; i++) {
+      if (reps[i].gsn != GSN_SCAN_TABREF ||
+          reps[i].errorCode != kTotalLenError) {
+        g_err << ids[i] << ": FAIL -- expected SCAN_TABREF "
+              << kTotalLenError << ", got " << gsnName(reps[i].gsn) << " "
+              << reps[i].errorCode << ": the program was not refused"
+              << endl;
+        result = NDBT_FAILED;
+      } else {
+        g_info << ids[i] << ": PASS (all data nodes started; SCAN_TABREF "
+               << reps[i].errorCode << ")" << endl;
+      }
+    }
+    return result;
+  }
+
   /* ---- P-38 / P-39: a string MIN / MAX and a number in one slot ------- *
    * A string MIN / MAX keeps in its slot a pointer to the data node's
    * copy of the value; every other aggregate keeps a number there.  A
@@ -1783,6 +1904,55 @@ class SpjMalformedChecker {
     return rep;
   }
 
+  /* Send the P-46 range scan of the ordered index with the AttrInfo
+   * section attrInfo, and wait for its first reply. */
+  Reply sendInterpretedRangeScan(Uint32 indexId, Uint32 indexVersion,
+                                 const std::vector<Uint32> &attrInfo) {
+    Reply rep;
+    const Uint32 nodeId = pickDbNode();
+    Uint32 apiConnectPtr = 0, tcRef = 0, seizeUp = 0;
+    if (!seize(nodeId, apiConnectPtr, tcRef, seizeUp)) {
+      rep.disconnected = true;
+      return rep;
+    }
+    const Uint32 userPointer = ++m_userPointer;
+    SimpleSignal sig(false);
+    Uint32 *d = sig.getDataPtrSend();
+    const Uint32 len = SpjMalformedSignals::fillScanTabReq(
+        d, apiConnectPtr, indexId, indexVersion, 0x5b460000u + nodeId,
+        userPointer, kBatchRows, kBatchBytes, false, 1);
+    SpjMalformedSignals::setScanTabReqPlainRangeScan(d);
+
+    std::vector<Uint32> ai(attrInfo);
+    std::vector<Uint32> keyInfo;
+    appendEqRange(keyInfo, 0, 1);
+    appendEqRange(keyInfo, 1, 2);
+    std::vector<Uint32> rcvIds(1, kReceiverId);
+    sig.ptr[ScanTabReq::ReceiverIdSectionNum].p = rcvIds.data();
+    sig.ptr[ScanTabReq::ReceiverIdSectionNum].sz = (Uint32)rcvIds.size();
+    sig.ptr[ScanTabReq::AttrInfoSectionNum].p = ai.data();
+    sig.ptr[ScanTabReq::AttrInfoSectionNum].sz = (Uint32)ai.size();
+    sig.ptr[ScanTabReq::KeyInfoSectionNum].p = keyInfo.data();
+    sig.ptr[ScanTabReq::KeyInfoSectionNum].sz = (Uint32)keyInfo.size();
+    sig.header.m_noOfSections = 3;
+
+    m_ss->lock();
+    const int sent = m_ss->sendFragmentedSignal(nodeId, sig, refToBlock(tcRef),
+                                                GSN_SCAN_TABREQ, len);
+    Uint32 reply[25];
+    if (sent == SEND_OK) {
+      /* The first fragment's SCAN_TABCONF (it has read both ranges), or
+       * the SCAN_TABREF of the scan. */
+      rep.gsn = waitReplyLocked(GSN_SCAN_TABCONF, GSN_SCAN_TABREF, seizeUp,
+                                nodeId, ReplyMillis, reply);
+      if (rep.gsn == GSN_SCAN_TABREF) rep.errorCode = reply[3];
+    } else {
+      rep.disconnected = true;
+    }
+    m_ss->unlock();
+    return rep;
+  }
+
   /* Caller holds the lock.  Return the first gsn1/gsn2 from nodeId (any
    * node for 0) whose word 0 is word0Match, or 0 on timeout. */
   Uint32 waitReplyLocked(Uint32 gsn1, Uint32 gsn2, Uint32 word0Match,
@@ -2075,6 +2245,43 @@ CASE_STEP(runQ5, runQ5)
 CASE_STEP(runS1, runS1)
 CASE_STEP(runS2, runS2)
 
+/* P-46 scans an ordered index on column 0 of the table, which the step
+ * creates and drops after the case. */
+int runP46(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = nullptr;
+  SignalSender *ss = nullptr;
+  NdbRestarter *restarter = nullptr;
+  SpjMalformedChecker *c = makeChecker(ctx, step, pNdb, ss, restarter);
+  if (c == nullptr) return NDBT_FAILED;
+  const NdbDictionary::Table *tab = ctx->getTab();
+  NdbDictionary::Dictionary *dict = pNdb->getDictionary();
+  const char *const indexName = "P46_ORDERED_COL0";
+  (void)dict->dropIndex(indexName, tab->getName());  /* an earlier run's */
+  NdbDictionary::Index idx(indexName);
+  idx.setTable(tab->getName());
+  idx.setType(NdbDictionary::Index::OrderedIndex);
+  idx.setLogging(false);
+  idx.addColumnName(tab->getColumn(0)->getName());
+  int res = NDBT_FAILED;
+  const NdbDictionary::Index *created = nullptr;
+  if (dict->createIndex(idx) != 0) {
+    g_err << "P-46: creating ordered index " << indexName << " failed: "
+          << dict->getNdbError() << endl;
+  } else if ((created = dict->getIndex(indexName, tab->getName())) ==
+             nullptr) {
+    g_err << "P-46: ordered index " << indexName << " not found: "
+          << dict->getNdbError() << endl;
+  } else {
+    res = c->runP46(Uint32(created->getObjectId()),
+                    Uint32(created->getObjectVersion()));
+  }
+  (void)dict->dropIndex(indexName, tab->getName());
+  delete c;
+  delete ss;
+  delete restarter;
+  return res;
+}
+
 }  // namespace
 
 NDBT_TESTSUITE(testSpjMalformed);
@@ -2189,6 +2396,11 @@ TESTCASE("P45",
          "join aggregation: inline-type compare of values of other "
          "lengths than the staged one") {
   STEP(runP45);
+}
+TESTCASE("P46",
+         "interpreted range scan with two ranges whose parameter blocks "
+         "run past the parameter area") {
+  STEP(runP46);
 }
 TESTCASE("P38",
          "join aggregation: string MIN and BIGINT MIN in one slot") {

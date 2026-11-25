@@ -996,11 +996,59 @@ bool Dbtup::pushdownInitErrorInserted() const {
 #endif
 }
 
+/*
+ * The interpreted program of a scan starts with the header
+ *   [initReadLen][interpretLen][finalUpdateLen][finalReadLen][paramLen]
+ * and the five regions follow it in that order.  The last one, the
+ * parameter area, is the subroutine region of an NDB API program, or,
+ * for a DBSPJ scan with parameters (scanFrag_send), one parameter block
+ * per range, each [blockLen][blockLen - 1 words].  All five lengths are
+ * the sender's.
+ *
+ * Returns the word offset of the parameter area in the section of
+ * totalLen words at attrInfo, or 0 when the header is incomplete or the
+ * regions do not end within the section.  The lengths are summed in 64
+ * bits, so they cannot wrap to a short sum (RONDB-1124).
+ */
+static Uint32 scanParamAreaStart(const Uint32 *attrInfo, Uint32 totalLen) {
+  if (unlikely(totalLen < 5)) {
+    return 0;
+  }
+  const Uint64 areaStart = Uint64(5) + Uint64(attrInfo[0]) +
+                           Uint64(attrInfo[1]) + Uint64(attrInfo[2]) +
+                           Uint64(attrInfo[3]);
+  if (unlikely(areaStart + Uint64(attrInfo[4]) > Uint64(totalLen))) {
+    return 0;
+  }
+  return Uint32(areaStart);
+}
+
+/*
+ * The length of the parameter block at word offset 'offset' of the
+ * parameter area of paramAreaLen words at paramArea, or 0 when no whole
+ * block starts there: the offset is at or past the end of the area, or
+ * the block's length runs past it or is 0.  A block's length counts its
+ * length word, so a block is never empty, and each range moves on to a
+ * block of its own.
+ */
+static Uint32 scanParamBlockLen(const Uint32 *paramArea,
+                                Uint32 paramAreaLen,
+                                Uint32 offset) {
+  if (unlikely(offset >= paramAreaLen)) {
+    return 0;
+  }
+  const Uint32 blockLen = paramArea[offset];
+  if (unlikely(blockLen == 0 || blockLen > paramAreaLen - offset)) {
+    return 0;
+  }
+  return blockLen;
+}
+
 Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
                                bool interpretedFlag,
                                bool first_call,
                                void* scan_rec,
-                               Uint32* pushdownError)
+                               Uint32* scanError)
 {
   /* Get stored procedure */
   StoredProcPtr storedPtr;
@@ -1033,6 +1081,16 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
     SectionReader reader(storedPtr.p->storedProcIVal,
                          getSectionSegmentPool());
     totalLen = reader.getSize();
+    /* scanProcedure refuses a section of ZATTR_BUFFER_SIZE words or more
+     * (STORED_PROCREF), and DBLQH deletes that stored procedure before
+     * it comes here.  Should one come here, it is not copied. */
+    if (unlikely(totalLen >= ZATTR_BUFFER_SIZE)) {
+      jam();
+      if (scanError != nullptr) {
+        *scanError = ZSTORED_TOO_MUCH_ATTRINFO_ERROR;
+      }
+      return totalLen;
+    }
     reader.getWords(&cinBuffer[0], totalLen);
     /* Cache the full linearized section on first call (scan procedures only) */
     jamDebug();
@@ -1041,9 +1099,9 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
       jam();
       return 0;
     }
-    const Uint32 readLen = cinBuffer[0] + cinBuffer[1] +
-      cinBuffer[2] + cinBuffer[3];
-    paramAreaStart = 5 + readLen;
+    /* 0 when the header is refused, which fails an interpreted scan
+     * below, on this and every later call. */
+    paramAreaStart = scanParamAreaStart(&cinBuffer[0], totalLen);
     storedPtr.p->storedParamAreaStart = paramAreaStart;
   }
   ndbrequire(storedPtr.p->storedCode == ZSCAN_PROCEDURE);
@@ -1055,31 +1113,50 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
   if (interpretedFlag) {
     jam();
     jamDataDebug(paramAreaStart);
+    if (unlikely(paramAreaStart == 0)) {
+      /* The five region lengths of the header run past the section, or
+       * it has no header: as interpreterStartLab would refuse each row,
+       * the scan fails with ZTOTAL_LEN_ERROR before it reads one. */
+      jam();
+      if (scanError != nullptr) {
+        *scanError = ZTOTAL_LEN_ERROR;
+      }
+      return totalLen;
+    }
+    /* The parameter area as the sender wrote it, within the section
+     * (scanParamAreaStart).  cinBuffer[4] may by now hold the length of
+     * the block of an earlier range. */
+    const Uint32* const section = storedPtr.p->cachedLinearAttrInfo;
+    const Uint32 paramAreaLen = section[4];
     Uint32 paramLen = 0;
-    if (cinBuffer[4] == 0) {
+    if (paramAreaLen == 0) {
       jamDebug();
       // No parameters supplied in this attrInfo
     } else if (storedPtr.p->storedParamOffset == 0) {
       jamDebug();
       // First parameter — already in position
-      paramLen = cinBuffer[4];
-      ndbassert(paramAreaStart + paramLen <= totalLen);
+      paramLen = paramAreaLen;
     } else {
       jamDebug();
-      // Jump directly to current parameter using cached offset
-      const Uint32 paramOffset =
-        paramAreaStart + storedPtr.p->storedParamOffset;
-      ndbassert(paramOffset < totalLen);
-      Uint32* paramBase = &cinBuffer[paramOffset];
-      paramLen = *paramBase;
-      ndbassert(paramOffset + paramLen <= totalLen);
-      if (paramAreaStart + paramLen <= paramOffset) {
-        memcpy(&cinBuffer[paramAreaStart], paramBase,
-                paramLen * sizeof(Uint32));
-      } else {
-        memmove(&cinBuffer[paramAreaStart], paramBase,
-                paramLen * sizeof(Uint32));
+      /* Jump directly to the block of this range, at the offset that
+       * nextAttrInfoParam reached.  The block is read from the cached
+       * section, as nextAttrInfoParam reads it, and must lie within the
+       * parameter area: the sender wrote the block lengths, and a range
+       * that has no block left fails the scan. */
+      const Uint32 paramOffset = storedPtr.p->storedParamOffset;
+      paramLen = scanParamBlockLen(&section[paramAreaStart], paramAreaLen,
+                                   paramOffset);
+      if (unlikely(paramLen == 0)) {
+        jam();
+        jamDataDebug(paramOffset);
+        if (scanError != nullptr) {
+          *scanError = ZTOTAL_LEN_ERROR;
+        }
+        return totalLen;
       }
+      memcpy(&cinBuffer[paramAreaStart],
+             &section[paramAreaStart + paramOffset],
+             paramLen * sizeof(Uint32));
       cinBuffer[4] = paramLen;
     }
 
@@ -1094,7 +1171,7 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
         /* The program follows the parameters.  As for an aggregation on a
          * key read (handleAggReadRow), a malformed or rejected program, or
          * an interpreter that cannot be allocated, fails the scan instead
-         * of the node: DBLQH closes the scan with *pushdownError before it
+         * of the node: DBLQH closes the scan with *scanError before it
          * reads a row. */
         const Uint32 proc_start = paramAreaStart + paramLen;
         Uint32 proc_len = 0;
@@ -1104,8 +1181,8 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
         }
         if (unlikely(proc_len < 8 || proc_len > totalLen - proc_start)) {
           jam();
-          if (pushdownError != nullptr) {
-            *pushdownError = ZAGG_WRONG_OPERATION;
+          if (scanError != nullptr) {
+            *scanError = ZAGG_WRONG_OPERATION;
           }
           return totalLen;
         }
@@ -1122,9 +1199,9 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
           jam();
           /* 1870 is temporary (out of query memory); a rejected program
            * is the statement's own error. */
-          if (pushdownError != nullptr) {
-            *pushdownError = out_of_memory ? ZAGG_ALLOC_MEM_FAILED
-                                           : ZAGG_WRONG_OPERATION;
+          if (scanError != nullptr) {
+            *scanError = out_of_memory ? ZAGG_ALLOC_MEM_FAILED
+                                       : ZAGG_WRONG_OPERATION;
           }
           return totalLen;
         }
@@ -1313,7 +1390,7 @@ void Dbtup::readLinkedToMemBuffer(const Uint32 *linked,
   }
 }
 
-void Dbtup::nextAttrInfoParam(Uint32 storedProcId) {
+Uint32 Dbtup::nextAttrInfoParam(Uint32 storedProcId) {
   jam();
 
   /* Get stored procedure */
@@ -1328,18 +1405,34 @@ void Dbtup::nextAttrInfoParam(Uint32 storedProcId) {
    * since cinBuffer may have been overwritten by a real-time break.
    * Only advance when parameters exist (buf[4] > 0). For scans
    * without parameters, nextAttrInfoParam is still called (opExec
-   * is set) but there is nothing to skip. */
-  Uint32* buf = storedPtr.p->cachedLinearAttrInfo;
-  ndbassert(buf != nullptr);
-  if (buf[4] > 0) {
+   * is set) but there is nothing to skip.
+   *
+   * The first call of scanCopyAttrinfo cached the section and checked
+   * its header, leaving storedParamAreaStart 0 if it refused it.  The
+   * block lengths are the sender's: a block that does not lie within
+   * the parameter area fails the scan instead of moving the offset past
+   * the area, where scanCopyAttrinfo would read and copy the next block
+   * (RONDB-1124). */
+  const Uint32* const buf = storedPtr.p->cachedLinearAttrInfo;
+  const Uint32 paramAreaStart = storedPtr.p->storedParamAreaStart;
+  if (unlikely(buf == nullptr || paramAreaStart == 0)) {
+    jam();
+    return ZTOTAL_LEN_ERROR;
+  }
+  const Uint32 paramAreaLen = buf[4];
+  if (paramAreaLen > 0) {
     jamDebug();
-    const Uint32 paramAreaStart = storedPtr.p->storedParamAreaStart;
-    ndbassert(paramAreaStart + storedPtr.p->storedParamOffset <
-              storedPtr.p->cachedLinearLen);
     const Uint32 paramBlockLen =
-      buf[paramAreaStart + storedPtr.p->storedParamOffset];
+        scanParamBlockLen(&buf[paramAreaStart], paramAreaLen,
+                          storedPtr.p->storedParamOffset);
+    if (unlikely(paramBlockLen == 0)) {
+      jam();
+      jamDataDebug(storedPtr.p->storedParamOffset);
+      return ZTOTAL_LEN_ERROR;
+    }
     storedPtr.p->storedParamOffset += paramBlockLen;
   }
+  return 0;
 }
 
 bool Dbtup::cacheFromCinBuffer(storedProc* sp, Uint32 len) {

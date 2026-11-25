@@ -26705,25 +26705,26 @@ void Dblqh::accScanConfScanLab(Signal *signal,
       jamEntryDebug();
       Uint32 storedProcId = signal->theData[1];
       scanPtr->scanStoredProcId = storedProcId;
-      Uint32 pushdownError = 0;
+      Uint32 scanError = 0;
       if (unlikely(c_tup->scanCopyAttrinfo(storedProcId,
                                            bool(regTcPtr->opExec),
                                            true,
                                            scanPtr,
-                                           &pushdownError) == 0)) {
+                                           &scanError) == 0)) {
         jam();
         scanPtr->scanCompletedStatus = ZTRUE;
         tcConnectptr.p->errorCode = ZMEM_NOMEM_ERROR;
         closeScanLab(signal, tcConnectptr.p);
         return;
       }
-      if (unlikely(pushdownError != 0)) {
-        /* The interpreter of the pushed aggregation or vector search
-         * could not be created; the scan has no interpreter and has not
-         * read a row.  tupScanCloseConfLab sends SCAN_FRAGREF. */
+      if (unlikely(scanError != 0)) {
+        /* DBTUP refused the header of the interpreted program (882), or
+         * the interpreter of the pushed aggregation or vector search
+         * could not be created; the scan has not read a row.
+         * tupScanCloseConfLab sends SCAN_FRAGREF. */
         jam();
         scanPtr->scanCompletedStatus = ZTRUE;
-        tcConnectptr.p->errorCode = pushdownError;
+        tcConnectptr.p->errorCode = scanError;
         closeScanLab(signal, tcConnectptr.p);
         return;
       }
@@ -26744,15 +26745,31 @@ void Dblqh::accScanConfScanLab(Signal *signal,
     jam();
     TcConnectionrec *const regTcPtr = tcConnectptr.p;
 
+    Uint32 scanError = 0;
     if (regTcPtr->opExec)  // has interpreter code, possibly using param
     {
       // Advance to next parameter in the attrInfo
-      c_tup->nextAttrInfoParam(scanPtr->scanStoredProcId);
+      scanError = c_tup->nextAttrInfoParam(scanPtr->scanStoredProcId);
     }
-    (void) c_tup->scanCopyAttrinfo(scanPtr->scanStoredProcId,
-                                   bool(regTcPtr->opExec),
-                                   false,
-                                   scanPtr);
+    if (likely(scanError == 0)) {
+      (void) c_tup->scanCopyAttrinfo(scanPtr->scanStoredProcId,
+                                     bool(regTcPtr->opExec),
+                                     false,
+                                     scanPtr,
+                                     &scanError);
+    }
+    if (unlikely(scanError != 0)) {
+      /* DBTUP found no parameter block for this range of a multi-range
+       * scan within the parameter area of the interpreted program (882):
+       * the block lengths are the sender's.  Close the scan before it
+       * reads a row of the range, as for the first range above;
+       * tupScanCloseConfLab sends SCAN_FRAGREF. */
+      jam();
+      scanPtr->scanCompletedStatus = ZTRUE;
+      tcConnectptr.p->errorCode = scanError;
+      closeScanLab(signal, tcConnectptr.p);
+      return;
+    }
     storedProcConfScanLab(signal, tcConnectptr);
     return;
   }

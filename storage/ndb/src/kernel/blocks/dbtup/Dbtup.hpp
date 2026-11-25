@@ -1732,6 +1732,8 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     ~storedProc() {}
 
     Uint32 storedProcIVal;
+    /* Word offset of the parameter area of an interpreted scan program,
+     * 0 when scanCopyAttrinfo refused the program's header. */
     Uint32 storedParamAreaStart;
     Uint32 storedParamOffset; // Cumulative word offset to current param
     Uint32 lastSegment;
@@ -4032,18 +4034,25 @@ private:
                          Uint32 resultData, Uint32 routeRef);
 public:
   /* Returns the length of the scan's attrinfo, 0 if it could not be
-   * cached.  When the interpreter of a pushed aggregation or vector
-   * search cannot be created for scan_rec, *pushdownError (if given) is
-   * set to the error to fail the scan with; the scan record is left
-   * without an interpreter. */
+   * cached.  *scanError (if given) is set to the error to fail the scan
+   * with when an interpreted program's header does not fit its section
+   * or the parameter block of the current range does not lie within the
+   * parameter area (ZTOTAL_LEN_ERROR), when the section does not fit
+   * cinBuffer (ZSTORED_TOO_MUCH_ATTRINFO_ERROR), or when the interpreter
+   * of a pushed aggregation or vector search cannot be created for
+   * scan_rec (the scan record is then left without an interpreter). */
   Uint32 scanCopyAttrinfo(Uint32 storedProcId,
                           bool interpretedFlag,
                           bool first_call,
                           void* scan_rec = nullptr,
-                          Uint32* pushdownError = nullptr);
+                          Uint32* scanError = nullptr);
   Uint32 keyCopyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal);
 
-  void nextAttrInfoParam(Uint32 storedProcId);
+  /* Moves an interpreted scan on to the parameter block of its next
+   * range.  Returns 0, or ZTOTAL_LEN_ERROR, the error to fail the scan
+   * with, when the current block does not lie within the parameter
+   * area or the program's header was refused. */
+  Uint32 nextAttrInfoParam(Uint32 storedProcId);
   bool cacheFromCinBuffer(storedProc* sp, Uint32 len);
 
   /* Sets *errorCode (non-zero) when the result cannot be sent; the
