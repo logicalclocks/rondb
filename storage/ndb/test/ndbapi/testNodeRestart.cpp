@@ -9633,16 +9633,15 @@ static int readTablePrimaries(NDBT_Context *ctx, Uint32 *fragCount,
 
 /**
  * Waits until all data nodes see the same primary replicas of the test
- * table and, when balanced is set, each data node is primary for its
- * share of the fragments. A node restart calculates the primary replicas
- * of each table again when it starts to copy the table, and COMMIT_STORED
+ * table and each data node is primary for its share of the fragments. A
+ * node restart calculates the primary replicas of each table again when
+ * it starts to copy the table, and COMMIT_STORED
  * of each fragment switches to them, which gives each alive node of a
  * node group the same number of primary replicas when the node group's
  * fragments divide evenly among its nodes, as they do when the fragment
  * count of the table is a multiple of the number of data nodes.
  */
-static int waitTablePrimaries(NDBT_Context *ctx, bool balanced,
-                              int timeoutSec) {
+static int waitTablePrimaries(NDBT_Context *ctx, int timeoutSec) {
   NdbRestarter restarter;
   const int numNodes = restarter.getNumDbNodes();
   for (int sec = 0;; sec++) {
@@ -9657,23 +9656,21 @@ static int waitTablePrimaries(NDBT_Context *ctx, bool balanced,
     for (int i = 0; i < numNodes; i++) {
       const int nodeId = restarter.getDbNodeId(i);
       counts.appfmt(" node %d: %u", nodeId, primaryCount[nodeId]);
-      if (balanced && even && primaryCount[nodeId] != fragCount / numNodes) {
+      if (even && primaryCount[nodeId] != fragCount / numNodes) {
         ok = false;
       }
     }
     if (ok) {
       ndbout_c("Primary replicas of the %u fragments of %s:%s%s", fragCount,
                ctx->getTab()->getName(), counts.c_str(),
-               (balanced && !even) ? " (balance not checked, the fragments"
-                                     " do not divide evenly)"
-                                   : "");
+               even ? "" : " (balance not checked, the fragments do not"
+                           " divide evenly)");
       return NDBT_OK;
     }
     if (sec >= timeoutSec) {
       g_err << "After " << timeoutSec << " s the primary replicas of the "
             << fragCount << " fragments of " << ctx->getTab()->getName()
-            << " are not "
-            << (balanced ? "balanced" : "the same on all data nodes") << ":"
+            << " are not the same on all data nodes and balanced:"
             << counts.c_str() << endl;
       return NDBT_FAILED;
     }
@@ -9682,13 +9679,11 @@ static int waitTablePrimaries(NDBT_Context *ctx, bool balanced,
 }
 
 /**
- * Finalizer: the primary replicas are the same on all data nodes and,
- * unless CheckPrimariesBalanced is 0, balanced.
+ * Finalizer: the primary replicas are the same on all data nodes and
+ * balanced.
  */
 int runCheckTablePrimaries(NDBT_Context *ctx, NDBT_Step *step) {
-  const bool balanced =
-      ctx->getProperty("CheckPrimariesBalanced", Uint32(1)) != 0;
-  return waitTablePrimaries(ctx, balanced, 60);
+  return waitTablePrimaries(ctx, 60);
 }
 
 /**
