@@ -247,9 +247,10 @@ bool embeddedSkips(const Uint32* emb, Uint32 emb_len, Uint32* skips,
       known &= ~embeddedRegWrites(instr, is_branch);
     }
     if (is_branch) {
-      /* Forward offset from the branch word, as validateEmbeddedProgram. */
+      /* Forward offset from the branch word, at least 1, as
+       * validateEmbeddedProgram. */
       const Uint32 target = pc + ((instr >> 16) & 0x7FFF);
-      if ((instr >> 31) != 0 || target >= emb_len) {
+      if ((instr >> 31) != 0 || target == pc || target >= emb_len) {
         return false;
       }
       setProgramBit(targets, target);

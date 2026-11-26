@@ -11833,7 +11833,10 @@ int Dbtup::interpreterJumpTable(Signal* signal,
       jamDataDebug(opCode);
       const int _rc = h(ctx);
       if (likely(_rc == INTERP_CONTINUE)) {
-        if (noBackJumps && unlikely(TprogramCounter < prevPC)) {
+        /* Every instruction but a branch moves on past its words; a
+         * branch of offset 0 lands on itself (brancher) and would run
+         * again forever, there being no instruction limit here. */
+        if (noBackJumps && unlikely(TprogramCounter <= prevPC)) {
           jam();
           terrorCode = ZBACKWARD_JUMP_NOT_ALLOWED;
           return -1;

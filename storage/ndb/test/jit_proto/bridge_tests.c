@@ -4017,6 +4017,42 @@ static void test_agg_uncond_branch_accept(void) {
   mark_pass(name);
 }
 
+/* T72f: a ZERO length of a conditional branch is MALFORMED too (T72c
+ * refused it for BRANCH only).  BRANCH_ATTR_EQ_NULL lowered to an
+ * OP_BRANCH_ATTR_EQ_NULL whose target was its own op. */
+static void test_cond_branch_zero_reject(void) {
+  uint32_t filter_prog[3] = {
+    enc_emb_branch_attr_null(EMB_BRANCH_ATTR_EQ_NULL, /*offset=*/0),
+    enc_emb_attr_id(/*attrId=*/1),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+  };
+  assert_scan_filter_rejected("T72f cond_branch_zero_reject",
+                              filter_prog, 3,
+                              JIT_BRIDGE_MALFORMED,
+                              /*want_word=*/1, EMB_BRANCH_ATTR_EQ_NULL);
+}
+
+/* T72g: T60a with a guard of length 0.  The guard was folded to "never
+ * taken" and the program compiled, where the interpreter runs the
+ * guard again forever on a NULL. */
+static void test_guard_zero_reject(void) {
+  uint32_t prog[11] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/8),
+    enc_emb_read_attr(/*attr_id=*/7, /*reg=*/0),
+    enc_emb_branch_reg_eq_null(/*reg=*/0, /*offset=*/0),
+    enc_emb_load_const16(/*reg=*/1, /*val=*/115),
+    enc_emb_branch_reg_reg(EMB_BRANCH_GT_REG_REG, 0, 1, /*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T72g guard_zero_reject", prog, 11, JIT_BRIDGE_MALFORMED,
+                  /*want_word=*/2, EMB_BRANCH_REG_EQ_NULL);
+}
+
 
 /* ------------------------------------------------------------------ */
 /* ronsql_jit slice 2 item 4 — READ_LINKED_COLUMN_TO_REG (op 44).     */
@@ -6054,6 +6090,8 @@ int main(void) {
   test_uncond_branch_zero_reject();
   test_uncond_branch_range_reject();
   test_agg_uncond_branch_accept();
+  test_cond_branch_zero_reject();
+  test_guard_zero_reject();
   test_linked_col_bigint_accept();
   test_linked_col_smallint_accept();
   test_linked_col_bigunsigned_accept();

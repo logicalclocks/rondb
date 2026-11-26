@@ -1,0 +1,16 @@
+--source include/have_ndb.inc
+
+# P-57: a join aggregation whose embedded program has a branch of
+# offset 0, a branch to itself: an unconditional BRANCH, and a
+# BRANCH_REG_EQ_NULL of a register that is NULL. The offset counts from
+# the branch word, validateEmbeddedProgram took it, and the embedded
+# interpreter runs without an instruction limit, so a row that took the
+# branch ran forever in the LDM thread. JOIN_AGG_SETUP_REQ now refuses
+# the program: SCAN_TABREF, with every data node started. The controls,
+# the same programs with offset 1, must get SCAN_TABCONF.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P57
+--let $spj_case_title = P-57: join aggregation embedded branch of offset 0, to itself
+--source suite/ndb_spj/include/spj_malformed_case.inc

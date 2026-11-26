@@ -3325,13 +3325,13 @@ public:
    *       synthetic CTE row).  Implicit in the CTE filter path.
    *
    *   IFLAG_DISALLOW_BACKWARD_JUMPS — after every handler dispatch,
-   *       check that the new TprogramCounter is not less than the
-   *       pre-dispatch value; violations set
-   *       ZBACKWARD_JUMP_NOT_ALLOWED and return -1.  Combined with a
-   *       handler table that omits CALL / RETURN, this makes the
-   *       program provably terminating — so the 16000-instruction
-   *       fuse is dropped in this mode for the aggregation
-   *       interpreter's embedded programs.
+   *       check that the new TprogramCounter is past the
+   *       pre-dispatch value (a branch of offset 0 lands on itself);
+   *       violations set ZBACKWARD_JUMP_NOT_ALLOWED and return -1.
+   *       Combined with a handler table that omits CALL / RETURN,
+   *       this makes the program provably terminating — so the
+   *       16000-instruction fuse is dropped in this mode for the
+   *       aggregation interpreter's embedded programs.
    */
   enum InterpreterJumpTableFlags {
     IFLAG_REJECT_RETURNS_NEG       = 0x1,

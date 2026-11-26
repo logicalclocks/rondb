@@ -89,7 +89,9 @@
  * types in one slot and loads of linked values shorter than their type,
  * which fail the row, and a MAX of a kOpMov copy of a string register,
  * which must work.  P-56 sums after a SUM of a register set NULL, which
- * stopped a debug data node (RONDB-1124).
+ * stopped a debug data node (RONDB-1124).  P-57 sends an embedded
+ * program with a branch to itself, which ran forever in the LDM thread
+ * and which JOIN_AGG_SETUP_REQ must refuse (validateEmbeddedProgram).
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
  * re-send (passQueue), which only DBTC itself may set (RONDB-1124).
  * S-1 and S-2 send join aggregation signals that only data nodes send
@@ -2673,6 +2675,97 @@ class SpjMalformedChecker {
     return NDBT_OK;
   }
 
+  /* ---- P-57: an embedded branch to itself ----------------------------- *
+   * A leaf whose rows run one branch word, branch, with offset in its
+   * bits 16-30, then COUNT(1):
+   *   0 branch to word offset
+   *   1 LOAD_CONST16 0 into register 0
+   *   2 WRITE_INTERPRETER_OUTPUT 0 of register 0: go on after it
+   *   3 EXIT_OK
+   * The offset counts from the branch word (Dbtup::brancher): 1 goes on
+   * to word 1, 0 is a branch to itself. */
+  static std::vector<Uint32> oneBranchLeaf(Uint32 branch, Uint32 offset) {
+    const std::vector<Uint32> emb = {
+        branch | (offset << 16),
+        Interpreter::LoadConst16(0, 0),
+        Interpreter::WriteInterpreterOutput(0, 0),
+        Interpreter::ExitOK()};
+    return embeddedCountLeaf(emb);
+  }
+
+  int runP57() {
+    /* validateEmbeddedProgram took a branch of offset 0 (it checked the
+     * direction and that the target is inside the program), and
+     * interpreterAggEmbedded runs without the 16000-instruction limit,
+     * its back-jump check refusing only a lower program counter.  So a
+     * taken branch to itself ran forever in the LDM thread.  An
+     * unconditional BRANCH, and a BRANCH_REG_EQ_NULL of register 1,
+     * which is NULL when the embedded program starts.  The program is
+     * the only leaf, so the rows of T1 run it.  JOIN_AGG_SETUP_REQ now
+     * refuses it (DbspjErr::InvalidRequest), and the interpreter fails
+     * a row that branches to itself (ZBACKWARD_JUMP_NOT_ALLOWED): each
+     * request must get SCAN_TABREF with every data node started.  The
+     * controls, the same programs with offset 1, must get SCAN_TABCONF:
+     * without them a harness whose rows never reach the program would
+     * pass.  They run first, so that no request expected to succeed
+     * follows one that may stop a data node. */
+    const Uint32 branches[2] = {Interpreter::BRANCH,
+                                Interpreter::BRANCH_REG_EQ_NULL | (1u << 6)};
+    const char *const controlIds[2] = {
+        "P-57 control: BRANCH to the next word",
+        "P-57 control: BRANCH_REG_EQ_NULL of a NULL register to the next "
+        "word"};
+    const char *const ids[2] = {
+        "P-57a join aggregation embedded BRANCH to itself",
+        "P-57b join aggregation embedded BRANCH_REG_EQ_NULL of a NULL "
+        "register to itself"};
+
+    for (int i = 0; i < 2; i++) {
+      SpjReq good;
+      makeJoinAggScan(good, {oneBranchLeaf(branches[i], 1)});
+      good.waitForEnd = true;
+      const Reply control = sendScanTabReq(good);
+      printReply(controlIds[i], control);
+      if (control.gsn != GSN_SCAN_TABCONF) {
+        g_err << controlIds[i] << " did not get SCAN_TABCONF (got "
+              << gsnName(control.gsn) << ", err " << control.errorCode
+              << ").  The rows do not reach the leaf program; fix this "
+                 "before trusting the result of P-57." << endl;
+        return clusterHealthy() ? NDBT_FAILED : failNodeDown(controlIds[i]);
+      }
+    }
+
+    Reply reps[2];
+    for (int i = 0; i < 2; i++) {
+      SpjReq bad;
+      makeJoinAggScan(bad, {oneBranchLeaf(branches[i], 0)});
+      bad.waitForEnd = true;
+      reps[i] = sendScanTabReq(bad);
+      printReply(ids[i], reps[i]);
+    }
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown("P-57");
+    }
+    int result = NDBT_OK;
+    for (int i = 0; i < 2; i++) {
+      if (reps[i].gsn != GSN_SCAN_TABREF) {
+        g_err << ids[i] << ": FAIL -- expected SCAN_TABREF, got "
+              << gsnName(reps[i].gsn) << " " << reps[i].errorCode
+              << ": the branch to itself was not refused" << endl;
+        result = NDBT_FAILED;
+      } else {
+        g_info << ids[i] << ": PASS (all data nodes started; SCAN_TABREF "
+               << reps[i].errorCode << ", JOIN_AGG_SETUP_REF sends "
+               << Uint32(DbspjErr::InvalidRequest) << ")" << endl;
+      }
+    }
+    return result;
+  }
+
   /* ---- Q cases: DBTC's rate queue re-send mark sent by the API -------- *
    * DBTC's rate queue handler re-sends a queued request to its own DBTC
    * instance with a mark: the passQueue flag of TCKEYREQ, TCINDXREQ and
@@ -3357,6 +3450,7 @@ CASE_STEP(runP52, runP52)
 CASE_STEP(runP54, runP54)
 CASE_STEP(runP55, runP55)
 CASE_STEP(runP56, runP56)
+CASE_STEP(runP57, runP57)
 CASE_STEP(runQ1, runQ1)
 CASE_STEP(runQ2, runQ2)
 CASE_STEP(runQ3, runQ3)
@@ -3683,6 +3777,10 @@ TESTCASE("P55",
 TESTCASE("P56",
          "join aggregation: SUM after a SUM of a register set NULL") {
   STEP(runP56);
+}
+TESTCASE("P57",
+         "join aggregation: an embedded branch of offset 0, to itself") {
+  STEP(runP57);
 }
 TESTCASE("Q1", "TCKEYREQ with the rate queue flag from the API") {
   STEP(runQ1);

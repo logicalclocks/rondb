@@ -585,7 +585,8 @@ class AggInterpreterBase : public PushdownInterpreter {
    * enforced an opcode allow-list and rejected backward branches).  The
    * stricter JoinAgg form is adopted here for both — the allow-list
    * covers every opcode either path emits, and the backward-branch
-   * reject closes a potential infinite-loop class.  A
+   * reject closes a potential infinite-loop class, as does the reject
+   * of a branch of offset 0, a branch to itself.  A
    * BRANCH_MEM_OP_ARG_INLINE_TYPE must lie inside the program and carry
    * a collation exactly for a string type
    * (NdbSqlUtil::get_compare_collation).  Pure function over

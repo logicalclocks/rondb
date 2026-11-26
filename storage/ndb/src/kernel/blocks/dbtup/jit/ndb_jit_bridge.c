@@ -830,8 +830,8 @@ static int emb_null_path_reg_safe(const uint32_t *emb_prog, uint32_t emb_len,
           break;
         /* ronsql_jit slice 2 item 3: the unconditional jump has ONE
          * successor — the target. (A zero offset stalls on visited[]
-         * and ends the path; translate rejects it as MALFORMED before
-         * any scan verdict matters.) */
+         * and ends the path; translate rejects a zero offset of any
+         * branch as MALFORMED before any scan verdict matters.) */
         case BR_EMB_BRANCH:
           if ((inst >> 31) != 0) return 0;             /* backward */
           pc += (inst >> 16) & 0x7FFFu;
@@ -1213,6 +1213,28 @@ static JitBridgeReason translate_embedded_block(
         regs_written = emb_in_regs[inst_pc];
       }
       path_live = 1;
+    }
+
+    /* RONDB-1124: a branch of length 0, of any form, lands on itself:
+     * the interpreter's brancher runs the same word again, forever once
+     * taken.  Only BR_EMB_BRANCH refused it.  The other cases check the
+     * direction and the end of the block, so such a branch resolved to
+     * the op of its own pc, which only jit1's admission refused, or, a
+     * BRANCH_REG_EQ_NULL, was folded to "never taken", where the
+     * interpreter loops on a NULL.  The data nodes refuse it in an
+     * aggregation program (validateEmbeddedProgram) before the JIT. */
+    {
+      uint32_t self_target = 0;
+      if (br_emb_branch_target(emb_op, inst, inst_pc, emb_len,
+                               &self_target) &&
+          self_target == inst_pc) {
+        if (out_err) {
+          out_err->reason         = JIT_BRIDGE_MALFORMED;
+          out_err->offending_word = outer_word_pos + 1 + emb_pc;
+          out_err->offending_op   = emb_op;
+        }
+        return JIT_BRIDGE_MALFORMED;
+      }
     }
 
     switch (emb_op) {

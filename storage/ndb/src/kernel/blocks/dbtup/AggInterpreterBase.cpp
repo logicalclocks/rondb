@@ -741,6 +741,15 @@ bool AggInterpreterBase::validateEmbeddedProgram(
         return false;
       }
       Uint32 offset = (instr >> 16) & 0x7FFF;
+      /* The offset counts from the branch word (Dbtup::brancher), so 0
+       * is a branch to itself: taken once, it is taken again on the
+       * same registers, and interpreterAggEmbedded runs without an
+       * instruction limit. */
+      if (offset == 0) {
+        g_eventLogger->debug(
+            "validateEmbeddedProgram: branch to itself at pc=%u", pc);
+        return false;
+      }
       Uint32 target = pc + offset;
       if (target >= emb_len) {
         g_eventLogger->warning(
