@@ -26748,8 +26748,20 @@ void Dblqh::accScanConfScanLab(Signal *signal,
     Uint32 scanError = 0;
     if (regTcPtr->opExec)  // has interpreter code, possibly using param
     {
+      /* Only DBSPJ writes one parameter block per range into the
+       * parameter area of the program (scanFrag_send); for any other
+       * sender, such as DBTC with an NDB API scan, the area is the
+       * program's subroutine region, which every range runs whole.
+       * clientBlockref is the sender of SCAN_FRAGREQ.  A release node
+       * takes SCAN_FRAGREQ from data nodes only (SignalScopes.hpp), and
+       * DBTC sends it as itself, so an API node cannot have its scan
+       * read as one from DBSPJ.  Each block of a scan from DBSPJ is
+       * checked against the area as well. */
+      const bool paramBlockPerRange =
+          (refToMain(regTcPtr->clientBlockref) == DBSPJ);
       // Advance to next parameter in the attrInfo
-      scanError = c_tup->nextAttrInfoParam(scanPtr->scanStoredProcId);
+      scanError = c_tup->nextAttrInfoParam(scanPtr->scanStoredProcId,
+                                           paramBlockPerRange);
     }
     if (likely(scanError == 0)) {
       (void) c_tup->scanCopyAttrinfo(scanPtr->scanStoredProcId,

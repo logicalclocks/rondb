@@ -997,13 +997,33 @@ bool Dbtup::pushdownInitErrorInserted() const {
 }
 
 /*
+ * Error insert 4047: nextAttrInfoParam reads the parameter area of an
+ * interpreted range scan that DBSPJ did not send as one parameter block
+ * per range, as it reads a DBSPJ scan's.  Only DBSPJ writes the blocks,
+ * so this lets a raw scan from the API reach the block checks with
+ * blocks of its own (testSpjMalformed P46).  Checked through the LDM
+ * instance, as 4046.
+ */
+bool Dbtup::scanParamBlocksErrorInserted() const {
+#ifdef ERROR_INSERT
+  const Dbtup* ldm = (m_ldm_instance_used != nullptr)
+                         ? m_ldm_instance_used
+                         : this;
+  return ldm->jit_error_inserted(4047);
+#else
+  return false;
+#endif
+}
+
+/*
  * The interpreted program of a scan starts with the header
  *   [initReadLen][interpretLen][finalUpdateLen][finalReadLen][paramLen]
  * and the five regions follow it in that order.  The last one, the
  * parameter area, is the subroutine region of an NDB API program, or,
  * for a DBSPJ scan with parameters (scanFrag_send), one parameter block
- * per range, each [blockLen][blockLen - 1 words].  All five lengths are
- * the sender's.
+ * per range, each [blockLen][blockLen - 1 words].  Only for a scan from
+ * DBSPJ does each range after the first move on to a block of its own
+ * (nextAttrInfoParam).  All five lengths are the sender's.
  *
  * Returns the word offset of the parameter area in the section of
  * totalLen words at attrInfo, or 0 when the header is incomplete or the
@@ -1139,7 +1159,8 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
     } else {
       jamDebug();
       /* Jump directly to the block of this range, at the offset that
-       * nextAttrInfoParam reached.  The block is read from the cached
+       * nextAttrInfoParam reached (only a scan from DBSPJ moves on from
+       * the first block).  The block is read from the cached
        * section, as nextAttrInfoParam reads it, and must lie within the
        * parameter area: the sender wrote the block lengths, and a range
        * that has no block left fails the scan. */
@@ -1390,7 +1411,8 @@ void Dbtup::readLinkedToMemBuffer(const Uint32 *linked,
   }
 }
 
-Uint32 Dbtup::nextAttrInfoParam(Uint32 storedProcId) {
+Uint32 Dbtup::nextAttrInfoParam(Uint32 storedProcId,
+                                bool paramBlockPerRange) {
   jam();
 
   /* Get stored procedure */
@@ -1418,6 +1440,18 @@ Uint32 Dbtup::nextAttrInfoParam(Uint32 storedProcId) {
   if (unlikely(buf == nullptr || paramAreaStart == 0)) {
     jam();
     return ZTOTAL_LEN_ERROR;
+  }
+  if (!paramBlockPerRange && likely(!scanParamBlocksErrorInserted())) {
+    /* Not a scan from DBSPJ, whose scanFrag_send alone writes one
+     * parameter block per range.  The parameter area is the subroutine
+     * region of the program, as NdbScanOperation sends it: every range
+     * runs the same program with all of its subroutines, so
+     * storedParamOffset stays 0 and scanCopyAttrinfo takes the whole
+     * area, as for the first range.  Reading the subroutine code as
+     * block lengths failed such a scan at its second range
+     * (RONDB-1124). */
+    jamDebug();
+    return 0;
   }
   const Uint32 paramAreaLen = buf[4];
   if (paramAreaLen > 0) {

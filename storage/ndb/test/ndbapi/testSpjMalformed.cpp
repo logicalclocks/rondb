@@ -60,7 +60,12 @@
  * P-46 is a plain interpreted range scan, not through DBSPJ, with two
  * ranges whose parameter blocks run past the parameter area of the
  * program, or whose header lengths wrap in 32 bits, which DBTUP refuses
- * (RONDB-1124).
+ * (RONDB-1124).  DBTUP reads parameter blocks only for a scan from DBSPJ,
+ * so the block cases run under error insert 4047, which has it read them
+ * for this scan as well (data nodes built with ERROR_INSERT only).
+ * P-49 is an NDB API range scan with two ranges whose program calls a
+ * subroutine, which must return the rows of both ranges: DBTUP read the
+ * subroutine as parameter blocks from the second range on (RONDB-1124).
  * P-48 reads a linked attribute entry shorter than its type, as P-40
  * does, on the JIT (test_spj_malformed_p48_jit), which decoded it as a
  * value, and for the NULL-extended row of an outer join, which failed
@@ -119,6 +124,7 @@
 #include <signaldata/DbspjErr.hpp>
 #include <signaldata/JoinAgg.hpp>
 #include <ndbapi/NdbAggregationCommon.hpp>
+#include <algorithm>
 #include <cstring>
 #include <vector>
 #include "../../src/ndbapi/SignalSender.hpp"
@@ -1280,6 +1286,9 @@ class SpjMalformedChecker {
    * the row, with TCKEYREF carrying the operation pointer in word 0. */
   static constexpr Uint32 kRefuseCode = 899;     /* EXIT_REFUSE's code */
   static constexpr Uint32 kTotalLenError = 882;  /* ZTOTAL_LEN_ERROR */
+  /* DBTUP reads the parameter area of a scan not from DBSPJ as one
+   * parameter block per range (P-46, ERROR_codes.txt). */
+  static constexpr int kParamBlocksInsert = 4047;
 
   Reply sendInterpretedRead(const std::vector<Uint32> &attrInfo) {
     Reply rep;
@@ -1464,11 +1473,14 @@ class SpjMalformedChecker {
    * time.  Its AttrInfo section is an interpreted program, which DBTC
    * and DBLQH pass on as the API sent it:
    *   [0][1][0][1][paramLen] EXIT_OK, read KOL1, the parameter area
-   * Every fragment scans both ranges.  For the second one DBLQH has
-   * DBTUP move on to the next parameter block (nextAttrInfoParam) and
-   * copy it to the start of the parameter area (scanCopyAttrinfo).
-   * DBSPJ writes one block per range, [blockLen][blockLen - 1 words];
-   * here the API writes the block lengths. */
+   * Every fragment scans both ranges.  For the second one of a scan from
+   * DBSPJ, DBLQH has DBTUP move on to the next parameter block
+   * (nextAttrInfoParam) and copy it to the start of the parameter area
+   * (scanCopyAttrinfo).  DBSPJ writes one block per range,
+   * [blockLen][blockLen - 1 words].  This scan comes from DBTC, so its
+   * parameter area is the subroutine region of the program, used whole
+   * for every range (P-49), unless error insert 4047 has DBTUP read it as
+   * blocks, whose lengths the API then writes. */
   static std::vector<Uint32> rangeScanProgram(
       const std::vector<Uint32> &params) {
     std::vector<Uint32> ai = {0, 1, 0, 1, Uint32(params.size()),
@@ -1502,11 +1514,22 @@ class SpjMalformedChecker {
      * ZTOTAL_LEN_ERROR before it reads a row of the range.  The
      * control, two well-formed blocks of 2 and 3 words, must get
      * SCAN_TABCONF: without it a harness whose scan never reaches the
-     * second range would pass. */
+     * second range would pass.
+     *
+     * Only DBSPJ writes parameter blocks, and DBTUP now reads them only
+     * for a scan from DBSPJ: for this scan from DBTC the parameter area
+     * is the subroutine region of the program, whatever its words are
+     * (P-49).  So P-46a and P-46b run under error insert 4047, which has
+     * DBTUP read this scan's area as blocks, and the control runs once
+     * more under it.  The insert needs data nodes built with
+     * ERROR_INSERT; MTR runs this program from the same build as the
+     * data nodes, so it runs them when it was built with ERROR_INSERT
+     * itself.  P-46c, the header, is checked for every scan. */
     const char *findingId = "P-46 parameter blocks of a multi-range scan";
-    const Reply control = sendInterpretedRangeScan(
-        indexId, indexVersion,
-        rangeScanProgram({2, 0x11111111u, 3, 0x22222222u, 0x33333333u}));
+    const std::vector<Uint32> controlProgram =
+        rangeScanProgram({2, 0x11111111u, 3, 0x22222222u, 0x33333333u});
+    const Reply control =
+        sendInterpretedRangeScan(indexId, indexVersion, controlProgram);
     printReply("CONTROL (two ranges, two well-formed parameter blocks)",
                control);
     if (control.gsn != GSN_SCAN_TABCONF) {
@@ -1534,10 +1557,42 @@ class SpjMalformedChecker {
         {0, 0x80000000u, 0, 0, 0x80000001u, Interpreter::ExitOK(),
          AttributeHeader(0, 0).m_value}};
     Reply reps[3];
-    for (int i = 0; i < 3; i++) {
-      reps[i] = sendInterpretedRangeScan(indexId, indexVersion, programs[i]);
-      printReply(ids[i], reps[i]);
+    bool ran[3] = {false, false, false};
+    /* P-46c without the insert: the header is checked for every scan. */
+    reps[2] = sendInterpretedRangeScan(indexId, indexVersion, programs[2]);
+    ran[2] = true;
+    printReply(ids[2], reps[2]);
+    int result = NDBT_OK;
+#ifdef ERROR_INSERT
+    Reply blocksControl;
+    if (m_restarter->insertErrorInAllNodes(kParamBlocksInsert) != 0) {
+      g_err << "P-46: inserting error " << kParamBlocksInsert
+            << " failed" << endl;
+      result = NDBT_FAILED;
+    } else {
+      blocksControl =
+          sendInterpretedRangeScan(indexId, indexVersion, controlProgram);
+      printReply("CONTROL under error insert 4047 (the two well-formed "
+                 "blocks read as blocks)",
+                 blocksControl);
+      for (int i = 0; i < 2; i++) {
+        reps[i] =
+            sendInterpretedRangeScan(indexId, indexVersion, programs[i]);
+        ran[i] = true;
+        printReply(ids[i], reps[i]);
+      }
     }
+    if (m_restarter->insertErrorInAllNodes(0) != 0) {
+      g_err << "P-46: clearing error " << kParamBlocksInsert << " failed"
+            << endl;
+      result = NDBT_FAILED;
+    }
+#else
+    g_info << "P-46a, P-46b: not run, they need error insert "
+           << kParamBlocksInsert
+           << ", which only data nodes built with ERROR_INSERT have"
+           << endl;
+#endif
 
     /* Give a crash time to surface, then check status. */
     NdbSleep_MilliSleep(SettleMillis);
@@ -1545,8 +1600,19 @@ class SpjMalformedChecker {
     if (!clusterHealthy()) {
       return failNodeDown(findingId);
     }
-    int result = NDBT_OK;
+#ifdef ERROR_INSERT
+    if (ran[0] && blocksControl.gsn != GSN_SCAN_TABCONF) {
+      g_err << "P-46 CONTROL under error insert " << kParamBlocksInsert
+            << ": FAIL -- expected SCAN_TABCONF, got "
+            << gsnName(blocksControl.gsn) << " " << blocksControl.errorCode
+            << ": well-formed blocks were refused" << endl;
+      result = NDBT_FAILED;
+    }
+#endif
     for (int i = 0; i < 3; i++) {
+      if (!ran[i]) {
+        continue;
+      }
       if (reps[i].gsn != GSN_SCAN_TABREF ||
           reps[i].errorCode != kTotalLenError) {
         g_err << ids[i] << ": FAIL -- expected SCAN_TABREF "
@@ -1560,6 +1626,130 @@ class SpjMalformedChecker {
       }
     }
     return result;
+  }
+
+  /* ---- P-49: a multi-range scan whose program calls a subroutine ------ *
+   * Not raw signals: an NdbIndexScanOperation of the ordered index on
+   * column 0 (T1's KOL1) with two ranges, KOL1 in [1, 4] and KOL1 in
+   * [10, 13], and an NdbInterpretedCode program whose subroutine 0 reads
+   * KOL1 into register 1; the main program calls it and refuses the rows
+   * whose KOL1 is 3 or 12:
+   *   call_sub 0; R2 = 3; R1 == R2 -> refuse; R2 = 12; R1 == R2 -> refuse;
+   *   exit_ok; refuse: exit_nok; sub 0: R1 = KOL1; ret_sub
+   * NdbScanOperation sends the subroutine as the parameter area of the
+   * program (header word 4), and DBTC passes it on.  From the second
+   * range on DBTUP read that area as parameter blocks, which only DBSPJ
+   * writes: the subroutine's first word, a READ_ATTR_INTO_REG
+   * instruction, is no block length within the 2-word area, so every
+   * such scan failed with 882 (RONDB-1124).  Now every range of a scan
+   * that is not from DBSPJ runs the whole program, and the scan must
+   * return KOL1 1, 2 and 4 of the first range and 10, 11 and 13 of the
+   * second. */
+  int runP49(Ndb *pNdb, const NdbDictionary::Table *tab,
+             const NdbDictionary::Index *index) {
+    const char *const findingId =
+        "P-49 multi-range scan whose program calls a subroutine";
+    const Uint32 kol1AttrId = 0;
+    const char *const kol1Name = tab->getColumn(kol1AttrId)->getName();
+    const Uint32 regKol1 = 1;
+    const Uint32 regConst = 2;
+    const Uint32 refuseLabel = 0;
+    const Uint32 refusedInFirst = 3;
+    const Uint32 refusedInSecond = 12;
+    NdbInterpretedCode code(tab);
+    if (code.call_sub(0) != 0 ||
+        code.load_const_u32(regConst, refusedInFirst) != 0 ||
+        code.branch_eq(regKol1, regConst, refuseLabel) != 0 ||
+        code.load_const_u32(regConst, refusedInSecond) != 0 ||
+        code.branch_eq(regKol1, regConst, refuseLabel) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.def_label(int(refuseLabel)) != 0 ||
+        code.interpret_exit_nok() != 0 ||
+        code.def_sub(0) != 0 ||
+        code.read_attr(regKol1, kol1AttrId) != 0 ||
+        code.ret_sub() != 0 ||
+        code.finalise() != 0) {
+      g_err << findingId << ": building the program failed: "
+            << code.getNdbError() << endl;
+      return NDBT_FAILED;
+    }
+
+    /* [low, high] of each range, both inclusive */
+    const Uint32 bounds[2][2] = {{1, 4}, {10, 13}};
+    const std::vector<Uint32> expected = {1, 2, 4, 10, 11, 13};
+
+    NdbTransaction *trans = pNdb->startTransaction();
+    if (trans == nullptr) {
+      g_err << findingId << ": startTransaction failed: "
+            << pNdb->getNdbError() << endl;
+      return NDBT_FAILED;
+    }
+    NdbIndexScanOperation *op = trans->getNdbIndexScanOperation(index);
+    NdbRecAttr *kol1Value = nullptr;
+    bool defined =
+        op != nullptr &&
+        op->readTuples(NdbOperation::LM_CommittedRead,
+                       NdbScanOperation::SF_MultiRange) == 0;
+    for (Uint32 r = 0; defined && r < 2; r++) {
+      defined = op->setBound(kol1Name, NdbIndexScanOperation::BoundLE,
+                             &bounds[r][0]) == 0 &&
+                op->setBound(kol1Name, NdbIndexScanOperation::BoundGE,
+                             &bounds[r][1]) == 0 &&
+                op->end_of_bound(r) == 0;
+    }
+    if (defined) {
+      defined = op->setInterpretedCode(&code) == 0 &&
+                (kol1Value = op->getValue(kol1Name)) != nullptr;
+    }
+    if (!defined) {
+      g_err << findingId << ": defining the scan failed: "
+            << trans->getNdbError() << endl;
+      trans->close();
+      return NDBT_FAILED;
+    }
+
+    std::vector<Uint32> rows;
+    int errorCode = 0;
+    if (trans->execute(NdbTransaction::NoCommit) != 0) {
+      errorCode = trans->getNdbError().code;
+    } else {
+      int rc;
+      while ((rc = op->nextResult(true)) == 0) {
+        rows.push_back(kol1Value->u_32_value());
+      }
+      if (rc != 1) {
+        errorCode = op->getNdbError().code;
+        if (errorCode == 0) errorCode = trans->getNdbError().code;
+        if (errorCode == 0) errorCode = -1;
+      }
+    }
+    trans->close();
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (errorCode != 0) {
+      g_err << findingId << ": FAIL -- the scan failed with error "
+            << errorCode
+            << (errorCode == int(kTotalLenError)
+                    ? ": DBTUP read the subroutine of the program as "
+                      "parameter blocks at the second range"
+                    : "")
+            << endl;
+      return NDBT_FAILED;
+    }
+    std::sort(rows.begin(), rows.end());
+    if (rows != expected) {
+      g_err << findingId << ": FAIL -- expected KOL1";
+      for (Uint32 v : expected) g_err << " " << v;
+      g_err << ", got";
+      for (Uint32 v : rows) g_err << " " << v;
+      g_err << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId << ": PASS (all data nodes started; KOL1 1, 2, 4 "
+           << "of the first range, 10, 11, 13 of the second)" << endl;
+    return NDBT_OK;
   }
 
   int runP48() {  /* a short linked entry: the JIT, an outer join */
@@ -2577,6 +2767,31 @@ CASE_STEP(runQ5, runQ5)
 CASE_STEP(runS1, runS1)
 CASE_STEP(runS2, runS2)
 
+/* Creates the ordered index indexName on column 0 of tab, after dropping
+ * one that an earlier run left.  Returns it, or nullptr. */
+const NdbDictionary::Index *createOrderedIndexOnColumn0(
+    NdbDictionary::Dictionary *dict, const NdbDictionary::Table *tab,
+    const char *indexName, const char *caseId) {
+  (void)dict->dropIndex(indexName, tab->getName());  /* an earlier run's */
+  NdbDictionary::Index idx(indexName);
+  idx.setTable(tab->getName());
+  idx.setType(NdbDictionary::Index::OrderedIndex);
+  idx.setLogging(false);
+  idx.addColumnName(tab->getColumn(0)->getName());
+  if (dict->createIndex(idx) != 0) {
+    g_err << caseId << ": creating ordered index " << indexName
+          << " failed: " << dict->getNdbError() << endl;
+    return nullptr;
+  }
+  const NdbDictionary::Index *created =
+      dict->getIndex(indexName, tab->getName());
+  if (created == nullptr) {
+    g_err << caseId << ": ordered index " << indexName << " not found: "
+          << dict->getNdbError() << endl;
+  }
+  return created;
+}
+
 /* P-46 scans an ordered index on column 0 of the table, which the step
  * creates and drops after the case. */
 int runP46(NDBT_Context *ctx, NDBT_Step *step) {
@@ -2588,24 +2803,36 @@ int runP46(NDBT_Context *ctx, NDBT_Step *step) {
   const NdbDictionary::Table *tab = ctx->getTab();
   NdbDictionary::Dictionary *dict = pNdb->getDictionary();
   const char *const indexName = "P46_ORDERED_COL0";
-  (void)dict->dropIndex(indexName, tab->getName());  /* an earlier run's */
-  NdbDictionary::Index idx(indexName);
-  idx.setTable(tab->getName());
-  idx.setType(NdbDictionary::Index::OrderedIndex);
-  idx.setLogging(false);
-  idx.addColumnName(tab->getColumn(0)->getName());
   int res = NDBT_FAILED;
-  const NdbDictionary::Index *created = nullptr;
-  if (dict->createIndex(idx) != 0) {
-    g_err << "P-46: creating ordered index " << indexName << " failed: "
-          << dict->getNdbError() << endl;
-  } else if ((created = dict->getIndex(indexName, tab->getName())) ==
-             nullptr) {
-    g_err << "P-46: ordered index " << indexName << " not found: "
-          << dict->getNdbError() << endl;
-  } else {
+  const NdbDictionary::Index *created =
+      createOrderedIndexOnColumn0(dict, tab, indexName, "P-46");
+  if (created != nullptr) {
     res = c->runP46(Uint32(created->getObjectId()),
                     Uint32(created->getObjectVersion()));
+  }
+  (void)dict->dropIndex(indexName, tab->getName());
+  delete c;
+  delete ss;
+  delete restarter;
+  return res;
+}
+
+/* P-49 scans an ordered index on column 0 of the table through the NDB
+ * API; the step creates the index and drops it after the case. */
+int runP49(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = nullptr;
+  SignalSender *ss = nullptr;
+  NdbRestarter *restarter = nullptr;
+  SpjMalformedChecker *c = makeChecker(ctx, step, pNdb, ss, restarter);
+  if (c == nullptr) return NDBT_FAILED;
+  const NdbDictionary::Table *tab = ctx->getTab();
+  NdbDictionary::Dictionary *dict = pNdb->getDictionary();
+  const char *const indexName = "P49_ORDERED_COL0";
+  int res = NDBT_FAILED;
+  const NdbDictionary::Index *created =
+      createOrderedIndexOnColumn0(dict, tab, indexName, "P-49");
+  if (created != nullptr) {
+    res = c->runP49(pNdb, tab, created);
   }
   (void)dict->dropIndex(indexName, tab->getName());
   delete c;
@@ -2731,7 +2958,8 @@ TESTCASE("P45",
 }
 TESTCASE("P46",
          "interpreted range scan with two ranges whose parameter blocks "
-         "run past the parameter area") {
+         "run past the parameter area (the block cases on data nodes "
+         "built with ERROR_INSERT only)") {
   STEP(runP46);
 }
 TESTCASE("P48",
@@ -2739,6 +2967,11 @@ TESTCASE("P48",
          "type, compared (on the JIT when it is on) and on an outer "
          "join's NULL-extended row") {
   STEP(runP48);
+}
+TESTCASE("P49",
+         "NDB API index scan with two ranges whose program calls a "
+         "subroutine returns the rows of both ranges") {
+  STEP(runP49);
 }
 TESTCASE("P50",
          "interpreted programs with a subroutine part, or a pattern "

@@ -3642,6 +3642,9 @@ private:
   /* Error insert 4046, see DbtupExecQuery.cpp. False in release builds. */
   bool pushdownInitErrorInserted() const;
 
+  /* Error insert 4047, see DbtupExecQuery.cpp. False in release builds. */
+  bool scanParamBlocksErrorInserted() const;
+
   // Read only PK attributes, without AttributeHeader.
   // Optinally xfrm'ing the key in preparation for hash
   int readKeyAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
@@ -4048,11 +4051,15 @@ public:
                           Uint32* scanError = nullptr);
   Uint32 keyCopyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal);
 
-  /* Moves an interpreted scan on to the parameter block of its next
-   * range.  Returns 0, or ZTOTAL_LEN_ERROR, the error to fail the scan
-   * with, when the current block does not lie within the parameter
-   * area or the program's header was refused. */
-  Uint32 nextAttrInfoParam(Uint32 storedProcId);
+  /* Called at each range after the first of an interpreted scan.
+   * paramBlockPerRange is true for a scan from DBSPJ, whose parameter
+   * area holds one parameter block per range: the scan moves on to the
+   * block of its next range.  Any other scan's parameter area is the
+   * subroutine region of its program, which every range runs whole, so
+   * nothing moves.  Returns 0, or ZTOTAL_LEN_ERROR, the error to fail
+   * the scan with, when the current block does not lie within the
+   * parameter area or the program's header was refused. */
+  Uint32 nextAttrInfoParam(Uint32 storedProcId, bool paramBlockPerRange);
   bool cacheFromCinBuffer(storedProc* sp, Uint32 len);
 
   /* Sets *errorCode (non-zero) when the result cannot be sent; the

@@ -40,6 +40,11 @@ Next DBACC 3007
       vector search (fragment scan or primary-key read) as if QueryMemory
       ran out: the scan / read fails with 1870 (persistent until cleared;
       also checked for query threads, through the LDM instance)
+4047: Read the parameter area of an interpreted range scan that DBSPJ did
+      not send as one parameter block per range, as for a scan from DBSPJ
+      (Dbtup::nextAttrInfoParam), so a raw scan reaches the block checks
+      (testSpjMalformed P46; persistent until cleared; also checked for
+      query threads, through the LDM instance)
 4060: RONDB-1056 JIT must-JIT: interpreter fallback is fatal for any program /
       scan filter with a compilable region (Dbtup / AggInterpreter /
       JoinAggInterpreter; deliberate-fallback canaries are exempt)
@@ -48,7 +53,7 @@ Next DBACC 3007
       program whose compilable region did not JIT-compile aborts the node;
       per-row fallbacks never trip it (suite-wide strict arming, paired
       with DBLQH 5120)
-Next DBTUP 4047 (4060-4064 reserved for the RONDB-1056 JIT above)
+Next DBTUP 4048 (4060-4064 reserved for the RONDB-1056 JIT above)
 5121: CRASH_INSERTION in execJOIN_AGG_SETUP_REQ (DblqhProxy) — node failure testing
 5122: CRASH_INSERTION in execJOIN_AGG_COMPLETE_REQ (Dblqh) — node failure testing
 5123: CRASH_INSERTION in execJOIN_AGG_RELEASE_REQ (DblqhProxy) — node failure testing
