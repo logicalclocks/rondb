@@ -1,0 +1,13 @@
+SET @jit_f0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# P-40: join aggregation linked attribute entry shorter than its type, JIT on
+Running command
+Result of command: 0
+Test program success!
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_f0 > 0
+AS p40_refused_by_jit;
+p40_refused_by_jit
+1

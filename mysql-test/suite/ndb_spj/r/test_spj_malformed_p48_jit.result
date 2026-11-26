@@ -9,9 +9,9 @@ Test program success!
 Running command
 Result of command: 0
 Test program success!
-SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) = @jit_f0
-AS p48_not_refused_by_jit;
-p48_not_refused_by_jit
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @jit_f0
+AS p48_outer_join_leaf_refused_by_jit;
+p48_outer_join_leaf_refused_by_jit
 1
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >
 @jit_c0 AS p48_compiled_by_jit;

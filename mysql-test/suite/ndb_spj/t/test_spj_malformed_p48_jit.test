@@ -9,10 +9,13 @@
 # per-row fallback, where the interpreter reads NULL and fails the row
 # (SCAN_TABREF), as for a NULL entry, while the rows of an 8-byte entry
 # are counted on the JIT. The outer join's NULL-extended rows never run
-# on the JIT.
+# on the JIT, and its leaf (P-40's) has a path that ends without
+# interpreter output 0, so the compiler refuses it (embedded_no_output,
+# RONDB-1124, see test_spj_malformed_p40_jit).
 # A per-row fallback does not show in ndbinfo.jit, so the counters show
-# that no program fell back to the interpreter, that the programs were
-# compiled (or reused), and that rows ran on the JIT.
+# that a program fell back to the interpreter (the outer join's leaf),
+# that programs were compiled (or reused), and that rows ran on the JIT
+# (only the rows of the compare can).
 
 SET @jit_f0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 SET @jit_c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
@@ -20,8 +23,8 @@ SET @jit_r0 = (SELECT SUM(rows_executed) FROM ndbinfo.jit);
 --let $spj_case = P48
 --let $spj_case_title = P-48: join aggregation linked attribute entry shorter than its type, JIT on
 --source suite/ndb_spj/include/spj_malformed_case.inc
-SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) = @jit_f0
-       AS p48_not_refused_by_jit;
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @jit_f0
+       AS p48_outer_join_leaf_refused_by_jit;
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >
        @jit_c0 AS p48_compiled_by_jit;
 SELECT (SELECT SUM(rows_executed) FROM ndbinfo.jit) > @jit_r0

@@ -1226,7 +1226,11 @@ class SpjMalformedChecker {
      * The controls: a NULL entry must get SCAN_TABCONF and an 8-byte one
      * SCAN_TABREF (without them a harness whose rows never reach the
      * program would pass).  The 8-byte one runs last, so that no request
-     * expected to succeed follows a failed scan. */
+     * expected to succeed follows a failed scan.  With the JIT on
+     * (test_spj_malformed_p40_jit) the compiler refuses the leaf, whose
+     * value path ends without output 0, and the rows run on the
+     * interpreter; the compiled program counted the rows of the 8-byte
+     * entry, which fail on the interpreter. */
     const std::vector<Uint32> leaf = linkedNullLeaf();
     const Uint32 w0 = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
     const Uint32 w1 = CteLinkedAttr::encodeWord1(0);

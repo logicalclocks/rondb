@@ -1,0 +1,21 @@
+--source include/have_ndb.inc
+
+# P-40 (see test_spj_malformed_p40) with the JIT on
+# (CompiledInterpreter=ON, test_spj_malformed_p40_jit.cnf). The leaf
+# program reads linked position 0 as a BIGINT and, for a value, reaches
+# EXIT_OK without having written interpreter output 0, which fails the
+# row on the interpreter (1872), so the 8-byte entry gets SCAN_TABREF.
+# The JIT compiled the program, emitted nothing for that EXIT_OK and
+# went on to the COUNT, so the rows of the 8-byte entry were counted
+# (SCAN_TABCONF) and P-40 failed its control. The compiler now refuses
+# a program with a path that ends without output 0 (embedded_no_output,
+# RONDB-1124); the program runs on the interpreter and P-40 gets the
+# results it gets with the JIT off. The fallback counter shows the
+# refusal.
+
+SET @jit_f0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+--let $spj_case = P40
+--let $spj_case_title = P-40: join aggregation linked attribute entry shorter than its type, JIT on
+--source suite/ndb_spj/include/spj_malformed_case.inc
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_f0 > 0
+       AS p40_refused_by_jit;

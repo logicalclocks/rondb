@@ -766,11 +766,13 @@ static uint32_t enc_emb_write_output(uint32_t reg, uint32_t out_idx) {
   return 59u | (1u << 15) | ((reg & 0x7u) << 6) | ((out_idx & 0xFFFFu) << 16);
 }
 
-/* T13: empty embedded block is a no-op. */
-static void test_embedded_empty_accept(void) {
+/* T13: an empty embedded block ends without interpreter output 0, so
+ * the interpreter fails every row (ZOUTSIDE_OF_PROGRAM_ERROR, then
+ * 1872): rejected (RONDB-1124; it was accepted as a no-op). */
+static void test_embedded_empty_reject(void) {
   uint32_t prog[1] = { enc_op(kOpEmbeddedInterp, /*emb_len=*/0) };
-  assert_accepted("T13 embedded_empty_accept", prog, 1,
-                  /*expected_n_ops=*/1);
+  assert_rejected("T13 embedded_empty_reject", prog, 1,
+                  JIT_BRIDGE_EMBEDDED_NO_OUTPUT, 0, kOpEmbeddedInterp);
 }
 
 /* T14: minimal `WHERE col IS NULL` shape:
@@ -2008,23 +2010,29 @@ static void test_embedded_invalidates_f64_reject(void) {
  * rename to slots 8-15), so embedded code cannot overwrite an outer
  * register and there is nothing to invalidate. GREATEST/LEAST's
  * outer trailer (Mov/SetRegNull/Sum after the embedded compare)
- * depends on this. Exactly the pre-slice-2 T51f program, accepted. */
+ * depends on this. The pre-slice-2 T51f program, with one output
+ * block as the embedded block, accepted. */
 static void test_tracking_survives_embedded_block(void) {
   const char *name = "T51g tracking_survives_embedded_block";
-  uint32_t prog[3] = {
+  uint32_t prog[6] = {
     enc_load_col(NDB_TYPE_DOUBLE, 0, 0),
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/0),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
     enc_agg(kOpSumDouble, /*reg=*/0, /*agg=*/0),
   };
   Program p;
-  /* f64 load + SUM_F64 + agg tail(2); the empty block emits nothing.
-   * The load NB-converts (5D: its null edge branches to the tail
-   * instead of per-row-fallback) — same as every outer load whose
-   * only consumer is an aggregate. */
-  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/4)) return;
+  /* f64 load + the block's LC16 + JUMP + SUM_F64 + agg tail(2).  The
+   * block is one output block (an empty one fails every row, T13).
+   * The load stays plain: its null edge would skip the block's ops. */
+  if (!expect_accepted(name, prog, 6, &p, /*expected_n_ops=*/6)) return;
   if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
-                       OP_LOAD_COL_NDB_F64_NB)) return;
-  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_LOAD_COL_NDB_F64)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_JUMP)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 3)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
                        OP_SUM_F64)) return;
   mark_pass(name);
 }
@@ -3534,21 +3542,24 @@ static void test_arith_conv_u64_mul(void) {
 /* T67a: embedded string condition at program start — b = 0 + 1 + 0. */
 static void test_agg_attr_op_arg_start(void) {
   const char *name = "T67a agg_attr_op_arg_start";
-  uint32_t prog[9] = {
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
+  uint32_t prog[11] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/8),
     enc_emb_op_word(EMB_BRANCH_ATTR_OP_ARG,
                     (3u << 6) | (0u << 12) | (5u << 16)),  /* EQ -> +5 */
     (1u << 16) | 8u,           /* attrId 1, byte len 8 (2 data words) */
     0x00000005u,
     0x00000000u,
     enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
     enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
     enc_sum(/*reg=*/0, /*agg=*/0),
   };
   Program p;
-  /* [0]BRANCH_ATTR_OP_ARG(b=1,c=2) [1]EXIT(refuse) [2..]outer. */
-  if (!expect_accepted(name, prog, 9, &p, /*expected_n_ops=*/6)) return;
+  /* [0]BRANCH_ATTR_OP_ARG(b=1,c=2) [1]EXIT(refuse) [2]LC16 [3]JUMP
+   * [4..]outer: load, SUM, tail EXIT, OVERFLOW_EXIT. */
+  if (!expect_accepted(name, prog, 11, &p, /*expected_n_ops=*/8)) return;
   if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
                        OP_BRANCH_ATTR_OP_ARG)) return;
   if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 1)) return;
@@ -3561,24 +3572,26 @@ static void test_agg_attr_op_arg_start(void) {
  * position (header at word 2 -> b = 3 + emb_pc). */
 static void test_agg_attr_op_arg_mid(void) {
   const char *name = "T67b agg_attr_op_arg_mid";
-  uint32_t prog[11] = {
+  uint32_t prog[13] = {
     enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
     enc_sum(/*reg=*/0, /*agg=*/0),
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/8),
     enc_emb_op_word(EMB_BRANCH_ATTR_OP_ARG,
                     (3u << 6) | (0u << 12) | (5u << 16)),
     (2u << 16) | 8u,
     0x00000005u,
     0x00000000u,
     enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
     enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
     enc_sum(/*reg=*/1, /*agg=*/1),
   };
   Program p;
-  /* [0]load [1]SUM [2]BRANCH_ATTR_OP_ARG(b=3) [3]EXIT [4]load [5]SUM
-   * [6]EXIT [7]OVF. */
-  if (!expect_accepted(name, prog, 11, &p, /*expected_n_ops=*/8)) return;
+  /* [0]load [1]SUM [2]BRANCH_ATTR_OP_ARG(b=3) [3]EXIT [4]LC16 [5]JUMP
+   * [6]load [7]SUM [8]EXIT [9]OVF. */
+  if (!expect_accepted(name, prog, 13, &p, /*expected_n_ops=*/10)) return;
   if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
                        OP_BRANCH_ATTR_OP_ARG)) return;
   if (!expect_op_field(name, &p, 2, "b", p.ops[2].b, 3)) return;
@@ -3825,14 +3838,18 @@ static void test_gl_null_check_accept(void) {
 /* dst is F64-marked (compare routing pinned by T78).                 */
 static void test_gl_import_f64_accept(void) {
   const char *name = "T70c gl_import_f64_accept";
-  uint32_t prog[3] = {
+  uint32_t prog[6] = {
     enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/0),
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/1),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/4),
     enc_emb_rar(0, 1),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/0),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
   };
   Program p;
-  /* F64 load + import MOV + tail EXIT (no aggregation ops). */
-  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/3)) return;
+  /* F64 load + import MOV + LC16 + JUMP + tail EXIT (no aggregation
+   * ops). */
+  if (!expect_accepted(name, prog, 6, &p, /*expected_n_ops=*/5)) return;
   if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
                        OP_MOV_INT_INT)) return;
   if (!expect_op_field(name, &p, 1, "a", p.ops[1].a, 9)) return;
@@ -3845,27 +3862,32 @@ static void test_gl_import_f64_accept(void) {
 /* source is u63-safe and imports as plain i64 as before.              */
 static void test_gl_import_u64_bounds(void) {
   const char *name = "T70d gl_import_u64_bounds";
-  uint32_t big[3] = {
+  uint32_t big[6] = {
     enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/0, /*col=*/0),
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/1),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/4),
     enc_emb_rar(0, 1),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/0),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
   };
   Program pb;
-  if (!expect_accepted("T70d gl_import_bigunsigned_accept", big, 3, &pb,
-                       /*expected_n_ops=*/3)) return;
+  if (!expect_accepted("T70d gl_import_bigunsigned_accept", big, 6, &pb,
+                       /*expected_n_ops=*/5)) return;
   if (!expect_op_field("T70d gl_import_bigunsigned_accept", &pb, 1, "kind",
                        pb.ops[1].kind, OP_MOV_INT_INT)) return;
-  uint32_t acc[5] = {
+  uint32_t acc[7] = {
     enc_load_col(NDB_TYPE_SMALLUNSIGNED, /*reg=*/0, /*col=*/0),
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/4),
     enc_emb_rar(0, 1),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/0),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
     enc_sum(/*reg=*/0, /*agg=*/0),
   };
   Program p;
-  /* LOAD + import-MOV + SUM + agg tail(2) = 5 (emb EXIT_OK emits
-   * nothing on the aggregation fall-through model). */
-  if (!expect_accepted(name, acc, 5, &p, /*expected_n_ops=*/5)) return;
+  /* LOAD + import-MOV + LC16 + JUMP + SUM + agg tail(2) = 7 (emb
+   * EXIT_OK emits nothing on the aggregation fall-through model). */
+  if (!expect_accepted(name, acc, 7, &p, /*expected_n_ops=*/7)) return;
   if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
                        OP_MOV_INT_INT)) return;
   if (!expect_op_field(name, &p, 1, "a", p.ops[1].a, 9)) return;
@@ -3877,15 +3899,18 @@ static void test_gl_import_u64_bounds(void) {
 /* lowers to an unconditional OP_JUMP.                                */
 static void test_gl_ne_null_jump(void) {
   const char *name = "T70e gl_ne_null_jump";
-  uint32_t prog[5] = {
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/4),
+  uint32_t prog[7] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
     enc_emb_load_const16(/*reg=*/0, /*val=*/5),
     enc_emb_branch_reg_ne_null(/*reg=*/0, /*offset=*/2),
     enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_load_const16(/*reg=*/1, /*val=*/0),
+    enc_emb_write_output(/*reg=*/1, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
   };
   Program p;
-  if (!expect_accepted(name, prog, 5, &p, /*expected_n_ops=*/4)) return;
+  /* LC16 + JUMP + EXIT(refuse) + LC16 + JUMP + tail EXIT. */
+  if (!expect_accepted(name, prog, 7, &p, /*expected_n_ops=*/6)) return;
   if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_JUMP)) return;
   if (!expect_op_field(name, &p, 1, "c", p.ops[1].c, 3)) return;
   mark_pass(name);
@@ -3968,18 +3993,23 @@ static void test_uncond_branch_range_reject(void) {
  * resolves to the tail OP_EXIT. */
 static void test_agg_uncond_branch_accept(void) {
   const char *name = "T72e agg_uncond_branch_accept";
-  uint32_t prog[4] = {
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+  uint32_t prog[6] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/5),
     enc_emb_branch_uncond(/*offset=*/2),
     enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
   };
   Program p;
-  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/3)) return;
+  /* JUMP + EXIT(refuse) + LC16 + JUMP + tail EXIT. */
+  if (!expect_accepted(name, prog, 6, &p, /*expected_n_ops=*/5)) return;
   if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind, OP_JUMP)) return;
   if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 2)) return;
   if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_EXIT)) return;
-  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_EXIT)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                       OP_LOAD_CONST_UINT16)) return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind, OP_EXIT)) return;
   mark_pass(name);
 }
 
@@ -4001,14 +4031,16 @@ static uint32_t enc_emb_rlc(uint32_t dst, uint32_t pos, uint32_t type) {
  * slot, op->b packs (position << 8) | ndb_type for the helper. */
 static void test_linked_col_bigint_accept(void) {
   const char *name = "T73a linked_col_bigint_accept";
-  uint32_t prog[3] = {
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
+  uint32_t prog[5] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/4),
     enc_emb_rlc(/*dst=*/1, /*pos=*/1, NDB_TYPE_BIGINT),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/0),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
   };
   Program p;
-  /* LOAD_LINKED_COL + tail EXIT (no aggregation ops). */
-  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/2)) return;
+  /* LOAD_LINKED_COL + LC16 + JUMP + tail EXIT (no aggregation ops). */
+  if (!expect_accepted(name, prog, 5, &p, /*expected_n_ops=*/4)) return;
   if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
                        OP_LOAD_LINKED_COL)) return;
   if (!expect_op_field(name, &p, 0, "a", p.ops[0].a, 9)) return;
@@ -4021,13 +4053,15 @@ static void test_linked_col_bigint_accept(void) {
  * admitted the same way. */
 static void test_linked_col_smallint_accept(void) {
   const char *name = "T73b linked_col_smallint_accept";
-  uint32_t prog[3] = {
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
+  uint32_t prog[5] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/4),
     enc_emb_rlc(/*dst=*/2, /*pos=*/0, NDB_TYPE_SMALLINT),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/0),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
   };
   Program p;
-  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/2)) return;
+  if (!expect_accepted(name, prog, 5, &p, /*expected_n_ops=*/4)) return;
   if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
                        OP_LOAD_LINKED_COL)) return;
   if (!expect_op_field(name, &p, 0, "a", p.ops[0].a, 10)) return;
@@ -4041,13 +4075,15 @@ static void test_linked_col_smallint_accept(void) {
  * routing pinned by T81b). */
 static void test_linked_col_bigunsigned_accept(void) {
   const char *name = "T73c linked_col_bigunsigned_accept";
-  uint32_t prog[3] = {
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
+  uint32_t prog[5] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/4),
     enc_emb_rlc(1, 0, NDB_TYPE_BIGUNSIGNED),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/0),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
   };
   Program p;
-  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/2)) return;
+  if (!expect_accepted(name, prog, 5, &p, /*expected_n_ops=*/4)) return;
   if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
                        OP_LOAD_LINKED_COL)) return;
   if (!expect_op_field(name, &p, 0, "b", p.ops[0].b,
@@ -4060,13 +4096,15 @@ static void test_linked_col_bigunsigned_accept(void) {
  * (compare routing pinned by T78c). */
 static void test_linked_col_double_accept(void) {
   const char *name = "T73d linked_col_double_accept";
-  uint32_t prog[3] = {
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
+  uint32_t prog[5] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/4),
     enc_emb_rlc(1, 0, NDB_TYPE_DOUBLE),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/0),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
   };
   Program p;
-  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/2)) return;
+  if (!expect_accepted(name, prog, 5, &p, /*expected_n_ops=*/4)) return;
   if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
                        OP_LOAD_LINKED_COL)) return;
   if (!expect_op_field(name, &p, 0, "b", p.ops[0].b,
@@ -4101,57 +4139,63 @@ static void test_scan_filter_linked_col_reject(void) {
 #define EMB_BRANCH_MEM_OP_ARG_INLINE 40
 
 /* T74a: op 38 on the aggregation-embedded path. Layout: w0 (nulls=3,
- * cond=EQ, offset +7 -> the EXIT_REFUSE), w1 (attrId<<16)|argLen=8,
- * w2 tableId, w3 schemaVersion, w4-5 literal, then EXIT_OK /
- * EXIT_REFUSE. attr_op_arg_base is outer_word_pos+1 = 1, so op->b
- * is 1 (the instruction's offset within the embedded words). */
+ * cond=EQ, offset +9 -> the EXIT_REFUSE), w1 (attrId<<16)|argLen=8,
+ * w2 tableId, w3 schemaVersion, w4-5 literal, then an output block
+ * (LC16, WRITE_INTERPRETER_OUTPUT, EXIT_OK) and EXIT_REFUSE.
+ * attr_op_arg_base is outer_word_pos+1 = 1, so op->b is 1 (the
+ * instruction's offset within the embedded words). */
 static void test_branch_mem_op_arg_accept(void) {
   const char *name = "T74a branch_mem_op_arg_accept";
-  uint32_t prog[9] = {
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/8),
+  uint32_t prog[11] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/10),
     enc_emb_op_word(EMB_BRANCH_MEM_OP_ARG,
-                    (3u << 6) | (0u << 12) | (7u << 16)),
+                    (3u << 6) | (0u << 12) | (9u << 16)),
     (1u << 16) | 8u,        /* attrId=1, argLen=8 */
     7u,                     /* tableId (runtime-validated) */
     0x00010001u,            /* schemaVersion */
     0x00000005u,            /* literal low */
     0x00000000u,            /* literal high */
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
     enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
   };
   Program p;
-  /* BRANCH_MEM_OP_ARG + EXIT(refuse) + tail EXIT (agg EXIT_OK emits
-   * nothing). */
-  if (!expect_accepted(name, prog, 9, &p, /*expected_n_ops=*/3)) return;
+  /* BRANCH_MEM_OP_ARG + LC16 + JUMP + EXIT(refuse) + tail EXIT (agg
+   * EXIT_OK emits nothing). */
+  if (!expect_accepted(name, prog, 11, &p, /*expected_n_ops=*/5)) return;
   if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
                        OP_BRANCH_MEM_OP_ARG)) return;
   if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 1)) return;
-  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 1)) return;
-  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_EXIT)) return;
-  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_EXIT)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 3)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind, OP_EXIT)) return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind, OP_EXIT)) return;
   mark_pass(name);
 }
 
 /* T74b: op 40 (inline type) — 3 header words instead of 4. */
 static void test_branch_mem_inline_type_accept(void) {
   const char *name = "T74b branch_mem_inline_type_accept";
-  uint32_t prog[8] = {
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/7),
+  uint32_t prog[10] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/9),
     enc_emb_op_word(EMB_BRANCH_MEM_OP_ARG_INLINE,
-                    (3u << 6) | (5u << 12) | (6u << 16)),   /* GE */
+                    (3u << 6) | (5u << 12) | (8u << 16)),   /* GE */
     ((uint32_t)NDB_TYPE_BIGINT << 16) | 8u,   /* typeId, argLen=8 */
     (8u << 16) | 0u,        /* columnSizeBytes=8, csNumber=0 */
     0x00000005u,
     0x00000000u,
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
     enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
   };
   Program p;
-  if (!expect_accepted(name, prog, 8, &p, /*expected_n_ops=*/3)) return;
+  /* BRANCH_MEM_OP_ARG + LC16 + JUMP + EXIT(refuse) + tail EXIT. */
+  if (!expect_accepted(name, prog, 10, &p, /*expected_n_ops=*/5)) return;
   if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
                        OP_BRANCH_MEM_OP_ARG)) return;
   if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 1)) return;
-  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 1)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 3)) return;
   mark_pass(name);
 }
 
@@ -4228,8 +4272,8 @@ static uint32_t enc_emb_read_mem(uint32_t op, uint32_t reg, uint32_t off) {
  * OP_BRANCH_F64 with both side flags set. 2.5 = 0x4004000000000000. */
 static void test_f64_compare_col_vs_literal(void) {
   const char *name = "T75a f64_compare_col_vs_literal";
-  uint32_t prog[8] = {
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/7),
+  uint32_t prog[10] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/9),
     enc_emb_read_attr(/*attr_id=*/3, /*reg=*/1),
     enc_emb_load_double_hdr(/*reg=*/2),
     0x00000000u,             /* double low  */
@@ -4237,11 +4281,14 @@ static void test_f64_compare_col_vs_literal(void) {
     enc_emb_branch_reg_reg(EMB_BRANCH_GE_REG_REG, /*left=*/1,
                            /*right=*/2, /*offset=*/2),
     enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/0),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
   };
   Program p;
-  /* F64 load + double const + BRANCH_F64 + EXIT(refuse) + tail. */
-  if (!expect_accepted(name, prog, 8, &p, /*expected_n_ops=*/5)) return;
+  /* F64 load + double const + BRANCH_F64 + EXIT(refuse) + LC16 + JUMP +
+   * tail. */
+  if (!expect_accepted(name, prog, 10, &p, /*expected_n_ops=*/7)) return;
   if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
                        OP_LOAD_COL_NDB_F64)) return;
   if (!expect_op_field(name, &p, 0, "a", p.ops[0].a, 9)) return;
@@ -4270,18 +4317,20 @@ static void test_f64_compare_col_vs_literal(void) {
  * flag clear). */
 static void test_f64_compare_int_vs_literal(void) {
   const char *name = "T75b f64_compare_int_vs_literal";
-  uint32_t prog[8] = {
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/7),
+  uint32_t prog[10] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/9),
     enc_emb_load_const16(/*reg=*/1, /*val=*/5),
     enc_emb_load_double_hdr(/*reg=*/2),
     0x00000000u,
     0x40040000u,
     enc_emb_branch_reg_reg(EMB_BRANCH_LT_REG_REG, 1, 2, /*offset=*/2),
     enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/0),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
   };
   Program p;
-  if (!expect_accepted(name, prog, 8, &p, /*expected_n_ops=*/5)) return;
+  if (!expect_accepted(name, prog, 10, &p, /*expected_n_ops=*/7)) return;
   if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
                        OP_LOAD_CONST_UINT16)) return;
   if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
@@ -4297,13 +4346,15 @@ static void test_f64_compare_int_vs_literal(void) {
 /* T75c: READ_UINT32_MEM_TO_REG lowers to the cold-call mem read. */
 static void test_read_mem_u32_accept(void) {
   const char *name = "T75c read_mem_u32_accept";
-  uint32_t prog[3] = {
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
+  uint32_t prog[5] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/4),
     enc_emb_read_mem(EMB_READ_UINT32_MEM_TO_REG, /*reg=*/1, /*off=*/4),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/0),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
   };
   Program p;
-  if (!expect_accepted(name, prog, 3, &p, /*expected_n_ops=*/2)) return;
+  if (!expect_accepted(name, prog, 5, &p, /*expected_n_ops=*/4)) return;
   if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
                        OP_READ_MEM_TO_REG)) return;
   if (!expect_op_field(name, &p, 0, "a", p.ops[0].a, 9)) return;
@@ -4361,8 +4412,8 @@ static uint32_t enc_emb_arith(uint32_t op, uint32_t dst, uint32_t s1,
 /* T76a: WHERE a + b > const — the full shape. */
 static void test_arith_add_compare_accept(void) {
   const char *name = "T76a arith_add_compare_accept";
-  uint32_t prog[8] = {
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/7),
+  uint32_t prog[10] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/9),
     enc_emb_read_attr(/*attr_id=*/1, /*reg=*/1),
     enc_emb_read_attr(/*attr_id=*/2, /*reg=*/2),
     enc_emb_arith(EMB_ADD_REG_REG, /*dst=*/3, 1, 2),
@@ -4370,18 +4421,21 @@ static void test_arith_add_compare_accept(void) {
     enc_emb_branch_reg_reg(EMB_BRANCH_GT_REG_REG, /*left=*/3,
                            /*right=*/4, /*offset=*/2),
     enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_load_const16(/*reg=*/5, /*val=*/0),
+    enc_emb_write_output(/*reg=*/5, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
   };
   Program p;
-  /* 2 loads + ARITH_FB + LC16 + BRANCH_GT + EXIT(refuse) + tail. */
-  if (!expect_accepted(name, prog, 8, &p, /*expected_n_ops=*/7)) return;
+  /* 2 loads + ARITH_FB + LC16 + BRANCH_GT + EXIT(refuse) + LC16 +
+   * JUMP + tail. */
+  if (!expect_accepted(name, prog, 10, &p, /*expected_n_ops=*/9)) return;
   if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
                        OP_ARITH_FB)) return;
   if (!expect_op_field(name, &p, 2, "a", p.ops[2].a, 11)) return;
   if (!expect_op_field(name, &p, 2, "b", p.ops[2].b, 9)) return;
   if (!expect_op_field(name, &p, 2, "d", p.ops[2].d, 10)) return;
-  /* item 9: the fallback edge targets the tail OP_EXIT (op 6). */
-  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 6)) return;
+  /* item 9: the fallback edge targets the tail OP_EXIT (op 8). */
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 8)) return;
   if (p.ops[2].imm != (int64_t)0x0B9A) {   /* add | dst 11 | 9,10 */
     mark_fail(name, "arg=%llx, want b9a",
               (unsigned long long)p.ops[2].imm);
@@ -4395,29 +4449,33 @@ static void test_arith_add_compare_accept(void) {
 /* T76b/c: SUB and MUL arith codes. */
 static void test_arith_sub_mul_codes(void) {
   const char *name = "T76b arith_sub_mul_codes";
-  uint32_t sub_prog[5] = {
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/4),
+  uint32_t sub_prog[7] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
     enc_emb_read_attr(1, 1),
     enc_emb_read_attr(2, 2),
     enc_emb_arith(EMB_SUB_REG_REG, 3, 1, 2),
+    enc_emb_load_const16(/*reg=*/4, /*val=*/0),
+    enc_emb_write_output(/*reg=*/4, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
   };
   Program p;
-  if (!expect_accepted(name, sub_prog, 5, &p, /*expected_n_ops=*/4)) return;
+  if (!expect_accepted(name, sub_prog, 7, &p, /*expected_n_ops=*/6)) return;
   if (p.ops[2].imm != (int64_t)0x1B9A) {   /* sub code 1 */
     mark_fail(name, "sub arg=%llx, want 1b9a",
               (unsigned long long)p.ops[2].imm);
     return;
   }
-  uint32_t mul_prog[5] = {
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/4),
+  uint32_t mul_prog[7] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
     enc_emb_read_attr(1, 1),
     enc_emb_read_attr(2, 2),
     enc_emb_arith(EMB_MUL_REG_REG, 3, 1, 2),
+    enc_emb_load_const16(/*reg=*/4, /*val=*/0),
+    enc_emb_write_output(/*reg=*/4, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
   };
-  if (!expect_accepted("T76c arith_mul_code", mul_prog, 5, &p,
-                       /*expected_n_ops=*/4)) return;
+  if (!expect_accepted("T76c arith_mul_code", mul_prog, 7, &p,
+                       /*expected_n_ops=*/6)) return;
   if (p.ops[2].imm != (int64_t)0x2B9A) {   /* mul code 2 */
     mark_fail("T76c arith_mul_code", "mul arg=%llx, want 2b9a",
               (unsigned long long)p.ops[2].imm);
@@ -4540,21 +4598,23 @@ static void test_f64_gl_fast_path(void) {
  * arm). */
 static void test_f64_gl_mixed_import(void) {
   const char *name = "T78b f64_gl_mixed_import";
-  uint32_t prog[9] = {
+  uint32_t prog[11] = {
     enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/0),
     enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/5),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/7),
     enc_emb_rar(0, 1),
     enc_emb_rar(1, 2),
     enc_emb_branch_reg_reg(EMB_BRANCH_LT_REG_REG, 1, 2, /*offset=*/2),
     enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/0),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
     enc_agg(kOpSumDouble, /*reg=*/0, /*agg=*/0),
   };
   Program p;
-  /* loads(2) + imports(2) + BRANCH_F64 + EXIT(refuse) + SUM_F64 +
-   * tail EXIT + OVERFLOW_EXIT. */
-  if (!expect_accepted(name, prog, 9, &p, /*expected_n_ops=*/9)) return;
+  /* loads(2) + imports(2) + BRANCH_F64 + EXIT(refuse) + LC16 + JUMP +
+   * SUM_F64 + tail EXIT + OVERFLOW_EXIT. */
+  if (!expect_accepted(name, prog, 11, &p, /*expected_n_ops=*/11)) return;
   if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind,
                        OP_BRANCH_F64)) return;
   if (p.ops[4].imm != (int64_t)0xA912) {  /* LT=2 | 0x10 | r9,r10 */
@@ -4569,17 +4629,19 @@ static void test_f64_gl_mixed_import(void) {
  * dsts are F64-marked, so the GT lowers to OP_BRANCH_F64. */
 static void test_f64_gl_linked_compare(void) {
   const char *name = "T78c f64_gl_linked_compare";
-  uint32_t prog[6] = {
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/5),
+  uint32_t prog[8] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/7),
     enc_emb_rlc(/*dst=*/1, /*pos=*/0, NDB_TYPE_DOUBLE),
     enc_emb_rlc(/*dst=*/2, /*pos=*/1, /*NDB_TYPE_FLOAT=*/11),
     enc_emb_branch_reg_reg(EMB_BRANCH_GT_REG_REG, 1, 2, /*offset=*/2),
     enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/0),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
   };
   Program p;
-  /* LLC + LLC + BRANCH_F64 + EXIT(refuse) + tail EXIT. */
-  if (!expect_accepted(name, prog, 6, &p, /*expected_n_ops=*/5)) return;
+  /* LLC + LLC + BRANCH_F64 + EXIT(refuse) + LC16 + JUMP + tail EXIT. */
+  if (!expect_accepted(name, prog, 8, &p, /*expected_n_ops=*/7)) return;
   if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
                        OP_LOAD_LINKED_COL)) return;
   if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
@@ -4936,16 +4998,18 @@ static void test_u64_gl_fast_path(void) {
  * load — left-u64 flag only (0x40). */
 static void test_u64_linked_compare(void) {
   const char *name = "T81b u64_linked_compare";
-  uint32_t prog[6] = {
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/5),
+  uint32_t prog[8] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/7),
     enc_emb_rlc(/*dst=*/1, /*pos=*/0, NDB_TYPE_BIGUNSIGNED),
     enc_emb_rlc(/*dst=*/2, /*pos=*/1, NDB_TYPE_BIGINT),
     enc_emb_branch_reg_reg(EMB_BRANCH_LT_REG_REG, 1, 2, /*offset=*/2),
     enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/0),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
   };
   Program p;
-  if (!expect_accepted(name, prog, 6, &p, /*expected_n_ops=*/5)) return;
+  if (!expect_accepted(name, prog, 8, &p, /*expected_n_ops=*/7)) return;
   if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
                        OP_BRANCH_F64)) return;
   if (p.ops[2].imm != (int64_t)0xA942) {  /* LT=2 | left-u64 0x40 | r9,r10 */
@@ -4989,19 +5053,22 @@ static void test_u64_arith_operand_reject(void) {
  * unsigned side to double as UNSIGNED (compareTypedRegs' float arm). */
 static void test_f64_vs_u64_import(void) {
   const char *name = "T81e f64_vs_u64_import";
-  uint32_t prog[8] = {
+  uint32_t prog[10] = {
     enc_load_col(NDB_TYPE_DOUBLE, /*reg=*/0, /*col=*/0),
     enc_load_col(NDB_TYPE_BIGUNSIGNED, /*reg=*/1, /*col=*/1),
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/5),
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/7),
     enc_emb_rar(0, 1),
     enc_emb_rar(1, 2),
     enc_emb_branch_reg_reg(EMB_BRANCH_GT_REG_REG, 1, 2, /*offset=*/2),
     enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/0),
+    enc_emb_write_output(/*reg=*/3, /*out_idx=*/0),
     enc_emb_op_word(EMB_EXIT_OK, 0),
   };
   Program p;
-  /* loads(2) + imports(2) + BRANCH_F64 + EXIT(refuse) + tail EXIT = 7. */
-  if (!expect_accepted(name, prog, 8, &p, /*expected_n_ops=*/7)) return;
+  /* loads(2) + imports(2) + BRANCH_F64 + EXIT(refuse) + LC16 + JUMP +
+   * tail EXIT = 9. */
+  if (!expect_accepted(name, prog, 10, &p, /*expected_n_ops=*/9)) return;
   if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind,
                        OP_BRANCH_F64)) return;
   if (p.ops[4].imm != (int64_t)0xA994) {  /* GT=4 | 0x10 | 0x80 | r9,r10 */
@@ -5533,6 +5600,134 @@ static void test_import_unloaded_reg_reject(void) {
                   JIT_BRIDGE_REG_NOT_LOADED, 1, EMB_READ_AGG_REG_TO_REG);
 }
 
+/* ------------------------------------------------------------------ */
+/* RONDB-1124: interpreter output 0.  AggInterpreter and              */
+/* JoinAggInterpreter clear output 0 before an embedded block, and    */
+/* fail the row with 1872 when the block ends by EXIT_OK without      */
+/* having written it, or runs past its last word.  The bridge emits   */
+/* nothing for EXIT_OK and lets the row run on into the outer         */
+/* program, so the JIT counted such a row; now such a block rejects   */
+/* (JIT_BRIDGE_EMBEDDED_NO_OUTPUT) and the program runs on the        */
+/* interpreter.  T13 is the empty block.                              */
+/* ------------------------------------------------------------------ */
+
+/* T86a: the leaf of testSpjMalformed P-40.  A NULL linked value goes
+ * on to the output block (the guard's edge), a value reaches the
+ * EXIT_OK at emb pc 2 without output 0: the interpreter fails the
+ * row, the JIT counted it. */
+static void test_exit_ok_without_output_reject(void) {
+  uint32_t prog[11] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
+    enc_emb_rlc(/*dst=*/1, /*pos=*/0, NDB_TYPE_BIGINT),
+    enc_emb_branch_reg_eq_null(/*reg=*/1, /*offset=*/2),   /* -> 3 */
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_load_const16(/*reg=*/0, /*val=*/0),
+    enc_emb_write_output(/*reg=*/0, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_const(NDB_TYPE_BIGINT, /*reg=*/0), 1u, 0u,
+    enc_count(/*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T86a exit_ok_without_output_reject", prog, 11,
+                  JIT_BRIDGE_EMBEDDED_NO_OUTPUT, 3, EMB_EXIT_OK);
+}
+
+/* T86b: T86a with an output block on the value path too: a value
+ * goes on to the COUNT (output 0), a NULL skips the rest of the row
+ * (output 0xFFFF).  Every path writes output 0: compiled.  The guard
+ * of the linked register folds; a NULL takes the per-row fallback in
+ * the load's helper.  [0]LOAD_LINKED_COL [1]LC16 [2]JUMP(->5)
+ * [3]LC16 [4]JUMP(->tail) [5]LOAD_CONST [6]COUNT [7]tail EXIT. */
+static void test_every_path_writes_output_accept(void) {
+  const char *name = "T86b every_path_writes_output_accept";
+  uint32_t prog[13] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/8),
+    enc_emb_rlc(/*dst=*/1, /*pos=*/0, NDB_TYPE_BIGINT),
+    enc_emb_branch_reg_eq_null(/*reg=*/1, /*offset=*/4),   /* -> 5 */
+    enc_emb_load_const16(/*reg=*/0, /*val=*/0),
+    enc_emb_write_output(/*reg=*/0, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_load_const16(/*reg=*/0, /*val=*/0xFFFF),
+    enc_emb_write_output(/*reg=*/0, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_const(NDB_TYPE_BIGINT, /*reg=*/0), 1u, 0u,
+    enc_count(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 13, &p, /*expected_n_ops=*/8)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_LINKED_COL)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_LOAD_CONST_UINT16)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_JUMP)) return;
+  if (!expect_op_field(name, &p, 2, "c", p.ops[2].c, 5)) return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind, OP_JUMP)) return;
+  if (!expect_op_field(name, &p, 4, "c", p.ops[4].c, 7)) return;
+  if (!expect_op_field(name, &p, 6, "kind", p.ops[6].kind,
+                       OP_COUNT_BIGINT)) return;
+  mark_pass(name);
+}
+
+/* T86c: a CASE whose THEN branch (emb pc 2) lands on the EXIT_OK of
+ * the THEN output block (pc 8), past its WRITE.  On that path the
+ * interpreter fails the row; the JIT took the branch to the op after
+ * the block (arm 0).  The ELSE path is a whole output block. */
+static void test_case_branch_past_write_reject(void) {
+  uint32_t prog[14] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/9),
+    enc_emb_read_attr(/*attr_id=*/1, /*reg=*/0),
+    enc_emb_load_const16(/*reg=*/1, /*val=*/5),
+    enc_emb_branch_reg_reg(EMB_BRANCH_GT_REG_REG, 0, 1, /*offset=*/6),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),             /* ELSE */
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/2),             /* THEN */
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/3, /*col=*/2),   /* arm 0 */
+    enc_op(kOpSkip, /*count=*/1),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/3, /*col=*/3),   /* arm 1 */
+    enc_sum(/*reg=*/3, /*agg=*/0),
+  };
+  assert_rejected("T86c case_branch_past_write_reject", prog, 14,
+                  JIT_BRIDGE_EMBEDDED_NO_OUTPUT, 9, EMB_EXIT_OK);
+}
+
+/* T86d: a WRITE_INTERPRETER_OUTPUT that EXIT_OK does not follow.  The
+ * JIT takes output 0 at the WRITE (its jump); the interpreter goes on
+ * to the EXIT_REFUSE and drops the row. */
+static void test_write_not_before_exit_ok_reject(void) {
+  uint32_t prog[6] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T86d write_not_before_exit_ok_reject", prog, 6,
+                  JIT_BRIDGE_EMBEDDED_NO_OUTPUT, 2,
+                  EMB_WRITE_INTERP_OUTPUT);
+}
+
+/* T86e: a block whose last instruction falls through past its end
+ * (the THEN path after LC16 at emb pc 4).  The interpreter fails the
+ * row (ZOUTSIDE_OF_PROGRAM_ERROR); the JIT went on into the SUM.  The
+ * reject names the block's header word. */
+static void test_block_falls_off_end_reject(void) {
+  uint32_t prog[8] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/5),
+    enc_emb_read_attr(/*attr_id=*/1, /*reg=*/0),
+    enc_emb_load_const16(/*reg=*/1, /*val=*/5),
+    enc_emb_branch_reg_reg(EMB_BRANCH_GT_REG_REG, 0, 1, /*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T86e block_falls_off_end_reject", prog, 8,
+                  JIT_BRIDGE_EMBEDDED_NO_OUTPUT, 0, kOpEmbeddedInterp);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -5552,7 +5747,7 @@ int main(void) {
   test_load_const_truncated_reject();
   test_reg_oor_reject();
   test_set_reg_null_accept();
-  test_embedded_empty_accept();
+  test_embedded_empty_reject();
   test_embedded_attr_ne_null_accept();
   test_embedded_backward_reject();
   test_embedded_attr_max_accept();
@@ -5751,6 +5946,11 @@ int main(void) {
   test_case_arm_without_load_reject();
   test_case_arms_both_load_accept();
   test_import_unloaded_reg_reject();
+  test_exit_ok_without_output_reject();
+  test_every_path_writes_output_accept();
+  test_case_branch_past_write_reject();
+  test_write_not_before_exit_ok_reject();
+  test_block_falls_off_end_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;
