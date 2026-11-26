@@ -469,8 +469,12 @@ static const Uint32* keyEntryAt(const char* data, Uint32 key_len,
   const Uint32* end = p + (key_len >> 2);
   Uint32 i = 0;
   while (p < end) {
+    const Uint32 words = 1 + AttributeHeader::getDataSize(*p);
+    if (unlikely(words > Uint32(end - p))) {
+      return nullptr;  // The entry runs past the key
+    }
     if (i == col_idx) return p;
-    p += 1 + AttributeHeader::getDataSize(*p);
+    p += words;
     i++;
   }
   return nullptr;
@@ -494,7 +498,15 @@ int JoinAggInterpreter::compareGroupsByOrderSpec(
         /* MySQL: NULLs order first ascending. */
         r = (na && nb) ? 0 : (na ? -1 : 1);
       } else if (m_gb_types_inited && oc.idx < m_n_gb_cols &&
-                 m_gb_types[oc.idx].cmpFn != nullptr) {
+                 m_gb_types[oc.idx].cmpFn != nullptr &&
+                 likely(NdbSqlUtil::check_compare_values(
+                     m_gb_types[oc.idx].typeId, ea + 1, aha.getByteSize(),
+                     eb + 1, ahb.getByteSize()))) {
+        /* checkGroupKey let only values the compare function takes
+         * become a group: a VARCHAR length prefix past its value failed
+         * cmpVarchar's require, a NaN DOUBLE cmpDouble's, in any data
+         * node.  Two of them that it cannot compare with each other
+         * (DECIMAL or BINARY values of two sizes) order as equal. */
         r = (*m_gb_types[oc.idx].cmpFn)(
             m_gb_types[oc.idx].cs,
             ea + 1, aha.getByteSize(),
@@ -554,6 +566,36 @@ int JoinAggInterpreter::compareGroupsByOrderSpec(
     if (r != 0) return r;
   }
   return 0;
+}
+
+bool JoinAggInterpreter::checkGroupKey(const char* key,
+                                       Uint32 key_len) const {
+  if (unlikely(!m_gb_map->checkKey(key, key_len))) {
+    return false;
+  }
+  for (Uint32 c = 0; c < m_n_order_cols; c++) {
+    const OrderCol& oc = m_order_spec[c];
+    if (oc.is_agg || oc.idx >= m_n_gb_cols) {
+      continue;
+    }
+    const Uint32* e = keyEntryAt(key, key_len, oc.idx);
+    if (e == nullptr) {
+      continue;  // compareGroupsByOrderSpec skips the column too
+    }
+    const AttributeHeader ah(*e);
+    if (ah.isNULL()) {
+      continue;
+    }
+    /* The value against itself: what the compare function needs of
+     * every value (its size for a fixed-size type, not NaN, a length
+     * prefix inside it) */
+    if (unlikely(!NdbSqlUtil::check_compare_values(
+            m_gb_types[oc.idx].typeId, e + 1, ah.getByteSize(), e + 1,
+            ah.getByteSize()))) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /* Bounded candidate heap for the LIMIT select phase: the WORST kept
@@ -1638,6 +1680,19 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     }
 
     Uint32 len_in_char = m_attr_read_pos * sizeof(Uint32);
+    /* A linked GROUP BY column's value comes from the linked buffer,
+     * which DBSPJ copies from the API's P_DATA tokens, and its type
+     * from a CTE marker or the setup metadata.  A VARCHAR value whose
+     * length byte runs past it was hashed from past the key, and two
+     * such rows in one bucket stopped the data node on cmpVarchar's
+     * require, debug or release. */
+    if (unlikely(!checkGroupKey(reinterpret_cast<const char*>(m_attr_read_buf),
+                                len_in_char))) {
+      g_eventLogger->debug("JoinAggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
+          "a GROUP BY value its type cannot hash or compare (key_len=%u)",
+          len_in_char);
+      return ZAGG_OTHER_ERROR;
+    }
     /* One hash per row: a new group is inserted into the bucket the
      * lookup used (nothing changes the table in between). */
     const Uint32 gb_bucket = m_gb_map->hashKey(

@@ -388,6 +388,14 @@ class JoinAggInterpreter : public AggInterpreterBase {
   int compareGroupsByOrderSpec(const char* a_data, Uint32 a_key_len,
                                const char* b_data,
                                Uint32 b_key_len) const;
+  /* Whether a row's GROUP BY key can become a group: the hash table can
+   * hash and compare it (JoinGBHashTable::checkKey), and each GROUP BY
+   * column of the ORDER BY spec holds a value its type's compare
+   * function takes (NdbSqlUtil::check_compare_values), which
+   * compareGroupsByOrderSpec gives it.  A linked GROUP BY column's
+   * value and type come from a request.  The GROUP BY types must be
+   * known (m_gb_types_inited). */
+  bool checkGroupKey(const char* key, Uint32 key_len) const;
   Int32 evictOneGroup(Uint32* buf, Uint32 buf_words,
                       Uint32* words_written,
                       uchar* xfrm_buf, Uint32 xfrm_buf_len);

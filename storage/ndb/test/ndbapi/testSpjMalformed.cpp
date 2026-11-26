@@ -75,6 +75,9 @@
  * AttrInfo, which DBSPJ must refuse (RONDB-1124).
  * P-38 and P-39 send CASE programs that put a string MIN / MAX and a
  * number in one aggregate slot (checkAggSlotKinds).
+ * P-52 groups by a linked VARCHAR / LONGVARCHAR whose length prefix
+ * runs past its value, which fails the row (RONDB-1124,
+ * JoinAggInterpreter::checkGroupKey).
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
  * re-send (passQueue), which only DBTC itself may set (RONDB-1124).
  * S-1 and S-2 send join aggregation signals that only data nodes send
@@ -2182,6 +2185,83 @@ class SpjMalformedChecker {
                   {aggUpdate(kOpMax, 0, 0)})});
   }
 
+  /* ---- P-52: a GROUP BY value whose length prefix runs past it -------- *
+   * The leaf groups by linked position 0 (linkedGroupByLeaf), and the
+   * CTE marker of the linked entry types the column, so the API chooses
+   * both the type and the bytes of the GROUP BY key.  The hash table
+   * took the length prefix of a VARCHAR or LONGVARCHAR key as it was:
+   * hashKeyFull had strnxfrm_hash read the length it gave from past the
+   * key (for a one-byte LONGVARCHAR an unset length), and the compare of
+   * two such keys in one bucket (findInBucket, cmpVarchar or
+   * cmpLongvarchar) failed its require, which stopped any data node,
+   * debug or release, on the second row of the group.  ProcessRec now
+   * refuses the key (JoinAggInterpreter::checkGroupKey), which fails the
+   * row with 1869.  The control is the same request with the VARCHAR
+   * 'abcd' (length byte 4), which must get SCAN_TABCONF: without it a
+   * harness whose rows never reach the group table would pass. */
+  int runP52() {
+    const std::vector<Uint32> leaf = linkedGroupByLeaf(1);
+    const Uint32 w1 = CteLinkedAttr::encodeWord1(kLatin1);
+    const Uint32 w0Varchar = CteLinkedAttr::encodeWord0(NDB_TYPE_VARCHAR, 11);
+    const Uint32 w0Longvarchar =
+        CteLinkedAttr::encodeWord0(NDB_TYPE_LONGVARCHAR, 12);
+    const char *findingId = "P-52 GROUP BY value whose length prefix runs "
+                            "past it";
+
+    SpjReq good;
+    /* [4]'abc' 'd' */
+    makeJoinAggScanLookup(
+        good, {w0Varchar, w1, (0u << 16) | 5u, 0x63626104u, 0x00000064u},
+        leaf);
+    good.waitForEnd = true;
+    const Reply control = sendScanTabReq(good);
+    printReply("CONTROL (GROUP BY VARCHAR 'abcd')", control);
+    if (control.gsn != GSN_SCAN_TABCONF) {
+      g_err << "P-52 CONTROL did not get SCAN_TABCONF (got "
+            << gsnName(control.gsn) << ", err " << control.errorCode
+            << ").  The rows do not reach the group table; fix this "
+               "before trusting the result of P-52." << endl;
+      return clusterHealthy() ? NDBT_FAILED : failNodeDown(findingId);
+    }
+
+    const char *const ids[2] = {
+        /* VARCHAR of 5 bytes whose length byte says 255 */
+        "P-52a GROUP BY VARCHAR value whose length byte runs past it",
+        /* LONGVARCHAR of 1 byte: no room for its 2-byte length */
+        "P-52b GROUP BY LONGVARCHAR value of one byte"};
+    const std::vector<Uint32> linked[2] = {
+        {w0Varchar, w1, (0u << 16) | 5u, 0x636261FFu, 0x00000064u},
+        {w0Longvarchar, w1, (0u << 16) | 1u, 0x00000041u}};
+    Reply reps[2];
+    for (int i = 0; i < 2; i++) {
+      SpjReq bad;
+      makeJoinAggScanLookup(bad, linked[i], leaf);
+      bad.waitForEnd = true;
+      reps[i] = sendScanTabReq(bad);
+      printReply(ids[i], reps[i]);
+    }
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    int result = NDBT_OK;
+    for (int i = 0; i < 2; i++) {
+      if (reps[i].gsn != GSN_SCAN_TABREF) {
+        g_err << ids[i] << ": FAIL -- expected SCAN_TABREF, got "
+              << gsnName(reps[i].gsn)
+              << ": the GROUP BY value was not refused" << endl;
+        result = NDBT_FAILED;
+      } else {
+        g_info << ids[i] << ": PASS (all data nodes started; SCAN_TABREF "
+               << reps[i].errorCode << ")" << endl;
+      }
+    }
+    return result;
+  }
+
   /* ---- Q cases: DBTC's rate queue re-send mark sent by the API -------- *
    * DBTC's rate queue handler re-sends a queued request to its own DBTC
    * instance with a mark: the passQueue flag of TCKEYREQ, TCINDXREQ and
@@ -2862,6 +2942,7 @@ CASE_STEP(runP50, runP50)
 CASE_STEP(runP51, runP51)
 CASE_STEP(runP38, runP38)
 CASE_STEP(runP39, runP39)
+CASE_STEP(runP52, runP52)
 CASE_STEP(runQ1, runQ1)
 CASE_STEP(runQ2, runQ2)
 CASE_STEP(runQ3, runQ3)
@@ -3094,6 +3175,11 @@ TESTCASE("P38",
 TESTCASE("P39",
          "join aggregation: MAX of a register that is a BIGINT or a CHAR") {
   STEP(runP39);
+}
+TESTCASE("P52",
+         "join aggregation: a linked GROUP BY value whose length prefix "
+         "runs past it") {
+  STEP(runP52);
 }
 TESTCASE("Q1", "TCKEYREQ with the rate queue flag from the API") {
   STEP(runQ1);

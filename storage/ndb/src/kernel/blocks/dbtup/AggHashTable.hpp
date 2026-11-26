@@ -438,6 +438,18 @@ class GBHashTable {
   Uint32 hashKey(const char* key, Uint32 len,
                  uchar* xfrm_buf, Uint32 xfrm_buf_len) const;
   char* findInBucket(Uint32 b, const char* key, Uint32 key_len) const;
+  /* Whether a GROUP BY key of len bytes whose values came in a request
+   * can be hashed and compared: every column entry lies inside the key,
+   * and a column with a collation (CHAR, VARCHAR, LONGVARCHAR) has its
+   * length prefix inside its value.  The values of a linked GROUP BY
+   * column come from the linked buffer, which DBSPJ copies from the
+   * API's P_DATA tokens, and its type from a CTE marker or the setup
+   * metadata; the key of a CTE_LOOKUP comes from the API's constants or
+   * a parent row.  hashKeyFull read the length the prefix gave from
+   * past the value, and findInBucket's compare (cmpVarchar,
+   * cmpLongvarchar) requires the prefix to fit.  Callers refuse a key
+   * that fails this before they hash it. */
+  bool checkKey(const char* key, Uint32 len) const;
 
  private:
   char* m_buckets[BUCKET_COUNT];   // segment 0
@@ -693,13 +705,22 @@ Uint64 GBHashTable<BUCKET_COUNT>::hashKeyFull(const char* key,
   for (Uint32 i = 0; i < m_n_gb_cols && p < end; i++) {
     AttributeHeader ah(*p);
     Uint32 dataSize = ah.getDataSize();
-    if (m_col_types[i].cs != nullptr && dataSize > 0) {
-      // Collation-aware: normalize via strnxfrm_hash, then hash
+    if (unlikely(1 + dataSize > Uint32(end - p))) {
+      /* The entry runs past the key (checkKey refuses such a key): hash
+       * no byte past it. */
+      break;
+    }
+    Uint32 lb = 0;
+    Uint32 srcLen = 0;
+    if (m_col_types[i].cs != nullptr && dataSize > 0 &&
+        likely(NdbSqlUtil::get_var_length(
+            m_col_types[i].typeId, reinterpret_cast<const uchar*>(p + 1),
+            ah.getByteSize(), lb, srcLen))) {
+      /* Collation-aware: normalize via strnxfrm_hash, then hash.  A
+       * value whose length prefix runs past it (checkKey refuses it)
+       * takes the byte path below instead: the prefix gave up to 65535
+       * bytes, which strnxfrm_hash read from past the key. */
       const uchar* src = reinterpret_cast<const uchar*>(p + 1);
-      Uint32 byteSize = ah.getByteSize();
-      Uint32 lb, srcLen;
-      NdbSqlUtil::get_var_length(m_col_types[i].typeId, src, byteSize,
-                                 lb, srcLen);
       Uint32 maxBytes = m_col_types[i].maxBytes;
       Uint32 defLen = maxBytes - lb;
       int n = NdbSqlUtil::strnxfrm_hash(m_col_types[i].cs,
@@ -796,6 +817,16 @@ char* GBHashTable<BUCKET_COUNT>::findInBucket(Uint32 b, const char* key,
         break;
       }
       if (m_col_types[i].cs != nullptr) {
+        /* cmpVarchar and cmpLongvarchar require each length prefix to
+         * fit its value, or stop the node.  Keys that came in a request
+         * are checked where they come in (checkKey); a key whose prefix
+         * does not fit matches nothing. */
+        if (unlikely(!NdbSqlUtil::check_compare_values(
+                m_col_types[i].typeId, p1 + 1, ah1.getByteSize(), p2 + 1,
+                ah2.getByteSize()))) {
+          match = false;
+          break;
+        }
         int cmp = (*m_col_types[i].cmpFn)(
             m_col_types[i].cs,
             p1 + 1, ah1.getByteSize(),
@@ -819,6 +850,35 @@ char* GBHashTable<BUCKET_COUNT>::findInBucket(Uint32 b, const char* key,
     if (match && p1 == p1_end && p2 == p2_end) return d;
   }
   return nullptr;
+}
+
+template<Uint32 BUCKET_COUNT>
+bool GBHashTable<BUCKET_COUNT>::checkKey(const char* key, Uint32 len) const {
+  if (m_col_types == nullptr) {
+    /* No type metadata: hashKeyFull and findInBucket take the key as
+     * bytes. */
+    return true;
+  }
+  /* The columns hashKeyFull and findInBucket read */
+  const Uint32* p = reinterpret_cast<const Uint32*>(key);
+  const Uint32* const end = reinterpret_cast<const Uint32*>(key + len);
+  for (Uint32 i = 0; i < m_n_gb_cols && p < end; i++) {
+    const AttributeHeader ah(*p);
+    const Uint32 dataSize = ah.getDataSize();
+    if (1 + dataSize > Uint32(end - p)) {
+      return false;
+    }
+    if (m_col_types[i].cs != nullptr && dataSize > 0) {
+      Uint32 lb = 0;
+      Uint32 valueLen = 0;
+      if (!NdbSqlUtil::get_var_length(m_col_types[i].typeId, p + 1,
+                                      ah.getByteSize(), lb, valueLen)) {
+        return false;
+      }
+    }
+    p += 1 + dataSize;
+  }
+  return true;
 }
 
 #endif  // AGGHASHTABLE_H_

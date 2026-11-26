@@ -22802,6 +22802,15 @@ singleRowCteProbe(JoinAggInterpreter *interp,
       return nullptr;  /* stored NULL => MISS */
     }
     if (types != nullptr && types[pos].cs != nullptr) {
+      /* The bound value comes from the API (a constant of the query or
+       * a parent row's column): cmpVarchar and cmpLongvarchar require
+       * its length prefix to fit it, or stop the node. */
+      if (unlikely(!NdbSqlUtil::check_compare_values(
+              types[pos].typeId, &keyBuf[kp + 1], reqAh.getByteSize(),
+              &stored[spos + 1], storedAh.getByteSize()))) {
+        *malformed = true;
+        return nullptr;
+      }
       const int cmp = (*types[pos].cmpFn)(
           types[pos].cs,
           &keyBuf[kp + 1], reqAh.getByteSize(),
@@ -23068,6 +23077,19 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
      * accumulators = groupData + 0 = m_agg_results correctly. */
     req.keyLen = 0;
   } else {
+    /* The key's values come from the API (constants of the query, or a
+     * parent row's columns typed as the CTE's GROUP BY columns): a
+     * VARCHAR length prefix past its value was hashed from past the key
+     * and stopped the node in the compare (cmpVarchar's require). */
+    const JoinGBHashTable *lookupMap = interp->gb_map();
+    if (unlikely(lookupMap != nullptr &&
+                 !lookupMap->checkKey(
+                     reinterpret_cast<const char *>(keyBuf), req.keyLen))) {
+      jam();
+      sendCteLookupRef(signal, req.senderRef, req.senderData,
+                       ZCTE_LOOKUP_ATTRINFO_MALFORMED, req.correlation);
+      return;
+    }
     groupData = interp->lookupGroup(
         reinterpret_cast<const char *>(keyBuf), req.keyLen,
         c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf

@@ -2050,8 +2050,11 @@ class Dbspj : public SimulatedBlock {
   Uint32 cte_lookup_execNODE_FAILREP(Signal *, Ptr<Request>, Ptr<TreeNode>,
                                      NdbNodeBitmask);
   void cte_lookup_parent_row(Signal *, Ptr<Request>, Ptr<TreeNode>, const RowPtr &);
-  Uint64 cte_lookup_hash_key(const JoinAggInterpreter *, const char *,
-                             Uint32, Uint32);
+  /* The owner hash of a CTE_LOOKUP key, as DBLQH hashes the CTE's
+   * groups; false when a column entry runs past the key or a value of a
+   * column with a collation has its length prefix past it. */
+  bool cte_lookup_hash_key(const JoinAggInterpreter *, const char *,
+                           Uint32, Uint32, Uint64 *);
   void cte_lookup_send(Signal *, Ptr<Request>, Ptr<TreeNode>,
                        const RowPtr &);
   void execCTE_LOOKUP_CONF(Signal *);

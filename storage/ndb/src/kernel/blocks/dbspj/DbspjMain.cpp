@@ -7040,13 +7040,23 @@ void Dbspj::cte_lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
  * per-probe and sends synchronously with CONF-equivalent m_rows
  * accounting. */
 
-Uint64 Dbspj::cte_lookup_hash_key(const JoinAggInterpreter *interp,
-                                  const char *key,
-                                  Uint32 keyLen,
-                                  Uint32 nGbCols) {
+/* The key comes from the parent row by the key pattern of the API (its
+ * P_DATA constants, or parent columns typed as the CTE's GROUP BY
+ * columns).  get_var_length's result was ignored: a VARCHAR length byte
+ * past its value, or a LONGVARCHAR value of one byte (the length then
+ * unset), had strnxfrm_hash read up to 65535 bytes from past the key's
+ * stack copy, and an entry that ran past the key was hashed past it.
+ * Such a key is refused; DBLQH refuses it too, for the probes that it
+ * hashes itself (JoinGBHashTable::checkKey). */
+bool Dbspj::cte_lookup_hash_key(const JoinAggInterpreter *interp,
+                                const char *key,
+                                Uint32 keyLen,
+                                Uint32 nGbCols,
+                                Uint64 *hashOut) {
   const GBColTypeInfo *colTypes = interp->gb_types();
   if (colTypes == nullptr) {
-    return rondb_xxhash_std(key, keyLen);
+    *hashOut = rondb_xxhash_std(key, keyLen);
+    return true;
   }
 
   bool hasCharset = false;
@@ -7057,7 +7067,8 @@ Uint64 Dbspj::cte_lookup_hash_key(const JoinAggInterpreter *interp,
     }
   }
   if (!hasCharset) {
-    return rondb_xxhash_std(key, keyLen);
+    *hashOut = rondb_xxhash_std(key, keyLen);
+    return true;
   }
 
   uchar *xfrmBuf = reinterpret_cast<uchar *>(m_buffer0);
@@ -7068,12 +7079,20 @@ Uint64 Dbspj::cte_lookup_hash_key(const JoinAggInterpreter *interp,
   for (Uint32 i = 0; i < nGbCols && p < end; i++) {
     AttributeHeader ah(*p);
     const Uint32 dataSize = ah.getDataSize();
+    if (unlikely(1 + dataSize > Uint32(end - p))) {
+      jam();
+      return false;
+    }
     if (colTypes[i].cs != nullptr && dataSize > 0) {
       const uchar *src = reinterpret_cast<const uchar *>(p + 1);
       const Uint32 byteSize = ah.getByteSize();
-      Uint32 lb, srcLen;
-      NdbSqlUtil::get_var_length(colTypes[i].typeId, src, byteSize,
-                                 lb, srcLen);
+      Uint32 lb = 0;
+      Uint32 srcLen = 0;
+      if (unlikely(!NdbSqlUtil::get_var_length(colTypes[i].typeId, src,
+                                               byteSize, lb, srcLen))) {
+        jam();
+        return false;
+      }
       const Uint32 maxBytes = colTypes[i].maxBytes;
       ndbrequire(maxBytes >= lb);
       const Uint32 defLen = maxBytes - lb;
@@ -7099,7 +7118,8 @@ Uint64 Dbspj::cte_lookup_hash_key(const JoinAggInterpreter *interp,
     }
     p += 1 + dataSize;
   }
-  return hash;
+  *hashOut = hash;
+  return true;
 }
 
 /**
@@ -7343,9 +7363,14 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
            * probe. */
           targetNodeId = refToNode(requestPtr.p->m_senderRef);
         } else {
-          const Uint64 h = cte_lookup_hash_key(
-              localCteInterp, reinterpret_cast<const char *>(keyBuf),
-              keyLenBytes, nGbCols);
+          Uint64 h = 0;
+          if (unlikely(!cte_lookup_hash_key(
+                  localCteInterp, reinterpret_cast<const char *>(keyBuf),
+                  keyLenBytes, nGbCols, &h))) {
+            jam();
+            err = DbspjErr::InvalidRequest;
+            break;
+          }
           const Uint32 ownerIdx = static_cast<Uint32>(h) % numOwners;
           targetNodeId = cteOwnerNode(requestPtr.p, cteIdx, ownerIdx);
         }
