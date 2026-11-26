@@ -9706,6 +9706,340 @@ int runVerifyTableReplicas(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+/**
+ * Same-row write serialization and the limit on operations in flight in
+ * DBTC, see same_row_serialization.md in
+ * storage/ndb/claude_files/replica_chain_switch/. Error insert 8321 makes
+ * a write wait while an earlier write of the same row in the same
+ * transaction is in flight, as if the replica chain had changed between
+ * them; 8322 limits the operations of a transaction in flight to 4. The
+ * DBTC counters of ndbinfo.counters show that the waits happened.
+ */
+static const Uint32 TC_SAME_ROW_WAITS = 32;
+static const Uint32 TC_PARALLEL_OP_WAITS = 33;
+
+/* Sum of a DBTC counter of ndbinfo.counters over all nodes and instances */
+static int readTcCounter(NDBT_Context *ctx, Uint32 counterId, Uint64 *sum) {
+  *sum = 0;
+  NdbInfo ndbinfo(&ctx->m_cluster_connection, "ndbinfo/");
+  if (!ndbinfo.init()) {
+    g_err << "ndbinfo.init failed" << endl;
+    return NDBT_FAILED;
+  }
+  const NdbInfo::Table *table;
+  if (ndbinfo.openTable("ndbinfo/counters", &table) != 0) {
+    g_err << "Failed to open ndbinfo counters" << endl;
+    return NDBT_FAILED;
+  }
+  NdbInfoScanOperation *scanOp = nullptr;
+  if (ndbinfo.createScanOperation(table, &scanOp)) {
+    g_err << "No NdbInfoScanOperation" << endl;
+    ndbinfo.closeTable(table);
+    return NDBT_FAILED;
+  }
+  const NdbInfoRecAttr *idCol = nullptr;
+  const NdbInfoRecAttr *valCol = nullptr;
+  if (scanOp->readTuples() != 0 ||
+      (idCol = scanOp->getValue("counter_id")) == nullptr ||
+      (valCol = scanOp->getValue("val")) == nullptr ||
+      scanOp->execute() != 0) {
+    g_err << "Failed to scan ndbinfo counters" << endl;
+    ndbinfo.releaseScanOperation(scanOp);
+    ndbinfo.closeTable(table);
+    return NDBT_FAILED;
+  }
+  int rc;
+  while ((rc = scanOp->nextResult()) > 0) {
+    if (idCol->u_32_value() == counterId) *sum += valCol->u_64_value();
+  }
+  ndbinfo.releaseScanOperation(scanOp);
+  ndbinfo.closeTable(table);
+  if (rc < 0) {
+    g_err << "Failed to read ndbinfo counters" << endl;
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
+/* The rows [row, row + numRows) exist with updates value updates */
+static int checkRowsUpdates(Ndb *pNdb, const NdbDictionary::Table *tab,
+                            int row, int numRows, int updates) {
+  HugoOperations ops(*tab);
+  int result = NDBT_FAILED;
+  int rc = -1;
+  if (ops.startTransaction(pNdb) == 0 &&
+      ops.pkReadRecord(pNdb, row, numRows) == 0 &&
+      (rc = ops.execute_Commit(pNdb)) == 0) {
+    result = ops.verifyUpdatesValue(updates, numRows);
+  } else {
+    g_err << "Failed to read rows " << row << ".." << (row + numRows - 1)
+          << ": " << rc << endl;
+  }
+  ops.closeTransaction(pNdb);
+  return result;
+}
+
+/* None of the rows [row, row + numRows) exists */
+static int checkRowsAbsent(Ndb *pNdb, const NdbDictionary::Table *tab,
+                           int row, int numRows) {
+  for (int r = row; r < row + numRows; r++) {
+    HugoOperations ops(*tab);
+    int rc = -1;
+    if (ops.startTransaction(pNdb) == 0 && ops.pkReadRecord(pNdb, r, 1) == 0) {
+      rc = ops.execute_Commit(pNdb);
+    }
+    ops.closeTransaction(pNdb);
+    if (rc != 626) {
+      g_err << "Row " << r << " should not exist, read gave " << rc << endl;
+      return NDBT_FAILED;
+    }
+  }
+  return NDBT_OK;
+}
+
+/**
+ * Batches that write the same rows two or three times: update/update,
+ * delete/insert, locked read/update, update/locked read, and
+ * insert/update/delete of rows that did not exist. The results, also
+ * those of the locked reads, must be those of the batch executed in
+ * order. TcErrorInsert
+ * is set in all data nodes during the step, and the DBTC counter
+ * TcCounter must have increased.
+ */
+int runSameRowBatches(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = GETNDB(step);
+  const NdbDictionary::Table *tab = ctx->getTab();
+  const int records = ctx->getNumRecords();
+  const int loops = ctx->getNumLoops();
+  const int errorInsert =
+      (int)ctx->getProperty("TcErrorInsert", Uint32(8321));
+  const Uint32 counterId = ctx->getProperty("TcCounter", TC_SAME_ROW_WAITS);
+  NdbRestarter restarter;
+
+  Uint64 before = 0;
+  if (readTcCounter(ctx, counterId, &before) != NDBT_OK) return NDBT_FAILED;
+  if (restarter.insertErrorInAllNodes(errorInsert) != 0) {
+    g_err << "Failed to insert error " << errorInsert << endl;
+    return NDBT_FAILED;
+  }
+
+  int result = NDBT_OK;
+  for (int l = 0; l < loops && result == NDBT_OK; l++) {
+    const int batch = 1 + (rand() % 20);
+    const int row = rand() % (records - batch + 1);
+    const int u = 1000 * (l + 1);
+
+    HugoOperations upd(*tab);
+    int rc = -1;
+    if (upd.startTransaction(pNdb) == 0 &&
+        upd.pkUpdateRecord(pNdb, row, batch, u) == 0 &&
+        upd.pkUpdateRecord(pNdb, row, batch, u + 1) == 0) {
+      rc = upd.execute_Commit(pNdb);
+    }
+    upd.closeTransaction(pNdb);
+    if (rc != 0 || checkRowsUpdates(pNdb, tab, row, batch, u + 1) != 0) {
+      g_err << "Update/update of rows " << row << ".." << (row + batch - 1)
+            << " failed: " << rc << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+
+    HugoOperations delIns(*tab);
+    rc = -1;
+    if (delIns.startTransaction(pNdb) == 0 &&
+        delIns.pkDeleteRecord(pNdb, row, batch) == 0 &&
+        delIns.pkInsertRecord(pNdb, row, batch, u + 2) == 0) {
+      rc = delIns.execute_Commit(pNdb);
+    }
+    delIns.closeTransaction(pNdb);
+    if (rc != 0 || checkRowsUpdates(pNdb, tab, row, batch, u + 2) != 0) {
+      g_err << "Delete/insert of rows " << row << ".." << (row + batch - 1)
+            << " failed: " << rc << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+
+    /* A locked read before an update of the row reads the row before it */
+    HugoOperations readUpd(*tab);
+    rc = -1;
+    if (readUpd.startTransaction(pNdb) == 0 &&
+        readUpd.pkReadRecord(pNdb, row, batch, NdbOperation::LM_Exclusive) ==
+            0 &&
+        readUpd.pkUpdateRecord(pNdb, row, batch, u + 3) == 0 &&
+        (rc = readUpd.execute_NoCommit(pNdb)) == 0) {
+      if (readUpd.verifyUpdatesValue(u + 2, batch) != NDBT_OK) {
+        rc = -2;
+      } else {
+        rc = readUpd.execute_Commit(pNdb);
+      }
+    }
+    readUpd.closeTransaction(pNdb);
+    if (rc != 0 || checkRowsUpdates(pNdb, tab, row, batch, u + 3) != 0) {
+      g_err << "Read/update of rows " << row << ".." << (row + batch - 1)
+            << " failed: " << rc << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+
+    /* A locked read after an update of the row reads the update */
+    HugoOperations updRead(*tab);
+    rc = -1;
+    if (updRead.startTransaction(pNdb) == 0 &&
+        updRead.pkUpdateRecord(pNdb, row, batch, u + 4) == 0 &&
+        updRead.pkReadRecord(pNdb, row, batch, NdbOperation::LM_Read) == 0 &&
+        (rc = updRead.execute_Commit(pNdb)) == 0 &&
+        updRead.verifyUpdatesValue(u + 4, batch) != NDBT_OK) {
+      rc = -2;
+    }
+    updRead.closeTransaction(pNdb);
+    if (rc != 0 || checkRowsUpdates(pNdb, tab, row, batch, u + 4) != 0) {
+      g_err << "Update/read of rows " << row << ".." << (row + batch - 1)
+            << " failed: " << rc << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+
+    const int newRow = records + row;
+    HugoOperations insUpdDel(*tab);
+    rc = -1;
+    if (insUpdDel.startTransaction(pNdb) == 0 &&
+        insUpdDel.pkInsertRecord(pNdb, newRow, batch, u) == 0 &&
+        insUpdDel.pkUpdateRecord(pNdb, newRow, batch, u + 1) == 0 &&
+        insUpdDel.pkDeleteRecord(pNdb, newRow, batch) == 0) {
+      rc = insUpdDel.execute_Commit(pNdb);
+    }
+    insUpdDel.closeTransaction(pNdb);
+    if (rc != 0 || checkRowsAbsent(pNdb, tab, newRow, batch) != 0) {
+      g_err << "Insert/update/delete of rows " << newRow << ".."
+            << (newRow + batch - 1) << " failed: " << rc << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+  }
+
+  restarter.insertErrorInAllNodes(0);
+  Uint64 after = 0;
+  if (result == NDBT_OK && readTcCounter(ctx, counterId, &after) != NDBT_OK) {
+    result = NDBT_FAILED;
+  }
+  if (result == NDBT_OK) {
+    ndbout_c("DBTC counter %u: %llu waits", counterId,
+             (unsigned long long)(after - before));
+    if (after <= before) {
+      g_err << "No waits counted in DBTC counter " << counterId
+            << " with error insert " << errorInsert << endl;
+      result = NDBT_FAILED;
+    }
+  }
+  return result;
+}
+
+/**
+ * With at most 4 operations of a transaction in flight (8322), batches
+ * of 20 updates are aborted while operations wait in DBTC:
+ * - the first four updates wait for row locks of another transaction, so
+ *   the deadlock timeout aborts the transaction (266) with 16 operations
+ *   waiting;
+ * - the first operation fails (insert of an existing row, 630) with
+ *   AbortOnError;
+ * and with IgnoreError the waiting operations go on after that error and
+ * commit. Nothing of the aborted transactions may remain.
+ */
+int runWaitingOperationAbort(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = GETNDB(step);
+  const NdbDictionary::Table *tab = ctx->getTab();
+  if (ctx->getNumRecords() < 30) {
+    g_err << "The test needs at least 30 records" << endl;
+    return NDBT_FAILED;
+  }
+  NdbRestarter restarter;
+  Uint64 before = 0;
+  if (readTcCounter(ctx, TC_PARALLEL_OP_WAITS, &before) != NDBT_OK) {
+    return NDBT_FAILED;
+  }
+  if (restarter.insertErrorInAllNodes(8322) != 0) {
+    g_err << "Failed to insert error 8322" << endl;
+    return NDBT_FAILED;
+  }
+
+  int result = NDBT_OK;
+  do {
+    /* runLoadTable loads the rows with updates value 0 */
+    HugoOperations locker(*tab);
+    if (locker.startTransaction(pNdb) != 0 ||
+        locker.pkReadRecord(pNdb, 0, 4, NdbOperation::LM_Exclusive) != 0 ||
+        locker.execute_NoCommit(pNdb) != 0) {
+      g_err << "Failed to lock rows 0..3" << endl;
+      locker.closeTransaction(pNdb);
+      result = NDBT_FAILED;
+      break;
+    }
+    HugoOperations victim(*tab);
+    int rc = -1;
+    if (victim.startTransaction(pNdb) == 0 &&
+        victim.pkUpdateRecord(pNdb, 0, 20, 7) == 0) {
+      rc = victim.execute_Commit(pNdb);
+    }
+    victim.closeTransaction(pNdb);
+    locker.closeTransaction(pNdb);
+    if (rc != 266) {
+      g_err << "Updates of locked rows: expected 266, got " << rc << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+    if (checkRowsUpdates(pNdb, tab, 0, 20, 0) != NDBT_OK) {
+      result = NDBT_FAILED;
+      break;
+    }
+
+    HugoOperations failing(*tab);
+    rc = -1;
+    if (failing.startTransaction(pNdb) == 0 &&
+        failing.pkInsertRecord(pNdb, 0, 1) == 0 &&
+        failing.pkUpdateRecord(pNdb, 1, 20, 8) == 0) {
+      rc = failing.execute_Commit(pNdb);
+    }
+    failing.closeTransaction(pNdb);
+    if (rc != 630) {
+      g_err << "Insert of an existing row: expected 630, got " << rc << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+    if (checkRowsUpdates(pNdb, tab, 0, 21, 0) != NDBT_OK) {
+      result = NDBT_FAILED;
+      break;
+    }
+
+    HugoOperations ignoring(*tab);
+    if (ignoring.startTransaction(pNdb) == 0 &&
+        ignoring.pkInsertRecord(pNdb, 0, 1) == 0 &&
+        ignoring.pkUpdateRecord(pNdb, 1, 20, 9) == 0) {
+      /* The insert fails, checked below through the rows */
+      (void)ignoring.execute_Commit(pNdb, AO_IgnoreError);
+    }
+    ignoring.closeTransaction(pNdb);
+    if (checkRowsUpdates(pNdb, tab, 0, 1, 0) != NDBT_OK ||
+        checkRowsUpdates(pNdb, tab, 1, 20, 9) != NDBT_OK) {
+      g_err << "IgnoreError batch did not commit as expected" << endl;
+      result = NDBT_FAILED;
+      break;
+    }
+  } while (0);
+
+  restarter.insertErrorInAllNodes(0);
+  Uint64 after = 0;
+  if (result == NDBT_OK &&
+      readTcCounter(ctx, TC_PARALLEL_OP_WAITS, &after) != NDBT_OK) {
+    result = NDBT_FAILED;
+  }
+  if (result == NDBT_OK && after <= before) {
+    g_err << "No waits counted in PARALLEL_OP_WAITS with error insert 8322"
+          << endl;
+    result = NDBT_FAILED;
+  }
+  return result;
+}
+
 int runWatchdogSlowShutdown(NDBT_Context *ctx, NDBT_Step *step) {
   /* Steps
    * 1 Set low watchdog threshold
@@ -16170,6 +16504,52 @@ TESTCASE("ChainSwitchDoubleUpdate",
   STEP(runRestarter);
   FINALIZER(runClearErrorInsert);
   FINALIZER(runCheckTablePrimaries);
+  FINALIZER(runVerifyTableReplicas);
+  FINALIZER(runScanReadVerify);
+  FINALIZER(runClearTable);
+}
+TESTCASE("SameRowWriteWait",
+         "Batches write the same rows two or three times (update/update, "
+         "delete/insert, insert/update/delete) with error insert 8321, which "
+         "makes every later write of a row wait in DBTC until the earlier one "
+         "has completed, as after a change of the replica chain. The results "
+         "must be those of the batch executed in order, the waits must show "
+         "in SAME_ROW_WAITS of ndbinfo.counters, and all replicas must "
+         "agree") {
+  TC_PROPERTY("TcErrorInsert", Uint32(8321));
+  TC_PROPERTY("TcCounter", Uint32(32));
+  INITIALIZER(runCreateReadBackupTable);
+  INITIALIZER(runLoadTable);
+  STEP(runSameRowBatches);
+  FINALIZER(runClearErrorInsert);
+  FINALIZER(runVerifyTableReplicas);
+  FINALIZER(runScanReadVerify);
+  FINALIZER(runClearTable);
+}
+TESTCASE("ParallelOperationLimit",
+         "As SameRowWriteWait, with error insert 8322, which limits the "
+         "operations of a transaction in flight to 4, so the rest of each "
+         "batch waits in DBTC (PARALLEL_OP_WAITS of ndbinfo.counters)") {
+  TC_PROPERTY("TcErrorInsert", Uint32(8322));
+  TC_PROPERTY("TcCounter", Uint32(33));
+  INITIALIZER(runCreateReadBackupTable);
+  INITIALIZER(runLoadTable);
+  STEP(runSameRowBatches);
+  FINALIZER(runClearErrorInsert);
+  FINALIZER(runVerifyTableReplicas);
+  FINALIZER(runScanReadVerify);
+  FINALIZER(runClearTable);
+}
+TESTCASE("WaitingOperationAbort",
+         "With at most 4 operations of a transaction in flight (error insert "
+         "8322), transactions are aborted while operations wait in DBTC: by "
+         "the deadlock timeout of updates that wait for row locks (266), and "
+         "by an error of the first operation with AbortOnError (630). With "
+         "IgnoreError the waiting operations go on after the error") {
+  INITIALIZER(runCreateReadBackupTable);
+  INITIALIZER(runLoadTable);
+  STEP(runWaitingOperationAbort);
+  FINALIZER(runClearErrorInsert);
   FINALIZER(runVerifyTableReplicas);
   FINALIZER(runScanReadVerify);
   FINALIZER(runClearTable);

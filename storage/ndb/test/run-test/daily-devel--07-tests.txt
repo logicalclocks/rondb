@@ -246,6 +246,18 @@ cmd: testNodeRestart
 args: -l 2 -n ChainSwitchDoubleUpdate T1
 max-time: 1800
 
+cmd: testNodeRestart
+args: -l 20 -n SameRowWriteWait T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -l 20 -n ParallelOperationLimit T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n WaitingOperationAbort T1
+max-time: 600
+
 cmd: testPartitioning
 args : -n startTransactionHint_orderedIndex_MaxKey T1
 max-time: 60
