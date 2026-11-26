@@ -2787,6 +2787,17 @@ int NdbBlob::initBlobTask(NdbTransaction::ExecType anExecType
       m_blobOp.m_writeBufferLen = theGetSetBytes;
       m_blobOp.m_oldLen = insert_old_len;
       m_blobOp.m_position = 0;
+    } else if (!theSetFlag && insert_old_len == ~Uint64(0)) {
+      /*
+       * TTL related: NdbRecAttr writes the head only from setValue(). With
+       * no value set, an insert over an expired row would keep the old head
+       * while the probe below deletes its parts, so rewrite the head NULL.
+       */
+      m_blobOp.m_state = BlobTask::BTS_WRITE_HEAD;
+      m_blobOp.m_writeBuffer = nullptr;
+      m_blobOp.m_writeBufferLen = 0;
+      m_blobOp.m_oldLen = insert_old_len;
+      m_blobOp.m_position = 0;
     } else {
       /* NdbRecAttr has already written the Blob head */
       m_blobOp.m_state = BlobTask::BTS_WRITE_PARTS;
