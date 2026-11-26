@@ -564,6 +564,9 @@ static inline int embedded_filters_enabled(void) {
 /* by EXIT_REFUSE, or by EXIT_OK right after WRITE_INTERP_OUTPUT; a   */
 /* path that ends without output 0 fails the row on the interpreter,  */
 /* so such a block rejects (JIT_BRIDGE_EMBEDDED_NO_OUTPUT, RONDB-1124).*/
+/* The WRITE must follow the LOAD_CONST16 of its register, and only a */
+/* folded BRANCH_REG_EQ_NULL may land on it: the lowering jumps by    */
+/* that constant (UNSUPPORTED_OP otherwise).                          */
 /*                                                                    */
 /* Branch target translation: the embedded block has its own pc-      */
 /* space (0..emb_len-1). We track each instruction's output Op index  */
@@ -1162,6 +1165,19 @@ static JitBridgeReason translate_embedded_block(
   uint8_t emb_in_regs[BR_EMB_MAX_LEN];
   memset(emb_in_regs, 0, sizeof(emb_in_regs));
   uint8_t regs_written = 0;
+  /* RONDB-1124: the value of output 0.  A WRITE_INTERPRETER_OUTPUT
+   * lowers to a jump by const16_by_reg, the LOAD_CONST16 of the linear
+   * path, so a branch that lands between that LOAD_CONST16 and the
+   * WRITE brings the register's value of another path, and the JIT
+   * takes another CASE arm than the interpreter.  emb_jit_branch_in
+   * marks the pcs that a branch the JIT can take lands on: every edge
+   * but that of a folded BRANCH_REG_EQ_NULL, which no row the JIT
+   * completes takes (its register is written on every path and holds no
+   * NULL on such a row).  last_lc16_reg: the register of the instruction
+   * just before, if it was a LOAD_CONST16, else 0xFF. */
+  uint8_t emb_jit_branch_in[BR_EMB_MAX_LEN];
+  memset(emb_jit_branch_in, 0, sizeof(emb_jit_branch_in));
+  uint8_t last_lc16_reg = 0xFF;
 
   /* Pass 1: linear walk, emit Ops with target_emb_pc in c. */
   uint32_t emb_pc = 0;
@@ -1170,6 +1186,9 @@ static JitBridgeReason translate_embedded_block(
     uint8_t  prev_read_attr_dst     = read_attr_dst;
     uint16_t prev_read_attr_op_idx  = read_attr_op_idx;
     read_attr_pending = 0;
+    const uint8_t prev_lc16_reg = last_lc16_reg;
+    last_lc16_reg = 0xFF;
+    int branch_folded = 0;
     uint32_t inst = emb_prog[emb_pc];
     /* NDB normal-interpreter opcode encoding (different from the
      * aggregation interpreter's bits 31..26 layout): bits 5..0 +
@@ -1396,6 +1415,7 @@ static JitBridgeReason translate_embedded_block(
            * a NULL entry, or an entry with fewer bytes than its type
            * (519404769c7, CteLinkedAttr::linkedColumnBytes), so the
            * fold is exact for it. */
+          branch_folded = 1;
           emb_pc += 1;
           break;
         }
@@ -2438,6 +2458,7 @@ static JitBridgeReason translate_embedded_block(
         emb_reg_f64[reg] = 0;
         emb_reg_u64[reg] = 0;
         emb_reg_read_attr[reg] = -1;
+        last_lc16_reg = (uint8_t)reg;
         emb_pc += 1;
         break;
       }
@@ -2479,6 +2500,21 @@ static JitBridgeReason translate_embedded_block(
               out_err->offending_op   = emb_op;
             }
             return JIT_BRIDGE_EMBEDDED_NO_OUTPUT;
+          }
+          /* RONDB-1124: every path the JIT takes into this WRITE comes
+           * through the LOAD_CONST16 of its register just before it, so
+           * the jump's constant is the value written on each of them.
+           * The emitters' output blocks are LOAD_CONST16,
+           * WRITE_INTERPRETER_OUTPUT, EXIT_OK, and only the folded guard
+           * of RonSQL's COUNT(*) ROWID guard lands on such a WRITE. */
+          if ((uint32_t)prev_lc16_reg != reg ||
+              emb_jit_branch_in[emb_pc] != 0) {
+            if (out_err) {
+              out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+              out_err->offending_word = outer_word_pos + 1 + emb_pc;
+              out_err->offending_op   = emb_op;
+            }
+            return JIT_BRIDGE_UNSUPPORTED_OP;
           }
         }
         uint16_t skip_offset = const16_by_reg[reg];
@@ -2683,6 +2719,9 @@ static JitBridgeReason translate_embedded_block(
               (uint8_t)(emb_in_regs[target_pc] & regs_written);
         }
         br_merge_out0(&emb_in_out0[target_pc], out0_written);
+        if (!branch_folded) {
+          emb_jit_branch_in[target_pc] = 1;
+        }
       }
       if (emb_op == BR_EMB_WRITE_INTERP_OUTPUT) {
         out0_written = 1;

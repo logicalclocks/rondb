@@ -5840,6 +5840,57 @@ static void test_ne_null_unwritten_reg_reject(void) {
                   JIT_BRIDGE_REG_NOT_LOADED, 1, EMB_BRANCH_REG_NE_NULL_OP);
 }
 
+/* ------------------------------------------------------------------ */
+/* RONDB-1124: the value of output 0.  WRITE_INTERPRETER_OUTPUT       */
+/* lowers to a jump by the LOAD_CONST16 of the linear path; a branch  */
+/* that lands between that LOAD_CONST16 and the WRITE brings another  */
+/* value, and the JIT took another CASE arm than the interpreter.     */
+/* The WRITE must follow the LOAD_CONST16 of its register, and no     */
+/* branch but a folded BRANCH_REG_EQ_NULL (T60g, the ROWID guard) may */
+/* land on it; otherwise the program rejects (UNSUPPORTED_OP).        */
+/* ------------------------------------------------------------------ */
+
+/* T86j: the THEN branch (emb pc 3) lands on the WRITE (pc 5), where r2
+ * is 3 (pc 2) on that path; the ELSE path loads 0 at pc 4.  The
+ * interpreter writes 3 for a THEN row; the JIT jumped by 0. */
+static void test_branch_onto_write_reject(void) {
+  uint32_t prog[10] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/7),
+    enc_emb_read_attr(/*attr_id=*/1, /*reg=*/0),
+    enc_emb_load_const16(/*reg=*/1, /*val=*/5),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/3),
+    enc_emb_branch_reg_reg(EMB_BRANCH_GT_REG_REG, 0, 1, /*offset=*/2),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/3, /*col=*/2),
+    enc_sum(/*reg=*/3, /*agg=*/0),
+  };
+  assert_rejected("T86j branch_onto_write_reject", prog, 10,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 6, EMB_WRITE_INTERP_OUTPUT);
+}
+
+/* T86k: the branch lands on the LOAD_CONST16 of another register
+ * (pc 5) between the LOAD_CONST16 of r2 (pc 4) and its WRITE (pc 6):
+ * the WRITE does not follow the LOAD_CONST16 of its register. */
+static void test_write_after_other_const_reject(void) {
+  uint32_t prog[11] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/8),
+    enc_emb_read_attr(/*attr_id=*/1, /*reg=*/0),
+    enc_emb_load_const16(/*reg=*/1, /*val=*/5),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/3),
+    enc_emb_branch_reg_reg(EMB_BRANCH_GT_REG_REG, 0, 1, /*offset=*/2),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/9),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/4, /*col=*/2),
+    enc_sum(/*reg=*/4, /*agg=*/0),
+  };
+  assert_rejected("T86k write_after_other_const_reject", prog, 11,
+                  JIT_BRIDGE_UNSUPPORTED_OP, 7, EMB_WRITE_INTERP_OUTPUT);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -6067,6 +6118,8 @@ int main(void) {
   test_guard_written_reg_accept();
   test_compare_unwritten_reg_reject();
   test_ne_null_unwritten_reg_reject();
+  test_branch_onto_write_reject();
+  test_write_after_other_const_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;
