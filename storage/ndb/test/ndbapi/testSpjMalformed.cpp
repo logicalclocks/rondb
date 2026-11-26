@@ -705,6 +705,47 @@ class SpjMalformedChecker {
     return embeddedCountLeaf(emb);
   }
 
+  /* A leaf (P-51) whose rows load linked position 0 as a BIGINT, and
+   * load register 3 only for a value other than 7:
+   *   0 READ_LINKED_COLUMN_TO_REG of position 0, BIGINT, into register 1
+   *   1 LOAD_CONST16 7 into register 2
+   *   2 BRANCH_EQ_REG_REG of registers 1 and 2 to word 4
+   *   3 LOAD_CONST16 1 into register 3
+   *   4 BRANCH_REG_EQ_NULL of register 3 to word 8
+   *   5 LOAD_CONST16 0 into register 0
+   *   6 WRITE_INTERPRETER_OUTPUT 0 of register 0: go on after it
+   *   7 EXIT_OK
+   *   8 BRANCH_EQ_REG_REG of registers 3 and 2 to word 9
+   *   9 LOAD_CONST16 0 into register 0
+   *  10 WRITE_INTERPRETER_OUTPUT 0 of register 0
+   *  11 EXIT_OK
+   * then COUNT(1).  The embedded program starts with its registers
+   * NULL, so for a value of 7 register 3 is NULL at word 4, the guard
+   * is taken, and the compare at word 8 fails the row
+   * (ZREGISTER_INIT_ERROR, 1872): SCAN_TABREF.  For another value the
+   * rows are counted: SCAN_TABCONF.  The JIT folds the guard to "not
+   * taken" (ndb_jit_bridge.c; its registers hold no NULL), so the
+   * compiled program counted the rows of a 7. */
+  static std::vector<Uint32> linkedSkipLoadLeaf() {
+    const std::vector<Uint32> emb = {
+        Interpreter::ReadLinkedColumnIntoReg(1, 0, NDB_TYPE_BIGINT),
+        Interpreter::LoadConst16(2, 7),
+        Interpreter::Branch(Interpreter::BRANCH_EQ_REG_REG, 2, 1) |
+            (2u << 16),
+        Interpreter::LoadConst16(3, 1),
+        Interpreter::Branch(Interpreter::BRANCH_REG_EQ_NULL, 0, 3) |
+            (4u << 16),
+        Interpreter::LoadConst16(0, 0),
+        Interpreter::WriteInterpreterOutput(0, 0),
+        Interpreter::ExitOK(),
+        Interpreter::Branch(Interpreter::BRANCH_EQ_REG_REG, 2, 3) |
+            (1u << 16),
+        Interpreter::LoadConst16(0, 0),
+        Interpreter::WriteInterpreterOutput(0, 0),
+        Interpreter::ExitOK()};
+    return embeddedCountLeaf(emb);
+  }
+
   /* The join aggregation of makeJoinAggScanLookup with its leaf
    * outer-joined (P-48), and keyed on the root's KOL2 instead of its
    * primary key.  Hugo loads KOL2 with values above 10^8, none of them
@@ -2032,6 +2073,63 @@ class SpjMalformedChecker {
     return result;
   }
 
+  int runP51() {  /* a null test of a register a path did not write */
+    /* The leaf (linkedSkipLoadLeaf) skips the load of register 3 for a
+     * linked value of 7, so its BRANCH_REG_EQ_NULL of register 3 is
+     * taken and the row fails; for another value the row is counted.
+     * The JIT folds such a guard to "not taken", which is right for a
+     * register that every path wrote: on a row the JIT completes, it
+     * holds a value.  With the JIT on (test_spj_malformed_p51_jit) the
+     * compiled program counted the rows of a 7 (RONDB-1124); the
+     * compiler now refuses a program that reads a register a path did
+     * not write, and the rows run on the interpreter.  The request with
+     * an entry of 7 must get SCAN_TABREF, and the control, an entry of
+     * 8, SCAN_TABCONF (without it a harness whose rows never reach the
+     * program would pass).  The control runs first, so that no request
+     * expected to succeed follows a failed scan. */
+    const std::vector<Uint32> leaf = linkedSkipLoadLeaf();
+    const Uint32 w0 = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
+    const Uint32 w1 = CteLinkedAttr::encodeWord1(0);
+    const char *findingId =
+        "P-51 null test of a register a path did not write";
+
+    SpjReq eight;
+    makeJoinAggScanLookup(eight, {w0, w1, (0u << 16) | 8u, 8u, 0u}, leaf);
+    eight.waitForEnd = true;
+    const Reply eightRep = sendScanTabReq(eight);
+    printReply("CONTROL (linked value 8)", eightRep);
+
+    SpjReq seven;
+    makeJoinAggScanLookup(seven, {w0, w1, (0u << 16) | 8u, 7u, 0u}, leaf);
+    seven.waitForEnd = true;
+    const Reply rep = sendScanTabReq(seven);
+    printReply(findingId, rep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (eightRep.gsn != GSN_SCAN_TABCONF) {
+      g_err << "P-51 CONTROL: expected SCAN_TABCONF for the linked value 8, "
+               "got " << gsnName(eightRep.gsn) << " " << eightRep.errorCode
+            << ".  The rows do not reach the leaf program; fix this before "
+               "trusting the result of P-51." << endl;
+      return NDBT_FAILED;
+    }
+    if (rep.gsn != GSN_SCAN_TABREF) {
+      g_err << findingId << ": FAIL -- expected SCAN_TABREF (register 3 is "
+            << "NULL at the guard), got " << gsnName(rep.gsn)
+            << ": the guard was not taken (with the JIT on, the compiled "
+               "program folded it)" << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId << ": PASS (all data nodes started; the guard "
+           << "was taken)" << endl;
+    return NDBT_OK;
+  }
+
   /* ---- P-38 / P-39: a string MIN / MAX and a number in one slot ------- *
    * A string MIN / MAX keeps in its slot a pointer to the data node's
    * copy of the value; every other aggregate keeps a number there.  A
@@ -2761,6 +2859,7 @@ CASE_STEP(runP44, runP44)
 CASE_STEP(runP45, runP45)
 CASE_STEP(runP48, runP48)
 CASE_STEP(runP50, runP50)
+CASE_STEP(runP51, runP51)
 CASE_STEP(runP38, runP38)
 CASE_STEP(runP39, runP39)
 CASE_STEP(runQ1, runQ1)
@@ -2982,6 +3081,11 @@ TESTCASE("P50",
          "without NI_ATTR_LINKED, which went to the subroutine section "
          "of the AttrInfo") {
   STEP(runP50);
+}
+TESTCASE("P51",
+         "join aggregation: a null test of an embedded register that a "
+         "path did not write (refused by the JIT when it is on)") {
+  STEP(runP51);
 }
 TESTCASE("P38",
          "join aggregation: string MIN and BIGINT MIN in one slot") {

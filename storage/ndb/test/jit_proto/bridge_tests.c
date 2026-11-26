@@ -2715,21 +2715,25 @@ static void test_nb_case_guard_no_read_attr_fold(void) {
 
 /* T60d (flipped): guard on a DIFFERENT register than the READ_ATTR —
  * no fusion, so it FOLDS; the load stays the PLAIN form (per-row
- * fallback on NULL preserves the completing-row invariant). */
+ * fallback on NULL preserves the completing-row invariant).  The
+ * guarded register is a constant: a register no path wrote rejects
+ * (RONDB-1124, T86f). */
 static void test_nb_case_guard_reg_mismatch_fold(void) {
   const char *name = "T60d nb_case_guard_reg_mismatch_fold";
-  uint32_t prog[4] = {
-    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+  uint32_t prog[5] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/4),
+    enc_emb_load_const16(/*reg=*/1, /*val=*/5),
     enc_emb_read_attr(/*attr_id=*/1, /*reg=*/0),
     enc_emb_branch_reg_eq_null(/*reg=*/1, /*offset=*/1),
     enc_emb_op_word(EMB_EXIT_REFUSE, 0),
   };
   Program p;
-  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/3)) return;
-  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+  /* [0]LC16 [1]LOAD_COL_NDB [2]EXIT(refuse) [3]tail EXIT. */
+  if (!expect_accepted(name, prog, 5, &p, /*expected_n_ops=*/4)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
                        OP_LOAD_COL_NDB)) return;
-  if (!expect_op_field(name, &p, 0, "a", p.ops[0].a, 8)) return;
-  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_EXIT)) return;
+  if (!expect_op_field(name, &p, 1, "a", p.ops[1].a, 8)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_EXIT)) return;
   mark_pass(name);
 }
 
@@ -5728,6 +5732,114 @@ static void test_block_falls_off_end_reject(void) {
                   JIT_BRIDGE_EMBEDDED_NO_OUTPUT, 0, kOpEmbeddedInterp);
 }
 
+/* ------------------------------------------------------------------ */
+/* RONDB-1124: embedded registers written on every path.  The         */
+/* interpreter starts an embedded block with its eight registers      */
+/* NULL; the JIT's are 0.  A BRANCH_REG_EQ_NULL of a register no      */
+/* write reached is taken on the interpreter, while the bridge folds  */
+/* it (never taken), and a compare of one fails the row there         */
+/* (ZREGISTER_INIT_ERROR) while the JIT compares 0.  Such a program   */
+/* now rejects (JIT_BRIDGE_REG_NOT_LOADED), as K-1 rejects a read of  */
+/* an outer register that a path does not load.                      */
+/* ------------------------------------------------------------------ */
+
+/* T86f: the guard of a register one path does not write.  A linked
+ * value of 7 branches (emb pc 2) past the LC16 of r3, so at the guard
+ * (pc 4) r3 is NULL on the interpreter, which takes the guard to the
+ * STOP block and skips the row; the JIT folded the guard and counted
+ * the row.  testSpjMalformed P-51 runs it. */
+static void test_guard_unwritten_reg_reject(void) {
+  uint32_t prog[16] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/11),
+    enc_emb_rlc(/*dst=*/1, /*pos=*/0, NDB_TYPE_BIGINT),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/7),
+    enc_emb_branch_reg_reg(EMB_BRANCH_EQ_REG_REG, 1, 2, /*offset=*/2),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/1),
+    enc_emb_branch_reg_eq_null(/*reg=*/3, /*offset=*/4),   /* -> 8 */
+    enc_emb_load_const16(/*reg=*/0, /*val=*/0),
+    enc_emb_write_output(/*reg=*/0, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_load_const16(/*reg=*/0, /*val=*/0xFFFF),
+    enc_emb_write_output(/*reg=*/0, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_const(NDB_TYPE_BIGINT, /*reg=*/0), 1u, 0u,
+    enc_count(/*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T86f guard_unwritten_reg_reject", prog, 16,
+                  JIT_BRIDGE_REG_NOT_LOADED, 5, EMB_BRANCH_REG_EQ_NULL);
+}
+
+/* T86g: T86f with r3 written on both paths (LC16 at emb pc 1, again
+ * at pc 4): compiled, and the guard folds.  [0]LOAD_LINKED_COL
+ * [1]LC16 [2]LC16 [3]BRANCH_EQ(->5) [4]LC16 [5]LC16 [6]JUMP [7]LC16
+ * [8]JUMP [9]LOAD_CONST [10]COUNT [11]tail EXIT. */
+static void test_guard_written_reg_accept(void) {
+  const char *name = "T86g guard_written_reg_accept";
+  uint32_t prog[17] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/12),
+    enc_emb_rlc(/*dst=*/1, /*pos=*/0, NDB_TYPE_BIGINT),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/1),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/7),
+    enc_emb_branch_reg_reg(EMB_BRANCH_EQ_REG_REG, 1, 2, /*offset=*/2),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/2),
+    enc_emb_branch_reg_eq_null(/*reg=*/3, /*offset=*/4),   /* -> 9 */
+    enc_emb_load_const16(/*reg=*/0, /*val=*/0),
+    enc_emb_write_output(/*reg=*/0, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_emb_load_const16(/*reg=*/0, /*val=*/0xFFFF),
+    enc_emb_write_output(/*reg=*/0, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_const(NDB_TYPE_BIGINT, /*reg=*/0), 1u, 0u,
+    enc_count(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  if (!expect_accepted(name, prog, 17, &p, /*expected_n_ops=*/12)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                       OP_BRANCH_EQ_INT_INT)) return;
+  if (!expect_op_field(name, &p, 3, "c", p.ops[3].c, 5)) return;
+  if (!expect_op_field(name, &p, 5, "kind", p.ops[5].kind,
+                       OP_LOAD_CONST_UINT16)) return;
+  if (!expect_op_field(name, &p, 10, "kind", p.ops[10].kind,
+                       OP_COUNT_BIGINT)) return;
+  mark_pass(name);
+}
+
+/* T86h: a compare of a register one path does not write: for a linked
+ * value of 7, r3 is NULL at the compare (emb pc 4), which fails the
+ * row on the interpreter, while the JIT compared 0 with 7. */
+static void test_compare_unwritten_reg_reject(void) {
+  uint32_t prog[13] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/8),
+    enc_emb_rlc(/*dst=*/1, /*pos=*/0, NDB_TYPE_BIGINT),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/7),
+    enc_emb_branch_reg_reg(EMB_BRANCH_EQ_REG_REG, 1, 2, /*offset=*/2),
+    enc_emb_load_const16(/*reg=*/3, /*val=*/1),
+    enc_emb_branch_reg_reg(EMB_BRANCH_GT_REG_REG, 3, 2, /*offset=*/1),
+    enc_emb_load_const16(/*reg=*/0, /*val=*/0),
+    enc_emb_write_output(/*reg=*/0, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_load_const(NDB_TYPE_BIGINT, /*reg=*/0), 1u, 0u,
+    enc_count(/*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T86h compare_unwritten_reg_reject", prog, 13,
+                  JIT_BRIDGE_REG_NOT_LOADED, 5, EMB_BRANCH_GT_REG_REG);
+}
+
+/* T86i: BRANCH_REG_NE_NULL (lowered to an unconditional jump) of a
+ * register nothing wrote: never taken on the interpreter. */
+static void test_ne_null_unwritten_reg_reject(void) {
+  uint32_t prog[6] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/5),
+    enc_emb_branch_reg_ne_null(/*reg=*/4, /*offset=*/2),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  assert_rejected("T86i ne_null_unwritten_reg_reject", prog, 6,
+                  JIT_BRIDGE_REG_NOT_LOADED, 1, EMB_BRANCH_REG_NE_NULL_OP);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -5951,6 +6063,10 @@ int main(void) {
   test_case_branch_past_write_reject();
   test_write_not_before_exit_ok_reject();
   test_block_falls_off_end_reject();
+  test_guard_unwritten_reg_reject();
+  test_guard_written_reg_accept();
+  test_compare_unwritten_reg_reject();
+  test_ne_null_unwritten_reg_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

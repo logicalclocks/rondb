@@ -1,0 +1,16 @@
+--source include/have_ndb.inc
+
+# P-51: a join aggregation leaf whose embedded program tests with
+# BRANCH_REG_EQ_NULL a register that one path does not write
+# (RONDB-1124). The program starts with its registers NULL; for a
+# linked value of 7 it skips the load of the register, so the guard is
+# taken and the row fails (SCAN_TABREF), while for a value of 8 the
+# rows are counted (SCAN_TABCONF), with every data node still started.
+# test_spj_malformed_p51_jit runs the case with the JIT on, which
+# folded the guard to "not taken" and counted the rows of a 7.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P51
+--let $spj_case_title = P-51: join aggregation null test of a register a path did not write
+--source suite/ndb_spj/include/spj_malformed_case.inc
