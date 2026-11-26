@@ -1149,6 +1149,16 @@ int NdbTransaction::executeNoBlobs(NdbTransaction::ExecType aTypeOfExec,
     DBUG_RETURN(-1);
   }
 
+  if (unlikely(theCommitStatus == Committed && aTypeOfExec != Rollback &&
+               theFirstOpInList != nullptr)) {
+    /*
+     * Operations defined after the commit can never be sent.
+     * executeAsynchPrepare would fail them with no error code.
+     */
+    theError.code = 4357;
+    DBUG_RETURN(-1);
+  }
+
   //------------------------------------------------------------------------
   // We will start by preparing all operations in the transaction defined
   // since last execute or since beginning. If this works ok we will continue
