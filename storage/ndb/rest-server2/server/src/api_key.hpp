@@ -108,9 +108,12 @@ that database's project ("<ProjectName>_<username>"). The key is the
 lowercased project name, which is simultaneously the project's online
 database name (pk-read/scan URLs) and its feature store name
 (feature-store requests) - Hopsworks derives both by lowercasing the
-project name. Only projects the owner is a MEMBER of have an entry;
-other databases (shared stores, system dbs) are absent and their
-requests run unmetered.
+project name. Every project the owner is a MEMBER of has an entry, and
+so has every database reached through a store share, mapped to the
+owner's project that received the share (the lowest-id recipient when
+several of the owner's projects did); membership wins when a database
+is both. Other databases (system dbs) are absent and their requests run
+unmetered.
 */
 struct RateLimitIdentities {
   std::unordered_map<std::string, std::string> per_db;

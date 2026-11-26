@@ -47,8 +47,10 @@
  *   is filled during authenticate(); target_db is the database the
  *   request is billed to - the URL database or the feature view's own
  *   feature store name, which are both the lowercased project name. A db
- *   the key's user is no member of (shared stores, system dbs) yields an
- *   empty identity: unmetered.
+ *   the key's user reaches only through a store share is billed to the
+ *   user's own project that received the share, the same account
+ *   Hopsworks grants the share to in MySQL. A db reached by neither
+ *   membership nor share (system dbs) yields an empty identity: unmetered.
  */
 /**
  * Report that a database the API key can reach has no rate limit identity, so

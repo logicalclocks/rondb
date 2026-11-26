@@ -611,8 +611,9 @@ RS_Status APIKeyCache::find_and_validate(const std::string &prefix,
   }
   // Copy out the project-user rate limit identities for the requested
   // databases while we still hold the lock (username mode; the map is
-  // empty otherwise). Databases without an identity - shared stores,
-  // system dbs - are simply absent and run unmetered.
+  // empty otherwise). Databases without an identity - reached by neither
+  // membership nor a store share, such as system dbs - are simply absent
+  // and run unmetered.
   if (rlIdentities != nullptr && db_access_ok &&
       !userDBs->rlIdentities.empty()) {
     for (const TableAccessRequest &accessReq : accessReqs) {
