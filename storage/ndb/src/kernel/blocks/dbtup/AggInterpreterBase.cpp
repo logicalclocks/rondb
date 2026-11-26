@@ -196,6 +196,22 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
     }
   }
 
+  /* The value of a linked column is an entry of the linked buffer, which
+   * DBSPJ copies from the API's P_DATA tokens, typed by the program.
+   * A fixed-size type decoded its bytes whatever the entry's size, so a
+   * BIGINT of a 4-byte entry read 4 bytes from past it: from what the
+   * per-LDM-thread read buffer held before, rows of other queries
+   * included.  READ_LINKED_COLUMN_TO_REG reads such an entry as NULL; a
+   * kOpLoadCol fails the row, as it does for a missing entry. */
+  if (unlikely(!header->isNULL() &&
+               header->getByteSize() <
+                   CteLinkedAttr::linkedColumnBytes(type))) {
+    g_eventLogger->debug("%s::ProcessRec ZAGG_LOAD_COL_WRONG_TYPE: "
+        "type %u for a value of %u bytes",
+        class_name, Uint32(type), header->getByteSize());
+    return ZAGG_LOAD_COL_WRONG_TYPE;
+  }
+
   /* The value decode is shared with aggregation in the RonSQL layer
    * (include/util/AggColumnLoad.hpp, RONDB-1124 WP-J J5), so both turn a
    * stored value into the same register.  Strings come back as
@@ -281,6 +297,18 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
                        attrDescriptor != nullptr ? declared
                                                  : header->getByteSize(),
                        &prefix, &payload_len);
+      /* The length prefix of a linked VARCHAR comes from the API: a
+       * prefix past the value had kOpMax / kOpMin copy up to 65535
+       * bytes of the read buffer past it into the result, rows of other
+       * queries included. */
+      if (unlikely(Uint32(prefix) + Uint32(payload_len) >
+                   header->getByteSize())) {
+        g_eventLogger->debug("%s::ProcessRec ZAGG_LOAD_COL_WRONG_TYPE: "
+            "a string of %u + %u bytes in a value of %u bytes",
+            class_name, Uint32(prefix), Uint32(payload_len),
+            header->getByteSize());
+        return ZAGG_LOAD_COL_WRONG_TYPE;
+      }
       StringResult& sr = m_register_string_data[reg_index];
       sr.ptr = base;
       sr.length = payload_len;
@@ -1601,6 +1629,21 @@ Int32 AggInterpreterBase::minMaxString(Uint32 reg_index, Uint32 agg_index,
     slot.prefix_bytes = src.prefix_bytes;
     slot.declared_size = src.declared_size;
   }
+  /* The slot compares and stores its values as the string type it was
+   * described with: the first value, or the setup metadata.  A value of
+   * another string type (the arm of a CASE, a register loaded as another
+   * type than the metadata gives) was compared with the slot's length
+   * prefix, and cmpVarchar or cmpLongvarchar failed its require, which
+   * stopped any data node.  NdbAggregator::RepeatAgg refuses CASE arms
+   * of different string types. */
+  if (unlikely(slot.prefix_bytes != src.prefix_bytes)) {
+    g_eventLogger->debug("AggInterpreterBase::minMaxString "
+                         "ZAGG_WRONG_OPERATION: a value with a %u-byte "
+                         "length prefix for slot %u of a %u-byte one",
+                         Uint32(src.prefix_bytes), m_acc_offset + agg_index,
+                         Uint32(slot.prefix_bytes));
+    return ZAGG_WRONG_OPERATION;
+  }
   AggResItem& dst = agg_res_ptr[agg_index];
   const Uint32 needed_payload = src.prefix_bytes + src.length;
   Uint32 alloc_size = (4 + needed_payload + 15) & ~15U;
@@ -1975,6 +2018,11 @@ Int32 AggInterpreterBase::executeStandardOpcode(
       reg_index = (value >> 12) & 0x0F;
       reg_index2 = (value >> 8) & 0x0F;
       m_registers[reg_index] = m_registers[reg_index2];
+      /* A string register's value is its capture: a kOpMax / kOpMin of
+       * the copy read the capture of an earlier load of reg_index, whose
+       * bytes the buffer no longer holds (a length prefix that no longer
+       * fits failed cmpVarchar's require). */
+      m_register_string_data[reg_index] = m_register_string_data[reg_index2];
       PA_INTERP_TRACE(m_frag_id,
                       "Move [%u]->[%u]",
                       reg_index2, reg_index);
@@ -1985,8 +2033,14 @@ Int32 AggInterpreterBase::executeStandardOpcode(
       if (m_registers[reg_index].type == NDB_TYPE_UNDEFINED) {
         m_registers[reg_index].type = NDB_TYPE_BIGINT;
         m_registers[reg_index].is_unsigned = false;
-        m_registers[reg_index].value.val_int64 = 0;
       }
+      /* A NULL register holds 0, as a NULL load and a NULL result of
+       * arithmetic leave it (SetRegisterNull).  The value the register
+       * had before went into a group's slot with the NULL, when the
+       * group's first row was NULL: Sum then asserted that a NULL slot
+       * holds 0 on the next row, and a release build added the old
+       * value to the sum. */
+      m_registers[reg_index].value.val_int64 = 0;
       m_registers[reg_index].is_null = true;
       PA_INTERP_TRACE(m_frag_id, "SetRegNull[%u]", reg_index);
       return 0;

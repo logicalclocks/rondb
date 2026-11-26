@@ -1,0 +1,19 @@
+--source include/have_ndb.inc
+
+# P-55: join aggregations whose leaf loads linked values the API typed:
+# (a) a VARCHAR MAX and a CHAR MAX of one slot, which failed
+#     cmpVarchar's require in any data node; minMaxString refuses a
+#     value of another string type than the slot's (1868);
+# (b) a MAX of a VARCHAR whose length byte runs past it, and (c) a SUM
+#     of a 4-byte entry as a BIGINT, which read past the entry;
+#     loadColumnTypedFromBuf refuses them (1866).
+# Each must get SCAN_TABREF with every data node started. The controls,
+# a MAX of the VARCHAR 'abcd', the same MAX of a kOpMov copy of the
+# register (kOpMov now copies the string capture) and a SUM of an
+# 8-byte BIGINT, must get SCAN_TABCONF.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P55
+--let $spj_case_title = P-55: join aggregation string MAX of two string types in one slot, of a kOpMov copy, short linked values
+--source suite/ndb_spj/include/spj_malformed_case.inc

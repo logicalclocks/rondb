@@ -82,6 +82,13 @@
  * column with a constant its compare function cannot take (a VARCHAR
  * length byte past it, a NaN FLOAT, the wrong size), which DBTUP
  * refuses with error 40 (RONDB-1124, handleBranchAttrOp).
+ * P-54 sends programs whose SUM or arithmetic reads a string register,
+ * or whose slot two aggregates update, which JOIN_AGG_SETUP_REQ must
+ * refuse (checkAggSlotKinds).  P-55 runs string MIN / MAX of two string
+ * types in one slot and loads of linked values shorter than their type,
+ * which fail the row, and a MAX of a kOpMov copy of a string register,
+ * which must work.  P-56 sums after a SUM of a register set NULL, which
+ * stopped a debug data node (RONDB-1124).
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
  * re-send (passQueue), which only DBTC itself may set (RONDB-1124).
  * S-1 and S-2 send join aggregation signals that only data nodes send
@@ -2382,6 +2389,250 @@ class SpjMalformedChecker {
     return result;
   }
 
+  /* ---- P-54: operations the type of their register does not allow ---- *
+   * A string register holds its type and 0; its value is the capture of
+   * the column (m_register_string_data), which only kOpMax and kOpMin
+   * read.  checkAggSlotKinds (in checkProgram) now refuses an
+   * arithmetic instruction or a numeric aggregate that may read a string
+   * register, and a slot that two different aggregates update, at
+   * JOIN_AGG_SETUP_REQ.  The program is leaf 1, which no row runs: before
+   * the check DblqhProxy accepted it and the scan got SCAN_TABCONF. */
+  int runP54() {
+    /* A string MAX and a SUM of a number, one slot each */
+    const int control = expectAggAccepted(
+        "P-54 control: MAX of a CHAR and SUM of a BIGINT, one slot each",
+        {countLeaf(),
+         aggProgram(2, {loadCol(0, NDB_TYPE_CHAR, 1), aggUpdate(kOpMax, 0, 0),
+                        aggOp(kOpLoadConst) | (NDB_TYPE_BIGINT << 21) |
+                            (1u << 16),
+                        1, 0, aggUpdate(kOpSum, 1, 1)})});
+    if (control != NDBT_OK) {
+      return control;
+    }
+    const char *const ids[3] = {
+        /* Sum stored the CHAR register in the slot and asserted on the
+         * next row that the slot is a BIGINT */
+        "P-54a join aggregation SUM of a CHAR register",
+        /* RegPlusReg asserted that a register that is not a DOUBLE is
+         * a BIGINT */
+        "P-54b join aggregation VARCHAR register plus a BIGINT",
+        /* Count asserted that its slot holds an unsigned BIGINT, which
+         * the SUM of the signed 1 is not */
+        "P-54c join aggregation SUM and COUNT of one slot"};
+    const std::vector<Uint32> leaves[3] = {
+        aggProgram(1, {loadCol(0, NDB_TYPE_CHAR, 1), aggUpdate(kOpSum, 0, 0)}),
+        aggProgram(1, {loadCol(0, NDB_TYPE_VARCHAR, 1),
+                       aggOp(kOpLoadConst) | (NDB_TYPE_BIGINT << 21) |
+                           (1u << 16),
+                       1, 0, aggOp(kOpPlus) | (0u << 12) | (1u << 8),
+                       aggUpdate(kOpCount, 0, 0)}),
+        aggProgram(1, {aggOp(kOpLoadConst) | (NDB_TYPE_BIGINT << 21) |
+                           (0u << 16),
+                       1, 0, aggUpdate(kOpSum, 0, 0),
+                       aggUpdate(kOpCount, 0, 0)})};
+    for (int i = 0; i < 3; i++) {
+      const int res = expectAggRejected(ids[i], {countLeaf(), leaves[i]});
+      if (res != NDBT_OK) {
+        return res;
+      }
+    }
+    return NDBT_OK;
+  }
+
+  /* ---- P-55: string loads and MIN / MAX of a row ---------------------- *
+   * The join aggregation of makeJoinAggScanLookup, whose leaf loads
+   * linked positions with kOpLoadCol (column AGG_LINKED_COL_FLAG |
+   * position) and has one slot, no GROUP BY.  The linked entries carry
+   * their CTE marker, so the API chooses their type and bytes. */
+  static constexpr Uint32 kLinkedPos0 = AGG_LINKED_COL_FLAG | 0u;
+  static constexpr Uint32 kLinkedPos1 = AGG_LINKED_COL_FLAG | 1u;
+
+  /* Send the join aggregation of the linked buffer and the leaf, and
+   * wait for its end. */
+  Reply sendLinkedAgg(const std::vector<Uint32> &linked,
+                      const std::vector<Uint32> &leaf) {
+    SpjReq r;
+    makeJoinAggScanLookup(r, linked, leaf);
+    r.waitForEnd = true;
+    return sendScanTabReq(r);
+  }
+
+  int runP55() {
+    /* The controls must get SCAN_TABCONF, and run first, so that none of
+     * them follows a failed scan:
+     *   MAX of the VARCHAR 'abcd' (shows that the rows reach the slot);
+     *   the same MAX of a kOpMov copy of the register.  kOpMov copied
+     *   the register but not its capture, so the MAX read the capture
+     *   of whatever was loaded into the copy before (here nothing: the
+     *   slot got no collation and the second row failed with 1869; a
+     *   capture of an earlier row could have a length prefix that no
+     *   longer fits, which failed cmpVarchar's require);
+     *   SUM of an 8-byte BIGINT. */
+    const Uint32 w1Latin1 = CteLinkedAttr::encodeWord1(kLatin1);
+    const Uint32 w1None = CteLinkedAttr::encodeWord1(0);
+    const Uint32 w0Varchar = CteLinkedAttr::encodeWord0(NDB_TYPE_VARCHAR, 11);
+    const Uint32 w0Char = CteLinkedAttr::encodeWord0(NDB_TYPE_CHAR, 8);
+    const Uint32 w0Bigint = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
+    /* [4]'abc' 'd', and 'abcd    ' */
+    const std::vector<Uint32> varcharAbcd = {w0Varchar, w1Latin1,
+                                             (0u << 16) | 5u, 0x63626104u,
+                                             0x00000064u};
+    const std::vector<Uint32> charAbcd = {w0Char, w1Latin1, (1u << 16) | 8u,
+                                          kAbcd, kFourSpaces};
+    const std::vector<Uint32> maxLeaf = aggProgram(
+        1, {loadCol(0, NDB_TYPE_VARCHAR, kLinkedPos0), aggUpdate(kOpMax, 0, 0)});
+    const std::vector<Uint32> movLeaf = aggProgram(
+        1, {loadCol(0, NDB_TYPE_VARCHAR, kLinkedPos0),
+            aggOp(kOpMov) | (1u << 12) | (0u << 8), aggUpdate(kOpMax, 1, 0)});
+    const std::vector<Uint32> sumLeaf = aggProgram(
+        1, {loadCol(0, NDB_TYPE_BIGINT, kLinkedPos0),
+            aggUpdate(kOpSumBigint, 0, 0)});
+    const char *findingId = "P-55 string loads and MIN / MAX of a row";
+
+    const char *const controlIds[3] = {
+        "CONTROL (MAX of a linked VARCHAR)",
+        "P-55 control: MAX of a kOpMov copy of a VARCHAR register",
+        "CONTROL (SUM of an 8-byte linked BIGINT)"};
+    const Reply controls[3] = {
+        sendLinkedAgg(varcharAbcd, maxLeaf),
+        sendLinkedAgg(varcharAbcd, movLeaf),
+        sendLinkedAgg({w0Bigint, w1None, (0u << 16) | 8u, 7u, 0u}, sumLeaf)};
+    for (int i = 0; i < 3; i++) {
+      printReply(controlIds[i], controls[i]);
+    }
+
+    /* (a) A VARCHAR MAX and a CHAR MAX of one slot: the slot took the
+     * VARCHAR's length prefix, and cmpVarchar read the CHAR's first
+     * byte, 'a', as the length of the CHAR value: its require stopped
+     * any data node.  minMaxString now refuses a value of another
+     * string type than the slot's (1868).
+     * (b) A linked VARCHAR of 2 bytes whose length byte says 255: MAX
+     * copied 256 bytes of DBTUP's read buffer into the result.
+     * (c) A BIGINT of a 4-byte linked entry: the load read 4 bytes past
+     * it.  loadColumnTypedFromBuf now refuses both (1866). */
+    std::vector<Uint32> mixed(varcharAbcd);
+    mixed.insert(mixed.end(), charAbcd.begin(), charAbcd.end());
+    const std::vector<Uint32> mixedLeaf = aggProgram(
+        1, {loadCol(0, NDB_TYPE_VARCHAR, kLinkedPos0), aggUpdate(kOpMax, 0, 0),
+            loadCol(1, NDB_TYPE_CHAR, kLinkedPos1), aggUpdate(kOpMax, 1, 0)});
+    const char *const ids[3] = {
+        "P-55a join aggregation VARCHAR MAX and CHAR MAX of one slot",
+        "P-55b join aggregation MAX of a linked VARCHAR whose length byte "
+        "runs past it",
+        "P-55c join aggregation SUM of a 4-byte linked entry as a BIGINT"};
+    const Reply reps[3] = {
+        sendLinkedAgg(mixed, mixedLeaf),
+        /* [255]'a' */
+        sendLinkedAgg({w0Varchar, w1Latin1, (0u << 16) | 2u, 0x000061FFu},
+                      maxLeaf),
+        sendLinkedAgg({w0Bigint, w1None, (0u << 16) | 4u, 7u}, sumLeaf)};
+    for (int i = 0; i < 3; i++) {
+      printReply(ids[i], reps[i]);
+    }
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    int result = NDBT_OK;
+    for (int i = 0; i < 3; i++) {
+      if (controls[i].gsn != GSN_SCAN_TABCONF) {
+        g_err << controlIds[i] << ": FAIL -- expected SCAN_TABCONF, got "
+              << gsnName(controls[i].gsn) << ", err "
+              << controls[i].errorCode << endl;
+        result = NDBT_FAILED;
+      }
+    }
+    for (int i = 0; i < 3; i++) {
+      if (reps[i].gsn != GSN_SCAN_TABREF) {
+        g_err << ids[i] << ": FAIL -- expected SCAN_TABREF, got "
+              << gsnName(reps[i].gsn) << ": the row was not refused"
+              << endl;
+        result = NDBT_FAILED;
+      } else {
+        g_info << ids[i] << ": PASS (all data nodes started; SCAN_TABREF "
+               << reps[i].errorCode << ")" << endl;
+      }
+    }
+    return result;
+  }
+
+  /* ---- P-56: SUM of a register set NULL ------------------------------- *
+   * The words of caseLeaf's CASE without the header: the embedded
+   * program, the THEN arm, the kOpSkip over the ELSE arm, the ELSE arm.
+   * Here the CASE runs on the rows of T1, whose column 0 is never NULL,
+   * so every row takes the THEN arm. */
+  static std::vector<Uint32> caseBody(const std::vector<Uint32> &thenArm,
+                                      const std::vector<Uint32> &elseArm) {
+    const Uint32 elseSkip = Uint32(thenArm.size()) + 1;
+    const std::vector<Uint32> emb = {
+        Interpreter::Read(0, 1),
+        Interpreter::Branch(Interpreter::BRANCH_REG_EQ_NULL, 0, 1) |
+            (4u << 16),
+        Interpreter::LoadConst16(2, 0),
+        Interpreter::WriteInterpreterOutput(2, 0),
+        Interpreter::ExitOK(),
+        Interpreter::LoadConst16(2, elseSkip),
+        Interpreter::WriteInterpreterOutput(2, 0),
+        Interpreter::ExitOK()};
+    std::vector<Uint32> body;
+    body.push_back(aggOp(kOpEmbeddedInterp) | Uint32(emb.size()));
+    body.insert(body.end(), emb.begin(), emb.end());
+    body.insert(body.end(), thenArm.begin(), thenArm.end());
+    body.push_back(aggOp(kOpSkip) | Uint32(elseArm.size()));
+    body.insert(body.end(), elseArm.begin(), elseArm.end());
+    return body;
+  }
+
+  int runP56() {
+    /* kOpSetRegNull kept the value of the register.  The first SUM of a
+     * group (a scalar slot here) stored the NULL register in the slot,
+     * value and all, so the slot was NULL with the value 5; the next
+     * SUM of a value asserted that a NULL slot holds 0, which stopped a
+     * debug data node, and a release one added 5 to the sum.  RonSQL's
+     * GREATEST / LEAST sets a register NULL after loading it.  Each SUM
+     * follows a CASE whose ELSE arm loads a DOUBLE, so that the data
+     * node leaves it the generic Sum (OptimizeProgramBuffer, bug 1); the
+     * typed SumBigint overwrites a NULL slot.  Every row takes the THEN
+     * arms: 5 set NULL, SUM, then 7, SUM.  The request must get
+     * SCAN_TABCONF with every data node started. */
+    std::vector<Uint32> nullArm = loadConst(0, NDB_TYPE_BIGINT, 5, 0);
+    nullArm.push_back(aggOp(kOpSetRegNull) | (0u << 16));
+    const std::vector<Uint32> doubleArm =
+        loadConst(0, NDB_TYPE_DOUBLE, 0, 0x3FF00000u);  /* 1.0 */
+    const std::vector<Uint32> sevenArm = loadConst(0, NDB_TYPE_BIGINT, 7, 0);
+    std::vector<Uint32> body = caseBody(nullArm, doubleArm);
+    body.push_back(aggUpdate(kOpSum, 0, 0));
+    const std::vector<Uint32> second = caseBody(sevenArm, doubleArm);
+    body.insert(body.end(), second.begin(), second.end());
+    body.push_back(aggUpdate(kOpSum, 0, 0));
+
+    const char *findingId =
+        "P-56 join aggregation SUM after a SUM of a register set NULL";
+    SpjReq r;
+    makeJoinAggScan(r, {aggProgram(1, body)});
+    r.waitForEnd = true;
+    const Reply rep = sendScanTabReq(r);
+    printReply(findingId, rep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (rep.gsn != GSN_SCAN_TABCONF) {
+      g_err << findingId << ": FAIL -- expected SCAN_TABCONF, got "
+            << gsnName(rep.gsn) << ", err " << rep.errorCode << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId << ": PASS (all data nodes started; SCAN_TABCONF)"
+           << endl;
+    return NDBT_OK;
+  }
+
   /* ---- Q cases: DBTC's rate queue re-send mark sent by the API -------- *
    * DBTC's rate queue handler re-sends a queued request to its own DBTC
    * instance with a mark: the passQueue flag of TCKEYREQ, TCINDXREQ and
@@ -3063,6 +3314,9 @@ CASE_STEP(runP51, runP51)
 CASE_STEP(runP38, runP38)
 CASE_STEP(runP39, runP39)
 CASE_STEP(runP52, runP52)
+CASE_STEP(runP54, runP54)
+CASE_STEP(runP55, runP55)
+CASE_STEP(runP56, runP56)
 CASE_STEP(runQ1, runQ1)
 CASE_STEP(runQ2, runQ2)
 CASE_STEP(runQ3, runQ3)
@@ -3375,6 +3629,20 @@ TESTCASE("P53",
          "interpreted read comparing a column with a constant its compare "
          "function cannot take") {
   STEP(runP53);
+}
+TESTCASE("P54",
+         "join aggregation: SUM or arithmetic of a string register, two "
+         "aggregates of one slot") {
+  STEP(runP54);
+}
+TESTCASE("P55",
+         "join aggregation: string MAX of two string types in one slot, of "
+         "a kOpMov copy, linked values shorter than their type") {
+  STEP(runP55);
+}
+TESTCASE("P56",
+         "join aggregation: SUM after a SUM of a register set NULL") {
+  STEP(runP56);
 }
 TESTCASE("Q1", "TCKEYREQ with the rate queue flag from the API") {
   STEP(runQ1);

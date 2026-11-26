@@ -123,6 +123,14 @@ class PushdownInterpreter {
    * a number.  Returns nullptr when no slot may get both, else the
    * reason for the log.  No per-row cost.
    *
+   * It also refuses an arithmetic instruction or an aggregate other than
+   * kOpMax, kOpMin and kOpCount that may read a string register (its
+   * value is its capture, the register holds 0; Sum and RegPlusReg
+   * asserted on it), and a slot that two different aggregates update
+   * (Count asserted that its slot is an unsigned BIGINT; the merges take
+   * one operation per slot).  The typed variants count as their generic
+   * aggregate.
+   *
    * AggInterpreterBase::checkProgram calls it last, on a program whose
    * header, instruction lengths and embedded programs it has checked;
    * start_pos is the first word after the GROUP BY columns.

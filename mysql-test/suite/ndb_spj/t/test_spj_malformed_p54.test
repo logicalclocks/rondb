@@ -1,0 +1,15 @@
+--source include/have_ndb.inc
+
+# P-54: join aggregation programs, as leaf 1 of two, whose SUM of a
+# CHAR register, VARCHAR register plus a BIGINT, or SUM and COUNT of one
+# slot failed an assert of the aggregation interpreter (Sum,
+# RegPlusReg, Count) in a debug data node on their second row.
+# checkAggSlotKinds now refuses them at JOIN_AGG_SETUP_REQ: SCAN_TABREF,
+# with every data node started. The control, a CHAR MAX and a BIGINT
+# SUM in a slot each, must get SCAN_TABCONF.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P54
+--let $spj_case_title = P-54: join aggregation SUM or arithmetic of a string register, two aggregates of one slot
+--source suite/ndb_spj/include/spj_malformed_case.inc

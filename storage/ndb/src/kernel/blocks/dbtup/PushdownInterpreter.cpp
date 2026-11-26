@@ -561,6 +561,38 @@ inline bool aggOpUsesRegs12And8(Uint32 op) {
          (op >= kOpPlusBigint && op <= kOpDivIntBigint) || op == kOpMov;
 }
 
+/* The aggregate an instruction that updates a slot computes, one bit
+ * each, for checkAggSlotKinds: the typed variants compute the aggregate
+ * of their generic form. */
+constexpr Uint8 kSlotFamilySum = 1;
+constexpr Uint8 kSlotFamilyAvg = 2;
+constexpr Uint8 kSlotFamilyMax = 4;
+constexpr Uint8 kSlotFamilyMin = 8;
+constexpr Uint8 kSlotFamilyCount = 16;
+
+inline Uint8 aggSlotFamily(Uint32 op) {
+  switch (op) {
+    case kOpSum:
+    case kOpSumBigint:
+    case kOpSumDouble:
+      return kSlotFamilySum;
+    case kOpAvg:
+      return kSlotFamilyAvg;
+    case kOpMax:
+    case kOpMaxBigint:
+    case kOpMaxDouble:
+      return kSlotFamilyMax;
+    case kOpMin:
+    case kOpMinBigint:
+    case kOpMinDouble:
+      return kSlotFamilyMin;
+    case kOpCount:
+      return kSlotFamilyCount;
+    default:
+      return 0;
+  }
+}
+
 }  // namespace
 
 void
@@ -598,6 +630,9 @@ PushdownInterpreter::checkAggSlotKinds(const Uint32* prog, Uint32 prog_len,
    * put there. */
   Uint8 slot_kinds[MAX_AGG_N_RESULTS];
   memset(slot_kinds, 0, sizeof(slot_kinds));
+  /* aggSlotFamily of the instructions that update each slot */
+  Uint8 slot_families[MAX_AGG_N_RESULTS];
+  memset(slot_families, 0, sizeof(slot_families));
   Uint32 skips[kProgramBitmapWords];
 
   /* A row starts with no register loaded. */
@@ -673,6 +708,14 @@ PushdownInterpreter::checkAggSlotKinds(const Uint32* prog, Uint32 prog_len,
       case kOpMulDouble:
       case kOpDivDouble:
       case kOpDivIntBigint:
+        /* A string register holds the type and 0, its value is in
+         * m_register_string_data.  The arithmetic took it for a number,
+         * and the generic forms (RegPlusReg ...) assert that a register
+         * that is not a DOUBLE is a BIGINT. */
+        if (((regKind(kinds, reg_a) | regKind(kinds, reg_b)) &
+             kRegKindString) != 0) {
+          return "arithmetic on a register that may hold a string";
+        }
         /* The result is a BIGINT or a DOUBLE (InterpreterCommonOp.hpp). */
         kinds = setRegKind(kinds, reg_a, kRegKindOther);
         break;
@@ -682,9 +725,10 @@ PushdownInterpreter::checkAggSlotKinds(const Uint32* prog, Uint32 prog_len,
          * Max or Min for any other. */
         slot_kinds[slot] = static_cast<Uint8>(
             slot_kinds[slot] | (regKind(kinds, reg) & kRegKindValue));
+        slot_families[slot] =
+            static_cast<Uint8>(slot_families[slot] | aggSlotFamily(op));
         break;
       case kOpSum:
-      case kOpCount:
       case kOpSumBigint:
       case kOpSumDouble:
       case kOpMaxBigint:
@@ -692,11 +736,22 @@ PushdownInterpreter::checkAggSlotKinds(const Uint32* prog, Uint32 prog_len,
       case kOpMinBigint:
       case kOpMinDouble:
       case kOpAvg:
+        /* Only the generic kOpMax / kOpMin take a string.  Sum stored
+         * the string register in the slot and asserted on the next row
+         * that the slot is a number, the typed aggregates read its 0. */
+        if ((regKind(kinds, reg) & kRegKindString) != 0) {
+          return "a numeric aggregate of a register that may hold a "
+                 "string";
+        }
+        [[fallthrough]];
+      case kOpCount:
         /* A number in the slot, whatever the register holds. */
         if ((regKind(kinds, reg) & kRegKindValue) != 0) {
           slot_kinds[slot] =
               static_cast<Uint8>(slot_kinds[slot] | kRegKindOther);
         }
+        slot_families[slot] =
+            static_cast<Uint8>(slot_families[slot] | aggSlotFamily(op));
         break;
       case kOpSkip: {
         const Uint32 target = pos + 1 + (word & 0xFFFF);
@@ -736,6 +791,15 @@ PushdownInterpreter::checkAggSlotKinds(const Uint32* prog, Uint32 prog_len,
   for (Uint32 slot = 0; slot < MAX_AGG_N_RESULTS; slot++) {
     if (slot_kinds[slot] == kRegKindValue) {
       return "a string MIN / MAX and another aggregate update one slot";
+    }
+    /* One aggregate per slot: the merges take the slot's one operation
+     * (extractAggOps), and Count asserts that its slot holds an
+     * unsigned BIGINT, which a SUM or a MAX of the slot need not leave
+     * there.  The arms of a CASE repeat one aggregate
+     * (NdbAggregator::RepeatAgg). */
+    const Uint8 families = slot_families[slot];
+    if ((families & (families - 1)) != 0) {
+      return "two different aggregates update one slot";
     }
   }
   return nullptr;

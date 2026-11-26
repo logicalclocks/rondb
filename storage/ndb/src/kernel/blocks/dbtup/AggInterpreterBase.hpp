@@ -296,7 +296,9 @@ class AggInterpreterBase : public PushdownInterpreter {
    *     checks the type and collation of each inline-type compare;
    *   - a kOpSkip lands on an instruction or at the end;
    *   - no aggregate slot may get both a string MIN / MAX and a number
-   *     from another aggregate or a MIN / MAX of another type
+   *     from another aggregate or a MIN / MAX of another type, or two
+   *     different aggregates, and no arithmetic or aggregate other than
+   *     MIN, MAX and COUNT may read a string register
    *     (PushdownInterpreter::checkAggSlotKinds).
    * insn_starts (insnStartWords(prog_len) words) gets a bit set for
    * every word where an instruction starts, for embeddedSkipTarget.

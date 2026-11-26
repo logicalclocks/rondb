@@ -1,0 +1,15 @@
+--source include/have_ndb.inc
+
+# P-56: a join aggregation whose rows SUM a register set NULL after it
+# held 5, then SUM 7 into the same slot, each SUM after a CASE that
+# leaves it the generic Sum. kOpSetRegNull kept the value, the first
+# SUM put a NULL 5 in the slot, and the second asserted that a NULL
+# slot holds 0, which stopped a debug data node (a release one summed
+# the 5). kOpSetRegNull now clears the value: SCAN_TABCONF, with every
+# data node started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P56
+--let $spj_case_title = P-56: join aggregation SUM after a SUM of a register set NULL
+--source suite/ndb_spj/include/spj_malformed_case.inc

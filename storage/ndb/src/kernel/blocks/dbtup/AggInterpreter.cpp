@@ -397,7 +397,17 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         attrDescriptor =
             req_struct->tablePtrP->tabDescriptor + (col_id * ZAD_SIZE);
         assert(header->getAttributeId() == col_id);
-        assert(type == AttributeDescriptor::getType(attrDescriptor[0]));
+        /* The type is a field of the program: NdbAggregator writes the
+         * column's, a raw program any.  The value was decoded as the
+         * program's type (a BIGINT of an INT column read 4 bytes past
+         * it), and a debug data node failed an assert. */
+        if (unlikely(type != AttributeDescriptor::getType(attrDescriptor[0]))) {
+          g_eventLogger->debug("AggInterpreter::ProcessRec "
+              "ZAGG_LOAD_COL_WRONG_TYPE: kOpLoadCol of column %u as type "
+              "%u, the column's is %u", col_id, Uint32(type),
+              AttributeDescriptor::getType(attrDescriptor[0]));
+          return ZAGG_LOAD_COL_WRONG_TYPE;
+        }
         Int32 lret = loadColumnTypedFromBuf(
             type, is_unsigned, reg_index, header, attrDescriptor,
             /*linked_cte_attr=*/false,
