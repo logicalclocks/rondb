@@ -6051,16 +6051,13 @@ void Dblqh::execSEND_PACKED(Signal *signal) {
   }  // for
   cpackedListIndex = 0;
 
-  /* Send buffered DATABASE_QUOTA_REP signals. With query workers
-   * configured, every producer (update_rate_usage, update_memory_usage,
-   * update_disk_space_usage, execCONNECT_TABLE_DB_REQ) appends to this
-   * buffer from any thread under the database hash mutex, so the drain
-   * holds it too: an append landing between the count read and the reset
-   * below would otherwise be wiped unsent. */
-  const bool lock_drain = globalData.ndbMtQueryWorkers > 0;
-  if (lock_drain) {
-    lock_database_hash();
-  }
+  /* Send buffered DATABASE_QUOTA_REP signals. Every producer
+   * (update_rate_usage, update_memory_usage, update_disk_space_usage,
+   * execCONNECT_TABLE_DB_REQ) appends to this buffer from any thread under
+   * the database hash mutex, so the drain holds it too: an append landing
+   * between the count read and the reset below would otherwise be wiped
+   * unsent. */
+  lock_database_hash();
   Uint32 num_tc_threads = globalData.ndbMtTcWorkers;
   Uint32 num_send_database_quota_rep = m_num_send_database_quota_rep;
 #ifdef DEBUG_RATE_SEND
@@ -6103,9 +6100,7 @@ void Dblqh::execSEND_PACKED(Signal *signal) {
       }
     }
   }
-  if (lock_drain) {
-    unlock_database_hash();
-  }
+  unlock_database_hash();
   return;
 }  // Dblqh::execSEND_PACKED()
 
@@ -40454,14 +40449,10 @@ Dblqh::update_memory_usage(Uint32 tableId,
    */
   /* Called on the owning LDM instance from any thread (DBTUP and DBACC
    * reach it through m_ldm_instance_used), so m_is_query_block is never set
-   * here. With query workers configured the owning thread and the query
-   * threads update these records and append quota reports concurrently,
-   * so the hash mutex is taken under the rule update_rate_usage and the
-   * execSEND_PACKED drain follow. */
-  const bool need_lock = globalData.ndbMtQueryWorkers > 0;
-  if (need_lock) {
-    lock_database_hash();
-  }
+   * here. The owning thread and the query threads update these records and
+   * append quota reports concurrently, so the hash mutex is taken under the
+   * rule update_rate_usage and the execSEND_PACKED drain follow. */
+  lock_database_hash();
   Uint32 tab_in_memory_page8k =
     tabPtr.p->m_in_memory_page8k += change_num_page8k;
   ndbrequire(tab_in_memory_page8k < 0x7FFFFFFF);
@@ -40504,9 +40495,7 @@ Dblqh::update_memory_usage(Uint32 tableId,
       send_database_quota_rep(dbPtr, now);
     }
   }
-  if (need_lock) {
-    unlock_database_hash();
-  }
+  unlock_database_hash();
 }
 
 void
@@ -40525,10 +40514,7 @@ Dblqh::update_disk_space_usage(Uint32 tableId,
    * situation where a database is created, dropped and created again.
    */
   /* Same rule as update_memory_usage: the owning instance, any thread. */
-  const bool need_lock = globalData.ndbMtQueryWorkers > 0;
-  if (need_lock) {
-    lock_database_hash();
-  }
+  lock_database_hash();
   Uint32 tab_disk_space_page32k =
     tabPtr.p->m_disk_space_page32k += change_num_page32k;
   DEB_RATE_DETAIL(("(%u) update_disk_space_usage from line %u, tab: %u,"
@@ -40570,9 +40556,7 @@ Dblqh::update_disk_space_usage(Uint32 tableId,
       send_database_quota_rep(dbPtr, now);
     }
   }
-  if (need_lock) {
-    unlock_database_hash();
-  }
+  unlock_database_hash();
 }
 
 void
@@ -40582,21 +40566,17 @@ Dblqh::update_rate_usage(Uint32 tableId,
   if (!m_restart_completed) return;
   /**
    * This always runs on the instance owning the fragment (query threads
-   * call it through m_ldm_instance_used), but with query workers
-   * configured several threads charge this instance's records
-   * concurrently with each other, with the owning LDM thread's charges
-   * and with its CREATE/DROP mutations of the hash and pool. Every charge
-   * then takes the instance's database hash mutex, the convention the
-   * transaction hash follows. The user is resolved by its raw id here,
-   * under the same mutex, instead of trusting a pool index cached at
-   * operation setup: a cached index could outlive a concurrent USER DROP
-   * and charge a released or reused record (the pool's magic check makes
-   * that a node failure).
+   * call it through m_ldm_instance_used), but several threads charge this
+   * instance's records concurrently with each other, with the owning LDM
+   * thread's charges and with its CREATE/DROP mutations of the hash and
+   * pool. Every charge therefore takes the instance's database hash mutex,
+   * the convention the transaction hash follows. The user is resolved by
+   * its raw id here, under the same mutex, instead of trusting a pool
+   * index cached at operation setup: a cached index could outlive a
+   * concurrent USER DROP and charge a released or reused record (the
+   * pool's magic check makes that a node failure).
    */
-  const bool need_lock = globalData.ndbMtQueryWorkers > 0;
-  if (need_lock) {
-    lock_database_hash();
-  }
+  lock_database_hash();
   DatabaseRecordPtr dbPtr;
   bool found = false;
   if (userId != RNIL64) {
@@ -40615,9 +40595,7 @@ Dblqh::update_rate_usage(Uint32 tableId,
     }
   }
   if (unlikely(!found)) {
-    if (need_lock) {
-      unlock_database_hash();
-    }
+    unlock_database_hash();
     return;
   }
   Uint64 rate_usage = dbPtr.p->m_rate_usage += added_rate_ns;
@@ -40641,9 +40619,7 @@ Dblqh::update_rate_usage(Uint32 tableId,
     jam();
     send_database_quota_rep(dbPtr, now);
   }
-  if (need_lock) {
-    unlock_database_hash();
-  }
+  unlock_database_hash();
 }
 
 Uint32 Dblqh::get_delay(Uint32 tableId) {
