@@ -77,6 +77,14 @@ target_compile_options(drogon PUBLIC
     -Wno-unused-variable
 )
 
+# Newer libc++ (e.g. Apple clang 21) marks std::future<T>::get() [[nodiscard]],
+# which trips TaskQueue::syncTaskInQueue(). Of the targets including
+# TaskQueue.h, only trantor builds with -Werror under clang (drogon uses it for
+# GCC only), so PRIVATE is enough.
+target_compile_options(trantor PRIVATE
+    -Wno-unused-result
+)
+
 IF(NOT APPLE)
   target_compile_options(trantor PRIVATE
       -Wno-logical-op
