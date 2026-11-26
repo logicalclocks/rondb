@@ -304,7 +304,7 @@ w2 = item3 | item4 &lt;&lt; 16  ...      total 1 + cnt/2 words; when cnt is even
 <tr><td>PI_ATTR_LIST</td><td>0x01</td><td>User projection <code>[n][n AttributeHeaders]</code>. Copied verbatim into AttrInfo and followed by FLUSH_AI to the API (scan requests, or when NI_LINKED_ATTR is set). Suppressed on non-leaf nodes of aggregate requests and inside CTE subtrees.</td></tr>
 <tr><td><i>PI_ATTR_PARAMS</i></td><td>0x02</td><td>commented out</td></tr>
 <tr><td>PI_KEY_PARAMS</td><td>0x04</td><td>Key parameter values follow the header. Must match NI_KEY_PARAMS (20012).</td></tr>
-<tr><td>PI_ATTR_INTERPRET</td><td>0x08</td><td><code>[(subLen&lt;&lt;16)|progLen][program][subroutines]</code>. The scan filter or WHERE program; also the ExitOK stub for aggregate leaves and CTE readers.</td></tr>
+<tr><td>PI_ATTR_INTERPRET</td><td>0x08</td><td><code>[(subLen&lt;&lt;16)|progLen][program]</code>; subLen must be 0 (P-50). The scan filter or WHERE program; also the ExitOK stub for aggregate leaves and CTE readers.</td></tr>
 <tr><td>PI_DISK_ATTR</td><td>0x10</td><td>The user projection has disk columns, so NoDiskFlag is cleared</td></tr>
 <tr><td>PI_ATTR_AGGREGATE [RonDB]</td><td>0x20</td><td><b>Defined but not used</b> by the API or DBSPJ. The aggregation program travels in the SCAN_TABREQ KeyInfo (&sect;7.1).</td></tr>
 <tr><td>SFP_PRUNE_PARAMS</td><td>0x10000</td><td>Prune pattern uses params. Must agree with SF_PRUNE_PARAMS and cnt.</td></tr>
@@ -362,8 +362,8 @@ w2 = item3 | item4 &lt;&lt; 16  ...      total 1 + cnt/2 words; when cnt is even
 <tr><td></td><td>Token types (P_DATA/P_COL/P_UNQ_PK/P_ATTRINFO/P_PARAM*/P_PARENT); fixed key may only hold P_DATA/P_PARAM*</td><td>20007</td></tr>
 <tr><td></td><td>Fixed key containing NULL</td><td><b>ndbabort()</b> (<a href="#P-6">P-6</a>)</td></tr>
 <tr><td>3 attr</td><td>NI_ATTR_INTERPRET together with PI_ATTR_INTERPRET</td><td>20011</td></tr>
-<tr><td></td><td>len2 word inside the node; <code>progLen</code> and <code>patternLen</code> &le; remaining</td><td>20004 + Tier B</td></tr>
-<tr><td>param interp</td><td>len word inside params; <code>program_len</code> and <code>subroutine_len</code> &le; remaining</td><td>20005 + Tier B</td></tr>
+<tr><td></td><td>len2 word inside the node; <code>progLen</code> and <code>patternLen</code> &le; remaining; <code>patternLen</code> 0 without NI_ATTR_LINKED (P-50)</td><td>20004 + Tier B</td></tr>
+<tr><td>param interp</td><td>len word inside params; <code>program_len</code> &le; remaining; <code>subroutine_len</code> 0 (P-50)</td><td>20005 + Tier B</td></tr>
 <tr><td>param list</td><td>len word inside params; <code>len &le; end-ptr</code></td><td>20005 + VT_SPJ_ATTR_LIST_LENGTH_MISMATCH (Tier B)</td></tr>
 <tr><td>4 linked</td><td>unpackList bounds, cnt &lt; 4096</td><td>20004</td></tr>
 <tr><td>5 prune (parseScanFrag)</td><td>cnt vs SF_PRUNE_PARAMS / SFP_PRUNE_PARAMS; cnt &le; 4096. The header word and the length are <b>not</b> bounded (<a href="#P-5">P-5</a>).</td><td>20013 (Tier B) / 20004 (Tier A)</td></tr>

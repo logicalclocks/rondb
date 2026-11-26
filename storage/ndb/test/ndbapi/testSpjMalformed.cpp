@@ -65,6 +65,9 @@
  * does, on the JIT (test_spj_malformed_p48_jit), which decoded it as a
  * value, and for the NULL-extended row of an outer join, which failed
  * the row; it reads as NULL there too (RONDB-1124).
+ * P-50 sends interpreted programs whose subroutine part, or whose
+ * pattern without NI_ATTR_LINKED, went to the subroutine section of the
+ * AttrInfo, which DBSPJ must refuse (RONDB-1124).
  * P-38 and P-39 send CASE programs that put a string MIN / MAX and a
  * number in one aggregate slot (checkAggSlotKinds).
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
@@ -1679,6 +1682,162 @@ class SpjMalformedChecker {
     return NDBT_OK;
   }
 
+  /* ---- P-50: the subroutine section of an interpreted AttrInfo ------- *
+   * DBSPJ gives the AttrInfo of an interpreted node the 5-word header
+   * [initReadLen][interpretLen][finalUpdateLen][finalReadLen][subLen]
+   * (Dbspj::parseDA).  The subroutine section, word 4, is DBTUP's
+   * parameter area, where an NI_ATTR_LINKED node puts the parameters
+   * that DBSPJ expands from each parent row.  Two parts of a request
+   * went there too, through code that stopped a debug data node on
+   * ndbassert(false) ("Need validation before being used"):
+   *   the subroutine part of a PI_ATTR_INTERPRET program,
+   *     [(subroutine length << 16) | program length][program][subroutines]
+   *   the pattern of an NI_ATTR_INTERPRET node without NI_ATTR_LINKED,
+   *     [(pattern length << 16) | program length][program][pattern]
+   * The NDB API sends neither.  DBSPJ now refuses both. */
+
+  /* Gives the parameters of the node at params[at], whose fixed part has
+   * fixedSize words, the PI_ATTR_INTERPRET part interp, in front of its
+   * PI_ATTR_LIST, where parseDA reads it. */
+  static void addParamInterpret(SpjReq &r, Uint32 at, Uint32 fixedSize,
+                                Uint32 opType,
+                                const std::vector<Uint32> &interp) {
+    const Uint32 len = QueryNodeParameters::getLength(r.params[at]);
+    ((QueryNodeParameters *)&r.params[at])->requestInfo |=
+        DABits::PI_ATTR_INTERPRET;
+    r.params.insert(r.params.begin() + at + fixedSize, interp.begin(),
+                    interp.end());
+    /* The insert may have reallocated; re-fetch. */
+    QueryNodeParameters::setOpLen(((QueryNodeParameters *)&r.params[at])->len,
+                                  opType, len + Uint32(interp.size()));
+  }
+
+  /* The scan of the control with the program interp in its parameters,
+   * as the NDB API sends a pushed scan filter. */
+  void makeParamInterpretedScan(SpjReq &r,
+                                const std::vector<Uint32> &interp) {
+    makeWellFormedScan(r);
+    addParamInterpret(r, 0, QN_ScanFragParameters::NodeSize,
+                      QueryNodeParameters::QN_SCAN_FRAG, interp);
+  }
+
+  /* The scan of the control with the program in its tree node: the node
+   * has NI_ATTR_INTERPRET, and part is its optional part 3. */
+  void makeTreeInterpretedScan(SpjReq &r, const std::vector<Uint32> &part) {
+    makeWellFormedScan(r);
+    ((QueryNode *)&r.tree[1])->requestInfo = DABits::NI_ATTR_INTERPRET;
+    r.tree.insert(r.tree.end(), part.begin(), part.end());
+    QueryNode::setOpLen(((QueryNode *)&r.tree[1])->len,
+                        QueryNode::QN_SCAN_FRAG,
+                        QN_ScanFragNode::NodeSize + Uint32(part.size()));
+    QueryTree::setCntLen(r.tree[0], 1, (Uint32)r.tree.size());
+  }
+
+  /* The join aggregation of the P-35 control (its leaf an NI_ATTR_LINKED
+   * lookup, which DBSPJ gives a linked buffer of one well-formed BIGINT
+   * entry at each send), counting the rows, with the program interp in
+   * the parameters of the leaf, as the NDB API sends an aggregation leaf
+   * with linked columns (NdbQueryOperationImpl::prepareAttrInfo). */
+  void makeLinkedLeafInterpreted(SpjReq &r,
+                                 const std::vector<Uint32> &interp) {
+    const Uint32 w0 = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
+    const Uint32 w1 = CteLinkedAttr::encodeWord1(0);
+    makeJoinAggScanLookup(r, {w0, w1, (0u << 16) | 8u, 7u, 0u}, countLeaf());
+    addParamInterpret(r, QueryNodeParameters::getLength(r.params[0]),
+                      QN_LookupParameters::NodeSize,
+                      QueryNodeParameters::QN_LOOKUP, interp);
+  }
+
+  int runP50() {
+    /* Each request first without the part that went to word 4, which
+     * must get SCAN_TABCONF (without it a harness whose request never
+     * reaches the parse of the program would pass), then with it, which
+     * must get SCAN_TABREF with the error of the refusal:
+     *   a  a scan whose PI_ATTR_INTERPRET program has a subroutine part
+     *      of one word.  A release data node put it in the parameter
+     *      area; a debug one stopped.
+     *   b  the same subroutine part on an NI_ATTR_LINKED aggregation
+     *      leaf.  A release data node stopped as well, on the
+     *      ndbrequire that no parameter area was built for a node that
+     *      constructs its own at each send.
+     *   c  a scan whose NI_ATTR_INTERPRET program in the tree node is
+     *      followed by a pattern of a P_DATA of one word, without
+     *      NI_ATTR_LINKED.  A release data node put the word in the
+     *      parameter area; a debug one stopped.
+     * The malformed requests run after every control, b last. */
+    const Uint32 exitOk = Interpreter::ExitOK();
+    const std::vector<Uint32> program = {1u, exitOk};
+    const std::vector<Uint32> withSubroutine = {(1u << 16) | 1u, exitOk, 0u};
+    const std::vector<Uint32> withPattern = {
+        (2u << 16) | 1u, exitOk, QueryPattern::data(1), 0x11111111u};
+    const char *const controlIds[3] = {
+        "CONTROL (P-50a scan program without a subroutine part)",
+        "CONTROL (P-50b aggregation leaf program without a subroutine "
+        "part)",
+        "CONTROL (P-50c tree node program without a pattern)"};
+    const char *const ids[3] = {
+        "P-50a scan program with a subroutine part",
+        "P-50b NI_ATTR_LINKED aggregation leaf program with a subroutine "
+        "part",
+        "P-50c tree node program with a pattern but no NI_ATTR_LINKED"};
+    const Uint32 expected[3] = {
+        Uint32(DbspjErr::InvalidTreeParametersSpecification),
+        Uint32(DbspjErr::InvalidTreeParametersSpecification),
+        Uint32(DbspjErr::InvalidTreeNodeSpecification)};
+
+    SpjReq good[3];
+    makeParamInterpretedScan(good[0], program);
+    makeLinkedLeafInterpreted(good[1], program);
+    makeTreeInterpretedScan(good[2], program);
+    SpjReq bad[3];
+    makeParamInterpretedScan(bad[0], withSubroutine);
+    makeLinkedLeafInterpreted(bad[1], withSubroutine);
+    makeTreeInterpretedScan(bad[2], withPattern);
+    bad[1].waitForEnd = true;
+
+    for (int i = 0; i < 3; i++) {
+      const Reply control = sendScanTabReq(good[i]);
+      printReply(controlIds[i], control);
+      if (control.gsn != GSN_SCAN_TABCONF) {
+        g_err << controlIds[i] << " did not get SCAN_TABCONF (got "
+              << gsnName(control.gsn) << ", err " << control.errorCode
+              << ").  The raw interpreted request is wrong; fix this "
+                 "before trusting the result of P-50." << endl;
+        return clusterHealthy() ? NDBT_FAILED : failNodeDown(controlIds[i]);
+      }
+    }
+
+    const int order[3] = {0, 2, 1};
+    Reply reps[3];
+    for (int k = 0; k < 3; k++) {
+      const int i = order[k];
+      reps[i] = sendScanTabReq(bad[i]);
+      printReply(ids[i], reps[i]);
+    }
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown("P-50");
+    }
+    int result = NDBT_OK;
+    for (int i = 0; i < 3; i++) {
+      if (reps[i].gsn != GSN_SCAN_TABREF ||
+          reps[i].errorCode != expected[i]) {
+        g_err << ids[i] << ": FAIL -- expected SCAN_TABREF " << expected[i]
+              << ", got " << gsnName(reps[i].gsn) << " "
+              << reps[i].errorCode << ": the request was not refused"
+              << endl;
+        result = NDBT_FAILED;
+      } else {
+        g_info << ids[i] << ": PASS (all data nodes started; SCAN_TABREF "
+               << reps[i].errorCode << ")" << endl;
+      }
+    }
+    return result;
+  }
+
   /* ---- P-38 / P-39: a string MIN / MAX and a number in one slot ------- *
    * A string MIN / MAX keeps in its slot a pointer to the data node's
    * copy of the value; every other aggregate keeps a number there.  A
@@ -2407,6 +2566,7 @@ CASE_STEP(runP43, runP43)
 CASE_STEP(runP44, runP44)
 CASE_STEP(runP45, runP45)
 CASE_STEP(runP48, runP48)
+CASE_STEP(runP50, runP50)
 CASE_STEP(runP38, runP38)
 CASE_STEP(runP39, runP39)
 CASE_STEP(runQ1, runQ1)
@@ -2579,6 +2739,12 @@ TESTCASE("P48",
          "type, compared (on the JIT when it is on) and on an outer "
          "join's NULL-extended row") {
   STEP(runP48);
+}
+TESTCASE("P50",
+         "interpreted programs with a subroutine part, or a pattern "
+         "without NI_ATTR_LINKED, which went to the subroutine section "
+         "of the AttrInfo") {
+  STEP(runP50);
 }
 TESTCASE("P38",
          "join aggregation: string MIN and BIGINT MIN in one slot") {
