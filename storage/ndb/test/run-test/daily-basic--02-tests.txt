@@ -52,6 +52,10 @@ cmd: testBlobs
 args: -bug 62321 -skip p
 max-time: 180
 
+cmd: testBlobTTL
+args: -n RecAttrInsertOverExpired
+max-time: 180
+
 cmd: testBasic
 args: -n NoCommit630 T1 T6 D1 D2
 max-time: 180

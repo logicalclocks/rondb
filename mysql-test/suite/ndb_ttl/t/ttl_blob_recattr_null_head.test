@@ -1,0 +1,19 @@
+--source include/have_ndb.inc
+
+# NDBT uses uppercase TEST_DB. On a case-insensitive filesystem, CREATE
+# and DROP can use different schema-distribution keys.
+--source include/have_case_sensitive_file_system.inc
+
+# Runs testBlobTTL -n RecAttrInsertOverExpired against the MTR cluster:
+# an NdbRecAttr insert that takes a blob handle but sets no value, over an
+# expired 5-part row of a TTL table, must leave the blob NULL with no part
+# rows (not the expired head over deleted parts).
+#
+# The test program creates and drops its own table T_BLOB_TTL in TEST_DB.
+
+CREATE DATABASE TEST_DB;
+
+let NDBAPITEST_NAME=testBlobTTL;
+let NDBAPITEST_ARGS=-n RecAttrInsertOverExpired;
+let NDBAPITEST_CLEANUP_QUERY=DROP DATABASE TEST_DB;
+--source suite/ndb/include/run_ndbapitest.inc
