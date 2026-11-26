@@ -6092,7 +6092,14 @@ int Dbtup::evalBranchColForJit(KeyReqStruct *req_struct,
       if (unlikely(sqlType.m_cmp == nullptr)) {
         return -40;  // type has no comparator (matches interpreter)
       }
-      res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+      /* As handleBranchAttrOp: only values the compare function takes,
+       * CHAR values of different lengths padded. */
+      if (unlikely(!NdbSqlUtil::check_compare_values(typeId, s1, attrLen,
+                                                     s2, argLen))) {
+        return -40;
+      }
+      res1 = (*NdbSqlUtil::getStringResultCmp(typeId))(cs, s1, attrLen, s2,
+                                                       argLen);
     }
   } else if (cond == Interpreter::LIKE || cond == Interpreter::NOT_LIKE) {
     /* ronsql_jit item 12: LIKE / NOT LIKE — handleBranchAttrOp's arm
@@ -9907,7 +9914,23 @@ struct Dbtup::InterpreterContext {
         if (unlikely(sqlType.m_cmp == 0)) {
           return -40;
         }
-        res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+        /* The second value is a constant of the program, a parameter or
+         * another column the program names, typed as the first column.
+         * The compare functions only require or assert what they need:
+         * a VARCHAR length byte past its value (cmpVarchar) and a NaN
+         * FLOAT or DOUBLE (cmpFloat, cmpDouble, which the NDB API's
+         * branch_col_* send as given) failed a require, which stopped
+         * any data node; a constant of another size than a fixed-size
+         * type failed an assert.  Refuse what the compare function
+         * cannot take, as the compares of a linked value do; CHAR
+         * values of different lengths compare padded. */
+        if (unlikely(!NdbSqlUtil::check_compare_values(typeId, s1, attrLen,
+                                                       s2, argLen))) {
+          thrjam(ctx.tup->jamBuffer());
+          return -40;
+        }
+        res1 = (*NdbSqlUtil::getStringResultCmp(typeId))(cs, s1, attrLen,
+                                                         s2, argLen);
       }
     } else {
       if ((cond == Interpreter::LIKE) ||

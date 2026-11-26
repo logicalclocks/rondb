@@ -1,0 +1,17 @@
+--source include/have_ndb.inc
+
+# P-53: a plain interpreted read, not through DBSPJ, whose program
+# compares a column with a constant (BRANCH_ATTR_OP_ARG) on a table the
+# case creates (P53_CMP: an Unsigned key, a VARCHAR(8) and a FLOAT):
+# a VARCHAR constant whose length byte runs past it and a NaN FLOAT
+# failed the require of cmpVarchar and cmpFloat, which stopped any data
+# node; an 8-byte constant for the Unsigned key failed cmpUnsigned's
+# assert in a debug data node. DBTUP now refuses them (error 40). The
+# controls, 'abcd' and 1.5, must compare equal with every data node
+# started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P53
+--let $spj_case_title = P-53: interpreted read comparing a column with a constant its compare function cannot take
+--source suite/ndb_spj/include/spj_malformed_case.inc

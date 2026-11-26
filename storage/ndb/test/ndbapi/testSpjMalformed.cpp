@@ -78,6 +78,10 @@
  * P-52 groups by a linked VARCHAR / LONGVARCHAR whose length prefix
  * runs past its value, which fails the row (RONDB-1124,
  * JoinAggInterpreter::checkGroupKey).
+ * P-53 is a plain interpreted read, not through DBSPJ, that compares a
+ * column with a constant its compare function cannot take (a VARCHAR
+ * length byte past it, a NaN FLOAT, the wrong size), which DBTUP
+ * refuses with error 40 (RONDB-1124, handleBranchAttrOp).
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
  * re-send (passQueue), which only DBTC itself may set (RONDB-1124).
  * S-1 and S-2 send join aggregation signals that only data nodes send
@@ -1339,6 +1343,13 @@ class SpjMalformedChecker {
   static constexpr int kParamBlocksInsert = 4047;
 
   Reply sendInterpretedRead(const std::vector<Uint32> &attrInfo) {
+    return sendInterpretedRead(attrInfo, m_tableId, m_schemaVersion);
+  }
+
+  /* The same read of the row with primary key 1 of the table tableId
+   * (P-53). */
+  Reply sendInterpretedRead(const std::vector<Uint32> &attrInfo,
+                            Uint32 tableId, Uint32 schemaVersion) {
     Reply rep;
     const Uint32 nodeId = pickDbNode();
     Uint32 apiConnectPtr = 0, tcRef = 0, seizeUp = 0;
@@ -1350,7 +1361,7 @@ class SpjMalformedChecker {
     SimpleSignal sig(false);
     Uint32 *d = sig.getDataPtrSend();
     const Uint32 len = SpjMalformedSignals::fillTcKeyReq(
-        d, apiConnectPtr, userPointer, m_tableId, m_schemaVersion,
+        d, apiConnectPtr, userPointer, tableId, schemaVersion,
         0x5b410000u + nodeId, userPointer);
     SpjMalformedSignals::setTcKeyReqInterpretedRead(d);
     Uint32 key[1] = {1};  /* KOL1, the primary key of a loaded row */
@@ -2262,6 +2273,115 @@ class SpjMalformedChecker {
     return result;
   }
 
+  /* ---- P-53: a column compared with a constant of the program -------- *
+   * An interpreted read (P-41's sendInterpretedRead) of the row with
+   * primary key 1 of the table P53_CMP, which the step creates:
+   * ID Unsigned (the key), VC VARCHAR(8) latin1 'abcd' and F FLOAT 1.5,
+   * attribute ids 0, 1 and 2.  Its program compares one column with a
+   * constant (BRANCH_ATTR_OP_ARG, DBTUP's handleBranchAttrOp) and
+   * refuses the read with kRefuseCode when the two are equal and
+   * kRefuseNotEqual when not:
+   *   0      BRANCH_ATTR_OP_ARG EQ to the last word
+   *   1      (attrId << 16) | the constant's length
+   *   2..    the constant
+   *   n-2    EXIT_REFUSE kRefuseNotEqual
+   *   n-1    EXIT_REFUSE kRefuseCode */
+  static constexpr Uint32 kRefuseNotEqual = 7001;
+  static constexpr Uint32 kCompareRefused = 40;  /* DBTUP's compare error */
+
+  static std::vector<Uint32> attrCompareRead(
+      Uint32 attrId, const std::vector<Uint32> &constant, Uint32 argLen) {
+    std::vector<Uint32> prog;
+    const Uint32 offset = 2 + Uint32(constant.size()) + 1;
+    prog.push_back(Interpreter::BranchCol(Interpreter::EQ,
+                                          Interpreter::NULL_CMP_EQUAL) |
+                   (offset << 16));
+    prog.push_back(Interpreter::BranchCol_2(attrId, argLen));
+    prog.insert(prog.end(), constant.begin(), constant.end());
+    prog.push_back(Interpreter::EXIT_REFUSE | (kRefuseNotEqual << 16));
+    prog.push_back(Interpreter::EXIT_REFUSE | (kRefuseCode << 16));
+    std::vector<Uint32> ai = {0, Uint32(prog.size()), 0, 0, 0};
+    ai.insert(ai.end(), prog.begin(), prog.end());
+    return ai;
+  }
+
+  int runP53(Uint32 tableId, Uint32 tableVersion) {
+    /* The compare functions only require or assert what they need of
+     * the two values, and handleBranchAttrOp gave them the constant as
+     * the program wrote it: a VARCHAR length byte past the constant
+     * (cmpVarchar) and a NaN FLOAT (cmpFloat, which NdbInterpretedCode's
+     * branch_col_eq sends as given) failed a require, which stopped any
+     * data node, and a constant of 8 bytes for an Unsigned column failed
+     * cmpUnsigned's assert in a debug data node.  DBTUP now refuses what
+     * the compare function cannot take (check_compare_values), which
+     * fails the read with error 40.  The controls, 'abcd' and 1.5, must
+     * find their columns equal (kRefuseCode): without them a harness
+     * whose read never reaches the compare would pass.  The controls
+     * run first, so that no read expected to succeed follows a refused
+     * one. */
+    const char *findingId = "P-53 column compared with a constant it "
+                            "cannot take";
+    const char *const controlIds[2] = {"CONTROL (VC = VARCHAR 'abcd')",
+                                       "CONTROL (F = FLOAT 1.5)"};
+    /* [4]'abc' 'd', and 1.5f */
+    const std::vector<Uint32> controls[2] = {
+        attrCompareRead(1, {0x63626104u, 0x00000064u}, 5),
+        attrCompareRead(2, {0x3FC00000u}, 4)};
+    for (int i = 0; i < 2; i++) {
+      const Reply control =
+          sendInterpretedRead(controls[i], tableId, tableVersion);
+      printReply(controlIds[i], control);
+      if (control.gsn != GSN_TCKEYREF || control.errorCode != kRefuseCode) {
+        g_err << "P-53 " << controlIds[i] << " did not get TCKEYREF "
+              << kRefuseCode << " (got " << gsnName(control.gsn) << ", err "
+              << control.errorCode << ").  The raw interpreted read does "
+                 "not reach the compare; fix this before trusting the "
+                 "result of P-53." << endl;
+        return clusterHealthy() ? NDBT_FAILED : failNodeDown(findingId);
+      }
+    }
+
+    const char *const ids[3] = {
+        /* [255]'abc': the length byte runs past the 4-byte constant */
+        "P-53a VARCHAR column compared with a constant whose length byte "
+        "runs past it",
+        /* A quiet NaN */
+        "P-53b FLOAT column compared with NaN",
+        /* 1 as 8 bytes for the 4-byte ID */
+        "P-53c Unsigned column compared with an 8-byte constant"};
+    const std::vector<Uint32> programs[3] = {
+        attrCompareRead(1, {0x636261FFu}, 4),
+        attrCompareRead(2, {0x7FC00000u}, 4),
+        attrCompareRead(0, {1u, 0u}, 8)};
+    Reply reps[3];
+    for (int i = 0; i < 3; i++) {
+      reps[i] = sendInterpretedRead(programs[i], tableId, tableVersion);
+      printReply(ids[i], reps[i]);
+    }
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    int result = NDBT_OK;
+    for (int i = 0; i < 3; i++) {
+      if (reps[i].gsn != GSN_TCKEYREF ||
+          reps[i].errorCode != kCompareRefused) {
+        g_err << ids[i] << ": FAIL -- expected TCKEYREF " << kCompareRefused
+              << ", got " << gsnName(reps[i].gsn) << " "
+              << reps[i].errorCode << ": the compare was not refused"
+              << endl;
+        result = NDBT_FAILED;
+      } else {
+        g_info << ids[i] << ": PASS (all data nodes started; TCKEYREF "
+               << reps[i].errorCode << ")" << endl;
+      }
+    }
+    return result;
+  }
+
   /* ---- Q cases: DBTC's rate queue re-send mark sent by the API -------- *
    * DBTC's rate queue handler re-sends a queued request to its own DBTC
    * instance with a mark: the passQueue flag of TCKEYREQ, TCINDXREQ and
@@ -3025,6 +3145,76 @@ int runP49(NDBT_Context *ctx, NDBT_Step *step) {
   return res;
 }
 
+/* P-53's row of P53_CMP: ID 1, VC 'abcd', F 1.5. */
+int insertP53Row(Ndb *pNdb, const NdbDictionary::Table *tab) {
+  NdbTransaction *trans = pNdb->startTransaction();
+  if (trans == nullptr) {
+    g_err << "P-53: startTransaction failed: " << pNdb->getNdbError()
+          << endl;
+    return -1;
+  }
+  const char vc[5] = {4, 'a', 'b', 'c', 'd'};
+  const float f = 1.5f;
+  NdbOperation *op = trans->getNdbOperation(tab);
+  int res = -1;
+  if (op != nullptr && op->insertTuple() == 0 &&
+      op->equal("ID", Uint32(1)) == 0 && op->setValue("VC", vc) == 0 &&
+      op->setValue("F", f) == 0 &&
+      trans->execute(NdbTransaction::Commit) == 0) {
+    res = 0;
+  } else {
+    g_err << "P-53: inserting the row failed: " << trans->getNdbError()
+          << endl;
+  }
+  pNdb->closeTransaction(trans);
+  return res;
+}
+
+/* P-53 reads a table with a VARCHAR and a FLOAT column, which T1 does
+ * not have: the step creates it, with one row, and drops it after the
+ * case. */
+int runP53(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = nullptr;
+  SignalSender *ss = nullptr;
+  NdbRestarter *restarter = nullptr;
+  SpjMalformedChecker *c = makeChecker(ctx, step, pNdb, ss, restarter);
+  if (c == nullptr) return NDBT_FAILED;
+  NdbDictionary::Dictionary *dict = pNdb->getDictionary();
+  const char *const tabName = "P53_CMP";
+  (void)dict->dropTable(tabName);  /* an earlier run's */
+  NdbDictionary::Table tab(tabName);
+  NdbDictionary::Column id("ID");
+  id.setType(NdbDictionary::Column::Unsigned);
+  id.setPrimaryKey(true);
+  tab.addColumn(id);
+  NdbDictionary::Column vc("VC");
+  vc.setType(NdbDictionary::Column::Varchar);  /* latin1 by default */
+  vc.setLength(8);
+  vc.setNullable(true);
+  tab.addColumn(vc);
+  NdbDictionary::Column f("F");
+  f.setType(NdbDictionary::Column::Float);
+  f.setNullable(true);
+  tab.addColumn(f);
+  int res = NDBT_FAILED;
+  const NdbDictionary::Table *created = nullptr;
+  if (dict->createTable(tab) != 0) {
+    g_err << "P-53: creating table " << tabName << " failed: "
+          << dict->getNdbError() << endl;
+  } else if ((created = dict->getTable(tabName)) == nullptr) {
+    g_err << "P-53: table " << tabName << " not found: "
+          << dict->getNdbError() << endl;
+  } else if (insertP53Row(pNdb, created) == 0) {
+    res = c->runP53(Uint32(created->getObjectId()),
+                    Uint32(created->getObjectVersion()));
+  }
+  (void)dict->dropTable(tabName);
+  delete c;
+  delete ss;
+  delete restarter;
+  return res;
+}
+
 }  // namespace
 
 NDBT_TESTSUITE(testSpjMalformed);
@@ -3180,6 +3370,11 @@ TESTCASE("P52",
          "join aggregation: a linked GROUP BY value whose length prefix "
          "runs past it") {
   STEP(runP52);
+}
+TESTCASE("P53",
+         "interpreted read comparing a column with a constant its compare "
+         "function cannot take") {
+  STEP(runP53);
 }
 TESTCASE("Q1", "TCKEYREQ with the rate queue flag from the API") {
   STEP(runQ1);
