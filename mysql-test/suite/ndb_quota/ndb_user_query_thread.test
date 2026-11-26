@@ -1,5 +1,5 @@
 --source include/have_ndb.inc
---source include/have_debug.inc
+--source include/have_ndb_debug.inc
 
 # RONDB-978 gap: USER rate accounting must also work for reads that execute
 # in query threads (DBQLQH). CREATE_DB_REQ is routed to the LDM workers only,
