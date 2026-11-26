@@ -690,6 +690,11 @@ class NdbQueryImpl {
 
   void setFetchTerminated(int aErrorCode, bool needClose);  // Need mutex lock
 
+  /** A wait for the TC node ended in a receive timeout or a node failure:
+   *  setFetchTerminated() while some worker is not final, else only
+   *  record the error. */
+  void setWaitFailed(int aErrorCode, bool needClose);  // Need mutex lock
+
   /** Stop receiving a failed scan before asynchronous kernel cleanup.
    *  Requires the receive mutex and SCAN_TABREF with closeNeeded. */
   void detachFailedScan();
