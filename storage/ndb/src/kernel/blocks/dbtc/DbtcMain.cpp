@@ -20493,6 +20493,17 @@ void Dbtc::close_scan_req_send_conf(Signal *signal, ScanRecordPtr scanPtr,
     DEB_SCAN_MANY(("(%u) TC scanPtrI: %u, Send SCAN_TABCONF, endOfData",
       instance(), scanPtr.i));
     sendSignal(ref, GSN_SCAN_TABCONF, signal, ScanTabConf::SignalLength, JBB);
+#ifdef ERROR_INSERT
+    if (ERROR_INSERTED(8320) && scanPtr.p->m_joinAgg) {
+      jam();
+      /* Send the pure EndOfData of a join aggregation twice, as when an
+       * API close crosses it: execSCAN_NEXTREQ answers that close with
+       * a second one ("Confirming scan close") once the scan is
+       * released (testJoinAggNdbApi --only 26). */
+      sendSignal(ref, GSN_SCAN_TABCONF, signal, ScanTabConf::SignalLength,
+                 JBB);
+    }
+#endif
     time_track_complete_scan(scanPtr.p, refToNode(ref));
   }
 

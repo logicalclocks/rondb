@@ -6019,6 +6019,164 @@ testPromisedRowsMissing(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 26: a second pure EndOfData after the one that ends a join     */
+/*          aggregation (ERROR_INSERT 8320).  Not part of the default  */
+/*          run: --only 26, from the debug-only MTR wrapper            */
+/*          testJoinAggNdbApiDupEndOfData.                             */
+/*                                                                     */
+/* An API close that crosses the end of the scan gets two pure         */
+/* EndOfData: DBTC's own, which ends the scan, and DBTC's answer to    */
+/* the close ("Confirming scan close"), sent when the close arrives    */
+/* after the scan was released.  8320 makes DBTC send its EndOfData    */
+/* twice, so that the second one comes right behind the first, while   */
+/* the API reads the result or closes the query.  Before the fix the   */
+/* second one went to setFetchTerminated() with every worker final: a  */
+/* debug API aborted on assert(m_finalWorkers < getWorkerCount()), or, */
+/* once close() had detached the query, on assert(m_scanningQuery) in  */
+/* NdbTransaction::receiveSCAN_TABCONF().  Now it is dropped: a query  */
+/* read to the end must give the right result, a query closed at once  */
+/* must close, and the queries after them must be right.               */
+/* ------------------------------------------------------------------ */
+
+static int
+testDuplicateEndOfData(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
+{
+  /* The line is printed whole at the end: a debug NDB API may log the
+   * dropped EndOfData (Ndbif: Error Invalid Signal) while the test runs. */
+  static const char *const head =
+      "Test 26: second EndOfData after the final one (ERROR_INSERT 8320) ... ";
+  static const int rounds = 5;
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(T14_PARENT);
+  dict->invalidateTable(T14_CHILD);
+  const NdbDictionary::Table *parentTab = dict->getTable(T14_PARENT);
+  const NdbDictionary::Table *childTab = dict->getTable(T14_CHILD);
+  if (parentTab == nullptr || childTab == nullptr) {
+    printf("%sFAILED (table lookup: %s)\n", head,
+           dict->getNdbError().message);
+    return -1;
+  }
+
+  const NdbDictionary::Column *grpCol = parentTab->getColumn("grp");
+
+  /* SELECT p.grp, SUM(c.val), COUNT(c.val)
+   * FROM t14_parent p JOIN t14_child c ON c.parent_id = p.id
+   * GROUP BY p.grp, closed before any result is read. */
+  NdbAggregator agg(childTab);
+  if (!agg.GroupByLinked(0, grpCol) ||
+      !agg.LoadColumn("val", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Count(1, 0) ||
+      !agg.Finalize()) {
+    printf("%sFAILED (agg program: %s)\n", head, agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(parentTab);
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(parentOp, "id"), nullptr
+  };
+  NdbQueryOptions opts;
+  opts.setMatchType(NdbQueryOptions::MatchNonNull);
+  opts.setAggregation(agg);
+  const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
+  opts.addLinkedProjection(grpLink);
+
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(childTab, joinKey, &opts);
+  if (childOp == nullptr) {
+    printf("%sFAILED (readTuple: %s)\n", head, qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("%sFAILED (prepare: %s)\n", head, qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  if (restarter.insertErrorInAllNodes(8320) != 0) {
+    printf("%sFAILED (insertErrorInAllNodes(8320))\n", head);
+    queryDef->destroy();
+    return -1;
+  }
+  V("\n  ERROR_INSERT 8320 set (join aggregation EndOfData sent twice)\n");
+
+  bool failed = false;
+  for (int round = 0; round < rounds && !failed; round++) {
+    /* Read to the end: the second EndOfData comes while the API waits
+     * for the aggregate rows or reads them.  A failure prints its own
+     * FAILED line. */
+    if (runAndVerifyT14Query(ndb, conn, "8320 read") != 0) {
+      failed = true;
+      break;
+    }
+
+    /* Close at once: the second EndOfData comes while close() waits for
+     * the first one, or after it, while close() detaches the query or
+     * releases the scan transaction. */
+    NdbTransaction *trans = ndb->startTransaction();
+    if (trans == nullptr) {
+      printf("FAILED (8320 close: startTransaction: %s)\n",
+             ndb->getNdbError().message);
+      failed = true;
+      break;
+    }
+    NdbQuery *query = trans->createQuery(queryDef);
+    if (query == nullptr) {
+      printf("FAILED (8320 close: createQuery: %s)\n",
+             trans->getNdbError().message);
+      trans->close();
+      failed = true;
+      break;
+    }
+    if (trans->execute(NdbTransaction::NoCommit) != 0) {
+      printf("FAILED (8320 close: execute: %s)\n",
+             trans->getNdbError().message);
+      query->close();
+      trans->close();
+      failed = true;
+      break;
+    }
+    query->close();
+    trans->close();
+    V("  round %d: read query right, early close done\n", round + 1);
+  }
+
+  restarter.insertErrorInAllNodes(0);
+  V("  ERROR_INSERT cleared\n");
+  queryDef->destroy();
+
+  if (failed) {
+    printf("%sFAILED (see the FAILED line above)\n", head);
+    return -1;
+  }
+
+  if (restarter.waitClusterStarted(30) != 0) {
+    printf("%sFAILED (a data node is not started after the queries)\n",
+           head);
+    return -1;
+  }
+
+  V("  Re-running query to verify cluster health...\n");
+  if (runAndVerifyT14Query(ndb, conn, "post-8320") != 0) {
+    printf("%sFAILED (the next query failed, see the FAILED line above)\n",
+           head);
+    return -1;
+  }
+
+  printf("%sOK (%d queries read right, %d closed at once, next query "
+         "correct)\n",
+         head, rounds, rounds);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -6166,7 +6324,7 @@ usage(const char *prog)
           "Options:\n"
           "  -c  NDB management server connect string (default: localhost:1186)\n"
           "  -m  MySQL server port (default: 3306)\n"
-          "  --only <N>     Run only test N (Test 25 runs only this way)\n"
+          "  --only <N>     Run only test N (Tests 25 and 26 run only this way)\n"
           "  --skip <N>     Skip test N\n"
           "  -v, --verbose  Show detailed progress output\n"
           "  -h, --help     Show this help\n",
@@ -6528,6 +6686,19 @@ int main(int argc, char **argv)
           NdbRestarter restarter(connectString);
           if (createTest14Tables(conn) == 0 && insertTest14Data(conn) == 0) {
             if (testPromisedRowsMissing(&ndb, conn, restarter) != 0)
+              exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTest14Tables(conn);
+        }
+
+        /* Test 26: a second pure EndOfData after the final one.  Only
+         * on request: it needs data nodes with error inserts. */
+        if (onlyTest == 26) {
+          NdbRestarter restarter(connectString);
+          if (createTest14Tables(conn) == 0 && insertTest14Data(conn) == 0) {
+            if (testDuplicateEndOfData(&ndb, conn, restarter) != 0)
               exitCode = 1;
           } else {
             exitCode = 1;

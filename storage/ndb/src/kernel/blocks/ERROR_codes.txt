@@ -260,7 +260,7 @@ Next DBLQH 5165
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8135
-Next DBTC 8320 (RonDB)
+Next DBTC 8321 (RonDB)
 Next TRPMAN 9007
 Next CMVMI 9993              Note: CMVMI grows downwards
 Next TRPMAN 9007 // Ndb numbers
@@ -835,6 +835,12 @@ DBTC node failure take over testing (RonDB)
       RateQueueDirtyReadOtherDatabase
       (ndb_quota.ndb_rate_queue_other_database). 8318 is taken on
       26.02-main.
+
+8320: Send the pure EndOfData SCAN_TABCONF that ends a join aggregation
+      scan twice (close_scan_req_send_conf), as DBTC does when an API
+      close crosses it: execSCAN_NEXTREQ answers the close with another
+      EndOfData ("Confirming scan close") after the scan is released.
+      Stays set until cleared (testJoinAggNdbApi --only 26).
 
 
 TRPMAN
