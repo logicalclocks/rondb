@@ -213,7 +213,8 @@ one had completed on all replicas.
   for a short TCKEYREQ the last ATTRINFO comes later
   (`execATTRINFO()` calls `attrinfoDihReceivedLab()`). An operation that
   may be sent is entered there (`trackSentOperation()`): counted in the
-  transaction, and a write is linked into the key table.
+  transaction, and a write or locked read is linked into the key table,
+  except one sent alone (see below).
 - On that path `attrinfoDihReceivedLab()` checks once whether the
   operation is tracked (not a committed read); `mustWaitToSend()` only
   asserts it, and the queue holds only tracked operations. If the
@@ -223,7 +224,24 @@ one had completed on all replicas.
   flight), so `mustWaitToSend()` is not called. That is the first
   operation of each batch: the NDB API sends the next batch only after
   all operations of the previous one are answered. The operation is still
-  entered with `trackSentOperation()`.
+  entered with `trackSentOperation()`, but sent alone: it is counted and
+  its key and path flags are set, but it is not linked into the key
+  table; the transaction remembers it (`m_unlinked_row_op`). The next
+  write or locked read checked by `mustWaitToSend()` while it is in flight
+  links it first (`linkUnlinkedRowOp()`); if it is answered before that,
+  `releaseSentOperation()` only forgets it. So a batch of one operation,
+  the most common batch, never touches the key table.
+- This is not decided from the batch having one operation
+  (`TF_SINGLE_EXEC_FLAG`, the execute flag on the first operation of a
+  batch). That flag is set on the transaction for the whole batch, so the
+  operations that a unique index lookup or triggers send in it have it
+  too and must still be checked against each other (a unique index
+  trigger of an update sends a delete and an insert of the index table).
+  An asynchronous API may also send the next batch before the answer, and
+  that batch must be checked against the operation in flight. The
+  operation's own triggers run only after its LQHKEYCONF (all
+  FIRE_TRIG_ORD and the fired count from LQHKEYCONF), so they never
+  overlap it.
 - The DBTC 1204 check of the chain clock is gone (reverted); 1204 remains
   the error of the primary's distribution key check in DBLQH.
 
@@ -300,7 +318,11 @@ one had completed on all replicas.
   bucket for write, and DIGETNODES and the routing hide a cache miss on
   it before `trackSentOperation()` writes it. The prefetch is done for
   every operation: leaving out committed reads and unlocks would take
-  branches that cost more than the prefetch. Only the copies of a row
+  branches that cost more than the prefetch. An operation sent alone does
+  not use the prefetched bucket (see Where); leaving it out would take one
+  more test, of `m_ops_in_flight | m_parked_ops`, which is the same at
+  TCKEYREQ and at the send unless the operation waits for short
+  ATTRINFO. Only the copies of a row
   that reorg and fully replicated triggers write to other fragments
   share a bucket because of the missing fragment id. LQHKEYCONF removes
   the key with little work before it, so it has no prefetch.
@@ -319,7 +341,8 @@ one had completed on all replicas.
   writes one byte more at seize and nothing else. `releaseTcCon()` tests
   only `m_send_flags != 0`, and `packLqhkeyreq040Lab()` clears
   `SF_PARKED` in the same byte. `ApiConnectRecord`: `m_ops_in_flight`,
-  the queue and `m_resume_scheduled`, reset in `initApiConnectRec()`.
+  `m_unlinked_row_op`, the queue and `m_resume_scheduled`, reset in
+  `initApiConnectRec()`.
 
 ### Abort, errors, failures
 
@@ -351,16 +374,18 @@ one had completed on all replicas.
 ## Costs
 
 - CPU: one key table insert and delete per write and locked read, and a
-  lookup (a walk of one bucket) unless it is the first operation of its
-  batch; a counter per tracked operation for the limit; the saved
-  DIGETNODESREQ inputs. Committed reads nothing.
+  lookup (a walk of one bucket), unless it is sent alone (the first
+  operation of its batch) and answered before another one is checked; a
+  counter per tracked operation for the limit; the saved DIGETNODESREQ
+  inputs. A batch of one operation does not touch the key table.
+  Committed reads nothing.
 - Latency: a write or locked read waits only when the path changed
   between it and an earlier operation of the same row in the same batch,
   or a locked read of a row with a write in flight goes through DBSPJ or
   to `V_QUERY` (single-operation batches and the API's batch-safe flag
   only); then about one round trip. Operations beyond the limit wait for
   a free slot, which is the intended flow control.
-- Memory: about 28 bytes per `TcConnectRecord`, 20 per `ApiConnectRecord`,
+- Memory: about 28 bytes per `TcConnectRecord`, 24 per `ApiConnectRecord`,
   12 per cache record, 64 KB of buckets per DBTC instance, and one cache
   record per waiting operation.
 - No aborts from this mechanism.
@@ -515,4 +540,7 @@ operation also waits behind an operation that waits for its row, which
 is rare); one CONTINUEB per transaction instead of one per operation;
 `attrinfoDihReceivedLab()` checks once whether an operation is tracked
 and skips `mustWaitToSend()` when the transaction has nothing in flight
-or waiting (see Where).
+or waiting (see Where); such an operation is linked into the key table
+only when another one is checked while it is in flight, instead of
+skipping a batch of one operation by `TF_SINGLE_EXEC_FLAG`, which index
+and trigger operations of the batch share (see Where).

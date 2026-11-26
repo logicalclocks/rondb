@@ -1021,11 +1021,14 @@ class Dbtc : public SimulatedBlock {
      * SF_IN_FLIGHT: sent to LQH, LQHKEYCONF or LQHKEYREF not received
      * yet, counted in ApiConnectRecord::m_ops_in_flight. Committed reads
      * are never counted, they do not report back.
-     * SF_ROW_KEY: a write or locked read in flight, linked into
-     * c_row_key_hash under the key (transaction, table, fragment, row
-     * hash) through m_row_key_next/m_row_key_prev. Its bucket is
-     * computed again from apiConnect, m_row_table_id and m_row_hash, none
-     * of which changes while it is linked.
+     * A write or locked read in flight has its key (transaction, table,
+     * fragment, row hash) in m_row_table_id, m_row_frag_id and m_row_hash.
+     * SF_ROW_KEY: it is linked into c_row_key_hash under that key through
+     * m_row_key_next/m_row_key_prev. Its bucket is computed again from
+     * apiConnect, m_row_table_id and m_row_hash, none of which changes
+     * while it is linked. One sent while nothing else of its transaction
+     * was in flight or waiting is not linked yet, see
+     * ApiConnectRecord::m_unlinked_row_op.
      * SF_READ: that operation is a locked read, executed in tcNodedata[0]
      * only. SF_READ_VIA_LDM: and sent to DBLQH there, not through DBSPJ or
      * V_QUERY, so along the same link as a write's first replica.
@@ -1344,8 +1347,15 @@ class Dbtc : public SimulatedBlock {
      * first-in, first-out queue of operations that wait to be sent
      * (OS_WAIT_DIH), see Dbtc::mustWaitToSend(). m_resume_scheduled: a
      * CONTINUEB ZRESUME_PARKED_OPS is on its way.
+     *
+     * m_unlinked_row_op: a write or locked read sent while nothing else of
+     * the transaction was in flight or waiting, not linked into
+     * c_row_key_hash (most batches have one operation). It is linked when
+     * another operation is checked against the key table, see
+     * Dbtc::linkUnlinkedRowOp().
      */
     Uint32 m_ops_in_flight = 0;
+    Uint32 m_unlinked_row_op = RNIL;
     Uint32 m_parked_ops = 0;
     Uint32 m_parked_head = RNIL;
     Uint32 m_parked_tail = RNIL;
@@ -3176,7 +3186,8 @@ class Dbtc : public SimulatedBlock {
   void parkOperation(Signal *signal, CacheRecordPtr cachePtr,
                      ApiConnectRecordPtr apiConnectptr);
   void trackSentOperation(ApiConnectRecord *regApiPtr,
-                          CacheRecord *regCachePtr);
+                          CacheRecord *regCachePtr, bool alone);
+  void linkUnlinkedRowOp(ApiConnectRecord *regApiPtr);
   void releaseSentOperation(Signal *signal,
                             ApiConnectRecordPtr apiConnectptr,
                             TcConnectRecordPtr opPtr, bool resume);

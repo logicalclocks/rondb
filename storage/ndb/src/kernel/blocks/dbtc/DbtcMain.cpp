@@ -3644,7 +3644,9 @@ void Dbtc::initApiConnectRec(Signal *signal, ApiConnectRecord *const regApiPtr,
   /* Nothing in flight or waiting is left from the previous transaction */
   ndbassert(regApiPtr->m_ops_in_flight == 0);
   ndbassert(regApiPtr->m_parked_ops == 0);
+  ndbassert(regApiPtr->m_unlinked_row_op == RNIL);
   regApiPtr->m_ops_in_flight = 0;
+  regApiPtr->m_unlinked_row_op = RNIL;
   regApiPtr->m_parked_ops = 0;
   regApiPtr->m_parked_head = RNIL;
   regApiPtr->m_parked_tail = RNIL;
@@ -5744,7 +5746,8 @@ void Dbtc::tckeyreq050Lab(Signal *signal, CacheRecordPtr const cachePtr,
 
   /**
    * A write's or locked read's row key goes into c_row_key_hash when it
-   * is sent (trackSentOperation()). Prefetch the bucket for write now, so
+   * is sent while another operation of the transaction is in flight or
+   * waiting (trackSentOperation()). Prefetch the bucket for write now, so
    * that DIGETNODES and the routing hide a cache miss on it. Done for
    * every operation: the branches to leave out committed reads and
    * unlocks would cost more than the prefetch.
@@ -5931,16 +5934,19 @@ void Dbtc::attrinfoDihReceivedLab(Signal *signal, CacheRecordPtr cachePtr,
       /**
        * With no operation of the transaction in flight or waiting nothing
        * can hold this one back: the common case of the first operation of
-       * a batch skips the check. A resumed one was checked when resumed.
+       * a batch skips the check, and is not linked into the key table
+       * unless another operation is sent before it is answered. A resumed
+       * one was checked when resumed.
        */
-      if (!resumed &&
-          (regApiPtr->m_ops_in_flight | regApiPtr->m_parked_ops) != 0 &&
+      const bool alone =
+          (regApiPtr->m_ops_in_flight | regApiPtr->m_parked_ops) == 0;
+      if (!resumed && !alone &&
           unlikely(mustWaitToSend(apiConnectptr, regCachePtr, false))) {
         jam();
         parkOperation(signal, cachePtr, apiConnectptr);
         return;
       }
-      trackSentOperation(regApiPtr, regCachePtr);
+      trackSentOperation(regApiPtr, regCachePtr, alone);
     }
     arrGuard(Tnode, MAX_NDB_NODES);
     BlockReference lqhRef;
@@ -6048,6 +6054,17 @@ void Dbtc::attrinfoDihReceivedLab(Signal *signal, CacheRecordPtr cachePtr,
  * In addition a transaction has at most MaxParallelOperationsPerTransaction
  * operations in flight (all except committed reads), the others wait.
  *
+ * The writes and locked reads in flight are linked into a key table,
+ * c_row_key_hash. One sent while nothing else of its transaction is in
+ * flight or waiting, the only operation of most batches, is counted but
+ * linked only when another operation is checked before it is answered
+ * (m_unlinked_row_op). This is not decided from the batch having one
+ * operation (TF_SINGLE_EXEC_FLAG): the operations that a unique index
+ * lookup or the triggers send in that batch have the flag too and must be
+ * checked against each other (a unique index trigger of an update sends
+ * a delete and an insert of the index table), and the next batch, if the
+ * API does not wait for the answer, against this one.
+ *
  * Waiting operations are kept in one first-in, first-out queue per
  * transaction (OS_WAIT_DIH, TcConnectRecord::m_parked_cache); when an
  * operation is answered a CONTINUEB resumes the queue from the front, and
@@ -6109,11 +6126,13 @@ Uint8 Dbtc::rowPathFlags(const TcConnectRecord *regTcPtr,
  * Returns false when the transaction has no operation in flight and none
  * waiting: the limit is at least 1, and every holder in the key table is
  * in flight. attrinfoDihReceivedLab() relies on this to skip the call.
+ * Before it looks in the key table it links the operation that was sent
+ * alone, if it is still in flight.
  */
 bool Dbtc::mustWaitToSend(ApiConnectRecordPtr const apiConnectptr,
                           CacheRecord *regCachePtr, bool resume) {
   const TcConnectRecord *regTcPtr = tcConnectptr.p;
-  const ApiConnectRecord *regApiPtr = apiConnectptr.p;
+  ApiConnectRecord *const regApiPtr = apiConnectptr.p;
   ndbassert(isTrackedOperation(regTcPtr));
   if (!resume && regApiPtr->m_parked_ops > 0) {
     /* Keep the order of the operations that wait */
@@ -6126,15 +6145,20 @@ bool Dbtc::mustWaitToSend(ApiConnectRecordPtr const apiConnectptr,
     if (!resume) c_parallel_limit_wait_count++;
     return true;
   }
-  if (isRowOrderedOperation(regTcPtr) &&
-      rowKeyHasHolderOnOtherPath(apiConnectptr.i, regTcPtr,
-                                 rowPathFlags(regTcPtr, regCachePtr),
-                                 regCachePtr->tableref,
-                                 regCachePtr->fragmentid,
-                                 regCachePtr->hashValue)) {
-    jam();
-    c_same_row_wait_count++;
-    return true;
+  if (isRowOrderedOperation(regTcPtr)) {
+    if (regApiPtr->m_unlinked_row_op != RNIL) {
+      jam();
+      linkUnlinkedRowOp(regApiPtr);
+    }
+    if (rowKeyHasHolderOnOtherPath(apiConnectptr.i, regTcPtr,
+                                   rowPathFlags(regTcPtr, regCachePtr),
+                                   regCachePtr->tableref,
+                                   regCachePtr->fragmentid,
+                                   regCachePtr->hashValue)) {
+      jam();
+      c_same_row_wait_count++;
+      return true;
+    }
   }
   return false;
 }
@@ -6184,9 +6208,15 @@ void Dbtc::parkOperation(Signal *signal, CacheRecordPtr const cachePtr,
 /**
  * The operation in tcConnectptr is sent now. A resumed operation keeps
  * SF_PARKED until packLqhkeyreq040Lab() releases its cache record.
+ *
+ * alone: nothing else of the transaction is in flight or waiting. Then no
+ * operation is checked against this one unless another one is sent before
+ * it is answered, so its row key is linked only then, by
+ * linkUnlinkedRowOp(). Most batches have one operation, and they leave
+ * the key table alone.
  */
 void Dbtc::trackSentOperation(ApiConnectRecord *regApiPtr,
-                              CacheRecord *regCachePtr) {
+                              CacheRecord *regCachePtr, bool alone) {
   TcConnectRecord *const regTcPtr = tcConnectptr.p;
   Uint8 flags = regTcPtr->m_send_flags;
   ndbassert((flags & ~TcConnectRecord::SF_PARKED) == 0);
@@ -6196,10 +6226,34 @@ void Dbtc::trackSentOperation(ApiConnectRecord *regApiPtr,
     regTcPtr->m_row_hash = regCachePtr->hashValue;
     regTcPtr->m_row_frag_id = Uint16(regCachePtr->fragmentid);
     regTcPtr->m_row_table_id = regCachePtr->tableref;
-    rowKeyInsert(tcConnectptr);
-    flags |= TcConnectRecord::SF_ROW_KEY | rowPathFlags(regTcPtr, regCachePtr);
+    flags |= rowPathFlags(regTcPtr, regCachePtr);
+    /* Alone: none in flight. Else mustWaitToSend() linked it */
+    ndbassert(regApiPtr->m_unlinked_row_op == RNIL);
+    if (alone) {
+      regApiPtr->m_unlinked_row_op = tcConnectptr.i;
+    } else {
+      rowKeyInsert(tcConnectptr);
+      flags |= TcConnectRecord::SF_ROW_KEY;
+    }
   }
   regTcPtr->m_send_flags = flags;
+}
+
+/**
+ * Another operation is to be checked against the key table while the
+ * write or locked read sent alone is in flight: link it now. Its key and
+ * path flags were set when it was sent.
+ */
+void Dbtc::linkUnlinkedRowOp(ApiConnectRecord *regApiPtr) {
+  TcConnectRecordPtr opPtr;
+  opPtr.i = regApiPtr->m_unlinked_row_op;
+  ndbrequire(tcConnectRecord.getValidPtr(opPtr));
+  ndbrequire((opPtr.p->m_send_flags & (TcConnectRecord::SF_IN_FLIGHT |
+                                       TcConnectRecord::SF_ROW_KEY)) ==
+             TcConnectRecord::SF_IN_FLIGHT);
+  rowKeyInsert(opPtr);
+  opPtr.p->m_send_flags |= TcConnectRecord::SF_ROW_KEY;
+  regApiPtr->m_unlinked_row_op = RNIL;
 }
 
 /**
@@ -6215,12 +6269,14 @@ void Dbtc::releaseSentOperation(Signal *signal,
   if (likely((flags & TcConnectRecord::SF_IN_FLIGHT) == 0)) {
     return;
   }
+  ApiConnectRecord *const regApiPtr = apiConnectptr.p;
   if (flags & TcConnectRecord::SF_ROW_KEY) {
     rowKeyRemove(opPtr);
+  } else if (regApiPtr->m_unlinked_row_op == opPtr.i) {
+    regApiPtr->m_unlinked_row_op = RNIL;
   }
   /* SF_PARKED stays: the cache record is released separately */
   regTcPtr->m_send_flags = flags & TcConnectRecord::SF_PARKED;
-  ApiConnectRecord *const regApiPtr = apiConnectptr.p;
   ndbassert(regApiPtr->m_ops_in_flight > 0);
   if (likely(regApiPtr->m_ops_in_flight > 0)) {
     regApiPtr->m_ops_in_flight--;
