@@ -3557,8 +3557,10 @@ private:
   ALWAYS_INLINE int readSingleAttribute(KeyReqStruct *req_struct,
                                         Uint32 attrId, Uint32 *outBuf,
                                         Uint32 maxWords) {
-    ndbassert(!(attrId & AttributeHeader::PSEUDO));
-    ndbassert(attrId < req_struct->tablePtrP->m_no_of_attributes);
+    /* attrId is a field of an aggregation program (kOpLoadCol, a GROUP
+     * BY column) or of a JIT-compiled scan filter, which an API node
+     * writes: refused with an error, not an ndbassert that stops a
+     * debug data node. */
     if (unlikely((attrId & AttributeHeader::PSEUDO) ||
                  attrId >= req_struct->tablePtrP->m_no_of_attributes)) {
       thrjam(req_struct->jamBuffer);

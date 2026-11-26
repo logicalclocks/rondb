@@ -2449,6 +2449,15 @@ Int32 AggInterpreterBase::initGBTypes(
             "metadata source", attr_id);
         return ZAGG_OTHER_ERROR;
       }
+      /* attr_id is a field of the program: an id past the table read
+       * the descriptor array out of bounds, and a charset position from
+       * there indexed charsetArray. */
+      if (unlikely(attr_id >= req_struct->tablePtrP->m_no_of_attributes)) {
+        g_eventLogger->debug("initGBTypes: local GROUP BY column attr_id=%u "
+            "past the table's %u columns", attr_id,
+            Uint32(req_struct->tablePtrP->m_no_of_attributes));
+        return ZATTRIBUTE_ID_ERROR;
+      }
       const Uint32* attrDesc = req_struct->tablePtrP->tabDescriptor +
           attr_id * ZAD_SIZE;
       info.typeId = AttributeDescriptor::getType(attrDesc[0]);

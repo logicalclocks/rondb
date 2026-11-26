@@ -84,7 +84,8 @@
  * refuses with error 40 (RONDB-1124, handleBranchAttrOp).
  * P-54 sends programs whose SUM or arithmetic reads a string register,
  * or whose slot two aggregates update, which JOIN_AGG_SETUP_REQ must
- * refuse (checkAggSlotKinds).  P-55 runs string MIN / MAX of two string
+ * refuse (checkAggSlotKinds), and one that groups by a column past the
+ * table, which fails the row.  P-55 runs string MIN / MAX of two string
  * types in one slot and loads of linked values shorter than their type,
  * which fail the row, and a MAX of a kOpMov copy of a string register,
  * which must work.  P-56 sums after a SUM of a register set NULL, which
@@ -780,10 +781,11 @@ class SpjMalformedChecker {
 
   /* ---- GROUP BY column metadata (P-43, P-44) --------------------------- *
    * A leaf that groups by column 0 of the table, its primary key (T1's
-   * KOL1, an Unsigned), and counts the rows. */
-  static std::vector<Uint32> localGroupByLeaf() {
+   * KOL1, an Unsigned), and counts the rows.  P-54 groups by column col
+   * instead. */
+  static std::vector<Uint32> localGroupByLeaf(Uint32 col = 0) {
     std::vector<Uint32> body;
-    body.push_back((0u << 16) |
+    body.push_back((col << 16) |
                    (Uint32(NDB_TYPE_UNSIGNED) & AGG_GB_COL_TYPE_MASK));
     const std::vector<Uint32> count = countBody(0, 0);
     body.insert(body.end(), count.begin(), count.end());
@@ -2436,6 +2438,44 @@ class SpjMalformedChecker {
         return res;
       }
     }
+
+    /* (d) A GROUP BY column past the table (T1 has 5), with the GROUP BY
+     * metadata of column 0, which the setup accepts: each row read it
+     * with readSingleAttribute, whose ndbassert stopped a debug data
+     * node (a release one failed the row with 879, as it does now).
+     * The control is P-43's, column 0 with its metadata. */
+    const char *idD = "P-54d join aggregation GROUP BY a column past the table";
+    SpjReq good;
+    makeJoinAggScan(good, {localGroupByLeaf()});
+    appendGroupByMeta(good, NDB_TYPE_UNSIGNED, 4, 0);
+    const Reply controlD = sendScanTabReq(good);
+    printReply("CONTROL (GROUP BY column 0 with its metadata)", controlD);
+    if (controlD.gsn != GSN_SCAN_TABCONF) {
+      g_err << "P-54d CONTROL did not get SCAN_TABCONF (got "
+            << gsnName(controlD.gsn) << ", err " << controlD.errorCode
+            << ").  Fix this before trusting the result of P-54d." << endl;
+      return clusterHealthy() ? NDBT_FAILED : failNodeDown(idD);
+    }
+    SpjReq r;
+    makeJoinAggScan(r, {localGroupByLeaf(100)});
+    appendGroupByMeta(r, NDB_TYPE_UNSIGNED, 4, 0);
+    r.waitForEnd = true;
+    const Reply rep = sendScanTabReq(r);
+    printReply(idD, rep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(idD);
+    }
+    if (rep.gsn != GSN_SCAN_TABREF) {
+      g_err << idD << ": FAIL -- expected SCAN_TABREF, got "
+            << gsnName(rep.gsn) << ": the column was not refused" << endl;
+      return NDBT_FAILED;
+    }
+    g_info << idD << ": PASS (all data nodes started; SCAN_TABREF "
+           << rep.errorCode << ")" << endl;
     return NDBT_OK;
   }
 
@@ -3632,7 +3672,7 @@ TESTCASE("P53",
 }
 TESTCASE("P54",
          "join aggregation: SUM or arithmetic of a string register, two "
-         "aggregates of one slot") {
+         "aggregates of one slot, a GROUP BY column past the table") {
   STEP(runP54);
 }
 TESTCASE("P55",

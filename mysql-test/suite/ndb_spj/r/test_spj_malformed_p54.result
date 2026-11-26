@@ -2,7 +2,7 @@
 Running command
 Result of command: 0
 Test program success!
-# P-54: join aggregation SUM or arithmetic of a string register, two aggregates of one slot
+# P-54: join aggregation SUM or arithmetic of a string register, two aggregates of one slot, a GROUP BY column past the table
 Running command
 Result of command: 0
 Test program success!
