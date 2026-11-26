@@ -1,0 +1,117 @@
+# ==========================================================================
+# Inserts of NULL or omitted TEXT values into a TTL table, batched into the
+# commit.
+#
+# An insert on a TTL table treats the old blob length as unknown, so even a
+# NULL blob has work: a NULL head rewrite and a part probe delete (see
+# ttl_blob_part_leak). When no value is set, NdbBlob::preExecute used to
+# define none of that work, so a statement whose rows all batch into the one
+# Commit execute (a multi-row autocommit insert, INSERT ... SELECT, or any
+# insert under transaction_allow_batching) committed its rows and then tried
+# to send the blob work on the committed transaction. That failed with
+# "Got error 0 'No error' from NDB" (error 122) while the rows stayed.
+#
+# Every insert below must succeed, and every row must read back. The
+# controls (a one-row insert, non-NULL values) passed before the fix too.
+#
+# The last part checks the leak side: a multi-row NULL insert over two
+# expired 5-part rows must delete all their parts.
+#
+# BLOB layout: 256 bytes inline in the base row + 2000-byte parts.
+#   10256 bytes = 256 + 5*2000 -> exactly 5 parts
+# Part rows are counted via ndbinfo.memory_per_fragment fixed_elem_count,
+# summed over fragments and replicas (NoOfReplicas=2: 2x the row count).
+# ==========================================================================
+
+--source include/have_ndb.inc
+
+SET time_zone = '+00:00';
+
+--disable_warnings
+DROP TABLE IF EXISTS test.tbn, test.tbt, test.tbl, test.src;
+--enable_warnings
+
+CREATE TABLE test.tbn (
+  id      INT PRIMARY KEY,
+  ttl_col DATETIME,
+  v       TEXT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+
+CREATE TABLE test.src (id INT PRIMARY KEY) ENGINE=NDB;
+INSERT INTO test.src VALUES (6), (7), (8), (9);
+
+--echo #
+--echo # Multi-row VALUES with NULL
+--echo #
+INSERT INTO test.tbn VALUES (1, NOW(), NULL), (2, NOW(), NULL), (3, NOW(), NULL);
+
+--echo #
+--echo # Multi-row with the TEXT column omitted
+--echo #
+INSERT INTO test.tbn (id, ttl_col) VALUES (4, NOW()), (5, NOW());
+
+--echo #
+--echo # INSERT ... SELECT with NULL, several rows and one row
+--echo #
+INSERT INTO test.tbn SELECT id, NOW(), NULL FROM test.src WHERE id IN (6, 7, 8);
+INSERT INTO test.tbn SELECT id, NOW(), NULL FROM test.src WHERE id = 9;
+
+--echo #
+--echo # transaction_allow_batching=ON: one-row insert, BEGIN ... COMMIT insert
+--echo #
+SET transaction_allow_batching = ON;
+INSERT INTO test.tbn VALUES (20, NOW(), NULL);
+BEGIN;
+INSERT INTO test.tbn VALUES (21, NOW(), NULL);
+COMMIT;
+SET transaction_allow_batching = OFF;
+
+--echo #
+--echo # Controls: one-row NULL insert, multi-row non-NULL insert
+--echo #
+INSERT INTO test.tbn VALUES (30, NOW(), NULL);
+INSERT INTO test.tbn VALUES (31, NOW(), 'x'), (32, NOW(), REPEAT('y', 5000));
+
+--echo # every row is there, NULL where no value was given
+SELECT id, v IS NULL AS v_is_null, LENGTH(v) FROM test.tbn ORDER BY id;
+
+--echo #
+--echo # TINYTEXT column (no parts): multi-row NULL insert
+--echo #
+CREATE TABLE test.tbt (
+  id      INT PRIMARY KEY,
+  ttl_col DATETIME,
+  v       TINYTEXT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+INSERT INTO test.tbt VALUES (1, NOW(), NULL), (2, NOW(), NULL);
+SELECT id, v IS NULL AS v_is_null FROM test.tbt ORDER BY id;
+
+--echo #
+--echo # Leak side: multi-row NULL insert over two expired 5-part rows
+--echo #
+CREATE TABLE test.tbl (
+  id      INT PRIMARY KEY,
+  ttl_col DATETIME,
+  v       TEXT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=2@ttl_col";
+INSERT INTO test.tbl VALUES (1, NOW(), REPEAT('a', 10256)), (2, NOW(), REPEAT('b', 10256));
+SELECT id, LENGTH(v) FROM test.tbl ORDER BY id;
+--echo # part rows: 2 rows x 5 parts (= 20 across 2 replicas)
+SELECT SUM(fixed_elem_count) AS part_rows_x_replicas
+  FROM ndbinfo.memory_per_fragment
+  WHERE fq_name = (SELECT CONCAT('test/def/NDB', CHAR(36), 'BLOB_', id, '_2')
+                   FROM ndbinfo.dict_obj_info WHERE fq_name = 'test/def/tbl');
+
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.tbl
+--let $ttl_wait_timeout = 20
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+INSERT INTO test.tbl VALUES (1, NOW(), NULL), (2, NOW(), NULL);
+SELECT id, v IS NULL AS v_is_null FROM test.tbl ORDER BY id;
+--echo # part rows after the NULL insert: 0 (all old parts probe-deleted)
+SELECT SUM(fixed_elem_count) AS part_rows_x_replicas
+  FROM ndbinfo.memory_per_fragment
+  WHERE fq_name = (SELECT CONCAT('test/def/NDB', CHAR(36), 'BLOB_', id, '_2')
+                   FROM ndbinfo.dict_obj_info WHERE fq_name = 'test/def/tbl');
+
+DROP TABLE test.tbn, test.tbt, test.tbl, test.src;
