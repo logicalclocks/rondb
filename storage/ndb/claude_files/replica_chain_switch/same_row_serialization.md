@@ -1,8 +1,11 @@
-# Same-row write serialization in DBTC
+# Same-row serialization in DBTC
 
-Status: proposed 2026-11-25, not implemented. It replaces the approach in
-`design.md` (keep the replica chain at COMMIT_STORED, chain clock and
-fragment stamps with the DBTC 1204 check, rebalance in start phase 120).
+Status: proposed 2026-11-25; implemented 2026-11-26 on
+RONDB-1124-autotest-fixes, not yet built or tested; locked reads added
+the same day (see Which operations). It replaces the
+approach in `design.md` (keep the replica chain at COMMIT_STORED, chain
+clock and fragment stamps with the DBTC 1204 check, rebalance in start
+phase 120), which is reverted.
 The Problem section of `design.md` (630 in `InplaceCharPkChange*`, the
 evidence, the chain changes at STORED and COMMIT_STORED) stays valid.
 
@@ -16,7 +19,10 @@ directly: a write is not sent while an earlier write of the same
 transaction on the same row (same table, fragment and row hash) is in
 flight along a different chain. It waits in DBTC and is sent when the
 earlier write gets LQHKEYCONF or LQHKEYREF. A write that takes the same
-chain as the earlier one is sent at once, as today.
+chain as the earlier one is sent at once, as today. Locked reads are
+ordered the same way against writes of the row: a locked read and a
+write keep their order at once only if the read goes to the write's
+first replica.
 
 DBDIH may then change chains whenever it needs to, as it did before:
 COMMIT_STORED switches the primary back to the restarted node fragment by
@@ -33,15 +39,23 @@ for this and is flow control in its own right.
   batch order for writes of one row (waiters are resumed first in, first
   out), which is what the RonDB comment at the read routing in
   `DbtcMain.cpp` promises for rows a transaction writes itself.
-- Reads, committed or locked, are not ordered against writes of the same
-  batch: reading your own writes within a batch is documented as unsafe,
-  the read returns either the old or the new row. A read sees the
-  transaction's own writes of earlier batches: the API starts the next
-  batch only after the previous one has completed, and DBTC confirms a
-  write only after LQHKEYCONF, which the last replica sends after every
-  replica has executed it (linear prepare,
-  `LqhKeyReq::setNormalProtocolFlag`). So reads take no part in the wait
-  and are never delayed by it.
+- Committed reads are not ordered against writes of the same batch:
+  reading your own writes within a batch with a committed read is
+  documented as unsafe, the read returns either the old or the new row.
+- Locked reads are ordered against writes of the same row in the batch
+  order. The comment at the query thread decision in
+  `Dbtc::sendlqhkeyreq()` says that the metadata handling (`ndb_schema`)
+  and the replication code rely on a locked read and a following write of
+  the same row in one batch being executed in that order. Normally both
+  go to the primary's LDM along the same link; when the primary changes
+  between them, the read would go to the old primary directly and the
+  write through the new primary, and could reach the old primary after
+  the write.
+- Any read sees the transaction's own writes of earlier batches: the API
+  starts the next batch only after the previous one has completed, and
+  DBTC confirms a write only after LQHKEYCONF, which the last replica
+  sends after every replica has executed it (linear prepare,
+  `LqhKeyReq::setNormalProtocolFlag`).
 - Committed reads do not report back to DBTC: there is no LQHKEYCONF for
   them, DBTC releases them when they are sent (`releaseDirtyRead()`), and
   nothing here may depend on them coming back.
@@ -91,7 +105,7 @@ Covered by this, with no other mechanism:
   inserted by another in the same batch is serialized like any row.
 
 It aborts nothing and delays nothing unless a chain changed between two
-writes of one row in one batch. Today's chain clock also aborts
+writes, or a locked read and a write, of one row in one batch. Today's chain clock also aborts
 transactions that are safe: `ndb_stored_chain` updates a row, lets STORED
 insert node 3, and updates the row again in the next statement; the
 second UPDATE gets 1204 (shown as lock wait timeout) although the first
@@ -116,158 +130,239 @@ one had completed on all replicas.
 - Writes: insert, update, write, delete, refresh, including dirty writes
   inside a transaction and trigger operations. Interpreted updates are
   updates. These are holders and can be waiters.
-- Reads of any lock mode, unlock operations and scans: not involved.
+- Locked reads: shared, exclusive and simple reads, including the reads
+  of unique index lookups and foreign key checks. Holders and waiters
+  against writes of the row, never against other reads.
+  (`isRowOrderedOperation()` is every tracked operation but an unlock.)
+- Committed reads, unlock operations and scans: not involved. A
+  committed read never reports back; an unlock goes by its lock handle to
+  the node with the lock, which the API has only after the read returned.
 
 ### Key, path and lifetime
 
-- Key: table id, fragment id (from `DiGetNodesConf`) and the row hash
-  `thashValue` that `hash()` computes in `tckeyreq050Lab()`. The row hash
-  is taken after collation normalisation, so `x3` and `'X3 '` in a case
-  insensitive collation give the same key. The fragment id is part of the
-  key because reorg and fully replicated trigger operations write the
-  same row to other fragments; those are other rows and must not wait for
-  each other or for the main operation. Hash collisions only make a write
-  wait unnecessarily.
-- Path: the node list from `DiGetNodesConf` (`tcNodedata`). Within one
-  fragment the LDM instance is the same in every node, so equal node
-  lists mean the same LDM instances and links.
-- Holder: a write from sending LQHKEYREQ until LQHKEYCONF, LQHKEYREF or
-  its abort.
-- A new write on a key is sent at once when the key has no waiting write
-  and every holder of the key has the same path. Otherwise it waits.
-  Waiters of a key are resumed first in, first out.
+- Key: transaction, table id, fragment id (from `DiGetNodesConf`) and the
+  row hash `thashValue` that `hash()` computes in `tckeyreq050Lab()`. The
+  row hash is taken after collation normalisation, so `x3` and `'X3 '` in
+  a case insensitive collation give the same key. The fragment id is part
+  of the key because reorg and fully replicated trigger operations write
+  the same row to other fragments; those are other rows and must not wait
+  for each other or for the main operation. Hash collisions only make a
+  write wait unnecessarily.
+- Path of a write: the node list from `DiGetNodesConf` (`tcNodedata`,
+  `noOfNodes`). Within one fragment the LDM instance is the same in every
+  node, so equal node lists mean the same LDM instances and links.
+  `V_QUERY` is resolved to DBLQH for writes.
+- Path of a locked read: the one node it is sent to (`tcNodedata[0]`,
+  the primary, or a backup for a simple read that may use one), and
+  whether it goes to DBLQH there (`SF_READ_VIA_LDM`): not through DBSPJ,
+  and not to `V_QUERY`, which may pick a query thread when the request is
+  sent. Reads in a batch with other operations go to the primary's DBLQH
+  (the batch-unsafe case in `getNodesForOperation()`), so this is the
+  common case.
+- Order kept without waiting: two writes with the same node list; a
+  locked read and a write when the read goes to the write's first
+  replica's DBLQH. Two reads never wait for each other.
+- Holder: a write or locked read from sending LQHKEYREQ until
+  LQHKEYCONF, LQHKEYREF or its release in an abort.
+- All write holders of a key have the same node list, but read holders
+  need not have the same node, so a new operation is compared with every
+  holder of its key in the bucket.
 - A holder never waits for anything in DBTC: it has been sent and only
   LQH decides when it is answered. Fired triggers are executed only after
-  the triggering operation's LQHKEYCONF (`execLQHKEYCONF`, `numFired`), so
-  the key is released before any of its trigger operations is created.
-  The wait therefore adds no deadlock inside DBTC; waits between
-  transactions on row locks are unchanged.
+  the triggering operation's LQHKEYCONF (`execLQHKEYCONF`, `numFired`), and
+  the key is released at the start of `execLQHKEYCONF`, before them. The
+  wait therefore adds no deadlock inside DBTC; waits between transactions
+  on row locks are unchanged. A locked read that waits in LQH for another
+  transaction's lock holds back a later write of its row in DBTC, which
+  would otherwise wait for the same lock in LQH.
 
 ### Limit on operations in flight
 
-- A data node configuration parameter (name to be decided, e.g.
-  `MaxParallelOperationsPerTransaction`) limits the operations DBTC has
-  sent for one transaction and not yet got LQHKEYCONF or LQHKEYREF for.
-  It counts the operations DBTC tracks to LQHKEYCONF, reads with locks
-  included. Committed reads are not counted: they never report back to
-  DBTC, so DBTC cannot know when they are done.
+- `MaxParallelOperationsPerTransaction` (data node parameter, id 712,
+  default 1024, minimum 1) limits the operations DBTC has sent for one
+  transaction and not yet got LQHKEYCONF or LQHKEYREF for. It counts all
+  operations except committed reads, reads with locks and unlock
+  operations included: committed reads never report back to DBTC, so
+  DBTC cannot know when they are done.
+- Scans are not counted; they have their own limits (fragments scanned in
+  parallel, batch sizes). Lock take-over operations of a scan are key
+  operations and are counted.
 - An operation beyond the limit waits like a write on a busy key and is
-  resumed when an operation of the transaction completes. Waiting
+  resumed when an operation of the transaction is answered. Waiting
   operations hold no slot and no lock, and a slot is freed at LQHKEYCONF,
   before the operation's triggers run, so the limit cannot deadlock a
   transaction against itself.
-- With the limit, the key table of a transaction never holds more than
-  the limit, so it has a fixed maximum size.
-- In itself the limit keeps one transaction with a very large batch from
-  flooding the LDM threads and the send buffers; such a batch is sent as
-  a window of the limit's size instead.
-- Default to be measured: large enough that MySQL batches, `ndb_restore`
-  and the REST server's batches are not slowed (a few hundred to a few
-  thousand).
+- The limit is flow control: one transaction with a very large batch is
+  sent as a window of the limit's size instead of flooding the LDM
+  threads and the send buffers. The key table does not depend on it (see
+  Key table). The default of 1024 is to be measured against MySQL
+  batches (`ndb_batch_size`, 32 KB by default, 2 MB for the replica
+  applier), `ndb_restore` and the REST server.
 
 ### Where
 
-`tckeyreq050Lab()` is split at the call to `execDIGETNODESREQ`: the part
-before it (hash, table check, `DiGetNodesReq`) and the part after it
-(reorg handling, chain into `tcNodedata`, read routing,
-`attrinfoDihReceivedLab()`). The key and limit check comes right after
-`DiGetNodesConf`, where the 1204 check is today (the 1204 check goes). A
-holder enters the key table just before LQHKEYREQ is sent
-(`sendlqhkeyreq()`).
+- `tckeyreq050Lab()` keeps the checks, the hash, the TTL decision and the
+  `anyNode` choice, and saves the inputs of DIGETNODESREQ in the cache
+  record (`m_distr_hash_value`, `m_dih_any_node`, `m_ttl_table`,
+  `m_ttl_can_go_to_replica`, `m_fired_frag_id`).
+- `getNodesForOperation()` is the part after it: DIGETNODESREQ, the reorg
+  handling, the chain into `tcNodedata`, the read routing. It runs once
+  at TCKEYREQ and again for each resumed operation.
+- The key and limit check (`mustWaitToSend()`) is at the start of the
+  send in `attrinfoDihReceivedLab()`, when the operation is fully received:
+  for a short TCKEYREQ the last ATTRINFO comes later
+  (`execATTRINFO()` calls `attrinfoDihReceivedLab()`). An operation that
+  may be sent is entered there (`trackSentOperation()`): counted in the
+  transaction, and a write is linked into the key table.
+- On that path `attrinfoDihReceivedLab()` checks once whether the
+  operation is tracked (not a committed read); `mustWaitToSend()` only
+  asserts it, and the queue holds only tracked operations. If the
+  transaction has no operation in flight and none waiting
+  (`m_ops_in_flight | m_parked_ops` is 0), nothing can hold the operation
+  back (the limit is at least 1, every holder in the key table is in
+  flight), so `mustWaitToSend()` is not called. That is the first
+  operation of each batch: the NDB API sends the next batch only after
+  all operations of the previous one are answered. The operation is still
+  entered with `trackSentOperation()`.
+- The DBTC 1204 check of the chain clock is gone (reverted); 1204 remains
+  the error of the primary's distribution key check in DBLQH.
 
 ### Parking an operation
 
-- New operation state, e.g. `OS_WAIT_SEND`. The abort and node failure
-  code already has case labels for operations that have not contacted any
-  LQH (`OS_WAIT_DIH`, defined but never set, `OS_WAIT_KEYINFO`,
-  `OS_WAIT_ATTR`, `OS_CONNECTED` in `abort015Lab()` and the failure data
-  setup); the new state joins them, plus any state names in dumps.
-- DBTC has one cache record per transaction (`ApiConnectRecord::cachePtr`),
-  released when LQHKEYREQ is sent (`packLqhkeyreq040Lab()`,
-  `releaseAttrinfo()`). A parked operation takes it along (a field in
-  `TcConnectRecord`), and the transaction's `cachePtr` becomes RNIL, so the
-  next TCKEYREQ seizes a new record from the transient pool. The cache
-  record keeps the KeyInfo and AttrInfo sections.
-- The operation is fully received when it parks, so the transaction state
-  changes as at the end of `tckeyreq050Lab()` today (`CS_RECEIVING` to
-  `CS_STARTED`, `CS_REC_COMMITTING` to `CS_START_COMMITTING`).
+- State `OS_WAIT_DIH`, which was defined but never set. The abort and node
+  failure code already handles it with the states of operations that have
+  not contacted any LQH (`abort015Lab()`, the failure data setup).
+  Operation states are not shown in ndbinfo.
+- DBTC has one cache record per transaction at a time
+  (`ApiConnectRecord::cachePtr`): for a long TCKEYREQ the block's
+  `m_local_cache_record` (`cachePtr` ~0), for a short one a record from the
+  transient pool; it is released when LQHKEYREQ is sent
+  (`packLqhkeyreq040Lab()`, `releaseAttrinfo()`). A parked operation keeps
+  its cache record in `TcConnectRecord::m_parked_cache`, owned while
+  `SF_PARKED` is set (until `packLqhkeyreq040Lab()` releases it after the
+  resume, or the operation is released); the local record
+  is copied into a pooled one first. The transaction's `cachePtr` becomes
+  RNIL, so its next operation is received as usual. `releaseAttrinfo()`
+  now releases the record it is given and resets the transaction's
+  `cachePtr` only if it is that record, since a resumed operation is sent
+  while the transaction may be receiving another short TCKEYREQ.
+- The transaction state has already changed when the operation parks
+  (`CS_RECEIVING` to `CS_STARTED`, `CS_REC_COMMITTING` to
+  `CS_START_COMMITTING`).
 - `lqhkeyreqrec` was already incremented in `execTCKEYREQ`, so a parked
   operation counts as outstanding: TCKEYCONF, commit and the execute-flag
   handling wait for it without other changes.
-- The operation keeps the inputs of its `DiGetNodesReq`; for a reorg
-  trigger operation that includes `firedFragId`, which today lives in the
-  transaction only for the duration of the TCKEYREQ.
-- One first-in, first-out queue of parked operations per transaction.
-  When a slot or a key is released, the queue is scanned from the front:
-  an operation is resumed when a slot is free and its key allows it; an
-  operation that must still wait blocks later operations on the same key,
-  not others. The queue is never longer than the operations the API or
-  the triggers sent, and only exists while something waits.
+- One first-in, first-out queue per transaction (`m_parked_head`,
+  `m_parked_tail`, `TcConnectRecord::m_parked_next`, `m_parked_ops`). A new
+  operation waits whenever the queue is not empty, so the operations that
+  wait keep their order, whatever made the first of them wait. Committed
+  reads never wait.
 
 ### Resuming
 
-- A resume is a CONTINUEB to DBTC (operation and transaction i-values plus
-  the transaction id, checked on arrival; an operation aborted meanwhile
-  is gone). The CONTINUEB keeps the resume out of the LQHKEYCONF context,
-  its globals (`tcConnectptr`) and its recursion; waits are rare, so the
-  extra signal does not matter.
-- The resumed operation calls `execDIGETNODESREQ` again with the saved
-  inputs and continues in the second half of `tckeyreq050Lab()`. It must
-  not reuse the chain it got before parking: STORED may have inserted a
-  node meanwhile (the new node would miss the write, and the primary would
-  refuse the old distribution key once the copy has started), or a node in
-  it may have failed. The key and limit check is done again with the new
-  result; if it says wait, the operation goes back to its place at the
-  front of the queue.
-- If the new `DiGetNodesConf` gives another fragment (a reorg moved the
-  hash meanwhile), the operation takes the new key.
+- When an operation in flight is answered and the transaction has
+  operations waiting, one CONTINUEB ZRESUME_PARKED_OPS (transaction
+  i-value and transaction id) is sent, from a local Signal25 since
+  `execLQHKEYCONF`/`execLQHKEYREF` still use their signal data
+  (`saveTriggeringOpState()`), and at most one is on its way per
+  transaction (`m_resume_scheduled`).
+- `resumeParkedOps()` ignores the CONTINUEB if the transaction id differs
+  or the transaction is not in a state that receives or executes
+  operations (aborting, committing, released). Otherwise, while the
+  queue is not empty and a slot is free, the first operation asks DBDIH
+  again (`getNodesForOperation()` with resume) and is checked again
+  (`mustWaitToSend()` with resume); if its row is still held along
+  another path it stays first, and the holder's answer resumes it.
+  Otherwise it leaves the queue and is sent (`attrinfoDihReceivedLab()`
+  with resumed). At most 16 operations per CONTINUEB, then another.
+- The new DIGETNODES is required: STORED may have inserted a node
+  meanwhile (the new node would miss the write, and the primary refuses
+  the old distribution key once the copy has started), or a node in the
+  chain may have failed. On resume `SOF_REORG_MOVING` is cleared before
+  DIGETNODES (set again if the row still moves) and `firedFragId` of a
+  reorg trigger operation is restored from the cache record. If the new
+  answer gives another fragment, the operation takes the new key. If it
+  says the row is not moved (reorg, `tcNodedata[0]` 0), the operation
+  completes without being sent, as it would have at TCKEYREQ.
+- The local read and write counters are counted at the first DIGETNODES
+  only.
 
 ### Key table
 
-- `TcConnectRecord`: row hash, fragment id, table id, next in bucket, next
-  in the transaction's wait queue. About 16 bytes per operation record.
-- `ApiConnectRecord`: count of operations in flight, a few bucket heads
-  inline (for example 8), and the i-value of a bucket array from a DBTC
-  pool, sized from the limit and taken only when a transaction has more
-  writes in flight than the inline buckets serve well. Released when the
-  transaction ends.
-- The path of a holder is its `tcNodedata`, already in the record.
+- One table per DBTC instance, not per transaction: `c_row_key_hash`,
+  16384 buckets of TcConnectRecord i-values (64 KB), linked through
+  `m_row_key_next`/`m_row_key_prev`. The key includes the transaction, so
+  other transactions only make a bucket longer. No pool, no sizing from
+  the limit and nothing to release when a transaction ends.
+- The bucket is computed from the transaction, table id and row hash,
+  not the fragment id (which is still compared as part of the key). So
+  `tckeyreq050Lab()` computes it right after `hash()` and prefetches the
+  bucket for write, and DIGETNODES and the routing hide a cache miss on
+  it before `trackSentOperation()` writes it. The prefetch is done for
+  every operation: leaving out committed reads and unlocks would take
+  branches that cost more than the prefetch. Only the copies of a row
+  that reorg and fully replicated triggers write to other fragments
+  share a bucket because of the missing fragment id. LQHKEYCONF removes
+  the key with little work before it, so it has no prefetch.
+- The bucket is not saved in the operation: removing the first entry of
+  a bucket computes it again from `apiConnect`, the table id and the row
+  hash, which do not change while the key is linked (the operations of a
+  transaction move to another `ApiConnectRecord` only in the commit and
+  complete phases, when none is in flight).
+- `TcConnectRecord`: `m_send_flags` (`SF_IN_FLIGHT`, `SF_ROW_KEY`,
+  `SF_READ`, `SF_READ_VIA_LDM`, `SF_PARKED`) with the fragment id as
+  `Uint16` next to it (`MAX_NDB_PARTITIONS` is at most 8160), row hash,
+  table id, the two links, `m_parked_cache`, `m_parked_next`. Only
+  `m_send_flags` is initialised when the record is seized (the pool
+  constructs each record on seize); every other field is written before
+  its flag is set and read only while it is set, so a committed read
+  writes one byte more at seize and nothing else. `releaseTcCon()` tests
+  only `m_send_flags != 0`, and `packLqhkeyreq040Lab()` clears
+  `SF_PARKED` in the same byte. `ApiConnectRecord`: `m_ops_in_flight`,
+  the queue and `m_resume_scheduled`, reset in `initApiConnectRec()`.
 
 ### Abort, errors, failures
 
+- LQHKEYCONF and LQHKEYREF release the slot and the key
+  (`releaseSentOperation()`) and schedule the resume.
 - `AbortOnError`: the first LQHKEYREF aborts the transaction; parked
-  operations are released with it (cache record, sections, key table)
-  and never reach LQH.
+  operations are released with it and never reach LQH.
 - `IgnoreError`: LQHKEYREF releases the key and the slot, and the queue
-  is scanned.
-- Transaction timeout, API abort, API disconnect, TC node failure
-  handling for a failed data node: parked operations are in the
-  transaction's operation list in a state that has contacted no LQH, so
-  they are released like `OS_WAIT_ATTR` operations today. A take-over by
-  another TC never sees them; the API gets the failure.
-- The key table and the queue must be empty when the transaction record
-  is released (ndbrequire in debug builds, reset otherwise).
+  goes on.
+- Transaction timeout, API abort, API disconnect, failure of a data node
+  in a chain: parked operations are in the transaction's operation list
+  in `OS_WAIT_DIH` and are released like the others. `releaseTcCon()`
+  releases the slot and key of an operation released without an answer,
+  and the cache record of a parked operation, and drops the queue of the
+  transaction (nothing is resumed in an aborted transaction). A take-over
+  by another TC never sees them; the API gets the failure.
 
 ### Observability and test support
 
-- DBTC counters of writes that waited for a key and of operations that
-  waited for the limit (for example in `ndbinfo.counters`, which changes
-  the ndbinfo MTR results), so tests can show that the paths ran.
-- An error insert in DBTC that treats every path as different, so the
-  key wait runs without a chain change, and one that delays LQHKEYCONF of
-  one table, so a second write of a row deterministically waits.
+- `ndbinfo.counters` of DBTC: `SAME_ROW_WAITS` (32), writes and locked
+  reads that found an earlier operation of their row in flight along
+  another path (counted at each such wait), and `PARALLEL_OP_WAITS` (33),
+  operations that waited for the limit or behind other waiting
+  operations.
+- Error insert 8321: a write or locked read waits whenever an earlier
+  write or locked read of the row is in flight (not two reads), as if
+  every path had changed. Error insert 8322: the limit is 4.
 
 ## Costs
 
-- CPU: one key table lookup, insert and delete per write; a counter per
-  tracked operation for the limit. Reads: nothing.
-- Latency: a write waits only when a chain changed between it and an
-  earlier write of the same row in the same batch; then about one round
-  trip. Operations beyond the limit wait for a free slot, which is the
-  intended flow control.
-- Memory: about 16 bytes per `TcConnectRecord`, the inline buckets per
-  `ApiConnectRecord`, a bounded bucket array for transactions with many
-  writes in flight.
+- CPU: one key table insert and delete per write and locked read, and a
+  lookup (a walk of one bucket) unless it is the first operation of its
+  batch; a counter per tracked operation for the limit; the saved
+  DIGETNODESREQ inputs. Committed reads nothing.
+- Latency: a write or locked read waits only when the path changed
+  between it and an earlier operation of the same row in the same batch,
+  or a locked read of a row with a write in flight goes through DBSPJ or
+  to `V_QUERY` (single-operation batches and the API's batch-safe flag
+  only); then about one round trip. Operations beyond the limit wait for
+  a free slot, which is the intended flow control.
+- Memory: about 28 bytes per `TcConnectRecord`, 20 per `ApiConnectRecord`,
+  12 per cache record, 64 KB of buckets per DBTC instance, and one cache
+  record per waiting operation.
 - No aborts from this mechanism.
 
 ## Mixed versions
@@ -281,7 +376,12 @@ rebalance protocol are removed, there are no new signals to gate either.
 ## Commits on RONDB-1124-autotest-fixes
 
 The branch is pushed, so the rollback uses `git revert` (no history
-rewrite), newest first.
+rewrite), newest first. Done 2026-11-26 as 2071c782072 (217dc8322b9),
+91f3ee4fcb2 (1b1a10e7a91), e7f57fba527 (7b6889d9c00), 38b89343ccd (the
+part of 051016ad56d), b575e711c75 (0a43454a422), b10c6ce04e8
+(8e4607d4378) and 956b382d306 (eccea74b295); `ndb_stored_chain` adapted
+in 3fce60b6307. The reverts leave `design.md` and the index as they were;
+DBDIH, DBLQH and the shared headers are as before eccea74b295.
 
 ### Roll back
 
@@ -352,44 +452,67 @@ every replica.
 - Existing, must pass without 630 or replica differences:
   `InplaceCharPkChangeCS/CI/CISlowCopy`, `ChainSwitchDoubleUpdate`, with
   2 and 3 replicas (daily-devel--07 and weekly-devel--04).
-- New NDBT cases:
-  - batches with two and more writes of one row (update/update,
-    delete/insert, insert/update/delete) with the error insert that
-    treats every path as different: results as with the batch executed in
-    order, the key-wait counter increases, replicas agree
-    (`verifyTableReplicas`);
-  - the same with the error insert that delays LQHKEYCONF;
-  - a batch larger than the limit (inserts, then updates of the same
-    rows): completes, the limit counter increases;
-  - a unique key swap between two rows in one batch while nodes restart;
-  - double updates on a fully replicated table while nodes restart
-    (trigger operations on other fragments must not wait for each other);
-  - abort with parked operations: `AbortOnError` failure of the holder,
-    API abort, transaction timeout, failure of a data node in the chain.
-- MTR: `ndb_stored_chain` adapted; the new configuration parameter in the
-  configuration tests; the counters in the ndbinfo results.
+- New in testNodeRestart, in both suites:
+  - `SameRowWriteWait`: batches with update/update, delete/insert,
+    exclusive read/update, update/shared read and insert/update/delete of
+    the same rows with error insert 8321; the results are those of the
+    batch executed in order (the reads return the row before, and after,
+    the update), `SAME_ROW_WAITS` increases, all replicas agree
+    (`verifyTableReplicas` on a Read Backup table).
+  - `ParallelOperationLimit`: the same with error insert 8322;
+    `PARALLEL_OP_WAITS` increases.
+  - `WaitingOperationAbort`: with 8322, a transaction whose first four
+    updates wait for row locks of another transaction times out (266)
+    with 16 operations waiting; an `AbortOnError` batch fails on its first
+    operation (630) with operations waiting; an `IgnoreError` batch goes
+    on after the error and commits. Nothing of the aborted ones remains.
+- MTR: `ndb_stored_chain` (second UPDATE after STORED inserted node 3
+  succeeds, the row is read through every replica), `ndbinfo` (the two
+  counter names).
+- Not written yet: a unique key swap between two rows in one batch while
+  nodes restart; double updates on a fully replicated table while nodes
+  restart; `MaxParallelOperationsPerTransaction` in the configuration
+  tests.
 
 ## Plan
 
-1. Settle the open points below.
-2. Revert the commits listed above (one revert commit each, newest first),
-   adapt the tests that stay, re-record `ndbinfo_plans`.
-3. Implement in DBTC: split `tckeyreq050Lab()`, key table, limit, park,
-   CONTINUEB resume with a new DIGETNODES, release on
-   LQHKEYCONF/LQHKEYREF/abort, the new state in the abort and failure
-   paths, counters, error inserts, configuration parameter.
-4. New tests, then the autotest suites with 2 and 3 replicas.
-5. Update `design.md` and the index in `storage/ndb/CLAUDE.md`.
+1. Settle the open points (done 2026-11-26, see Settled points).
+2. Revert the commits listed above, one revert commit each, newest first;
+   adapt the tests that stay (done 2026-11-26, local commits).
+3. Implement in DBTC (done 2026-11-26, not built).
+4. New tests (done 2026-11-26, see Tests), then the autotest suites with
+   2 and 3 replicas.
+5. Update `design.md` and the index in `storage/ndb/CLAUDE.md` (done).
+6. Re-record `ndbinfo_plans` (error messages of DisallowDirtyWrites, the
+   counters estimate of 13 rows per DBTC instance).
 
-## Open points
+## Settled points (2026-11-26)
 
-1. How a reorg trigger operation repeats its DIGETNODES on resume
-   (`firedFragId` saved in the operation, or a DIGETNODES variant that
-   takes the fragment id); fully replicated triggers already pass their
-   fragment in the TCKEYREQ.
-2. Name and default of the limit, and whether it should also apply to
-   scans. Committed reads stay outside it: they do not report back.
-3. Pool and size of the bucket arrays.
-4. Whether anything relies on the order of answers within a batch for
-   different rows (an operation that waits is answered after operations
-   behind it; the NDB API matches answers by operation).
+1. Reorg trigger operations on resume: `firedFragId` is saved in the cache
+   record at TCKEYREQ and restored into the transaction for the repeated
+   DIGETNODES, where the reorg handling reads it and resets it as before.
+   Fully replicated triggers pass their fragment in the TCKEYREQ (saved
+   `anyNode` 3).
+2. The limit: `MaxParallelOperationsPerTransaction`, default 1024,
+   minimum 1, not for scans; committed reads stay outside it.
+3. The key table: one hash table per DBTC instance with the transaction
+   in the key, 16384 buckets, so no pool, no per-transaction buckets and
+   no dependency on the limit.
+4. Order of answers within a batch: nothing relies on it. The NDB API
+   matches each TCKEYCONF entry by the operation's receiver and counts
+   completed operations (`NdbTransaction::receiveTCKEYCONF()`), and answers
+   for rows in different fragments already come back in any order.
+
+5. Locked reads are ordered against writes of the row too (was the open
+   point: `ndb_schema` and replication rely on a locked read and a
+   following write of a row in one batch executing in that order, which
+   a primary change between them could break; the chain clock refused it
+   with 1204). See Which operations and Key, path and lifetime.
+
+Also decided while implementing: the existing unused state `OS_WAIT_DIH`
+instead of a new one; one strict first-in, first-out queue (a later
+operation also waits behind an operation that waits for its row, which
+is rare); one CONTINUEB per transaction instead of one per operation;
+`attrinfoDihReceivedLab()` checks once whether an operation is tracked
+and skips `mustWaitToSend()` when the transaction has nothing in flight
+or waiting (see Where).

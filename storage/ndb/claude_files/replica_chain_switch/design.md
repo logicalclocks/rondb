@@ -9,8 +9,13 @@ the testNodeRestart test cases have not run yet.
 2026-11-25: a replacement is proposed in `same_row_serialization.md`:
 DBTC holds back an operation while an earlier operation of the same
 transaction on the same row is in flight, and steps 1-3 are rolled back.
-The Problem section below stays valid; the Design sections describe the
-current code until that replacement is implemented.
+
+2026-11-26: the replacement is implemented and steps 1-3 and their tests
+are reverted: COMMIT_STORED switches the primary as before, and DBTC
+holds back a write while an earlier write of the same row in the same
+transaction is in flight along another chain. The Problem section below
+stays valid; the Design sections describe the reverted code and are kept
+as history.
 
 ## Problem
 
