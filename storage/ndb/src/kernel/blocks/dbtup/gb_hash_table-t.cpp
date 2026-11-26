@@ -29,6 +29,8 @@
  * segments come from malloc through this file's agg_gb_segment_alloc,
  * which counts what is live and can be told to fail one allocation.
  * BUCKET_COUNT is 16, so growth crosses many segments with few keys.
+ * test_bad_length_prefix uses the type-aware path, with a VARCHAR
+ * column in latin1.
  */
 
 #include <util/NdbTap.hpp>
@@ -41,6 +43,7 @@
 #include "NdbAggregationCommon.hpp"
 #include <AttributeHeader.hpp>
 #include "AggHashTable.hpp"
+#include "mysql/strings/m_ctype.h"
 
 static int g_attempts = 0;     // agg_gb_segment_alloc calls
 static int g_live = 0;         // allocations not yet freed
@@ -254,7 +257,73 @@ static void test_peak() {
   OK(g_live == 0);
 }
 
+/* A VARCHAR GROUP BY column with a collation (RONDB-1124): checkKey
+ * refuses a key whose length byte runs past its value, a LONGVARCHAR
+ * value of one byte and an entry that runs past the key; hashKeyFull
+ * and findInBucket take such keys without reading past them and without
+ * the compare, whose require (cmpVarchar) stopped a data node. */
+static void test_bad_length_prefix() {
+  GBColTypeInfo types[2];
+  types[0].typeId = NdbSqlUtil::Type::Varchar;
+  types[0].cs = &my_charset_latin1;
+  types[0].cmpFn = NdbSqlUtil::getStringResultCmp(NdbSqlUtil::Type::Varchar);
+  types[0].maxBytes = 11;
+  types[1].typeId = NdbSqlUtil::Type::Longvarchar;
+  types[1].cs = &my_charset_latin1;
+  types[1].cmpFn =
+      NdbSqlUtil::getStringResultCmp(NdbSqlUtil::Type::Longvarchar);
+  types[1].maxBytes = 12;
+  Table t;
+  t.init(0);
+  t.setTypeMeta(types, 2);
+
+  /* [4]'abc' 'd', then the LONGVARCHAR [1, 0]'x' */
+  const Uint32 good[5] = {AttributeHeader(0, 5).m_value, 0x63626104u,
+                          0x00000064u, AttributeHeader(1, 3).m_value,
+                          0x00780001u};
+  /* The length byte says 255 in a value of 5 bytes */
+  const Uint32 bad_varchar[5] = {AttributeHeader(0, 5).m_value, 0x636261FFu,
+                                 0x00000064u, AttributeHeader(1, 3).m_value,
+                                 0x00780001u};
+  /* A LONGVARCHAR value of 1 byte: no room for its length */
+  const Uint32 bad_longvarchar[5] = {AttributeHeader(0, 5).m_value,
+                                     0x63626104u, 0x00000064u,
+                                     AttributeHeader(1, 1).m_value,
+                                     0x00000078u};
+  /* An entry of 40 bytes in a key of 2 words */
+  const Uint32 truncated[2] = {AttributeHeader(0, 40).m_value, 0x63626104u};
+  const char *const g = reinterpret_cast<const char *>(good);
+  const char *const bv = reinterpret_cast<const char *>(bad_varchar);
+  const char *const bl = reinterpret_cast<const char *>(bad_longvarchar);
+  const char *const tr = reinterpret_cast<const char *>(truncated);
+  OK(t.checkKey(g, sizeof(good)));
+  OK(!t.checkKey(bv, sizeof(bad_varchar)));
+  OK(!t.checkKey(bl, sizeof(bad_longvarchar)));
+  OK(!t.checkKey(tr, sizeof(truncated)));
+
+  /* A group of the good key; each bad key is looked up in its bucket */
+  char *r = static_cast<char *>(calloc(1, Table::OVERHEAD + sizeof(good)));
+  *reinterpret_cast<Uint32 *>(r + Table::KEY_LEN_OFFSET) = sizeof(good);
+  memcpy(r + Table::OVERHEAD, good, sizeof(good));
+  const Uint32 b = t.hashKey(g, sizeof(good), g_xfrm, sizeof(g_xfrm));
+  t.insertRawInBucket(b, r + Table::OVERHEAD, g_xfrm, sizeof(g_xfrm));
+  OK(t.findInBucket(b, g, sizeof(good)) == r + Table::OVERHEAD);
+  OK(t.findInBucket(b, bv, sizeof(bad_varchar)) == nullptr);
+  OK(t.findInBucket(b, bl, sizeof(bad_longvarchar)) == nullptr);
+  OK(t.findInBucket(b, tr, sizeof(truncated)) == nullptr);
+  /* hashKeyFull hashes them from their own bytes: the same each time */
+  OK(t.hashKeyFull(bv, sizeof(bad_varchar), g_xfrm, sizeof(g_xfrm)) ==
+     t.hashKeyFull(bv, sizeof(bad_varchar), g_xfrm, sizeof(g_xfrm)));
+  OK(t.hashKeyFull(bl, sizeof(bad_longvarchar), g_xfrm, sizeof(g_xfrm)) ==
+     t.hashKeyFull(bl, sizeof(bad_longvarchar), g_xfrm, sizeof(g_xfrm)));
+  (void)t.hashKeyFull(tr, sizeof(truncated), g_xfrm, sizeof(g_xfrm));
+  t.clear();
+  free(r);
+  OK(g_live == 0);
+}
+
 TAPTEST(GBHashTable) {
+  test_bad_length_prefix();
   test_growth_without_hint();
   test_hint_jump();
   test_no_jump();
