@@ -361,11 +361,16 @@ spellings would need new macro machinery.</p>
 <dt>Fallback if grouping is deemed too invasive for v1</dt><dd>Tag all transactions with the
     identity of the <em>first</em> operation's DB and document it. Deterministic but
     mis-attributes mixed batches; grouping is the recommended end state.</dd>
-<dt><span class="tag">AS BUILT</span></dt><dd>The <strong>fallback</strong> shipped, not the
-    grouping: <span class="file">batch_pk_read_ctrl.cpp</span> bills the whole batch to
-    <code>reqStructs[0].path.db</code>. Mixed-project batches are therefore mis-attributed to the
-    first operation's project. Per-database transaction groups remain the recommended end state
-    and are tracked as a follow-up.</dd>
+<dt><span class="tag">AS BUILT</span></dt><dd>The fallback shipped first; RONDB-1158 replaced it
+    with grouping by <em>identity</em> rather than by database:
+    <span class="file">batch_pk_read_ctrl.cpp</span> resolves each operation's identity from its
+    database and hands <code>pk_batch_read</code> the distinct identities plus a per-operation
+    index (<code>RS_RateLimitIdentities</code>); in single-transaction mode
+    <code>BatchKeyOperations</code> keeps one transaction per identity across the loops of the
+    batch, in per-operation mode each transaction is tagged with its operation's identity. A
+    batch over one identity, the common case, runs exactly as before; a mixed batch costs one
+    transaction per extra identity. An operation whose database has no identity runs untagged
+    while the others are metered.</dd>
 </dl>
 
 <h3>6.4 feature-store <span class="tag">POST /0.1.0/feature_store</span></h3>

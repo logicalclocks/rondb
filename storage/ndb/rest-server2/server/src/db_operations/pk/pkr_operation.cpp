@@ -101,6 +101,8 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
    * error return must not make it touch unconstructed entries. */
   m_numOperations = 0;
   m_num_sent_operations = 0;
+  m_num_groups = 0;
+  m_groups = nullptr;
   m_single_transaction = globalConfigs.rest.useSingleTransaction;
   m_key_ops = amalloc->alloc<KeyOperation>(numOps);
   if (unlikely(m_key_ops == nullptr)) {
@@ -108,6 +110,18 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
         std::string(rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
     return error;
   }
+  Uint32 num_groups = std::max(1u, m_identities->num);
+  m_groups = amalloc->alloc<IdentityGroup>(num_groups);
+  if (unlikely(m_groups == nullptr)) {
+    RS_Status error = RS_SERVER_ERROR(
+        std::string(rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
+    return error;
+  }
+  for (Uint32 g = 0; g < num_groups; g++) {
+    m_groups[g].m_trans = nullptr;
+    m_groups[g].m_num_sent = 0;
+  }
+  m_num_groups = num_groups;
   DEB_NDB_BE("m_key_ops: %p, sizeof(KeyOperation): %u",
              m_key_ops, (Uint32)sizeof(KeyOperation));
   for (Uint32 i = 0; i < numOps; i++) {
@@ -398,19 +412,24 @@ RS_Status BatchKeyOperations::setup_primary_keys() {
 
 /**
  * RONDB-978: tag a freshly started transaction with the rate limit
- * identity of the request. The data nodes meter usage per identity and
- * reject new transactions when the rate limit is exhausted; during the
- * overload backoff window setUserId itself fails with the rate overflow
- * error (mapped to HTTP 429). Transactions left open on failure are
- * closed by handle_ndb_error() -> close_transaction().
+ * identity operation opIdx bills to. The data nodes meter usage per
+ * identity and reject new transactions when the rate limit is exhausted;
+ * during the overload backoff window setUserId itself fails with the rate
+ * overflow error (mapped to HTTP 429). Transactions left open on failure
+ * are closed by handle_ndb_error() -> close_transaction().
  */
 RS_Status BatchKeyOperations::set_transaction_user_id(
-  NdbTransaction *transaction) {
-  if (m_rate_limit_identity == nullptr) {
+  NdbTransaction *transaction, Uint32 opIdx) {
+  if (m_identities->num == 0) {
     return RS_OK;
   }
-  if (unlikely(transaction->setUserId(m_rate_limit_identity,
-                                      m_rate_limit_identity_len) != 0)) {
+  Uint32 identity = identity_of(opIdx);
+  Uint32 len = m_identities->lens[identity];
+  if (len == 0) {
+    return RS_OK;
+  }
+  if (unlikely(transaction->setUserId(m_identities->names[identity],
+                                      len) != 0)) {
     return RS_RONDB_SERVER_ERROR(transaction->getNdbError(),
       std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
   }
@@ -421,36 +440,30 @@ RS_Status BatchKeyOperations::setup_transactions() {
   Uint32 tmp[MAX_KEY_SIZE_IN_WORDS * MAX_XFRM_MULTIPLY];
   char *buf = (char *)&tmp[0];
   if (unlikely(m_single_transaction)) {
-    if (m_key_ops[0].m_ndbTransaction != nullptr) {
-      /* Transaction started already in previous loop */
-      return RS_OK;
-    }
-    KeyOperation *key_op = &m_key_ops[0];
-    KeyOperation *first_key_op = nullptr;
+    /* One transaction per identity, started by the identity's first valid
+     * operation and kept across the loops of the batch. */
     for (Uint32 i = m_first_key; i < m_last_key; i++) {
-      first_key_op = &m_key_ops[i];
-      PKRRequest *req = &first_key_op->m_req;
-      if (req->IsInvalidOp()) {
-        first_key_op = nullptr;
+      KeyOperation *key_op = &m_key_ops[i];
+      if (key_op->m_req.IsInvalidOp()) {
         continue;
       }
-      break;
-    }
-    /* Check that at least one operation is valid */
-    if (first_key_op != nullptr) {
-      key_op->m_ndbTransaction = m_ndb_object->startTransaction(
-        first_key_op->m_ndb_record,
-        (const char*)first_key_op->m_row,
-        buf,
-        sizeof(tmp));
-      if (unlikely(key_op->m_ndbTransaction == nullptr)) {
-        return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(),
-          std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
+      IdentityGroup *group = &m_groups[identity_of(i)];
+      if (group->m_trans == nullptr) {
+        group->m_trans = m_ndb_object->startTransaction(
+          key_op->m_ndb_record,
+          (const char*)key_op->m_row,
+          buf,
+          sizeof(tmp));
+        if (unlikely(group->m_trans == nullptr)) {
+          return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(),
+            std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
+        }
+        RS_Status status = set_transaction_user_id(group->m_trans, i);
+        if (unlikely(status.http_code != SUCCESS)) {
+          return status;
+        }
       }
-      RS_Status status = set_transaction_user_id(key_op->m_ndbTransaction);
-      if (unlikely(status.http_code != SUCCESS)) {
-        return status;
-      }
+      key_op->m_ndbTransaction = group->m_trans;
     }
   } else {
     for (Uint32 i = m_first_key; i < m_last_key; i++) {
@@ -468,7 +481,7 @@ RS_Status BatchKeyOperations::setup_transactions() {
         return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(),
             std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
       }
-      RS_Status status = set_transaction_user_id(key_op->m_ndbTransaction);
+      RS_Status status = set_transaction_user_id(key_op->m_ndbTransaction, i);
       if (unlikely(status.http_code != SUCCESS)) {
         return status;
       }
@@ -490,10 +503,7 @@ RS_Status BatchKeyOperations::setup_read_operations() {
       continue;
     }
     NdbTransaction *trans = key_op->m_ndbTransaction;
-    if (unlikely(m_single_transaction)) {
-      trans = m_key_ops[0].m_ndbTransaction;
-      require(trans);
-    }
+    require(trans);
     DEB_NDB_BE("readTuple: read_columns[%u]: 0x%x,0x%x",
               opIdx,
               key_op->m_bitmap_read_columns[0],
@@ -545,6 +555,8 @@ RS_Status BatchKeyOperations::setup_read_operations() {
       trans->executeAsynchPrepare(NdbTransaction::Commit,
                                   nullptr,
                                   (void*)key_op);
+    } else {
+      m_groups[identity_of(opIdx)].m_num_sent++;
     }
     m_num_sent_operations++;
   }
@@ -554,10 +566,16 @@ RS_Status BatchKeyOperations::setup_read_operations() {
 RS_Status BatchKeyOperations::execute() {
   if (m_num_sent_operations > 0) {
     if (unlikely(m_single_transaction)) {
-      NdbTransaction *trans = m_key_ops[0].m_ndbTransaction;
-      if (unlikely(trans->execute(NdbTransaction::NoCommit) != 0)) {
-        return RS_RONDB_SERVER_ERROR(trans->getNdbError(),
-          std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+      for (Uint32 g = 0; g < m_num_groups; g++) {
+        IdentityGroup *group = &m_groups[g];
+        if (group->m_num_sent == 0) {
+          continue;
+        }
+        group->m_num_sent = 0;
+        if (unlikely(group->m_trans->execute(NdbTransaction::NoCommit) != 0)) {
+          return RS_RONDB_SERVER_ERROR(group->m_trans->getNdbError(),
+            std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+        }
       }
     } else {
       if (m_ndb_object->sendPollNdb(
@@ -1360,8 +1378,10 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
 
 void BatchKeyOperations::close_transaction() {
   if (unlikely(m_single_transaction)) {
-    if (m_key_ops[0].m_ndbTransaction != nullptr) {
-      m_ndb_object->closeTransaction(m_key_ops[0].m_ndbTransaction);
+    for (Uint32 g = 0; g < m_num_groups; g++) {
+      if (m_groups[g].m_trans != nullptr) {
+        m_ndb_object->closeTransaction(m_groups[g].m_trans);
+      }
     }
   } else {
     for (Uint32 i = 0; i < m_numOperations; i++) {
@@ -1379,11 +1399,9 @@ RS_Status BatchKeyOperations::perform_operation(
   RS_Buffer *reqBuffer,
   RS_BufferChain &resp_chain,
   Ndb *ndb_object,
-  const char *rate_limit_identity,
-  Uint32 rate_limit_identity_len) {
+  const RS_RateLimitIdentities *identities) {
 
-  m_rate_limit_identity = rate_limit_identity;
-  m_rate_limit_identity_len = rate_limit_identity_len;
+  m_identities = identities;
   DEB_NDB_BE("init_batch_operations");
   RS_Status status = init_batch_operations(
     amalloc,

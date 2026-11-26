@@ -28,8 +28,10 @@
 #include "rate_limit.hpp"
 #include "metrics.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <map>
+#include <vector>
 #include <drogon/HttpTypes.h>
 #include <iostream>
 #include <memory>
@@ -178,7 +180,11 @@ void BatchPKReadCtrl::batchPKRead(
   }
 
   // Authenticate
-  std::string rl_identity;
+  // The distinct identities the operations bill to, in first-seen order,
+  // and per operation the index of its identity, filled only once a second
+  // identity appears (a batch over one identity needs no per-op index).
+  std::vector<std::string> identities;
+  std::vector<unsigned int> op_identity;
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
     // One access request per (db, table) of the batch. An operation with
@@ -224,16 +230,52 @@ void BatchPKReadCtrl::batchPKRead(
       callback(resp);
       return;
     }
-    // A batch may mix databases but a transaction carries one identity;
-    // the whole batch is billed to the first operation's database (the
-    // same operation the single-transaction mode starts the transaction
-    // from). Mixed-project batches are rare; per-database transaction
-    // groups would attribute them exactly and are a possible follow-up.
-    rl_identity = get_rate_limit_identity(api_key, rlIdentities,
-                                          reqStructs.empty()
-                                            ? std::string_view()
-                                            : std::string_view(
-                                                reqStructs[0].path.db));
+    // A batch may mix databases but a transaction carries one identity, so
+    // each operation is billed to the identity its own database resolves
+    // to and pk_batch_read runs the operations of each identity in
+    // transactions of their own. Billing the whole batch to the first
+    // operation's database would let a caller meter reads of a capped
+    // project under an uncapped, or unmetered, project listed first.
+    std::vector<std::pair<std::string_view, unsigned int>> db_identity;
+    for (size_t i = 0; i < reqStructs.size(); i++) {
+      std::string_view db = reqStructs[i].path.db;
+      unsigned int identity_idx;
+      auto known = std::find_if(db_identity.begin(), db_identity.end(),
+        [db](const auto &entry) { return entry.first == db; });
+      if (known != db_identity.end()) {
+        identity_idx = known->second;
+      } else {
+        std::string identity =
+          get_rate_limit_identity(api_key, rlIdentities, db);
+        auto seen = std::find(identities.begin(), identities.end(), identity);
+        identity_idx = (unsigned int)(seen - identities.begin());
+        if (seen == identities.end()) {
+          identities.push_back(std::move(identity));
+        }
+        db_identity.emplace_back(db, identity_idx);
+      }
+      if (identity_idx != 0 && op_identity.empty()) {
+        op_identity.assign(i, 0);
+      }
+      if (!op_identity.empty()) {
+        op_identity.push_back(identity_idx);
+      }
+    }
+  }
+  RS_RateLimitIdentities rl_identities{};
+  std::vector<const char*> identity_names;
+  std::vector<unsigned int> identity_lens;
+  if (identities.size() > 1 || (identities.size() == 1 &&
+                                !identities[0].empty())) {
+    for (const std::string &identity : identities) {
+      identity_names.push_back(identity.c_str());
+      identity_lens.push_back((unsigned int)identity.size());
+    }
+    rl_identities.names = identity_names.data();
+    rl_identities.lens = identity_lens.data();
+    rl_identities.num = (unsigned int)identity_names.size();
+    rl_identities.op_identity =
+      op_identity.empty() ? nullptr : op_identity.data();
   }
   ArenaMalloc amalloc(256 * 1024);
   // Execute
@@ -290,8 +332,7 @@ void BatchPKReadCtrl::batchPKRead(
                            req_chain.views(),
                            &resp_chain,
                            currentThreadIndex,
-                           rl_identity.empty() ? nullptr : rl_identity.c_str(),
-                           (unsigned int)rl_identity.size());
+                           &rl_identities);
 
     resp->setStatusCode(static_cast<drogon::HttpStatusCode>(status.http_code));
 

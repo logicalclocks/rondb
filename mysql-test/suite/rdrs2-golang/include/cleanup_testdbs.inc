@@ -116,6 +116,8 @@ DROP DATABASE IF EXISTS sentinel;
 --error 0,255,65280
 --exec $NDB_MGM -e "USER DROP db004_macho"
 --error 0,255,65280
+--exec $NDB_MGM -e "USER DROP db005_macho"
+--error 0,255,65280
 --exec $NDB_MGM -e "USER DROP db029_macho"
 --error 0,255,65280
 --exec $NDB_MGM -e "USER DROP fsdb001_macho"

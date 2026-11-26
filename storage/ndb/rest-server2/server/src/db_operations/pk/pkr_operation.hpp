@@ -68,9 +68,20 @@ class BatchKeyOperations {
   Uint32 m_first_key;
   Uint32 m_last_key;
   bool m_isSuccess;
-  /* Rate limit identity set on every transaction; nullptr = disabled */
-  const char *m_rate_limit_identity;
-  Uint32 m_rate_limit_identity_len;
+  /* RONDB-1158: the identities the operations bill to; num 0 = untagged.
+   * In single-transaction mode the operations of one identity share a
+   * transaction, m_groups[identity], across the loops of the batch. */
+  const RS_RateLimitIdentities *m_identities;
+  struct IdentityGroup {
+    NdbTransaction *m_trans;
+    Uint32 m_num_sent;
+  };
+  IdentityGroup *m_groups;
+  Uint32 m_num_groups;
+  Uint32 identity_of(Uint32 opIdx) const {
+    return m_identities->op_identity == nullptr
+      ? 0 : m_identities->op_identity[opIdx];
+  }
 
  public:
    BatchKeyOperations();
@@ -81,14 +92,14 @@ class BatchKeyOperations {
                                RS_Buffer *reqBuffer,
                                RS_BufferChain &resp_chain,
                                Ndb *ndb_object,
-                               const char *rate_limit_identity,
-                               Uint32 rate_limit_identity_len);
+                               const RS_RateLimitIdentities *identities);
    RS_Status init_batch_operations(ArenaMalloc*,
                                    Uint32,
                                    bool is_batch,
                                    RS_Buffer *reqBuffer,
                                    Ndb *ndb_object);
-   RS_Status set_transaction_user_id(NdbTransaction *transaction);
+   RS_Status set_transaction_user_id(NdbTransaction *transaction,
+                                     Uint32 opIdx);
    RS_Status setup_primary_keys();
    RS_Status setup_transactions();
    RS_Status setup_read_operations();

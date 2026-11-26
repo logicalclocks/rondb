@@ -188,8 +188,7 @@ RS_Status pk_batch_read(void *amalloc_void,
                         RS_Buffer *req_buffs,
                         struct RS_BufferChain *resp_chain,
                         unsigned int threadIndex,
-                        const char *rate_limit_identity,
-                        unsigned int rate_limit_identity_len) {
+                        const RS_RateLimitIdentities *identities) {
   ArenaMalloc *amalloc = (ArenaMalloc*)amalloc_void;
   Ndb *ndb_object  = nullptr;
   RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object,
@@ -209,8 +208,7 @@ RS_Status pk_batch_read(void *amalloc_void,
                                       req_buffs,
                                       *resp_chain,
                                       ndb_object,
-                                      rate_limit_identity,
-                                      rate_limit_identity_len);
+                                      identities);
   )
   rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object,
                                            &status,

@@ -166,7 +166,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
     req_chain.advance(consumed);
 
     // pk_read
-    status = pk_batch_read((void*)&amalloc,
+    status = pk_batch_read_one_identity((void*)&amalloc,
                            1,
                            false,
                            req_chain.views(),

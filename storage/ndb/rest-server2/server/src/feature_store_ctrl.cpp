@@ -792,7 +792,7 @@ void FeatureStoreCtrl::featureStore(
     // pk_batch_read
     {
       DEB_FS_CTRL("Perform Batch PK Read for Feature Store request");
-      RS_Status status = pk_batch_read((void*)&amalloc,
+      RS_Status status = pk_batch_read_one_identity((void*)&amalloc,
                                        noOps,
                                        true,
                                        req_chain.views(),

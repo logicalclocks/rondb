@@ -190,14 +190,26 @@ RS_Status shutdown_connection();
  * buffer_chain.hpp). Declared as an opaque struct so this header stays
  * valid C. */
 struct RS_BufferChain;
+/* RONDB-1158: the rate limit identities a batch bills to. A transaction
+ * carries one identity, so the operations billed to different identities
+ * run in separate transactions, in single-transaction mode too. num 0
+ * leaves every transaction untagged; an identity of length 0 is
+ * "unmetered" and its transactions are untagged as well. */
+typedef struct RS_RateLimitIdentities {
+  const char *const *names;  /* num NUL-terminated identities */
+  const unsigned int *lens;
+  unsigned int num;
+  /* Per operation, an index into names. NULL: every operation bills to
+   * names[0]. */
+  const unsigned int *op_identity;
+} RS_RateLimitIdentities;
 RS_Status pk_batch_read(void *amalloc,
                         unsigned int no_req,
                         bool is_batch,
                         RS_Buffer *req_buffs,
                         struct RS_BufferChain *resp_chain,
                         unsigned int threadIndex,
-                        const char *rate_limit_identity,
-                        unsigned int rate_limit_identity_len);
+                        const RS_RateLimitIdentities *identities);
 
 /**
  * RonSQL query
@@ -249,4 +261,29 @@ RS_Status scan_read(ScanReadParams& scan_params, unsigned int threadIndex,
 
 #ifdef __cplusplus
 }
-#endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_DAL_H_
+
+#ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_DAL_H_ONE_IDENTITY_
+#define STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_DAL_H_ONE_IDENTITY_
+/* pk_batch_read for a request whose operations all bill to one identity
+ * (nullptr: untagged). Its own name rather than an overload: this header
+ * is also included from inside other headers' extern "C" blocks. */
+inline RS_Status pk_batch_read_one_identity(
+  void *amalloc,
+  unsigned int no_req,
+  bool is_batch,
+  RS_Buffer *req_buffs,
+  struct RS_BufferChain *resp_chain,
+  unsigned int threadIndex,
+  const char *rate_limit_identity,
+  unsigned int rate_limit_identity_len) {
+  RS_RateLimitIdentities identities{};
+  if (rate_limit_identity != nullptr) {
+    identities.names = &rate_limit_identity;
+    identities.lens = &rate_limit_identity_len;
+    identities.num = 1;
+  }
+  return pk_batch_read(amalloc, no_req, is_batch, req_buffs, resp_chain,
+                       threadIndex, &identities);
+}
+#endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_DAL_H_ONE_IDENTITY_
+#endif  // __cplusplus

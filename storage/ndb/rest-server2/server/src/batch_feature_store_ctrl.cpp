@@ -271,7 +271,7 @@ void BatchFeatureStoreCtrl::batch_featureStore(
     }
     metricsUpdater.set_key_requests(noOps);
     // pk_batch_read
-    status = pk_batch_read((void*)&amalloc,
+    status = pk_batch_read_one_identity((void*)&amalloc,
                            noOps,
                            true,
                            req_chain.views(),
