@@ -6087,17 +6087,33 @@ void Dblqh::execSEND_PACKED(Signal *signal) {
   m_num_send_database_quota_rep = 0;
   if (unlikely(m_num_deferred_quota_reports > 0)) {
     /* Reports the full buffer turned away: appended now, into the emptied
-     * buffer, and sent at the next drain. The hash walk runs only while
-     * such a record exists. */
+     * buffer, and sent at the next drain. The walk resumes at the bucket
+     * where it last met a full buffer and wraps once, so that more than a
+     * buffer's worth of deferred records are served in turn instead of the
+     * first buckets every time; it runs only while such a record exists. */
     jam();
     NDB_TICKS now = getHighResTimer();
-    DatabaseRecordPtr dbPtr;
-    for (bool more = m_databaseRecordHash.first(dbPtr);
-         more && m_num_deferred_quota_reports > 0;
-         more = m_databaseRecordHash.next(dbPtr)) {
-      if (dbPtr.p->m_report_deferred) {
-        send_database_quota_rep(dbPtr, now);
+    DatabaseRecord_hash::Iterator iter;
+    bool wrapped = false;
+    bool more = m_databaseRecordHash.next(m_deferred_walk_bucket, iter);
+    while (m_num_deferred_quota_reports > 0) {
+      if (!more) {
+        if (wrapped) {
+          break;
+        }
+        wrapped = true;
+        more = m_databaseRecordHash.next(Uint64(0), iter);
+        continue;
       }
+      if (m_num_send_database_quota_rep >=
+          c_send_database_quota_rep_file_size) {
+        m_deferred_walk_bucket = iter.bucket;
+        break;
+      }
+      if (iter.curr.p->m_report_deferred) {
+        send_database_quota_rep(iter.curr, now);
+      }
+      more = m_databaseRecordHash.next(iter);
     }
   }
   unlock_database_hash();

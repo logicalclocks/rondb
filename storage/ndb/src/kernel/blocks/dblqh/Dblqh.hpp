@@ -4782,7 +4782,8 @@ public:
   typedef Ptr64<DatabaseRecord> DatabaseRecordPtr;
   typedef RecordPool64<RWPool64<DatabaseRecord> > DatabaseRecord_pool;
   DatabaseRecord_pool m_databaseRecordPool;
-  DL64HashTable<DatabaseRecord_pool, DatabaseRecord> m_databaseRecordHash;
+  typedef DL64HashTable<DatabaseRecord_pool, DatabaseRecord> DatabaseRecord_hash;
+  DatabaseRecord_hash m_databaseRecordHash;
   NdbMutex m_database_hash_mutex;
   void lock_database_hash()
   {
@@ -4809,6 +4810,10 @@ public:
   Uint32 m_num_send_database_quota_rep;
   /* Records with m_report_deferred set, retried after each drain. */
   Uint32 m_num_deferred_quota_reports;
+  /* Hash bucket where the retry walk last stopped on a full buffer: the
+   * next walk starts there, so a record turned away twice is reached
+   * before any record deferred after it. */
+  Uint64 m_deferred_walk_bucket;
   bool m_restart_completed;
 
   struct MonotonicCounters {
