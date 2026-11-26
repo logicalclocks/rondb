@@ -132,7 +132,7 @@ static int insertNdbRecord(Ndb *ndb, const NdbDictionary::Table *tab,
   spec[2].offset = blobOffset;
   spec[2].nullbit_byte_offset = blobNullOffset;
   spec[2].nullbit_bit_in_byte = 0;
-  const NdbRecord *rec = dict->createRecord(tab, spec, 3, sizeof(spec[0]));
+  NdbRecord *rec = dict->createRecord(tab, spec, 3, sizeof(spec[0]));
   CHK_NDB(rec != nullptr, dict);
 
   Uint64 rowBuf[4];
