@@ -2529,7 +2529,15 @@ NdbBlob::BlobAction NdbBlob::preExecute(NdbTransaction::ExecType anExecType) {
       rc = BA_EXEC;
     }
   }
-  if (isInsertOp() && theSetFlag) {
+  /*
+   * TTL related: an insert on a TTL table has blob work even when no value
+   * was set, since the old length is unknown (see initBlobTask): the NULL
+   * head rewrite and the part probe. That work must be defined here, before
+   * a Commit batch, as a postExecute after the commit can no longer send it.
+   */
+  const bool ttlTable =
+      (theTable->m_ttl_sec != RNIL && theTable->m_ttl_col_no != RNIL);
+  if (isInsertOp() && (theSetFlag || ttlTable)) {
     /* If the main operation uses AbortOnError then
      * we can add operations to insert parts and update
      * the Blob head+inline here.
