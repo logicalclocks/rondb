@@ -521,6 +521,16 @@ void Dbtc::execCONTINUEB(Signal *signal) {
       handleBackgroundRateQueues(signal, Tdata0);
       return;
     }
+    case TcContinueB::ZRESUME_PARKED_OPS:
+    {
+      jam();
+      if (unlikely(signal->getLength() != 4)) {
+        ndbassert(false);
+        return;
+      }
+      resumeParkedOps(signal, Tdata0, Tdata1, Tdata2);
+      return;
+    }
     case TcContinueB::ZBACKGROUND_RATE_LIMITS:
     {
       jam();
@@ -1562,6 +1572,10 @@ void Dbtc::execREAD_CONFIG_REQ(Signal *signal) {
   val = 0;
   ndb_mgm_get_int_parameter(p, CFG_DB_DISALLOW_DIRTY_WRITES, &val);
   m_disallow_dirty_writes = (val != 0);
+
+  val = 1024;
+  ndb_mgm_get_int_parameter(p, CFG_DB_MAX_PARALLEL_OPS_PER_TRANSACTION, &val);
+  c_max_parallel_ops_per_trans = (val == 0) ? 1 : val;
 
   val = 1500;
   ndb_mgm_get_int_parameter(p, CFG_DB_HEARTBEAT_INTERVAL, &val);
@@ -3627,6 +3641,14 @@ void Dbtc::initApiConnectRec(Signal *signal, ApiConnectRecord *const regApiPtr,
   regApiPtr->m_firstTcConnectPtrI_FT = RNIL;
   regApiPtr->m_lastTcConnectPtrI_FT = RNIL;
   regApiPtr->m_concurrent_overtakeable_operations = 0;
+  /* Nothing in flight or waiting is left from the previous transaction */
+  ndbassert(regApiPtr->m_ops_in_flight == 0);
+  ndbassert(regApiPtr->m_parked_ops == 0);
+  regApiPtr->m_ops_in_flight = 0;
+  regApiPtr->m_parked_ops = 0;
+  regApiPtr->m_parked_head = RNIL;
+  regApiPtr->m_parked_tail = RNIL;
+  regApiPtr->m_resume_scheduled = false;
 }  // Dbtc::initApiConnectRec()
 
 void Dbtc::sendPoolShrink(const Uint32 pool_index) {
@@ -5222,143 +5244,48 @@ Uint32 Dbtc::check_own_location_domain(Uint16 *nodes, Uint32 end) {
 }
 
 /**
- * tckeyreq050Lab
- * This method is executed once all KeyInfo has been obtained for
- * the TcKeyReq signal
+ * Asks DBDIH for the fragment and replica chain of the operation in
+ * tcConnectptr and chooses the node and block to send it to. Done once
+ * when the operation has been received (tckeyreq050Lab()), and again
+ * when an operation that waited to be sent is resumed (resume, see
+ * resumeParkedOps()): the chain may have changed meanwhile, a node in it
+ * may have failed, or STORED may have inserted a starting node. Returns
+ * false if the transaction was aborted.
  */
-void Dbtc::tckeyreq050Lab(Signal *signal, CacheRecordPtr const cachePtr,
-                          ApiConnectRecordPtr const apiConnectptr) {
+bool Dbtc::getNodesForOperation(Signal *signal, CacheRecordPtr const cachePtr,
+                                ApiConnectRecordPtr const apiConnectptr,
+                                bool resume) {
   CacheRecord *const regCachePtr = cachePtr.p;
-  UintR tnoOfBackup;
-
-  terrorCode = 0;
-
-  if (unlikely(regCachePtr->keylen > MAX_KEY_SIZE_IN_WORDS)) {
-    jam();
-    terrorCode = ZSIGNAL_ERROR;
-    NodeId senderNodeId = refToNode(apiConnectptr.p->ndbapiBlockref);
-    reportMaliciousSignal(signal, senderNodeId, VT_KEY_LENGTH_EXCEEDED);
-    releaseAtErrorLab(signal, apiConnectptr);
-    return;
-  }
-
-  hash(signal, regCachePtr); /* NOW IT IS TIME TO CALCULATE THE HASH VALUE*/
-
   TcConnectRecord *const regTcPtr = tcConnectptr.p;
   ApiConnectRecord *const regApiPtr = apiConnectptr.p;
-
-  bool ttl_table = false;
-  bool ttl_can_go_to_replica = false;
-
-  UintR TtcTimer = ctcTimer;
-  UintR ThashValue = thashValue;
-  UintR TdistrHashValue = tdistrHashValue;
-  UintR Ttableref = regCachePtr->tableref;
-  Uint16 Tspecial_op_flags = regTcPtr->m_special_op_flags;
+  UintR tnoOfBackup;
+  const bool ttl_table = regCachePtr->m_ttl_table;
+  const bool ttl_can_go_to_replica = regCachePtr->m_ttl_can_go_to_replica;
+  Uint16 Tspecial_op_flags;
 
   TableRecordPtr localTabptr;
-  localTabptr.i = Ttableref;
+  localTabptr.i = regCachePtr->tableref;
   localTabptr.p = &tableRecord[localTabptr.i];
-  Uint32 schemaVersion = regCachePtr->schemaVersion;
-  if (likely(localTabptr.p->checkTable(schemaVersion))) {
-    ;
-  } else {
-    terrorCode = localTabptr.p->getErrorCode(schemaVersion);
-    TCKEY_abort(signal, 58, apiConnectptr);
-    return;
+
+  if (resume) {
+    jam();
+    /* Set below again if the row is still moving */
+    regTcPtr->m_special_op_flags &= ~TcConnectRecord::SOF_REORG_MOVING;
+    /* Only valid during the TCKEYREQ of a reorg trigger, see below */
+    regApiPtr->firedFragId = regCachePtr->m_fired_frag_id;
   }
-  /*
-   * TTL related
-   * if the current table is TTL table, check whether allow
-   * this operation to go to replica or not
-   */
-  {
-    Uint32 read_back = localTabptr.p->m_flags & TableRecord::TR_READ_BACKUP;
-    Uint32 fully_replicated =
-             localTabptr.p->m_flags & TableRecord::TR_FULLY_REPLICATED;
-    Uint32 op = regTcPtr->operation;
-    Uint32 op_count = regApiPtr->tcConnect.getCount();
-    Uint8 TopSimple = regTcPtr->opSimple;
-    Uint8 TopDirty = regTcPtr->dirtyOp;
-    Uint8 Tread_committed_base = regCachePtr->m_read_committed_base;
-
-    if (DictTabInfo::isTable(localTabptr.p->tableType)) {
-      ttl_table = is_ttl_table(localTabptr.p);
-    } else {
-      ttl_table = is_ttl_table(localTabptr.p->m_primary_table_id);
-    }
-
-    if (!ttl_table ||
-        (ttl_table && (read_back || fully_replicated) && op == ZREAD &&
-        (TopSimple != 0 || TopDirty != 0 || Tread_committed_base) &&
-        op_count == 1)) {
-      ttl_can_go_to_replica = true;
-    }
-  }
-
-  /**
-   * Set timer to current time every time we receive a new TCKEYREQ
-   * signal. This is used to check whether we should send a TC_HBREP
-   * to the NDB API to ensure that its 6-minute timeout doesn't
-   * end. Thus we need to ensure that the NDB API knows that we are
-   * still working on its request.
-   */
-  apiConnectptr.p->m_tc_hbrep_timer = TtcTimer;
-  setApiConTimer(apiConnectptr, TtcTimer, __LINE__);
-  regCachePtr->hashValue = ThashValue;
 
   ndbassert(signal->getNoOfSections() == 0);
 
   DiGetNodesReq *const req = (DiGetNodesReq *)&signal->theData[0];
-  req->tableId = Ttableref;
-  req->hashValue = TdistrHashValue;
+  req->tableId = regCachePtr->tableref;
+  req->hashValue = regCachePtr->m_distr_hash_value;
   req->distr_key_indicator = regCachePtr->distributionKeyIndicator;
   req->scan_indicator = 0;
-  req->anyNode = 0;
+  req->anyNode = regCachePtr->m_dih_any_node;
   req->get_next_fragid_indicator = 0;
   req->only_readable_nodes = (regTcPtr->operation == ZREAD);
   req->jamBufferPtr = jamBuffer();
-
-  if (localTabptr.p->m_flags & TableRecord::TR_FULLY_REPLICATED) {
-    if (regTcPtr->operation == ZREAD) {
-      /**
-       * inform DIH if TreadAny is even relevant...so it does not have to loop
-       *   unless really needing to...
-       */
-      if (regTcPtr->dirtyOp || regTcPtr->opSimple ||
-          regCachePtr->m_read_committed_base) {
-        jam();
-        req->anyNode = 1;
-        /*
-         * TTL related
-         * [CASE 1.1] key look-up on TTL & FULLY_REPLICATED table
-         */
-        if (!ttl_can_go_to_replica) {
-          TTL_RONDB_TRACE(localTabptr.i,
-                          "Dbtc::tckeyreq050Lab(), FULLY_REPLICATED "
-                          "table: %u is not allowed to go to any node",
-                          localTabptr.i);
-          req->anyNode = 0;
-        }
-      }
-    } else if (Tspecial_op_flags & TcConnectRecord::SOF_REORG_COPY) {
-      /**
-       * We want DIH to return the first new fragment, this is a copy
-       * of the row, it has been read from a main fragment and needs
-       * to be copied to the new fragments. We get the first new
-       * fragment and trust the fully replicated triggers to ensure
-       * that any more new fragments are also written using the
-       * iterator on the fully replicated trigger.
-       */
-      jam();
-      regTcPtr->m_special_op_flags &= ~TcConnectRecord::SOF_REORG_COPY;
-      req->anyNode = 2;
-    } else if (Tspecial_op_flags &
-               TcConnectRecord::SOF_FULLY_REPLICATED_TRIGGER) {
-      jam();
-      req->anyNode = 3;
-    }
-  }
 
   /*-------------------------------------------------------------*/
   /* FOR EFFICIENCY REASONS WE AVOID THE SIGNAL SENDING HERE AND */
@@ -5374,7 +5301,7 @@ void Dbtc::tckeyreq050Lab(Signal *signal, CacheRecordPtr const cachePtr,
   jamEntryDebug();
   if (unlikely(TerrorIndicator != 0)) {
     execDIGETNODESREF(signal, apiConnectptr);
-    return;
+    return false;
   }
 
   /****************>>*/
@@ -5689,7 +5616,8 @@ void Dbtc::tckeyreq050Lab(Signal *signal, CacheRecordPtr const cachePtr,
     regTcPtr->lastReplicaNo = 0;
     regTcPtr->noOfNodes = 1;
 
-    if (regTcPtr->tcNodedata[0] == getOwnNodeId()) c_counters.clocalReadCount++;
+    if (regTcPtr->tcNodedata[0] == getOwnNodeId() && !resume)
+      c_counters.clocalReadCount++;
 #ifdef ERROR_INSERT
     else if (ERROR_INSERTED(8083) && regTcPtr->m_util_flag == false &&
              !batchUnsafe)
@@ -5719,7 +5647,7 @@ void Dbtc::tckeyreq050Lab(Signal *signal, CacheRecordPtr const cachePtr,
        */
       jam();
       TCKEY_abort(signal, 64, apiConnectptr);
-      return;
+      return false;
     }
 
     /* Select the specified node for the unlock op */
@@ -5732,7 +5660,7 @@ void Dbtc::tckeyreq050Lab(Signal *signal, CacheRecordPtr const cachePtr,
     TlastReplicaNo = tnoOfBackup;
     regTcPtr->lastReplicaNo = (Uint8)TlastReplicaNo;
     regTcPtr->noOfNodes = (Uint8)(TlastReplicaNo + 1);
-    if (regTcPtr->tcNodedata[0] == getOwnNodeId())
+    if (regTcPtr->tcNodedata[0] == getOwnNodeId() && !resume)
       c_counters.clocalWriteCount++;
 
     if ((localTabptr.p->m_flags & TableRecord::TR_DELAY_COMMIT) != 0) {
@@ -5760,7 +5688,7 @@ void Dbtc::tckeyreq050Lab(Signal *signal, CacheRecordPtr const cachePtr,
     ndbabort();
     signal->theData[1] = 626;
     execDIGETNODESREF(signal, apiConnectptr);
-    return;
+    return false;
   }
 
   if((ERROR_INSERTED(8050) || ERROR_INSERTED(8072)) &&
@@ -5775,6 +5703,156 @@ void Dbtc::tckeyreq050Lab(Signal *signal, CacheRecordPtr const cachePtr,
     ndbabort();
     signal->theData[1] = 626;
     execDIGETNODESREF(signal, apiConnectptr);
+    return false;
+  }
+  return true;
+}  // Dbtc::getNodesForOperation()
+
+/**
+ * tckeyreq050Lab
+ * This method is executed once all KeyInfo has been obtained for
+ * the TcKeyReq signal
+ */
+void Dbtc::tckeyreq050Lab(Signal *signal, CacheRecordPtr const cachePtr,
+                          ApiConnectRecordPtr const apiConnectptr) {
+  CacheRecord *const regCachePtr = cachePtr.p;
+
+  terrorCode = 0;
+
+  if (unlikely(regCachePtr->keylen > MAX_KEY_SIZE_IN_WORDS)) {
+    jam();
+    terrorCode = ZSIGNAL_ERROR;
+    NodeId senderNodeId = refToNode(apiConnectptr.p->ndbapiBlockref);
+    reportMaliciousSignal(signal, senderNodeId, VT_KEY_LENGTH_EXCEEDED);
+    releaseAtErrorLab(signal, apiConnectptr);
+    return;
+  }
+
+  hash(signal, regCachePtr); /* NOW IT IS TIME TO CALCULATE THE HASH VALUE*/
+
+  TcConnectRecord *const regTcPtr = tcConnectptr.p;
+  ApiConnectRecord *const regApiPtr = apiConnectptr.p;
+
+  bool ttl_table = false;
+  bool ttl_can_go_to_replica = false;
+
+  UintR TtcTimer = ctcTimer;
+  UintR ThashValue = thashValue;
+  UintR TdistrHashValue = tdistrHashValue;
+  UintR Ttableref = regCachePtr->tableref;
+  Uint16 Tspecial_op_flags = regTcPtr->m_special_op_flags;
+
+  /**
+   * A write's or locked read's row key goes into c_row_key_hash when it
+   * is sent (trackSentOperation()). Prefetch the bucket for write now, so
+   * that DIGETNODES and the routing hide a cache miss on it. Done for
+   * every operation: the branches to leave out committed reads and
+   * unlocks would cost more than the prefetch.
+   */
+  NDB_PREFETCH_WRITE(
+      &c_row_key_hash[rowKeyBucket(apiConnectptr.i, Ttableref, ThashValue)]);
+
+  TableRecordPtr localTabptr;
+  localTabptr.i = Ttableref;
+  localTabptr.p = &tableRecord[localTabptr.i];
+  Uint32 schemaVersion = regCachePtr->schemaVersion;
+  if (likely(localTabptr.p->checkTable(schemaVersion))) {
+    ;
+  } else {
+    terrorCode = localTabptr.p->getErrorCode(schemaVersion);
+    TCKEY_abort(signal, 58, apiConnectptr);
+    return;
+  }
+  /*
+   * TTL related
+   * if the current table is TTL table, check whether allow
+   * this operation to go to replica or not
+   */
+  {
+    Uint32 read_back = localTabptr.p->m_flags & TableRecord::TR_READ_BACKUP;
+    Uint32 fully_replicated =
+             localTabptr.p->m_flags & TableRecord::TR_FULLY_REPLICATED;
+    Uint32 op = regTcPtr->operation;
+    Uint32 op_count = regApiPtr->tcConnect.getCount();
+    Uint8 TopSimple = regTcPtr->opSimple;
+    Uint8 TopDirty = regTcPtr->dirtyOp;
+    Uint8 Tread_committed_base = regCachePtr->m_read_committed_base;
+
+    if (DictTabInfo::isTable(localTabptr.p->tableType)) {
+      ttl_table = is_ttl_table(localTabptr.p);
+    } else {
+      ttl_table = is_ttl_table(localTabptr.p->m_primary_table_id);
+    }
+
+    if (!ttl_table ||
+        (ttl_table && (read_back || fully_replicated) && op == ZREAD &&
+        (TopSimple != 0 || TopDirty != 0 || Tread_committed_base) &&
+        op_count == 1)) {
+      ttl_can_go_to_replica = true;
+    }
+  }
+
+  /**
+   * Set timer to current time every time we receive a new TCKEYREQ
+   * signal. This is used to check whether we should send a TC_HBREP
+   * to the NDB API to ensure that its 6-minute timeout doesn't
+   * end. Thus we need to ensure that the NDB API knows that we are
+   * still working on its request.
+   */
+  apiConnectptr.p->m_tc_hbrep_timer = TtcTimer;
+  setApiConTimer(apiConnectptr, TtcTimer, __LINE__);
+  regCachePtr->hashValue = ThashValue;
+  regCachePtr->m_distr_hash_value = TdistrHashValue;
+  regCachePtr->m_ttl_table = ttl_table;
+  regCachePtr->m_ttl_can_go_to_replica = ttl_can_go_to_replica;
+  regCachePtr->m_fired_frag_id = regApiPtr->firedFragId;
+
+  Uint8 anyNode = 0;
+  if (localTabptr.p->m_flags & TableRecord::TR_FULLY_REPLICATED) {
+    if (regTcPtr->operation == ZREAD) {
+      /**
+       * inform DIH if TreadAny is even relevant...so it does not have to loop
+       *   unless really needing to...
+       */
+      if (regTcPtr->dirtyOp || regTcPtr->opSimple ||
+          regCachePtr->m_read_committed_base) {
+        jam();
+        anyNode = 1;
+        /*
+         * TTL related
+         * [CASE 1.1] key look-up on TTL & FULLY_REPLICATED table
+         */
+        if (!ttl_can_go_to_replica) {
+          TTL_RONDB_TRACE(localTabptr.i,
+                          "Dbtc::tckeyreq050Lab(), FULLY_REPLICATED "
+                          "table: %u is not allowed to go to any node",
+                          localTabptr.i);
+          anyNode = 0;
+        }
+      }
+    } else if (Tspecial_op_flags & TcConnectRecord::SOF_REORG_COPY) {
+      /**
+       * We want DIH to return the first new fragment, this is a copy
+       * of the row, it has been read from a main fragment and needs
+       * to be copied to the new fragments. We get the first new
+       * fragment and trust the fully replicated triggers to ensure
+       * that any more new fragments are also written using the
+       * iterator on the fully replicated trigger.
+       */
+      jam();
+      regTcPtr->m_special_op_flags &= ~TcConnectRecord::SOF_REORG_COPY;
+      anyNode = 2;
+    } else if (Tspecial_op_flags &
+               TcConnectRecord::SOF_FULLY_REPLICATED_TRIGGER) {
+      jam();
+      anyNode = 3;
+    }
+  }
+
+  regCachePtr->m_dih_any_node = anyNode;
+
+  if (unlikely(!getNodesForOperation(signal, cachePtr, apiConnectptr,
+                                     false))) {
     return;
   }
 
@@ -5823,8 +5901,14 @@ void Dbtc::tckeyreq050Lab(Signal *signal, CacheRecordPtr const cachePtr,
   return;
 }  // Dbtc::tckeyreq050Lab()
 
+/**
+ * The operation in tcConnectptr is fully received and has its replica
+ * chain: send it. resumed: it waited to be sent, resumeParkedOps() has
+ * asked DBDIH again and checked that it may be sent now.
+ */
 void Dbtc::attrinfoDihReceivedLab(Signal *signal, CacheRecordPtr cachePtr,
-                                  ApiConnectRecordPtr const apiConnectptr) {
+                                  ApiConnectRecordPtr const apiConnectptr,
+                                  bool resumed) {
   CacheRecord *const regCachePtr = cachePtr.p;
   TcConnectRecord *const regTcPtr = tcConnectptr.p;
   ApiConnectRecord *const regApiPtr = apiConnectptr.p;
@@ -5843,6 +5927,21 @@ void Dbtc::attrinfoDihReceivedLab(Signal *signal, CacheRecordPtr cachePtr,
   }
   if (likely(Tnode != 0)) {
     jamDebug();
+    if (isTrackedOperation(regTcPtr)) {
+      /**
+       * With no operation of the transaction in flight or waiting nothing
+       * can hold this one back: the common case of the first operation of
+       * a batch skips the check. A resumed one was checked when resumed.
+       */
+      if (!resumed &&
+          (regApiPtr->m_ops_in_flight | regApiPtr->m_parked_ops) != 0 &&
+          unlikely(mustWaitToSend(apiConnectptr, regCachePtr, false))) {
+        jam();
+        parkOperation(signal, cachePtr, apiConnectptr);
+        return;
+      }
+      trackSentOperation(regApiPtr, regCachePtr);
+    }
     arrGuard(Tnode, MAX_NDB_NODES);
     BlockReference lqhRef;
     if (regCachePtr->viaSPJFlag) {
@@ -5879,6 +5978,8 @@ void Dbtc::attrinfoDihReceivedLab(Signal *signal, CacheRecordPtr cachePtr,
     jam();
     Uint32 trigOp = regTcPtr->triggeringOperation;
     Uint32 TclientData = regTcPtr->clientData;
+    /* A resumed operation owns cachePtr, released here */
+    regTcPtr->m_send_flags &= ~TcConnectRecord::SF_PARKED;
     releaseKeys(regCachePtr);
     releaseAttrinfo(cachePtr, apiConnectptr.p);
     regApiPtr->lqhkeyreqrec--;
@@ -5913,6 +6014,457 @@ void Dbtc::attrinfoDihReceivedLab(Signal *signal, CacheRecordPtr cachePtr,
     }
   }
 }  // Dbtc::attrinfoDihReceivedLab()
+
+/**
+ * Same-row serialization and the limit on operations in flight
+ * ------------------------------------------------------------
+ * DBTC gets the replica chain of each operation from DBDIH separately,
+ * and DBDIH changes chains while transactions run (STORED inserts a
+ * starting node right after the primary, COMMIT_STORED switches the
+ * primary to it, a node stops or fails). Two writes of one row in one
+ * transaction that are in flight at the same time along different chains
+ * can reach some replica in the opposite order, so the replicas apply
+ * them in different orders (630 on an insert after a delete, or two
+ * updates that commit different values in different replicas).
+ *
+ * So a write is not sent while an earlier write of the same transaction
+ * on the same row (table, fragment, row hash) is in flight along another
+ * chain: it waits in DBTC until that write gets LQHKEYCONF or LQHKEYREF.
+ * Then every replica of the earlier write has executed it (prepare goes
+ * along the chain, the last replica answers), and the later write cannot
+ * overtake it whatever chain it gets. Writes along the same chain are sent
+ * at once: signal order between two block instances is kept.
+ *
+ * Locked reads are ordered the same way against writes of the row: the
+ * metadata handling (ndb_schema) and replication read a row with a lock
+ * and write it in the same batch, and the read must see the row before
+ * the write (see the query thread decision in sendlqhkeyreq()). A read
+ * executes only in the node it is sent to, so a read and a write keep
+ * their order only if the read goes to the write's first replica, to its
+ * DBLQH. Reads are not ordered among themselves. Committed reads do not
+ * report back to DBTC, so they take no part (they see the old or the new
+ * row).
+ *
+ * In addition a transaction has at most MaxParallelOperationsPerTransaction
+ * operations in flight (all except committed reads), the others wait.
+ *
+ * Waiting operations are kept in one first-in, first-out queue per
+ * transaction (OS_WAIT_DIH, TcConnectRecord::m_parked_cache); when an
+ * operation is answered a CONTINUEB resumes the queue from the front, and
+ * each resumed operation asks DBDIH again before it is sent. A waiting
+ * operation holds no slot and no lock, and the operations it waits for
+ * are in LQH, so the wait cannot deadlock inside DBTC.
+ *
+ * See storage/ndb/claude_files/replica_chain_switch/same_row_serialization.md
+ */
+Uint32 Dbtc::maxParallelOpsPerTrans() const {
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(8322)) {
+    return 4;
+  }
+#endif
+  return c_max_parallel_ops_per_trans;
+}
+
+/* Answered with LQHKEYCONF or LQHKEYREF: all but committed reads */
+bool Dbtc::isTrackedOperation(const TcConnectRecord *regTcPtr) {
+  return !(regTcPtr->operation == ZREAD && regTcPtr->dirtyOp == ZTRUE);
+}
+
+/**
+ * Of the tracked operations: writes and locked reads, ordered per row
+ * within a transaction. An unlock goes by its lock handle to the node
+ * holding the lock, which the API knows only after the read returned.
+ */
+bool Dbtc::isRowOrderedOperation(const TcConnectRecord *regTcPtr) {
+  return regTcPtr->operation != ZUNLOCK;
+}
+
+/**
+ * How a row ordered operation reaches the row, compared in
+ * rowKeyHasHolderOnOtherPath(). A write goes along its chain, the first
+ * replica's DBLQH first (V_QUERY is resolved to DBLQH for writes). A
+ * locked read goes to tcNodedata[0] only; to its DBLQH unless it goes
+ * through DBSPJ or to V_QUERY, which may pick a query thread.
+ */
+Uint8 Dbtc::rowPathFlags(const TcConnectRecord *regTcPtr,
+                         const CacheRecord *regCachePtr) {
+  const Uint32 op = regTcPtr->operation;
+  if (op != ZREAD && op != ZREAD_EX) {
+    return 0;
+  }
+  if (regCachePtr->viaSPJFlag == 0 && regTcPtr->recBlockNo == DBLQH) {
+    return TcConnectRecord::SF_READ | TcConnectRecord::SF_READ_VIA_LDM;
+  }
+  return TcConnectRecord::SF_READ;
+}
+
+/**
+ * Must the fully received operation in tcConnectptr, with its chain in
+ * tcNodedata, wait before it is sent? Only asked for a tracked operation:
+ * attrinfoDihReceivedLab() checks that, and only tracked operations wait,
+ * so the first of the queue is one too. resume: it is the first in the
+ * queue of waiting operations.
+ *
+ * Returns false when the transaction has no operation in flight and none
+ * waiting: the limit is at least 1, and every holder in the key table is
+ * in flight. attrinfoDihReceivedLab() relies on this to skip the call.
+ */
+bool Dbtc::mustWaitToSend(ApiConnectRecordPtr const apiConnectptr,
+                          CacheRecord *regCachePtr, bool resume) {
+  const TcConnectRecord *regTcPtr = tcConnectptr.p;
+  const ApiConnectRecord *regApiPtr = apiConnectptr.p;
+  ndbassert(isTrackedOperation(regTcPtr));
+  if (!resume && regApiPtr->m_parked_ops > 0) {
+    /* Keep the order of the operations that wait */
+    jam();
+    c_parallel_limit_wait_count++;
+    return true;
+  }
+  if (regApiPtr->m_ops_in_flight >= maxParallelOpsPerTrans()) {
+    jam();
+    if (!resume) c_parallel_limit_wait_count++;
+    return true;
+  }
+  if (isRowOrderedOperation(regTcPtr) &&
+      rowKeyHasHolderOnOtherPath(apiConnectptr.i, regTcPtr,
+                                 rowPathFlags(regTcPtr, regCachePtr),
+                                 regCachePtr->tableref,
+                                 regCachePtr->fragmentid,
+                                 regCachePtr->hashValue)) {
+    jam();
+    c_same_row_wait_count++;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * The operation in tcConnectptr waits to be sent. It takes its cache
+ * record along: a long TCKEYREQ uses the block's m_local_cache_record,
+ * which is copied, and the transaction gets a new cache record for its
+ * next operation.
+ */
+void Dbtc::parkOperation(Signal *signal, CacheRecordPtr const cachePtr,
+                         ApiConnectRecordPtr const apiConnectptr) {
+  TcConnectRecord *const regTcPtr = tcConnectptr.p;
+  ApiConnectRecord *const regApiPtr = apiConnectptr.p;
+  CacheRecordPtr parkedPtr = cachePtr;
+  if (cachePtr.i == Uint32(~0)) {
+    jam();
+    if (unlikely(!c_cacheRecordPool.seize(parkedPtr))) {
+      jam();
+      TCKEY_abort(signal, 3, apiConnectptr);
+      return;
+    }
+    *parkedPtr.p = *cachePtr.p;
+    cachePtr.p->keyInfoSectionI = RNIL;
+    cachePtr.p->attrInfoSectionI = RNIL;
+  }
+  if (regApiPtr->cachePtr == cachePtr.i) {
+    regApiPtr->cachePtr = RNIL;
+  }
+  ndbassert(regTcPtr->m_send_flags == 0);
+  regTcPtr->m_send_flags = TcConnectRecord::SF_PARKED;
+  regTcPtr->m_parked_cache = parkedPtr.i;
+  regTcPtr->m_parked_next = RNIL;
+  regTcPtr->tcConnectstate = OS_WAIT_DIH;
+  if (regApiPtr->m_parked_tail == RNIL) {
+    regApiPtr->m_parked_head = tcConnectptr.i;
+  } else {
+    TcConnectRecordPtr tailPtr;
+    tailPtr.i = regApiPtr->m_parked_tail;
+    ndbrequire(tcConnectRecord.getValidPtr(tailPtr));
+    tailPtr.p->m_parked_next = tcConnectptr.i;
+  }
+  regApiPtr->m_parked_tail = tcConnectptr.i;
+  regApiPtr->m_parked_ops++;
+}
+
+/**
+ * The operation in tcConnectptr is sent now. A resumed operation keeps
+ * SF_PARKED until packLqhkeyreq040Lab() releases its cache record.
+ */
+void Dbtc::trackSentOperation(ApiConnectRecord *regApiPtr,
+                              CacheRecord *regCachePtr) {
+  TcConnectRecord *const regTcPtr = tcConnectptr.p;
+  Uint8 flags = regTcPtr->m_send_flags;
+  ndbassert((flags & ~TcConnectRecord::SF_PARKED) == 0);
+  flags |= TcConnectRecord::SF_IN_FLIGHT;
+  regApiPtr->m_ops_in_flight++;
+  if (isRowOrderedOperation(regTcPtr)) {
+    regTcPtr->m_row_hash = regCachePtr->hashValue;
+    regTcPtr->m_row_frag_id = Uint16(regCachePtr->fragmentid);
+    regTcPtr->m_row_table_id = regCachePtr->tableref;
+    rowKeyInsert(tcConnectptr);
+    flags |= TcConnectRecord::SF_ROW_KEY | rowPathFlags(regTcPtr, regCachePtr);
+  }
+  regTcPtr->m_send_flags = flags;
+}
+
+/**
+ * opPtr got LQHKEYCONF or LQHKEYREF, or is released: its slot and row key
+ * are free. resume: let waiting operations of the transaction go on.
+ */
+void Dbtc::releaseSentOperation(Signal *signal,
+                                ApiConnectRecordPtr const apiConnectptr,
+                                TcConnectRecordPtr const opPtr,
+                                bool resume) {
+  TcConnectRecord *const regTcPtr = opPtr.p;
+  const Uint8 flags = regTcPtr->m_send_flags;
+  if (likely((flags & TcConnectRecord::SF_IN_FLIGHT) == 0)) {
+    return;
+  }
+  if (flags & TcConnectRecord::SF_ROW_KEY) {
+    rowKeyRemove(opPtr);
+  }
+  /* SF_PARKED stays: the cache record is released separately */
+  regTcPtr->m_send_flags = flags & TcConnectRecord::SF_PARKED;
+  ApiConnectRecord *const regApiPtr = apiConnectptr.p;
+  ndbassert(regApiPtr->m_ops_in_flight > 0);
+  if (likely(regApiPtr->m_ops_in_flight > 0)) {
+    regApiPtr->m_ops_in_flight--;
+  }
+  if (resume && unlikely(regApiPtr->m_parked_ops > 0)) {
+    jam();
+    scheduleResumeParkedOps(signal, apiConnectptr);
+  }
+}
+
+/**
+ * A waiting operation is released with its transaction (abort, API
+ * failure, release of the transaction): release its cache record. The
+ * transaction resumes nothing any more, so its queue is dropped.
+ */
+void Dbtc::releaseParkedCache(ApiConnectRecord *regApiPtr,
+                              TcConnectRecord *regTcPtr) {
+  CacheRecordPtr cachePtr;
+  cachePtr.i = regTcPtr->m_parked_cache;
+  ndbrequire(c_cacheRecordPool.getValidPtr(cachePtr));
+  releaseKeys(cachePtr.p);
+  releaseSection(cachePtr.p->attrInfoSectionI);
+  cachePtr.p->attrInfoSectionI = RNIL;
+  c_cacheRecordPool.release(cachePtr);
+  checkPoolShrinkNeed(DBTC_CACHE_RECORD_TRANSIENT_POOL_INDEX,
+                      c_cacheRecordPool);
+  regTcPtr->m_send_flags &= ~TcConnectRecord::SF_PARKED;
+  regApiPtr->m_parked_ops = 0;
+  regApiPtr->m_parked_head = RNIL;
+  regApiPtr->m_parked_tail = RNIL;
+}
+
+/**
+ * Resume the waiting operations of the transaction from a CONTINUEB: out
+ * of LQHKEYCONF/LQHKEYREF, whose signal data is still in use, and out of
+ * their recursion. A local signal is used for the same reason.
+ */
+void Dbtc::scheduleResumeParkedOps(Signal *signal,
+                                   ApiConnectRecordPtr const apiConnectptr) {
+  (void)signal;
+  ApiConnectRecord *const regApiPtr = apiConnectptr.p;
+  if (regApiPtr->m_resume_scheduled) {
+    return;
+  }
+  regApiPtr->m_resume_scheduled = true;
+  Signal25 resumeSignal[1] = {};
+  resumeSignal->theData[0] = TcContinueB::ZRESUME_PARKED_OPS;
+  resumeSignal->theData[1] = apiConnectptr.i;
+  resumeSignal->theData[2] = regApiPtr->transid[0];
+  resumeSignal->theData[3] = regApiPtr->transid[1];
+  sendSignal(cownref, GSN_CONTINUEB, resumeSignal, 4, JBB);
+}
+
+void Dbtc::resumeParkedOps(Signal *signal, Uint32 apiConnectPtrI,
+                           Uint32 transId1, Uint32 transId2) {
+  ApiConnectRecordPtr apiConnectptr;
+  apiConnectptr.i = apiConnectPtrI;
+  if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
+    jam();
+    return;
+  }
+  ApiConnectRecord *const regApiPtr = apiConnectptr.p;
+  if (regApiPtr->transid[0] != transId1 || regApiPtr->transid[1] != transId2) {
+    jam();
+    /* The transaction ended, the record has a new one */
+    return;
+  }
+  regApiPtr->m_resume_scheduled = false;
+  constexpr Uint32 MAX_RESUME_PER_RT_BREAK = 16;
+  Uint32 resumed = 0;
+  while (regApiPtr->m_parked_head != RNIL) {
+    switch (regApiPtr->apiConnectstate) {
+      case CS_STARTED:
+      case CS_RECEIVING:
+      case CS_REC_COMMITTING:
+      case CS_START_COMMITTING:
+      case CS_SEND_FIRE_TRIG_REQ:
+      case CS_WAIT_FIRE_TRIG_REQ:
+        break;
+      default:
+        /* Aborting or released, the abort releases the waiting ones */
+        jam();
+        return;
+    }
+    if (regApiPtr->m_ops_in_flight >= maxParallelOpsPerTrans()) {
+      /* The next answer resumes again */
+      jam();
+      return;
+    }
+    if (resumed++ == MAX_RESUME_PER_RT_BREAK) {
+      jam();
+      scheduleResumeParkedOps(signal, apiConnectptr);
+      return;
+    }
+    tcConnectptr.i = regApiPtr->m_parked_head;
+    ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
+    TcConnectRecord *const regTcPtr = tcConnectptr.p;
+    ndbrequire(regTcPtr->apiConnect == apiConnectptr.i);
+    ndbrequire(regTcPtr->tcConnectstate == OS_WAIT_DIH);
+    ndbrequire(regTcPtr->m_send_flags & TcConnectRecord::SF_PARKED);
+    CacheRecordPtr cachePtr;
+    cachePtr.i = regTcPtr->m_parked_cache;
+    ndbrequire(c_cacheRecordPool.getValidPtr(cachePtr));
+
+    /**
+     * Ask DBDIH again: the chain the operation got before it waited may
+     * be out of date (a node inserted by STORED would miss the write, and
+     * its primary refuses the old distribution key once the copy started;
+     * a node in it may have failed).
+     */
+    if (!getNodesForOperation(signal, cachePtr, apiConnectptr, true)) {
+      /* Aborted */
+      jam();
+      return;
+    }
+    if (regTcPtr->tcNodedata[0] != 0 &&
+        mustWaitToSend(apiConnectptr, cachePtr.p, true)) {
+      /* Stays first in the queue, the answer of the holder resumes it */
+      jam();
+      return;
+    }
+    jam();
+    regApiPtr->m_parked_head = regTcPtr->m_parked_next;
+    if (regApiPtr->m_parked_head == RNIL) {
+      regApiPtr->m_parked_tail = RNIL;
+    }
+    regApiPtr->m_parked_ops--;
+    /* Releases cachePtr and clears SF_PARKED */
+    attrinfoDihReceivedLab(signal, cachePtr, apiConnectptr, true);
+  }
+}
+
+/**
+ * The bucket of a row key. The fragment id is part of the key but not of
+ * the bucket, so tckeyreq050Lab() can compute the bucket and prefetch it
+ * before DIGETNODES; only the copies of a row that reorg and fully
+ * replicated triggers write to other fragments share a bucket because of
+ * that.
+ */
+Uint32 Dbtc::rowKeyBucket(Uint32 apiConnectPtrI, Uint32 tableId,
+                          Uint32 rowHash) {
+  Uint32 h = rowHash ^ (apiConnectPtrI * 0x9E3779B1U) ^
+             (tableId * 0xC2B2AE35U);
+  h ^= h >> 16;
+  return h & (ROW_KEY_HASH_SIZE - 1);
+}
+
+void Dbtc::rowKeyInsert(TcConnectRecordPtr const opPtr) {
+  TcConnectRecord *const regTcPtr = opPtr.p;
+  const Uint32 bucket =
+      rowKeyBucket(regTcPtr->apiConnect, regTcPtr->m_row_table_id,
+                   regTcPtr->m_row_hash);
+  regTcPtr->m_row_key_prev = RNIL;
+  regTcPtr->m_row_key_next = c_row_key_hash[bucket];
+  if (regTcPtr->m_row_key_next != RNIL) {
+    TcConnectRecordPtr nextPtr;
+    nextPtr.i = regTcPtr->m_row_key_next;
+    ndbrequire(tcConnectRecord.getValidPtr(nextPtr));
+    nextPtr.p->m_row_key_prev = opPtr.i;
+  }
+  c_row_key_hash[bucket] = opPtr.i;
+}
+
+void Dbtc::rowKeyRemove(TcConnectRecordPtr const opPtr) {
+  TcConnectRecord *const regTcPtr = opPtr.p;
+  if (regTcPtr->m_row_key_prev == RNIL) {
+    /* First in its bucket: only then is the bucket needed */
+    const Uint32 bucket =
+        rowKeyBucket(regTcPtr->apiConnect, regTcPtr->m_row_table_id,
+                     regTcPtr->m_row_hash);
+    ndbrequire(c_row_key_hash[bucket] == opPtr.i);
+    c_row_key_hash[bucket] = regTcPtr->m_row_key_next;
+  } else {
+    TcConnectRecordPtr prevPtr;
+    prevPtr.i = regTcPtr->m_row_key_prev;
+    ndbrequire(tcConnectRecord.getValidPtr(prevPtr));
+    prevPtr.p->m_row_key_next = regTcPtr->m_row_key_next;
+  }
+  if (regTcPtr->m_row_key_next != RNIL) {
+    TcConnectRecordPtr nextPtr;
+    nextPtr.i = regTcPtr->m_row_key_next;
+    ndbrequire(tcConnectRecord.getValidPtr(nextPtr));
+    nextPtr.p->m_row_key_prev = regTcPtr->m_row_key_prev;
+  }
+}
+
+/**
+ * Is an operation of the row in flight in the transaction whose order
+ * against regTcPtr's (with path flags pathFlags) the paths do not keep?
+ * - Two writes: kept along the same chain only.
+ * - A locked read and a write: the read executes in tcNodedata[0] only,
+ *   so kept only if that is the write's first replica and the read goes
+ *   to its DBLQH (SF_READ_VIA_LDM), along the link the write takes.
+ * - Two reads: not ordered.
+ * All writes of a row in flight have the same chain, but the reads need
+ * not have the same node, so every holder of the row is checked.
+ */
+bool Dbtc::rowKeyHasHolderOnOtherPath(Uint32 apiConnectPtrI,
+                                      const TcConnectRecord *regTcPtr,
+                                      Uint8 pathFlags, Uint32 tableId,
+                                      Uint32 fragId, Uint32 rowHash) {
+  const bool isRead = (pathFlags & TcConnectRecord::SF_READ) != 0;
+  TcConnectRecordPtr holderPtr;
+  holderPtr.i = c_row_key_hash[rowKeyBucket(apiConnectPtrI, tableId, rowHash)];
+  while (holderPtr.i != RNIL) {
+    ndbrequire(tcConnectRecord.getValidPtr(holderPtr));
+    const TcConnectRecord *holder = holderPtr.p;
+    holderPtr.i = holder->m_row_key_next;
+    if (holder->apiConnect != apiConnectPtrI ||
+        holder->m_row_hash != rowHash || holder->m_row_frag_id != fragId ||
+        holder->m_row_table_id != tableId) {
+      continue;
+    }
+    const Uint8 holderFlags = holder->m_send_flags;
+    const bool holderIsRead = (holderFlags & TcConnectRecord::SF_READ) != 0;
+    if (isRead && holderIsRead) {
+      continue;
+    }
+    jam();
+#ifdef ERROR_INSERT
+    if (ERROR_INSERTED(8321)) {
+      /* Test: as if every path had changed */
+      return true;
+    }
+#endif
+    if (!isRead && !holderIsRead) {
+      if (holder->noOfNodes != regTcPtr->noOfNodes) {
+        return true;
+      }
+      for (Uint32 i = 0; i < regTcPtr->noOfNodes; i++) {
+        if (holder->tcNodedata[i] != regTcPtr->tcNodedata[i]) {
+          return true;
+        }
+      }
+      continue;
+    }
+    const Uint8 readFlags = isRead ? pathFlags : holderFlags;
+    if ((readFlags & TcConnectRecord::SF_READ_VIA_LDM) == 0 ||
+        holder->tcNodedata[0] != regTcPtr->tcNodedata[0]) {
+      return true;
+    }
+  }
+  return false;
+}
 
 void Dbtc::packLqhkeyreq(Signal *signal, BlockReference TBRef,
                          CacheRecordPtr cachePtr,
@@ -6237,6 +6789,11 @@ void Dbtc::sendlqhkeyreq(Signal *signal, BlockReference TBRef,
        *
        * Currently writes cannot be executed by Query threads, so this will
        * require a solution when this is implemented.
+       *
+       * The order is kept along the same path only. When the read and the
+       * write of a row take different paths (the primary changed between
+       * them, or the read goes to a query thread), mustWaitToSend() holds
+       * back the later one until the earlier one is answered.
        */
       Uint32 version = getNodeInfo(nodeId).m_version;
       Uint32 operation_type = LqhKeyReq::getOperation(lqhKeyReq->requestInfo);
@@ -6452,6 +7009,8 @@ void Dbtc::packLqhkeyreq040Lab(Signal *signal, BlockReference TBRef,
 #endif
 
   /* Release AttrInfo related storage, and the Cache Record */
+  // A resumed operation owned it
+  regTcPtr->m_send_flags &= ~TcConnectRecord::SF_PARKED;
   releaseAttrinfo(cachePtr, apiConnectptr.p);
 
   UintR TtcTimer = ctcTimer;
@@ -6485,14 +7044,20 @@ void Dbtc::releaseAttrinfo(CacheRecordPtr cachePtr,
 
   //---------------------------------------------------
   // Now we will release the cache record at the same
-  // time as releasing the attrinfo records.
+  // time as releasing the attrinfo records. ~0 is the
+  // block's m_local_cache_record of a long TCKEYREQ.
+  // An operation resumed after waiting to be sent has
+  // its own cache record, while the transaction may be
+  // receiving another operation into regApiPtr->cachePtr.
   //---------------------------------------------------
-  if (unlikely(regApiPtr->cachePtr != Uint32(~0))) {
+  if (unlikely(cachePtr.i != Uint32(~0))) {
     c_cacheRecordPool.release(cachePtr);
     checkPoolShrinkNeed(DBTC_CACHE_RECORD_TRANSIENT_POOL_INDEX,
                         c_cacheRecordPool);
   }
-  regApiPtr->cachePtr = RNIL;
+  if (regApiPtr->cachePtr == cachePtr.i) {
+    regApiPtr->cachePtr = RNIL;
+  }
   return;
 }  // Dbtc::releaseAttrinfo()
 
@@ -6579,6 +7144,22 @@ bool Dbtc::releaseTcCon(Signal *signal,
     }
   }
   ndbrequire(regTcPtr->thePendingTriggers.isEmpty());
+
+  if (unlikely(regTcPtr->m_send_flags != 0)) {
+    /**
+     * Released without LQHKEYCONF/LQHKEYREF (abort, failure, release), or
+     * while it waited to be sent
+     */
+    jam();
+    if (regTcPtr->m_send_flags & TcConnectRecord::SF_PARKED) {
+      jam();
+      releaseParkedCache(regApiPtr, regTcPtr);
+    }
+    ApiConnectRecordPtr apiPtr;
+    apiPtr.i = regTcPtr->apiConnect;
+    apiPtr.p = regApiPtr;
+    releaseSentOperation(signal, apiPtr, tcConnectptr, false);
+  }
 
   ndbrequire(regTcPtr->commitAckMarker == RNIL);
   regTcPtr->tcConnectstate = OS_CONNECTED;
@@ -7034,6 +7615,13 @@ void Dbtc::execLQHKEYCONF(Signal *signal) {
     warningReport(signal, 27, tcConnectptr.i);
     return;
   }  // if
+
+  /**
+   * Every replica has executed the operation: a later write of the row
+   * may be sent along any chain now, see mustWaitToSend(). Before the
+   * triggers of the operation are executed, which may wait themselves.
+   */
+  releaseSentOperation(signal, apiConnectptr, tcConnectptr, true);
 
   Uint32 lockingOpI = RNIL;
   if (unlikely(Toperation == ZUNLOCK)) {
@@ -9777,6 +10365,9 @@ void Dbtc::execLQHKEYREF(Signal *signal) {
       const bool needAbort = (LqhKeyRef::getReplicaErrorFlag(flags) != 0);
       const Uint32 triggeringOp = regTcPtr->triggeringOperation;
       ConnectionState TapiConnectstate = regApiPtr->apiConnectstate;
+
+      /* The operation is done in every replica it reached */
+      releaseSentOperation(signal, apiConnectptr, tcConnectptr, true);
 
       time_track_complete_key_operation_error(
           regTcPtr, refToNode(regApiPtr->ndbapiBlockref),
@@ -23499,7 +24090,9 @@ void Dbtc::execDBINFO_SCANREQ(Signal *signal) {
           {Ndbinfo::TABLE_SCANS_COUNTER, c_counters.c_scan_count},
           {Ndbinfo::RANGE_SCANS_COUNTER, c_counters.c_range_scan_count},
           {Ndbinfo::LOCAL_READ_COUNTER, c_counters.clocalReadCount},
-          {Ndbinfo::LOCAL_WRITE_COUNTER, c_counters.clocalWriteCount}};
+          {Ndbinfo::LOCAL_WRITE_COUNTER, c_counters.clocalWriteCount},
+          {Ndbinfo::SAME_ROW_WAITS_COUNTER, c_same_row_wait_count},
+          {Ndbinfo::PARALLEL_OP_WAITS_COUNTER, c_parallel_limit_wait_count}};
       const size_t num_counters = sizeof(counters) / sizeof(counters[0]);
 
       Uint32 i = cursor->data[0];

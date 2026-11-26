@@ -328,6 +328,7 @@
 #define NDB_COMPILED_INTERPRETER_ON    2  /* force JIT (reserved; == AUTO today) */
 
 #define CFG_DB_DISALLOW_DIRTY_WRITES 711
+#define CFG_DB_MAX_PARALLEL_OPS_PER_TRANSACTION 712
 
 /* End RonDB only configuration parameters */
 

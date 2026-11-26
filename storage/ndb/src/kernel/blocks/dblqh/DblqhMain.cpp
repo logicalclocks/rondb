@@ -10869,9 +10869,13 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
      * will first update the primary replica in node 1, followed by the
      * backup replica in node 2 and finally the backup replica in node 3.
      *
-     * The consistency of the replicas in node 1 and node 3 is not at risk
-     * here. They are part of the write transactions in both distribution key
-     * 2 and 3. Thus we only need to care about the new replica in node 2.
+     * Node 3 used to receive writes from node 1 and now receives them
+     * from node 2. Between transactions the row locks in each replica keep
+     * the order. Within a transaction, DBTC does not send a write of a row
+     * while an earlier write of the same row is in flight along another
+     * chain (Dbtc::mustWaitToSend()), so node 3 cannot get two writes of a
+     * row in the wrong order either. The check below protects the copy to
+     * node 2.
      *
      * The new replica is brought up by synchronising the data in node 2 with
      * the data in the primary replica in node 1. This uses a copy scan that

@@ -230,6 +230,8 @@ static struct view {
      "  WHEN 29 THEN \"LQHKEY_OVERLOAD_NODE_PEER\""
      "  WHEN 30 THEN \"LQHKEY_OVERLOAD_SUBSCRIBER\""
      "  WHEN 31 THEN \"LQHSCAN_SLOWDOWNS\""
+     "  WHEN 32 THEN \"SAME_ROW_WAITS\""
+     "  WHEN 33 THEN \"PARALLEL_OP_WAITS\""
      "  ELSE \"<unknown>\" "
      " END AS counter_name, "
      "val "

@@ -324,6 +324,13 @@ class Dbtc : public SimulatedBlock {
     OS_ABORTING = 9,
     OS_ABORT_SENT = 10,
     OS_TAKE_OVER = 11,
+    /**
+     * Fully received, waits in DBTC to be sent: an earlier write or
+     * locked read of the same row in the same transaction is in flight
+     * along another path, or the transaction has its limit of operations
+     * in flight.
+     * See Dbtc::mustWaitToSend().
+     */
     OS_WAIT_DIH = 12,
     OS_WAIT_KEYINFO = 13,
     OS_WAIT_ATTR = 14,
@@ -1006,6 +1013,48 @@ class Dbtc : public SimulatedBlock {
       Uint32 triggerErrorCode;
     };
     NDB_TICKS m_start_ticks;
+
+    /**
+     * Same-row serialization and the limit on operations in flight,
+     * see Dbtc::mustWaitToSend().
+     *
+     * SF_IN_FLIGHT: sent to LQH, LQHKEYCONF or LQHKEYREF not received
+     * yet, counted in ApiConnectRecord::m_ops_in_flight. Committed reads
+     * are never counted, they do not report back.
+     * SF_ROW_KEY: a write or locked read in flight, linked into
+     * c_row_key_hash under the key (transaction, table, fragment, row
+     * hash) through m_row_key_next/m_row_key_prev. Its bucket is
+     * computed again from apiConnect, m_row_table_id and m_row_hash, none
+     * of which changes while it is linked.
+     * SF_READ: that operation is a locked read, executed in tcNodedata[0]
+     * only. SF_READ_VIA_LDM: and sent to DBLQH there, not through DBSPJ or
+     * V_QUERY, so along the same link as a write's first replica.
+     * SF_PARKED: the operation owns the cache record in m_parked_cache;
+     * it waits to be sent (OS_WAIT_DIH, linked through m_parked_next into
+     * its transaction's queue), or it was resumed and the cache record is
+     * not released yet (packLqhkeyreq040Lab()).
+     *
+     * Only m_send_flags is set when the record is seized; every other
+     * field here is set before its flag and read only while the flag is
+     * set, so committed reads and most other operations never touch them.
+     */
+    enum SendFlags {
+      SF_IN_FLIGHT = 1,
+      SF_ROW_KEY = 2,
+      SF_READ = 4,
+      SF_READ_VIA_LDM = 8,
+      SF_PARKED = 16
+    };
+    Uint8 m_send_flags = 0;
+    Uint16 m_row_frag_id;
+    static_assert(MAX_NDB_PARTITIONS <= 65536,
+                  "m_row_frag_id holds a fragment id");
+    Uint32 m_row_hash;
+    Uint32 m_row_table_id;
+    Uint32 m_row_key_next;
+    Uint32 m_row_key_prev;
+    Uint32 m_parked_cache;
+    Uint32 m_parked_next;
   };
 
   typedef Ptr<TcConnectRecord> TcConnectRecordPtr;
@@ -1289,6 +1338,18 @@ class Dbtc : public SimulatedBlock {
     UintR attrInfoLen;
     Uint32 immediateTriggerId;  // Id of trigger op being fired NOW
     Uint32 firedFragId;
+
+    /**
+     * Operations sent to LQH and not yet answered (SF_IN_FLIGHT), and the
+     * first-in, first-out queue of operations that wait to be sent
+     * (OS_WAIT_DIH), see Dbtc::mustWaitToSend(). m_resume_scheduled: a
+     * CONTINUEB ZRESUME_PARKED_OPS is on its way.
+     */
+    Uint32 m_ops_in_flight = 0;
+    Uint32 m_parked_ops = 0;
+    Uint32 m_parked_head = RNIL;
+    Uint32 m_parked_tail = RNIL;
+    bool m_resume_scheduled = false;
 
 #ifdef ERROR_INSERT
     Uint32 continueBCount;  // ERROR_INSERT 8082
@@ -1652,6 +1713,16 @@ class Dbtc : public SimulatedBlock {
      * to DBLQH in the LQHKEYREQ attrLen word, which validates it.
      */
     Uint8 m_agg_read;
+    /**
+     * The inputs of the operation's DIGETNODESREQ that are not in the
+     * fields above, saved so that an operation that waited to be sent
+     * asks DBDIH again (see Dbtc::getNodesForOperation()).
+     */
+    Uint8 m_dih_any_node;
+    Uint8 m_ttl_table;
+    Uint8 m_ttl_can_go_to_replica;
+    UintR m_distr_hash_value;
+    Uint32 m_fired_frag_id;
     /* End of TCKEYREQ/TCINDXREQ only fields */
   };
 
@@ -3077,7 +3148,8 @@ class Dbtc : public SimulatedBlock {
   void scanAttrinfoLab(Signal *signal, UintR Tlen,
                        ApiConnectRecordPtr apiConnectptr);
   void attrinfoDihReceivedLab(Signal *signal, CacheRecordPtr cachePtr,
-                              ApiConnectRecordPtr apiConnectptr);
+                              ApiConnectRecordPtr apiConnectptr,
+                              bool resumed = false);
   void aiErrorLab(Signal *signal, ApiConnectRecordPtr apiConnectptr);
   void scanReleaseResourcesLab(Signal *signal);
   void scanCompletedLab(Signal *signal);
@@ -3093,6 +3165,37 @@ class Dbtc : public SimulatedBlock {
                                 ApiConnectRecordPtr apiConnectptr);
   void tckeyreq050Lab(Signal *signal, CacheRecordPtr cachePtr,
                       ApiConnectRecordPtr apiConnectptr);
+  bool getNodesForOperation(Signal *signal, CacheRecordPtr cachePtr,
+                            ApiConnectRecordPtr apiConnectptr, bool resume);
+  /* Same-row serialization and the limit on operations in flight */
+  Uint32 maxParallelOpsPerTrans() const;
+  static bool isTrackedOperation(const TcConnectRecord *regTcPtr);
+  static bool isRowOrderedOperation(const TcConnectRecord *regTcPtr);
+  bool mustWaitToSend(ApiConnectRecordPtr apiConnectptr,
+                      CacheRecord *regCachePtr, bool resume);
+  void parkOperation(Signal *signal, CacheRecordPtr cachePtr,
+                     ApiConnectRecordPtr apiConnectptr);
+  void trackSentOperation(ApiConnectRecord *regApiPtr,
+                          CacheRecord *regCachePtr);
+  void releaseSentOperation(Signal *signal,
+                            ApiConnectRecordPtr apiConnectptr,
+                            TcConnectRecordPtr opPtr, bool resume);
+  void releaseParkedCache(ApiConnectRecord *regApiPtr,
+                          TcConnectRecord *regTcPtr);
+  void scheduleResumeParkedOps(Signal *signal,
+                               ApiConnectRecordPtr apiConnectptr);
+  void resumeParkedOps(Signal *signal, Uint32 apiConnectPtrI,
+                       Uint32 transId1, Uint32 transId2);
+  static Uint32 rowKeyBucket(Uint32 apiConnectPtrI, Uint32 tableId,
+                             Uint32 rowHash);
+  void rowKeyInsert(TcConnectRecordPtr opPtr);
+  void rowKeyRemove(TcConnectRecordPtr opPtr);
+  static Uint8 rowPathFlags(const TcConnectRecord *regTcPtr,
+                            const CacheRecord *regCachePtr);
+  bool rowKeyHasHolderOnOtherPath(Uint32 apiConnectPtrI,
+                                  const TcConnectRecord *regTcPtr,
+                                  Uint8 pathFlags, Uint32 tableId,
+                                  Uint32 fragId, Uint32 rowHash);
   void logAbortingOperation(Signal *signal, ApiConnectRecordPtr apiPtr,
                             TcConnectRecordPtr tcPtr, Uint32 error);
   void logTransactionTimeout(Signal *signal, Uint32 apiConn, Uint32 errCode,
@@ -3953,6 +4056,27 @@ class Dbtc : public SimulatedBlock {
   // EnableProactiveDeadlockDetection (default false; MTR enables it).
   bool c_proactive_deadlock_detect = false;
   bool m_disallow_dirty_writes = false;
+
+  /**
+   * Same-row serialization, see mustWaitToSend().
+   *
+   * c_row_key_hash: buckets of the writes and locked reads in flight of
+   * all transactions of this DBTC instance, linked through
+   * TcConnectRecord::m_row_key_next and m_row_key_prev. The key includes
+   * the transaction, so other transactions only make a bucket longer.
+   *
+   * c_max_parallel_ops_per_trans: MaxParallelOperationsPerTransaction,
+   * the operations of one transaction in flight at a time.
+   *
+   * The counters are in ndbinfo.counters: writes and locked reads that
+   * waited for an earlier operation of the same row, and operations that
+   * waited for the limit.
+   */
+  static constexpr Uint32 ROW_KEY_HASH_SIZE = 16384;  // power of 2
+  Uint32 c_row_key_hash[ROW_KEY_HASH_SIZE];
+  Uint32 c_max_parallel_ops_per_trans = 1024;
+  Uint64 c_same_row_wait_count = 0;
+  Uint64 c_parallel_limit_wait_count = 0;
 
   bool m_dbinfo_full_apiconnectrecord;
 

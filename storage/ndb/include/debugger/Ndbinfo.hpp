@@ -276,7 +276,12 @@ class Ndbinfo {
     LQHKEY_OVERLOAD_READER = 28,
     LQHKEY_OVERLOAD_NODE_PEER = 29,
     LQHKEY_OVERLOAD_SUBSCRIBER = 30,
-    LQHSCAN_SLOWDOWN = 31
+    LQHSCAN_SLOWDOWN = 31,
+    /* DBTC: writes that waited for an earlier write of the same row */
+    SAME_ROW_WAITS_COUNTER = 32,
+    /* DBTC: operations that waited for MaxParallelOperationsPerTransaction
+       or behind other waiting operations */
+    PARALLEL_OP_WAITS_COUNTER = 33
   };
 
   struct counter_entry {

@@ -225,7 +225,7 @@ DECLARE_NDBINFO_TABLE(COUNTERS, 5) = {
        */
        return c.data_nodes * ((7 * c.instances.lqh) +  // 7 rows per LQH
                               (13 * c.instances.tc) +  // 13 rows per SPJ
-                              (11 * c.instances.tc));  // 11 rows per TC
+                              (13 * c.instances.tc));  // 13 rows per TC
      },
      "monotonic counters"},
     {{"node_id", Ndbinfo::Number, ""},

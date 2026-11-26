@@ -80,6 +80,7 @@ class TcContinueB {
     ,ZCHECK_GCP_FINISHED                   = 41
     ,ZBACKGROUND_RATE_LIMITS               = 42
     ,ZBACKGROUND_RATE_QUEUE_HANDLER        = 43
+    ,ZRESUME_PARKED_OPS                    = 44
   };
 };
 
