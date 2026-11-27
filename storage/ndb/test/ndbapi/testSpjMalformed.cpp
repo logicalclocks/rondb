@@ -2040,13 +2040,13 @@ class SpjMalformedChecker {
         (2u << 16) | 1u, exitOk, QueryPattern::data(1), 0x11111111u};
     const char *const controlIds[3] = {
         "CONTROL (P-50a scan program without a subroutine part)",
-        "CONTROL (P-50b aggregation leaf program without a subroutine "
-        "part)",
+        ("CONTROL (P-50b aggregation leaf program without a subroutine "
+         "part)"),
         "CONTROL (P-50c tree node program without a pattern)"};
     const char *const ids[3] = {
         "P-50a scan program with a subroutine part",
-        "P-50b NI_ATTR_LINKED aggregation leaf program with a subroutine "
-        "part",
+        ("P-50b NI_ATTR_LINKED aggregation leaf program with a subroutine "
+         "part"),
         "P-50c tree node program with a pattern but no NI_ATTR_LINKED"};
     const Uint32 expected[3] = {
         Uint32(DbspjErr::InvalidTreeParametersSpecification),
@@ -2362,8 +2362,8 @@ class SpjMalformedChecker {
 
     const char *const ids[3] = {
         /* [255]'abc': the length byte runs past the 4-byte constant */
-        "P-53a VARCHAR column compared with a constant whose length byte "
-        "runs past it",
+        ("P-53a VARCHAR column compared with a constant whose length byte "
+         "runs past it"),
         /* A quiet NaN */
         "P-53b FLOAT column compared with NaN",
         /* 1 as 8 bytes for the 4-byte ID */
@@ -2567,8 +2567,8 @@ class SpjMalformedChecker {
             loadCol(1, NDB_TYPE_CHAR, kLinkedPos1), aggUpdate(kOpMax, 1, 0)});
     const char *const ids[3] = {
         "P-55a join aggregation VARCHAR MAX and CHAR MAX of one slot",
-        "P-55b join aggregation MAX of a linked VARCHAR whose length byte "
-        "runs past it",
+        ("P-55b join aggregation MAX of a linked VARCHAR whose length byte "
+         "runs past it"),
         "P-55c join aggregation SUM of a 4-byte linked entry as a BIGINT"};
     const Reply reps[3] = {
         sendLinkedAgg(mixed, mixedLeaf),
@@ -2721,12 +2721,12 @@ class SpjMalformedChecker {
                                 Interpreter::BRANCH_REG_EQ_NULL | (1u << 6)};
     const char *const controlIds[2] = {
         "P-57 control: BRANCH to the next word",
-        "P-57 control: BRANCH_REG_EQ_NULL of a NULL register to the next "
-        "word"};
+        ("P-57 control: BRANCH_REG_EQ_NULL of a NULL register to the next "
+         "word")};
     const char *const ids[2] = {
         "P-57a join aggregation embedded BRANCH to itself",
-        "P-57b join aggregation embedded BRANCH_REG_EQ_NULL of a NULL "
-        "register to itself"};
+        ("P-57b join aggregation embedded BRANCH_REG_EQ_NULL of a NULL "
+         "register to itself")};
 
     for (int i = 0; i < 2; i++) {
       SpjReq good;
@@ -2853,13 +2853,13 @@ class SpjMalformedChecker {
     const Uint32 constWords[2] = {1, 2};
     const char *const controlIds[2] = {
         "P-58 control: BRANCH over a LOAD_CONST32",
-        "P-58 control: BRANCH_REG_EQ_NULL of a NULL register over a "
-        "LOAD_CONST64"};
+        ("P-58 control: BRANCH_REG_EQ_NULL of a NULL register over a "
+         "LOAD_CONST64")};
     const char *const ids[2] = {
-        "P-58a join aggregation embedded BRANCH into the constant of a "
-        "LOAD_CONST32",
-        "P-58b join aggregation embedded BRANCH_REG_EQ_NULL of a NULL "
-        "register into the constant of a LOAD_CONST64"};
+        ("P-58a join aggregation embedded BRANCH into the constant of a "
+         "LOAD_CONST32"),
+        ("P-58b join aggregation embedded BRANCH_REG_EQ_NULL of a NULL "
+         "register into the constant of a LOAD_CONST64")};
     const char *readId =
         "P-58c interpreted read: BRANCH into a constant that reads as a "
         "branch back past the start";
