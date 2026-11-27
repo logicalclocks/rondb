@@ -275,6 +275,22 @@ class JoinAggInterpreter : public AggInterpreterBase {
   Int32 mergeScalarAccumulators(const char* accumulators, Uint32 accLen);
 
   void setUseMutex(bool v) { m_use_mutex = v; }
+  /* Several LDM threads feed one interpreter (MUTEX_BASED).  Whatever
+   * touches the group table or the chunk lists outside
+   * processRecWithLinkedAttrs / processNullExtendedRow holds this lock:
+   * an eviction (Dblqh::sendEvictedAggGroup) unlinks and frees a group
+   * another thread may be accumulating into.  The lock is not owned
+   * when the interpreter has a single feeder. */
+  std::unique_lock<std::mutex> lockFeederMutex() {
+    std::unique_lock<std::mutex> lock(m_mutex, std::defer_lock);
+    if (m_use_mutex) lock.lock();
+    return lock;
+  }
+  /* Number of groups, read under the lock. */
+  Uint32 numGroupsLocked() {
+    std::unique_lock<std::mutex> lock = lockFeederMutex();
+    return (m_gb_map != nullptr) ? m_gb_map->size() : 0;
+  }
   void setMaxGroups(Uint32 v) { m_max_groups = v; }
   Uint32 maxGroups() const { return m_max_groups; }
 

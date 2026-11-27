@@ -16721,11 +16721,23 @@ bool Dblqh::sendEvictedAggGroup(Signal *signal,
   Uint32 words_written = 0;
   static_assert(JOIN_AGG_MAX_RESULT_WORDS <=
                 sizeof(cevictBuffer) / sizeof(Uint32));
-  Int32 evict_ret = interp->evictOneGroup(
-      cevictBuffer,
-      JOIN_AGG_MAX_RESULT_WORDS,
-      &words_written,
-      c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
+  Int32 evict_ret;
+  {
+    /* The other LDM threads feeding this state run ProcessRec under the
+     * interpreter's lock; the eviction unlinks and frees a group, and
+     * m_rows_sent is one counter for all of them, so both need it too.
+     * The group is copied to this thread's cevictBuffer, so the send
+     * below runs unlocked. */
+    std::unique_lock<std::mutex> lock = interp->lockFeederMutex();
+    evict_ret = interp->evictOneGroup(
+        cevictBuffer,
+        JOIN_AGG_MAX_RESULT_WORDS,
+        &words_written,
+        c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
+    if (likely(evict_ret == 0)) {
+      state->m_rows_sent++;
+    }
+  }
   if (unlikely(evict_ret != 0)) {
     jam();
     /* Nothing to evict: the interpreter could not allocate a group even
@@ -16744,8 +16756,6 @@ bool Dblqh::sendEvictedAggGroup(Signal *signal,
   sendTransIdAIRow(signal, state->m_resultRef, receiverData,
                    state->m_transid, cevictBuffer, words_written,
                    /*corrAtEnd=*/false);
-
-  state->m_rows_sent++;
   return true;
 }
 

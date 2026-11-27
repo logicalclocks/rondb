@@ -5951,8 +5951,7 @@ retry:
   if (ERROR_INSERTED(4041) &&
       (++m_join_agg_evict_row_count % 7) == 0 &&
       !state->m_cte_mode &&
-      interp->gb_map_mutable() != nullptr &&
-      interp->gb_map_mutable()->size() > 2 &&
+      interp->numGroupsLocked() > 2 &&
       c_lqh->sendEvictedAggGroup(req_struct->signal, interp, state)) {
     evict_count++;
   }
