@@ -480,6 +480,18 @@ static const Uint32* keyEntryAt(const char* data, Uint32 key_len,
   return nullptr;
 }
 
+const GBColTypeInfo* JoinAggInterpreter::orderGroupByType(
+    const OrderCol& oc) const {
+  if (oc.is_agg || !m_gb_types_inited || oc.idx >= m_n_gb_cols) {
+    return nullptr;
+  }
+  const GBColTypeInfo* const type = &m_gb_types[oc.idx];
+  if (unlikely(type->cmpFn == nullptr)) {
+    return nullptr;
+  }
+  return type;
+}
+
 int JoinAggInterpreter::compareGroupsByOrderSpec(
     const char* a_data, Uint32 a_key_len,
     const char* b_data, Uint32 b_key_len) const {
@@ -494,26 +506,27 @@ int JoinAggInterpreter::compareGroupsByOrderSpec(
       const AttributeHeader ahb(*eb);
       const bool na = aha.isNULL();
       const bool nb = ahb.isNULL();
+      const GBColTypeInfo* const type = orderGroupByType(oc);
       if (na || nb) {
         /* MySQL: NULLs order first ascending. */
         r = (na && nb) ? 0 : (na ? -1 : 1);
-      } else if (m_gb_types_inited && oc.idx < m_n_gb_cols &&
-                 m_gb_types[oc.idx].cmpFn != nullptr &&
+      } else if (type != nullptr &&
                  likely(NdbSqlUtil::check_compare_values(
-                     m_gb_types[oc.idx].typeId, ea + 1, aha.getByteSize(),
+                     type->typeId, ea + 1, aha.getByteSize(),
                      eb + 1, ahb.getByteSize()))) {
         /* checkGroupKey let only values the compare function takes
          * become a group: a VARCHAR length prefix past its value failed
          * cmpVarchar's require, a NaN DOUBLE cmpDouble's, in any data
          * node.  Two of them that it cannot compare with each other
          * (DECIMAL or BINARY values of two sizes) order as equal. */
-        r = (*m_gb_types[oc.idx].cmpFn)(
-            m_gb_types[oc.idx].cs,
-            ea + 1, aha.getByteSize(),
-            eb + 1, ahb.getByteSize());
+        r = (*type->cmpFn)(type->cs,
+                           ea + 1, aha.getByteSize(),
+                           eb + 1, ahb.getByteSize());
       } else {
-        /* Types not initialised (no rows processed) — nothing to
-         * order; treat as equal. */
+        /* No type (orderGroupByType: the types not initialised, no
+         * rows processed), or two values the compare function cannot
+         * take together: order as equal.  This sets only the order of
+         * the groups, never which groups there are. */
         r = 0;
       }
     } else {
@@ -574,11 +587,13 @@ bool JoinAggInterpreter::checkGroupKey(const char* key,
     return false;
   }
   for (Uint32 c = 0; c < m_n_order_cols; c++) {
-    const OrderCol& oc = m_order_spec[c];
-    if (oc.is_agg || oc.idx >= m_n_gb_cols) {
+    /* The columns compareGroupsByOrderSpec gives to a compare function,
+     * as it chooses them */
+    const GBColTypeInfo* const type = orderGroupByType(m_order_spec[c]);
+    if (type == nullptr) {
       continue;
     }
-    const Uint32* e = keyEntryAt(key, key_len, oc.idx);
+    const Uint32* e = keyEntryAt(key, key_len, m_order_spec[c].idx);
     if (e == nullptr) {
       continue;  // compareGroupsByOrderSpec skips the column too
     }
@@ -590,7 +605,7 @@ bool JoinAggInterpreter::checkGroupKey(const char* key,
      * every value (its size for a fixed-size type, not NaN, a length
      * prefix inside it) */
     if (unlikely(!NdbSqlUtil::check_compare_values(
-            m_gb_types[oc.idx].typeId, e + 1, ah.getByteSize(), e + 1,
+            type->typeId, e + 1, ah.getByteSize(), e + 1,
             ah.getByteSize()))) {
       return false;
     }
@@ -2285,7 +2300,9 @@ static Int32 mergeStringAccumulator(AggResItem* dst,
       string_results[agg_index].prefix_bytes : stringPrefixBytes(src->type);
   const Uint32 src_len = prefix + src_payload_len;
   const Uint32 dst_len = prefix + dst_payload_len;
-  /* A CASE's arms can be CHAR columns of different sizes */
+  /* A CASE's arms can be CHAR columns of different sizes.  src->type is
+   * CHAR, VARCHAR or LONGVARCHAR (mergeAccumulators calls this only for
+   * those), each with a compare function. */
   NdbSqlUtil::Cmp* const cmp_fn = NdbSqlUtil::getStringResultCmp(src->type);
   const CHARSET_INFO* charset = (string_results != nullptr) ?
       string_results[agg_index].charset : nullptr;

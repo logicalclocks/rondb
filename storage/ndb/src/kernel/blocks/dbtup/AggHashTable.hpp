@@ -57,7 +57,9 @@ struct MemChunk {
 struct GBColTypeInfo {
   Uint32 typeId;
   const CHARSET_INFO *cs;          // nullptr for non-string types
-  NdbSqlUtil::Cmp *cmpFn;         // NdbSqlUtil::getStringResultCmp(typeId)
+  NdbSqlUtil::Cmp *cmpFn;         // NdbSqlUtil::getStringResultCmp(typeId),
+                                   // never nullptr once published
+                                   // (publishGBTypes)
   Uint32 maxBytes;                 // AttributeDescriptor::getSizeInBytes
 };
 
@@ -820,7 +822,9 @@ char* GBHashTable<BUCKET_COUNT>::findInBucket(Uint32 b, const char* key,
         /* cmpVarchar and cmpLongvarchar require each length prefix to
          * fit its value, or stop the node.  Keys that came in a request
          * are checked where they come in (checkKey); a key whose prefix
-         * does not fit matches nothing. */
+         * does not fit matches nothing.  cmpFn is set: publishGBTypes
+         * refuses a type without one, and check_compare_values takes no
+         * value of such a type. */
         if (unlikely(!NdbSqlUtil::check_compare_values(
                 m_col_types[i].typeId, p1 + 1, ah1.getByteSize(), p2 + 1,
                 ah2.getByteSize()))) {

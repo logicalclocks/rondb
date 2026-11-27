@@ -92,6 +92,9 @@
  * stopped a debug data node (RONDB-1124).  P-57 sends an embedded
  * program with a branch to itself, which ran forever in the LDM thread
  * and which JOIN_AGG_SETUP_REQ must refuse (validateEmbeddedProgram).
+ * P-59 groups by a linked value typed TEXT, BLOB, undefined or unknown,
+ * types without a compare function, which fails the row (RONDB-1124,
+ * AggInterpreterBase::publishGBTypes).
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
  * re-send (passQueue), which only DBTC itself may set (RONDB-1124).
  * S-1 and S-2 send join aggregation signals that only data nodes send
@@ -2766,6 +2769,84 @@ class SpjMalformedChecker {
     return result;
   }
 
+  /* ---- P-59: a GROUP BY column whose type has no compare function ----- *
+   * The leaf groups by linked position 0 (linkedGroupByLeaf), and the
+   * CTE marker of the linked entry types the column, so the API chooses
+   * the type.  BLOB, TEXT, the undefined type and an unknown type id
+   * have no compare function (NdbSqlUtil::getStringResultCmp), which
+   * the group hash table and the ORDER BY of a CTE call; the API refuses
+   * a BLOB or TEXT group key (NdbAggregator::GroupBy).  The kernel took
+   * such a type without a collation and grouped by the bytes of the
+   * value.  publishGBTypes now refuses it when the GROUP BY types are
+   * set, before any group, which fails the row with 1869.  The control
+   * is the same entry typed BIGINT, which must get SCAN_TABCONF: without
+   * it a harness whose rows never reach the group table would pass. */
+  int runP59() {
+    const std::vector<Uint32> leaf = linkedGroupByLeaf(1);
+    const Uint32 w1 = CteLinkedAttr::encodeWord1(0);
+    const char *findingId = "P-59 GROUP BY type without a compare function";
+
+    SpjReq good;
+    makeJoinAggScanLookup(
+        good,
+        {CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8), w1,
+         (0u << 16) | 8u, 7u, 0u},
+        leaf);
+    good.waitForEnd = true;
+    const Reply control = sendScanTabReq(good);
+    printReply("CONTROL (GROUP BY BIGINT 7)", control);
+    if (control.gsn != GSN_SCAN_TABCONF) {
+      g_err << "P-59 CONTROL did not get SCAN_TABCONF (got "
+            << gsnName(control.gsn) << ", err " << control.errorCode
+            << ").  The rows do not reach the group table; fix this "
+               "before trusting the result of P-59." << endl;
+      return clusterHealthy() ? NDBT_FAILED : failNodeDown(findingId);
+    }
+
+    constexpr int kCases = 4;
+    /* An id the 7 bits of the marker hold, past the last NDB type */
+    constexpr Uint32 kUnknownType = 100;
+    const Uint32 types[kCases] = {NDB_TYPE_TEXT, NDB_TYPE_BLOB,
+                                  NDB_TYPE_UNDEFINED, kUnknownType};
+    const char *const ids[kCases] = {
+        "P-59a GROUP BY a linked value typed TEXT",
+        "P-59b GROUP BY a linked value typed BLOB",
+        "P-59c GROUP BY a linked value of the undefined type",
+        "P-59d GROUP BY a linked value of an unknown type"};
+    Reply reps[kCases];
+    for (int i = 0; i < kCases; i++) {
+      SpjReq bad;
+      makeJoinAggScanLookup(
+          bad,
+          {CteLinkedAttr::encodeWord0(types[i], 8), w1, (0u << 16) | 8u, 7u,
+           0u},
+          leaf);
+      bad.waitForEnd = true;
+      reps[i] = sendScanTabReq(bad);
+      printReply(ids[i], reps[i]);
+    }
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    int result = NDBT_OK;
+    for (int i = 0; i < kCases; i++) {
+      if (reps[i].gsn != GSN_SCAN_TABREF) {
+        g_err << ids[i] << ": FAIL -- expected SCAN_TABREF, got "
+              << gsnName(reps[i].gsn)
+              << ": the GROUP BY type was not refused" << endl;
+        result = NDBT_FAILED;
+      } else {
+        g_info << ids[i] << ": PASS (all data nodes started; SCAN_TABREF "
+               << reps[i].errorCode << ")" << endl;
+      }
+    }
+    return result;
+  }
+
   /* ---- Q cases: DBTC's rate queue re-send mark sent by the API -------- *
    * DBTC's rate queue handler re-sends a queued request to its own DBTC
    * instance with a mark: the passQueue flag of TCKEYREQ, TCINDXREQ and
@@ -3451,6 +3532,7 @@ CASE_STEP(runP54, runP54)
 CASE_STEP(runP55, runP55)
 CASE_STEP(runP56, runP56)
 CASE_STEP(runP57, runP57)
+CASE_STEP(runP59, runP59)
 CASE_STEP(runQ1, runQ1)
 CASE_STEP(runQ2, runQ2)
 CASE_STEP(runQ3, runQ3)
@@ -3776,6 +3858,11 @@ TESTCASE("P56",
 TESTCASE("P57",
          "join aggregation: an embedded branch of offset 0, to itself") {
   STEP(runP57);
+}
+TESTCASE("P59",
+         "join aggregation: GROUP BY a linked value whose type has no "
+         "compare function") {
+  STEP(runP59);
 }
 TESTCASE("Q1", "TCKEYREQ with the rate queue flag from the API") {
   STEP(runQ1);

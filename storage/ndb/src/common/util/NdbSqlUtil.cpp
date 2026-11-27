@@ -2012,6 +2012,18 @@ static void testcomparevalues() {
   chk1(!NdbSqlUtil::check_compare_values(T::Undefined, abcd, 8, abcd, 8));
   chk1(!NdbSqlUtil::check_compare_values(200, abcd, 8, abcd, 8));
   chk1(!NdbSqlUtil::check_compare_values(T::Bit, abcd, 0, abcd, 8));
+  chk1(NdbSqlUtil::getStringResultCmp(T::Blob) == nullptr);
+  chk1(NdbSqlUtil::getStringResultCmp(T::Text) == nullptr);
+  chk1(NdbSqlUtil::getStringResultCmp(T::Undefined) == nullptr);
+  /* The group hash table and the single-row CTE probe call the compare
+   * function of a type only for values check_compare_values takes: it
+   * takes none of a type without a compare function. */
+  for (Uint32 t = 0; t < 256; t++) {
+    if (NdbSqlUtil::getStringResultCmp(t) != nullptr) continue;
+    for (unsigned n = 0; n <= 8; n++) {
+      chk1(!NdbSqlUtil::check_compare_values(t, abcd, n, abcd, n));
+    }
+  }
 
   /* CHAR(8) and CHAR(12) of one value compare equal under a PAD SPACE
    * collation (latin1) and a NO PAD one (utf8mb4_0900_ai_ci) */

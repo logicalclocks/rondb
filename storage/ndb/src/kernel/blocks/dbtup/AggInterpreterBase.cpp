@@ -2606,6 +2606,25 @@ Int32 AggInterpreterBase::publishGBTypes(EmulatedJamBuffer *jamBuf) {
   Uint32 max_xfrm_len = 0;
   for (Uint32 i = 0; i < m_n_gb_cols; i++) {
     thrjamDebug(jamBuf);
+    /* A GROUP BY column needs a compare function: the group hash table
+     * compares a column with a collation with it (findInBucket, DBLQH's
+     * single-row CTE probe), and the ORDER BY top-N of a CTE every
+     * GROUP BY column (compareGroupsByOrderSpec).  BLOB, TEXT, the
+     * undefined type and an unknown type id have none.  The API refuses
+     * a BLOB or TEXT group key (NdbAggregator::GroupBy), but the type of
+     * a linked column comes from a request (a CTE marker, the setup
+     * metadata), and a single-table aggregation program can name any
+     * column of its table.  A TEXT column of the table has a collation:
+     * its keys matched no group, so each row became a group of its own,
+     * and hashing them asserted a string type for a NO PAD collation.
+     * In the ORDER BY such a column failed every row (checkGroupKey).
+     * Refused here, before any group, so that no published GROUP BY type
+     * has a nullptr cmpFn. */
+    if (unlikely(m_gb_types[i].cmpFn == nullptr)) {
+      g_eventLogger->debug("publishGBTypes: GROUP BY column %u of type %u "
+          "has no compare function", i, m_gb_types[i].typeId);
+      return ZAGG_OTHER_ERROR;
+    }
     if (m_gb_types[i].cs != nullptr) {
       Uint32 lb = 0;
       if (m_gb_types[i].typeId == NDB_TYPE_VARCHAR) lb = 1;

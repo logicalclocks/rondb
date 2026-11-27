@@ -390,11 +390,11 @@ class JoinAggInterpreter : public AggInterpreterBase {
                                Uint32 b_key_len) const;
   /* Whether a row's GROUP BY key can become a group: the hash table can
    * hash and compare it (JoinGBHashTable::checkKey), and each GROUP BY
-   * column of the ORDER BY spec holds a value its type's compare
-   * function takes (NdbSqlUtil::check_compare_values), which
-   * compareGroupsByOrderSpec gives it.  A linked GROUP BY column's
-   * value and type come from a request.  The GROUP BY types must be
-   * known (m_gb_types_inited). */
+   * column of the ORDER BY spec that compareGroupsByOrderSpec gives to
+   * its type's compare function (orderGroupByType) holds a value the
+   * function takes (NdbSqlUtil::check_compare_values).  A linked
+   * GROUP BY column's value and type come from a request.  ProcessRec
+   * calls it once the GROUP BY types are known (m_gb_types_inited). */
   bool checkGroupKey(const char* key, Uint32 key_len) const;
   Int32 evictOneGroup(Uint32* buf, Uint32 buf_words,
                       Uint32* words_written,
@@ -507,6 +507,12 @@ class JoinAggInterpreter : public AggInterpreterBase {
     Uint8 is_agg;    /* 0 = GROUP BY column, 1 = aggregate slot */
     Uint8 desc;      /* 1 = descending */
   };
+  /* The type of the GROUP BY column that oc orders by, or nullptr where
+   * compareGroupsByOrderSpec orders the values as equal: an aggregate
+   * slot, GROUP BY types not known yet, or a type without a compare
+   * function (publishGBTypes refuses it, so not once the types are
+   * known).  checkGroupKey checks the columns this gives a type for. */
+  const GBColTypeInfo* orderGroupByType(const OrderCol& oc) const;
   void limitHeapSiftDown(Uint32 i);
   OrderCol m_order_spec[MAX_ORDER_COLS];
   Uint32 m_n_order_cols;

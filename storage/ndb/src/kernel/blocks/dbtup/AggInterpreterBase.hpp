@@ -827,6 +827,10 @@ class AggInterpreterBase : public PushdownInterpreter {
   const ColumnMeta* findColumnMeta(Uint32 tableId,
                                    Uint32 tableVersion,
                                    Uint32 columnId) const;
+  /* Checks m_gb_types[] and publishes it to m_gb_map (m_gb_types_inited).
+   * Refuses a GROUP BY column whose type has no compare function (BLOB,
+   * TEXT, an undefined or unknown type), so every published cmpFn is
+   * set. */
   Int32 publishGBTypes(EmulatedJamBuffer *jamBuf);
 
   /* Step 3a-B — m_buf_block-resident pointer buffers.

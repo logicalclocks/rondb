@@ -1,0 +1,17 @@
+--source include/have_ndb.inc
+
+# P-59: a join aggregation that groups by a linked column, whose type
+# (the CTE marker of the linked entry) the API chooses: TEXT, BLOB, the
+# undefined type and an unknown type id, which have no compare function.
+# The group hash table and the ORDER BY of a CTE compare GROUP BY values
+# with it; the kernel took such a type and grouped by the bytes of the
+# value. AggInterpreterBase::publishGBTypes now refuses the type before
+# any group, which fails the row: SCAN_TABREF, with every data node
+# started. The control, the same entry typed BIGINT, must get
+# SCAN_TABCONF.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P59
+--let $spj_case_title = P-59: join aggregation GROUP BY a linked value whose type has no compare function
+--source suite/ndb_spj/include/spj_malformed_case.inc
