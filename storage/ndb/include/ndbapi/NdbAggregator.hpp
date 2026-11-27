@@ -59,6 +59,7 @@ enum NdbAggregatorError {
   kErrUnsupportedTemporalOperation,
   kErrMixedStringCaseArms,
   kErrTooBigGroupKey,
+  kErrStringArithmetic,
   kErrMaxErrno
 };
 
@@ -80,6 +81,7 @@ static AggregationError g_errors_[] = {
   {kErrUnsupportedTemporalOperation, "Temporal (DATE/YEAR/DATETIME/TIME) columns are only supported for MIN/MAX/COUNT"},
   {kErrMixedStringCaseArms, "MIN/MAX over CASE arms needs strings of one type and collation in all arms, or in none"},
   {kErrTooBigGroupKey, "The GROUP BY columns of one group could be larger than 65535 bytes"},
+  {kErrStringArithmetic, "Arithmetic on a string (CHAR/VARCHAR) register is not supported"},
   {kErrMaxErrno, ""}
 };
 
@@ -381,6 +383,15 @@ class NdbAggregator {
   bool LoadInt64(Int64 value, Uint32 reg_id);
   bool LoadDouble(double value, Uint32 reg_id);
   bool Mov(Uint32 reg_1, Uint32 reg_2);
+  /* reg_1 = reg_1 op reg_2.  A register holds at most 8 bytes, so one
+   * loaded from a CHAR, VARCHAR or LONGVARCHAR column holds no value
+   * arithmetic can use (only MIN, MAX and COUNT read it).  These refuse,
+   * with kErrStringArithmetic, a register whose last load in program
+   * order (LoadColumn, LoadLinkedColumn, or Mov of such a register) is a
+   * string, as Sum, Avg and RepeatAgg of SUM / AVG refuse it with
+   * kErrUnsupportedStringOperation.  They do not follow the CASE arms
+   * (EmbeddedInterp, Skip): the data node still refuses a program in
+   * which a string may reach arithmetic on some path. */
   bool Add(Uint32 reg_1, Uint32 reg_2);
   bool Minus(Uint32 reg_1, Uint32 reg_2);
   bool Mul(Uint32 reg_1, Uint32 reg_2);
@@ -609,6 +620,9 @@ class NdbAggregator {
     error_ = g_errors_[err_no];
   }
   bool CheckRegs(Uint32 reg_1, Uint32 reg_2);
+  // CheckRegs, and kErrStringArithmetic when the last load into either
+  // register is a string.
+  bool CheckArithmetic(Uint32 reg_1, Uint32 reg_2);
   bool CheckAggAndReg(Uint32 agg_id, Uint32 reg_id);
   // False, with kErrTooBigProgram, when `words` more program words do not
   // fit in buffer_.

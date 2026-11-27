@@ -1248,6 +1248,11 @@ bool NdbAggregator::LoadLinkedColumn(Uint32 position, Uint32 reg_id,
 }
 
 bool NdbAggregator::LoadUint64(Uint64 value, Uint32 reg_id) {
+  /* reg_id indexes reg_columns_ and reg_types_ below */
+  if (reg_id >= kRegTotal) {
+    SetError(kErrInvalidRegNo);
+    return false;
+  }
   if (!HasRoom(3)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpLoadConst) << 26 |
@@ -1263,6 +1268,11 @@ bool NdbAggregator::LoadUint64(Uint64 value, Uint32 reg_id) {
 }
 
 bool NdbAggregator::LoadInt64(Int64 value, Uint32 reg_id) {
+  /* reg_id indexes reg_columns_ and reg_types_ below */
+  if (reg_id >= kRegTotal) {
+    SetError(kErrInvalidRegNo);
+    return false;
+  }
   if (!HasRoom(3)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpLoadConst) << 26 |
@@ -1278,6 +1288,11 @@ bool NdbAggregator::LoadInt64(Int64 value, Uint32 reg_id) {
 }
 
 bool NdbAggregator::LoadDouble(double value, Uint32 reg_id) {
+  /* reg_id indexes reg_columns_ and reg_types_ below */
+  if (reg_id >= kRegTotal) {
+    SetError(kErrInvalidRegNo);
+    return false;
+  }
   if (!HasRoom(3)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpLoadConst) << 26 |
@@ -1298,6 +1313,22 @@ bool NdbAggregator::CheckRegs(Uint32 reg_1, Uint32 reg_2) {
     return false;
   }
 
+  return true;
+}
+
+bool NdbAggregator::CheckArithmetic(Uint32 reg_1, Uint32 reg_2) {
+  if (!CheckRegs(reg_1, reg_2)) {
+    return false;
+  }
+  /* reg_types_ holds the type of the last load into each register, in
+   * program order; Mov copies it.  Arithmetic leaves reg_types_[reg_1]
+   * as it is: the left operand's type, which past this check is not a
+   * string, and stays a temporal type for a temporal operand, so that
+   * Sum and Avg still refuse SUM(date_col + 1). */
+  if (isStringType(reg_types_[reg_1]) || isStringType(reg_types_[reg_2])) {
+    SetError(kErrStringArithmetic);
+    return false;
+  }
   return true;
 }
 
@@ -1338,7 +1369,7 @@ bool NdbAggregator::Mov(Uint32 reg_1, Uint32 reg_2) {
 }
 
 bool NdbAggregator::Add(Uint32 reg_1, Uint32 reg_2) {
-  if (!CheckRegs(reg_1, reg_2)) {
+  if (!CheckArithmetic(reg_1, reg_2)) {
     return false;
   }
   if (!HasRoom(1)) return false;
@@ -1351,7 +1382,7 @@ bool NdbAggregator::Add(Uint32 reg_1, Uint32 reg_2) {
 }
 
 bool NdbAggregator::Minus(Uint32 reg_1, Uint32 reg_2) {
-  if (!CheckRegs(reg_1, reg_2)) {
+  if (!CheckArithmetic(reg_1, reg_2)) {
     return false;
   }
   if (!HasRoom(1)) return false;
@@ -1364,7 +1395,7 @@ bool NdbAggregator::Minus(Uint32 reg_1, Uint32 reg_2) {
 }
 
 bool NdbAggregator::Mul(Uint32 reg_1, Uint32 reg_2) {
-  if (!CheckRegs(reg_1, reg_2)) {
+  if (!CheckArithmetic(reg_1, reg_2)) {
     return false;
   }
   if (!HasRoom(1)) return false;
@@ -1377,7 +1408,7 @@ bool NdbAggregator::Mul(Uint32 reg_1, Uint32 reg_2) {
 }
 
 bool NdbAggregator::Div(Uint32 reg_1, Uint32 reg_2) {
-  if (!CheckRegs(reg_1, reg_2)) {
+  if (!CheckArithmetic(reg_1, reg_2)) {
     return false;
   }
   if (!HasRoom(1)) return false;
@@ -1390,7 +1421,7 @@ bool NdbAggregator::Div(Uint32 reg_1, Uint32 reg_2) {
 }
 
 bool NdbAggregator::DivInt(Uint32 reg_1, Uint32 reg_2) {
-  if (!CheckRegs(reg_1, reg_2)) {
+  if (!CheckArithmetic(reg_1, reg_2)) {
     return false;
   }
   if (!HasRoom(1)) return false;
@@ -1403,7 +1434,7 @@ bool NdbAggregator::DivInt(Uint32 reg_1, Uint32 reg_2) {
 }
 
 bool NdbAggregator::Mod(Uint32 reg_1, Uint32 reg_2) {
-  if (!CheckRegs(reg_1, reg_2)) {
+  if (!CheckArithmetic(reg_1, reg_2)) {
     return false;
   }
   if (!HasRoom(1)) return false;

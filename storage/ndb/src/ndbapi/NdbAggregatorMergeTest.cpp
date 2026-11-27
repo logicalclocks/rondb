@@ -433,6 +433,86 @@ static bool runResultSizeCases() {
   return true;
 }
 
+/*
+ * RONDB-1124: arithmetic, SUM and AVG of a string register.  A register
+ * holds at most 8 bytes, so one loaded from a CHAR, VARCHAR or
+ * LONGVARCHAR column holds no value arithmetic can use (only MIN and MAX
+ * read its capture).  The data node refuses a program in which an
+ * arithmetic instruction, a SUM or an AVG may read one
+ * (PushdownInterpreter::checkAggSlotKinds), when the scan runs.
+ * NdbAggregator refuses the call when the last load into the register is
+ * a string.
+ */
+typedef bool (NdbAggregator::*ArithmeticOp)(Uint32, Uint32);
+static const ArithmeticOp kArithmeticOps[] = {
+    &NdbAggregator::Add, &NdbAggregator::Minus, &NdbAggregator::Mul,
+    &NdbAggregator::Div, &NdbAggregator::DivInt, &NdbAggregator::Mod};
+
+static bool runStringArithmeticCases() {
+  const NdbDictionary::Column::Type stringTypes[] = {
+      NdbDictionary::Column::Char, NdbDictionary::Column::Varchar,
+      NdbDictionary::Column::Longvarchar};
+  for (NdbDictionary::Column::Type type : stringTypes) {
+    NdbColumnImpl str;
+    setColumn(str, type, 20);
+    for (ArithmeticOp op : kArithmeticOps) {
+      // The string as the left operand (the register written) and as the
+      // right one.
+      for (Uint32 stringReg = 0; stringReg < 2; stringReg++) {
+        NdbAggregator agg(nullptr);
+        CHECK(agg.LoadLinkedColumn(0, stringReg, &str));
+        CHECK(agg.LoadInt64(3, 1 - stringReg));
+        CHECK(!(agg.*op)(0, 1));
+        CHECK(agg.GetError().errno_ == kErrStringArithmetic);
+        // The refused call wrote nothing.  MIN, MAX and COUNT of the
+        // string go, and so does the arithmetic once a number is loaded
+        // over it.
+        CHECK(agg.Max(0, stringReg));
+        CHECK(agg.Min(1, stringReg));
+        CHECK(agg.Count(2, stringReg));
+        CHECK(agg.LoadInt64(4, stringReg));
+        CHECK((agg.*op)(0, 1));
+        CHECK(agg.Sum(3, 0));
+        CHECK(agg.Finalize());
+      }
+    }
+    NdbAggregator agg(nullptr);
+    CHECK(agg.LoadLinkedColumn(0, 0, &str));
+    CHECK(!agg.Sum(0, 0));
+    CHECK(agg.GetError().errno_ == kErrUnsupportedStringOperation);
+    CHECK(!agg.Avg(0, 0));
+    CHECK(agg.GetError().errno_ == kErrUnsupportedStringOperation);
+  }
+
+  // A Mov copy of a string register is a string.
+  NdbColumnImpl varchar;
+  setColumn(varchar, NdbDictionary::Column::Varchar, 20);
+  NdbAggregator agg(nullptr);
+  CHECK(agg.LoadLinkedColumn(0, 0, &varchar));
+  CHECK(agg.Mov(1, 0));
+  CHECK(agg.LoadInt64(2, 2));
+  CHECK(!agg.Add(2, 1));
+  CHECK(agg.GetError().errno_ == kErrStringArithmetic);
+  CHECK(!agg.Sum(0, 1));
+  CHECK(agg.GetError().errno_ == kErrUnsupportedStringOperation);
+  CHECK(agg.Max(0, 1));
+  CHECK(agg.LoadDouble(1.5, 1));
+  CHECK(agg.Mul(2, 1));
+  CHECK(agg.Sum(1, 2));
+  CHECK(agg.Finalize());
+
+  // A constant load into a register past the last one is refused:
+  // it wrote past reg_types_ and reg_columns_.
+  NdbAggregator bad_reg(nullptr);
+  CHECK(!bad_reg.LoadUint64(1, kRegTotal));
+  CHECK(bad_reg.GetError().errno_ == kErrInvalidRegNo);
+  CHECK(!bad_reg.LoadInt64(1, kRegTotal));
+  CHECK(bad_reg.GetError().errno_ == kErrInvalidRegNo);
+  CHECK(!bad_reg.LoadDouble(1.5, kRegTotal + 7));
+  CHECK(bad_reg.GetError().errno_ == kErrInvalidRegNo);
+  return true;
+}
+
 static bool runTypicalSizeCases() {
   /* typical_record_bytes(): the result header (3 words), the group
    * header (1 word), the key and the values, with a VARCHAR or
@@ -1007,6 +1087,7 @@ int main() {
   bool passed = runNumericCases();
   if (!runResultSizeCases()) passed = false;
   if (!runTypicalSizeCases()) passed = false;
+  if (!runStringArithmeticCases()) passed = false;
   if (!runResultBatchCases()) passed = false;
   for (bool grouped : {false, true}) {
     for (Uint32 type : {Uint32(NDB_TYPE_CHAR), Uint32(NDB_TYPE_VARCHAR),
@@ -1051,6 +1132,7 @@ int main() {
   ndb_end(0);
   printf("%s\n", passed
       ? "PASSED: result-size boundaries, bounded result batches, "
+        "string arithmetic refusals, "
         "numeric boundaries, 18 string failure/recovery cases, "
         "19 MergeLocalGroup cases, 4 collation merge cases, "
         "4 DOUBLE zero group cases and 3 program decode cases"
