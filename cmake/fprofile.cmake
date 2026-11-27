@@ -131,6 +131,13 @@ IF(FPROFILE_GENERATE)
     IF(MY_COMPILER_IS_GNU)
       STRING_APPEND(CMAKE_C_FLAGS " -fprofile-update=prefer-atomic")
       STRING_APPEND(CMAKE_CXX_FLAGS " -fprofile-update=prefer-atomic")
+      # Link __gcov_dump in from libgcov. The NDB daemons call it through
+      # a weak reference before _exit(), which does not write the profile;
+      # a weak reference alone does not link it in. See ndbd_exit() and
+      # ndb_daemon_exit().
+      FOREACH(type EXE SHARED MODULE)
+        STRING_APPEND(CMAKE_${type}_LINKER_FLAGS " -Wl,--undefined=__gcov_dump")
+      ENDFOREACH()
     ENDIF()
   ENDIF()
 ENDIF()

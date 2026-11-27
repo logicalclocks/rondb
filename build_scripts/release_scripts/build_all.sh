@@ -182,10 +182,23 @@ test_failures() {
 
 if [ "$RELEASE_BUILD" = true ]; then
   echo "_____________ BUILDING RONDB. RELEASE: TRUE _____________"
-  cd $TEMP_BUILD_DIR_ABS
-  mkdir -p feedback_build
-  cd feedback_build
-  $SRC_DIR_ABS/build_scripts/release_scripts/build_gen.sh "TRAIN" $SRC_DIR_ABS $TEMP_BUILD_DIR_ABS/feedback_build/install_dir
+  # PGO (profile guided optimization). The training build and the release
+  # build are both built in $PGO_BUILD_DIR, one after the other: GCC names
+  # each profile file after the absolute path of its object file, so the
+  # release build finds the profiles of the training run only if its
+  # objects have the same paths. The training build is moved aside to
+  # $PGO_TRAIN_DIR before the release build starts. Both builds use
+  # $PGO_PROFILE_DIR, the default of cmake/fprofile.cmake, made explicit.
+  PGO_BUILD_DIR=$TEMP_BUILD_DIR_ABS/pgo_build
+  PGO_TRAIN_DIR=$TEMP_BUILD_DIR_ABS/pgo_build_train
+  PGO_PROFILE_DIR=$TEMP_BUILD_DIR_ABS/pgo_build-profile-data
+
+  # Start clean: profiles of an earlier run would be merged with the new
+  # ones, or not match the new objects.
+  rm -rf $PGO_BUILD_DIR $PGO_TRAIN_DIR $PGO_PROFILE_DIR
+  mkdir -p $PGO_BUILD_DIR
+  cd $PGO_BUILD_DIR
+  $SRC_DIR_ABS/build_scripts/release_scripts/build_gen.sh "TRAIN" $SRC_DIR_ABS $PGO_BUILD_DIR/install_dir $PGO_PROFILE_DIR
   make -j$CORES
   cd mysql-test
   echo "_____________ TESTING PGO TRAINING BUILD _____________"
@@ -193,15 +206,24 @@ if [ "$RELEASE_BUILD" = true ]; then
     $SRC_DIR_ABS/build_scripts/release_scripts/run_training.sh ||
     test_failures "PGO training"
 
+  PGO_PROFILE_COUNT=$(find $PGO_PROFILE_DIR -name '*.gcda' 2>/dev/null | wc -l)
+  echo "PGO: the training run wrote $PGO_PROFILE_COUNT profile files to $PGO_PROFILE_DIR"
+  if [[ "$PGO_PROFILE_COUNT" -eq 0 ]]; then
+    echo "ERROR: the PGO training run wrote no profile files to $PGO_PROFILE_DIR."
+    echo "The release build would not be profile guided."
+    exit 1
+  fi
+
   cd $TEMP_BUILD_DIR_ABS
-  mkdir -p use_build
-  cd use_build
-  $SRC_DIR_ABS/build_scripts/release_scripts/build_gen.sh "RELEASE" $SRC_DIR_ABS $TEMP_BUILD_DIR_ABS/rondb_bin_use
+  mv $PGO_BUILD_DIR $PGO_TRAIN_DIR
+  mkdir -p $PGO_BUILD_DIR
+  cd $PGO_BUILD_DIR
+  $SRC_DIR_ABS/build_scripts/release_scripts/build_gen.sh "RELEASE" $SRC_DIR_ABS $TEMP_BUILD_DIR_ABS/rondb_bin_use $PGO_PROFILE_DIR
   make -j$CORES
   make install
 
   echo "_____________ TESTING RELEASE BUILD _____________"
-  cd $TEMP_BUILD_DIR_ABS/use_build/mysql-test
+  cd $PGO_BUILD_DIR/mysql-test
   MTR_PARALLEL=$MTR_PARALLEL \
     $SRC_DIR_ABS/build_scripts/release_scripts/run_training.sh ||
     test_failures "release"

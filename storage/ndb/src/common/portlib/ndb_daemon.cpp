@@ -367,6 +367,24 @@ char* get_pidfile_name()
   return NULL;
 }
 
+#if defined(__linux__)
+/*
+  PGO: the exit function below ends the process with _exit(), which does
+  not write the profile of a -fprofile-generate build, so it calls
+  __gcov_dump() first. The reference is weak: it is null in other
+  builds, where the call is skipped. The training build links
+  __gcov_dump in on purpose, see cmake/fprofile.cmake. The code is the
+  same in the training build and the release build, as -fprofile-use
+  requires.
+*/
+extern "C" void __gcov_dump(void) __attribute__((weak));
+[[maybe_unused]] static void dump_profile_if_training_build() {
+  if (__gcov_dump != nullptr) __gcov_dump();
+}
+#else
+[[maybe_unused]] static void dump_profile_if_training_build() {}
+#endif
+
 void ndb_daemon_exit(int status)
 {
   if (g_pidfd != -1)
@@ -388,6 +406,7 @@ void ndb_daemon_exit(int status)
 #ifdef HAVE_GCOV
   exit(status);
 #else
+  dump_profile_if_training_build();
   _exit(status);
 #endif
 }
