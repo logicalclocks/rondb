@@ -1,14 +1,18 @@
 # RONDB-1124 exec fixes: status and outstanding work
 
-Date: 2026-11-25. Branch `RONDB-1124-exec-fixes` on `origin`
-(https://github.com/mronstro/rondb). PR #1231 was merged into 26.10-main on
-2026-11-18; PR #1241 (logicalclocks/rondb, base 26.10-main) holds the work
-after it. The open analysis bugs 8, 9, 11 and 12 and three gaps of §4.2
-were fixed on 2026-11-24, one commit each (§2, §3). On 2026-11-25 most of
-what those fixes left open was fixed too (§3, §4), the JOIN_AGG and CTE
-signals got signal scopes (§3.5), and a collision of error insert 5160
-was resolved (§3.6). One candidate cause of the `ronsql_join` Test 3
-abort in the NDB API is fixed (§3.7).
+Date: 2026-11-27. Branch `RONDB-1124-exec-fixes` on `origin`
+(https://github.com/mronstro/rondb), pushed at `2ef4f179545`. PR #1231 was
+merged into 26.10-main on 2026-11-18; PR #1241 (logicalclocks/rondb, base
+26.10-main, open) holds the work after it. The open analysis bugs 8, 9, 11
+and 12 and three gaps of §4.2 were fixed on 2026-11-24, one commit each
+(§2, §3). On 2026-11-25 most of what those fixes left open was fixed too
+(§3, §4), the JOIN_AGG and CTE signals got signal scopes (§3.5), and a
+collision of error insert 5160 was resolved (§3.6). One candidate cause of
+the `ronsql_join` Test 3 abort in the NDB API is fixed (§3.7). On
+2026-11-26 and 2026-11-27 a review of the executor closed most of the
+remaining raw-API gaps of §3.4, §4.1, §4.2 and §4.3, the other two
+candidates of §3.7, a race in the eviction of a join aggregation group, and
+four test bugs (§3.8); §4.4 lists what is still open.
 
 This file is the starting point for whoever continues the work. It records:
 - what the analysis in `dblqh_ronsql_analysis.md` found;
@@ -28,19 +32,25 @@ continues both lists. Their status is in `../ronsql_executor/README.md`.
 - **Builds and tests.** The maintainer runs every build and test. Do not run
   `cmake --build`, `make`, `mtr`, `ctest` or test binaries yourself. Instead,
   give the exact commands and say what to look for in the results.
-- **One change at a time.** Propose one fix, wait for approval, then apply it.
-  After the maintainer reports that the tests pass, commit and push.
+- **One change at a time.** New features and new tests: build each in a
+  worktree under `rondb_2610_main/.claude/worktrees`, show it with its diff
+  and an explanation, and commit it to the branch only after the maintainer
+  approves it ("approve, but change X" means make X and commit without a
+  second review). A fix for a failure the maintainer has hit (a pasted test
+  failure or crash) goes straight into the tree as a commit so that it can
+  be rebuilt and tested, and its diff goes in the reply. Every change is
+  shown. Push only when the maintainer says so.
 - **Commits.** Subjects use the `BLOCK: description` style (e.g.
   `DBLQH: ...`, `DBTUP/NDBAPI: ...`, `RonSQL: ...`). The body explains the bug,
   the fix and the new test, and ends with the `Co-Authored-By:` line from the
   session's instructions. Make one commit per bug, with its tests.
 - **Error inserts.** These numbers are free next, as recorded on the "Next"
   lines in `storage/ndb/src/kernel/blocks/ERROR_codes.txt`:
-  - DBTUP 4047;
+  - DBTUP 4048;
   - DBLQH 5165. A DBLQH number can also be taken by an entry outside
     the RONDB-1124 block of `ERROR_codes.txt`: check with
     `git grep -w <n> storage/ndb/src/kernel` before taking one;
-  - DBTC 8135 / 8320 (RonDB);
+  - DBTC 8135 / 8321 (RonDB);
   - DBSPJ 17542.
 
   Update the "Next" line in the same commit as the new insert.
@@ -54,10 +64,18 @@ continues both lists. Their status is in `../ronsql_executor/README.md`.
     that sources the original and pins the JIT fallback delta; see
     `mysql-test/suite/ronsql_jit/t/ronsql_cte_minmax_string_redist.test`.
   - Raw-signal hardening tests go in
-    `storage/ndb/test/ndbapi/testSpjMalformed.cpp` (cases P1..P48, Q1..Q5,
+    `storage/ndb/test/ndbapi/testSpjMalformed.cpp` (cases P1..P60, Q1..Q5,
     S1..S2), each with an MTR wrapper in `mysql-test/suite/ndb_spj/t/`
     (`test_spj_malformed_pNN.test`, `test_tc_queue_flag_qN.test`,
-    `test_signal_scope_sN.test`).
+    `test_signal_scope_sN.test`). A table a case needs besides T1 is
+    created by its MTR wrapper through mysqld (`CREATE TABLE ...
+    ENGINE=NDB`, as `test_spj_malformed_p53` does) and looked up by the
+    program, never created through the NDB API.
+  - A test that runs `ndb_mgm` writes its output to its own
+    `$MYSQLTEST_VARDIR/tmp/<test>_mgm.log` and removes it, never to the
+    shared `$NDB_TOOLS_OUTPUT` (`ndb_testrun.log`): check-testcase fails
+    the test that creates that file, or the one that removes it after an
+    earlier test left it.
   - DBLQH protocol tests go in `testCteProtocol` and `testNodeRestart`
     (NF-*, PK-*, ID-*, TD-*).
 - **Regression set** after a kernel change in this area:
@@ -107,7 +125,18 @@ New error codes and inserts added by these fixes:
 - error insert DBLQH 5164 (`71440369013`): a CTE group's key taken one
   word short in `buildCteLinkedBuffer` (testCteProtocol OV-3);
 - error insert DBLQH 5163 (`8ce1fe1b401`): one aggregate group counted in
-  the COMPLETE_CONF but not sent (testJoinAggNdbApi Test 25).
+  the COMPLETE_CONF but not sent (testJoinAggNdbApi Test 25);
+- error insert DBTUP 4047 (`bb2930940bb`): read the parameter area of a
+  scan that is not from DBSPJ as per-range blocks all the same (P46);
+- error insert DBTC 8320 (`81e0f764713`): send the pure EndOfData of a
+  join aggregation twice, as DBTC does when a close crosses it
+  (testJoinAggNdbApi Test 26);
+- `kErrStringArithmetic` in `NdbAggregator` (`3e163568ac7`) and the RonSQL
+  refusal "Arithmetic on string columns is not supported." (`25c152abe89`);
+- `JIT_BRIDGE_EMBEDDED_NO_OUTPUT` (10, `917434677ee`): an embedded block
+  with a path that ends without output 0 runs on the interpreter;
+- a missing interpreter parameter fails with 876
+  (`ZOUTSIDE_OF_PROGRAM_ERROR`, `75b7d80d4ba`), where it gave 99.
 
 Bug 14 adds `AggInterpreterBase::checkProgram`, which runs:
 - in `DblqhProxy::execJOIN_AGG_SETUP_REQ` for every leaf, before the
@@ -223,15 +252,20 @@ and what of that was fixed on 2026-11-25:
     range scan of two or more ranges (or through DBSPJ). Now the header
     is summed in 64 bits, every block must lie within the parameter
     area, and the scan fails with 882. Test: P46.
-- Open:
-  - an NDB API multi-range scan whose program has subroutines gets its
-    subroutine code read as parameter blocks from range 2 on (so did
-    upstream WL#14388, within the section); it now fails with 882. To
-    make it work, take per-range blocks only from DBSPJ.
-  - DBSPJ (debug builds) hits `ndbassert(false)` when an API's
-    PI_ATTR_INTERPRET / NI_ATTR_INTERPRET words land in header word 4.
-  - an outer-joined aggregation lookup leaf sent as raw signals (P48's
-    first half) has not been seen to run.
+- Fixed on 2026-11-26:
+  - `bb2930940bb`: an NDB API multi-range scan whose program has
+    subroutines had its subroutine code read as parameter blocks from
+    range 2 on (so did upstream WL#14388, within the section) and failed
+    with 882. DBTUP now takes per-range blocks only for a SCAN_FRAGREQ
+    from DBSPJ; any other scan runs every range with the whole area.
+    Test: P49; P46 keeps its block checks under error insert 4047.
+  - `1b5a0262a58`: DBSPJ refuses API words for header word 4 (the
+    subroutine part of a PI_ATTR_INTERPRET program, 20005; a pattern of
+    an NI_ATTR_INTERPRET node without NI_ATTR_LINKED, 20004), which hit
+    `ndbassert(false)` in a debug node and an `ndbrequire` in a release
+    node for an NI_ATTR_LINKED leaf. Test: P50.
+- Open: an outer-joined aggregation lookup leaf sent as raw signals
+  (P48's first half) has not been seen to run.
 
 ### 3.5 Signal scopes for the JOIN_AGG and CTE signals (`9ff48bcde6a`)
 - None of the 29 JOIN_AGG_* and CTE_* GSNs had an entry in
@@ -265,15 +299,116 @@ and what of that was fixed on 2026-11-25:
   debug API aborted. Now it only records the error (4008 / 4028). Test:
   testJoinAggNdbApi Test 25 (`ndb_push_agg.testJoinAggNdbApiMissingRows`,
   error insert 5163 plus `ndb_reduced_api_protocol_timeout`).
-- Open: whether this was the cause. It needs a promised row that never
-  arrives and a stall of 3 × the receive timeout (about 6 minutes in
-  MTR). The other candidates: a close reply that crosses the EndOfData
-  after an earlier error (`closeTcCursor` → `sendClose` while a worker is
-  not final, delivered before `close()` clears `m_scanningQuery`), and a
-  late terminator of an earlier scan on a reused scan transaction (RDRS
-  only). The way to find out is a trace of the API's scan events per
-  query (confs, EndOfData, REFs, waits, closes) dumped before the assert,
-  while Test 3 runs a few hundred times.
+- The other two candidates are fixed too (2026-11-26):
+  - `2ce87f392be`: `closeTcCursor`'s two waits called
+    `setFetchTerminated` on a failed wait even with every worker final;
+    `NdbQueryImpl::setWaitFailed` now holds the rule of `8ce1fe1b401` for
+    all waits. No test: nothing can make the TC node's disconnect fall
+    into the poll that delivers the final EndOfData.
+  - `81e0f764713`: a close that crosses DBTC's own end of the scan gets a
+    second pure EndOfData ("Confirming scan close"). With every worker
+    final it is dropped (`execCLOSE_SCAN_REP` returns false), `close()`
+    detaches the query under a PollGuard, a scan transaction with no
+    scanning query drops it instead of asserting, and a close sent after
+    a receive timeout force-releases the scan transaction, so the stale
+    EndOfData cannot end the next scan on a reused connection (the RDRS
+    candidate). Test: testJoinAggNdbApi Test 26
+    (`ndb_push_agg.testJoinAggNdbApiDupEndOfData`, debug only, error
+    insert 8320); the reused-connection case has no test.
+- Open: which candidate caused the 2026-09-14 abort is not known; all
+  three are fixed. If it comes back, the way to find out is a trace of
+  the API's scan events per query (confs, EndOfData, REFs, waits,
+  closes) dumped before the assert, while Test 3 runs a few hundred
+  times.
+
+### 3.8 Fixes of 2026-11-26 and 2026-11-27
+
+One commit each, with its test. Kernel hardening against raw API input
+(all tested by testSpjMalformed with every data node started, MTR wrapper
+`ndb_spj.test_spj_malformed_pNN`):
+- `1b5a0262a58`, `bb2930940bb`: §3.4.
+- `e226cead16a`: a GROUP BY key whose VARCHAR / LONGVARCHAR length prefix
+  runs past its value (linked entries, CTE_LOOKUP keys) is refused before
+  `hashKeyFull`, `findInBucket`, `singleRowCteProbe` or the CTE ORDER BY
+  top-N reads past it or fails a `require` (1869, CTE_LOOKUP_REF 1265,
+  DBSPJ 20002). Tests: P52, `gb_hash_table-t` (`b2fe392c06f`).
+- `db7f5dce700`: `handleBranchAttrOp` and its JIT mirror refuse a compare
+  value that `check_compare_values` refuses (a VARCHAR prefix past the
+  value, a NaN FLOAT / DOUBLE, a wrong size) with 40. Test: P53.
+- `10fa2b555cd`: `checkAggSlotKinds` refuses arithmetic, SUM, AVG or a
+  typed MIN / MAX of a string register and two different aggregates of
+  one slot; per row, `minMaxString` refuses a value of another string
+  type than its slot's, `kOpMov` copies the string capture,
+  `kOpSetRegNull` zeroes the value, `loadColumnTypedFromBuf` refuses a
+  short value or a prefix past the value (1866), and AggInterpreter
+  refuses a `kOpLoadCol` of another type than the column's. Tests:
+  P54 (a-c), P55, P56.
+- `b306c658e03`: a column id past the table in an aggregation program
+  (kOpLoadCol, GROUP BY, a JIT scan filter's attribute) fails with 879
+  instead of an ndbassert, and `initGBTypes` no longer reads the
+  descriptor array past the table. Test: P54 (d).
+- `9d013e4d714`: `publishGBTypes` refuses a GROUP BY column whose type
+  has no compare function (BLOB, TEXT, undefined, unknown) with 1869;
+  `checkGroupKey` and `compareGroupsByOrderSpec` pick their columns with
+  one helper, `orderGroupByType`. Tests: P59, NdbSqlUtil-t.
+- `a35f780b3f0`: `validateEmbeddedProgram` refuses an embedded branch of
+  offset 0 (a branch to itself, which held the LDM thread), and
+  `interpreterJumpTable` refuses a program counter that does not move
+  forward. Test: P57, bridge_tests T72f-g.
+- `aa81e153e77`: `validateEmbeddedProgram` refuses a branch into the
+  operand words of an instruction and an instruction past the end of the
+  program, for every opcode; the JIT bridge refuses such a branch
+  (`JIT_BRIDGE_MALFORMED`); `interpreterNextLab` checks the program
+  counter before it fetches. Tests: P58, bridge_tests T72h-k.
+- `75b7d80d4ba`: every multi-word interpreter instruction checks its
+  operand words against the end of its program, and
+  `lookupInterpreterParameter` is bounded by the subroutine section, both
+  failing with 876. Tests: P60 (a-m), bridge_tests T87a-j.
+
+JIT (`ndb_jit_bridge.c`; each refused program runs on the interpreter):
+- `917434677ee`: §4.3, an embedded block with a path that ends without
+  output 0. Tests: bridge_tests T86a-e, P40 with the JIT
+  (`test_spj_malformed_p40_jit`).
+- `d950f587d15`: an embedded read of a register that a path did not write
+  (`JIT_BRIDGE_REG_NOT_LOADED`). Tests: T86f-i, P51 and
+  `test_spj_malformed_p51_jit`.
+- `0860e7af007`: a branch onto an output block's WRITE, or between its
+  LOAD_CONST16 and the WRITE. Tests: T86j-k.
+
+NDB API and RonSQL:
+- `2ce87f392be`, `81e0f764713`: §3.7.
+- `3e163568ac7`: `NdbAggregator` refuses arithmetic on a register whose
+  last load is a string (`kErrStringArithmetic`), and the constant loads
+  refuse a register number of 8 or more. Test: NdbAggregatorMerge-t.
+- `25c152abe89`: RonSQL refuses arithmetic on a string column while
+  planning. Test: `ronsql.ronsql_string_arithmetic` (no JIT mirror: no
+  program reaches a data node).
+- `8de5c290363`: the ScanTabReq flag setters clear the bit when passed 0
+  (P46's control had gone to DBSPJ).
+
+Found by test runs:
+- `b6f0f91c2c2` (DBLQH): with MUTEX_BASED feeders,
+  `sendEvictedAggGroup` evicted a group and counted `m_rows_sent`
+  without the interpreter's lock, so an eviction could free a group
+  another LDM thread was accumulating into. It now holds
+  `lockFeederMutex()` around both. Every eviction was affected, not only
+  the error inserts. Found by `ronsql_large.ronsql_large_mem_leak_errors`.
+- `27f1c908f75`: Test 26 executed a query definition whose tables
+  `runAndVerifyT14Query` had invalidated (SIGSEGV in the test program).
+- `10c4f5f628b`, `b1500fc831d`: `testJoinAggNdbApiDupEndOfData`,
+  `ndb_join_pushdown_agg_evict`, `ndb_pushdown_agg_drain` and
+  `ndb_pushdown_agg_init_fail` keep their `ndb_mgm` output out of
+  `ndb_testrun.log` (§1).
+- `2ef4f179545`: TPC-H Q9 is skipped again in `rdrs2-ronsqltpch`: its
+  aggregation reads sibling branches that are not ancestors of the
+  aggregation leaf, which RonSQL refuses at prepare. Supporting it is the
+  next phase, F-fanout in `cte_fix_plan.md`.
+- `e54961447c6`: P53's table is created through mysqld;
+  `75ae88908de`: clang's `-Wstring-concatenation` in testSpjMalformed.
+
+Also on the branch, outside this list: `aa73f997980` (NdbReceiver calloc
+argument order, GCC 14), `d72c9437333` (aarch64 JIT veneer for a far
+helper), `0a84882d297` (TRPMAN state for CLOSE_COMREQ before READ_CONFIG).
 
 ## 4. Gaps left by the fixes
 
@@ -337,9 +472,11 @@ and what of that was fixed on 2026-11-25:
   lands on it (RonSQL's guarded COUNT(*)), so the bug 1 optimizer may now
   type more opcodes after such programs. Tests: P38, P39,
   `testVarcharMinMax`.
-  - Still open (raw API only, debug asserts): SUM or arithmetic on a
+  - Fixed on 2026-11-26 (`10fa2b555cd`, §3.8): SUM or arithmetic on a
     string register; a `kOpLoadCol` whose declared type is not the
-    column's; `kOpMov` of a string does not copy its string data.
+    column's; `kOpMov` of a string did not copy its string data. The API
+    and RonSQL refuse string arithmetic too (`3e163568ac7`,
+    `25c152abe89`).
 
 ### 4.2 Kernel
 - **An aggregate can read a register the row never loaded (K-1 in
@@ -402,11 +539,12 @@ and what of that was fixed on 2026-11-25:
     itself sends CHAR(8) vs CHAR(12), which stopped a debug node, and
     `cmpVarchar`'s `require` stopped a release node too. Tests: P45,
     testCteNdbApiFilter Tests 34 / 35, NdbSqlUtil-t.
-  - Still open: the GROUP BY key compare sites (`findInBucket`,
-    `singleRowCteProbe`, `compareGroupsByOrderSpec`) trust a VARCHAR
-    length prefix from the metadata; `hashKeyFull` and DBSPJ
-    `cte_lookup_hash_key` ignore `get_var_length`'s result; upstream
-    `handleBranchAttrOp` has the same `require` on API constants.
+  - Fixed on 2026-11-26 (§3.8): the GROUP BY key compare sites
+    (`findInBucket`, `singleRowCteProbe`, `compareGroupsByOrderSpec`)
+    trusted a VARCHAR length prefix, and `hashKeyFull` and DBSPJ
+    `cte_lookup_hash_key` ignored `get_var_length`'s result
+    (`e226cead16a`); upstream `handleBranchAttrOp` had the same `require`
+    on API constants (`db7f5dce700`).
 - **Single-table pushed aggregation results: not a gap.** DBTUP has sent
   a record over one message fragmented since RONDB-874, and the API
   reassembles it. The real limit was the API's fixed 16 KB receive buffer,
@@ -434,15 +572,13 @@ and what of that was fixed on 2026-11-25:
     bug 7 (COMPLETE merge failure) tests deterministic.
 
 ### 4.3 JIT
-- **JIT and interpreter differ on an embedded program that exits
-  without writing output 0** (found by `823e7cdd38d`). The interpreter
-  fails such a row with 1872; the bridge (`ndb_jit_bridge.c`) treats
-  `EXIT_OK` without output as accept and counts the row. RonSQL and
-  mysqld always write output 0, so only a hand-built NDB API program
-  gets different results (no crash). Fix: the bridge refuses such a
-  program, so it runs on the interpreter. Also, the bridge folds a
-  `BRANCH_REG_EQ_NULL` on a linked register away rather than refusing
-  it.
+- **JIT and interpreter differed on an embedded program that exits
+  without writing output 0** (found by `823e7cdd38d`): fixed in
+  `917434677ee`. The bridge refuses such a program
+  (`JIT_BRIDGE_EMBEDDED_NO_OUTPUT`), so it runs on the interpreter. The
+  fold of `BRANCH_REG_EQ_NULL` stays, but only for a register every path
+  wrote (`d950f587d15`); a branch onto an output block's WRITE is refused
+  (`0860e7af007`).
 
 Optional, performance only:
 - Fuse compare-then-jump pairs in scan filters into one inverted compare
@@ -452,6 +588,40 @@ Optional, performance only:
 - The program cache does not remember refusals (`jit_progcache.c:285`), so a
   refused filter is retranslated and counted on every scan. Caching refusals
   would change every fallback pin in the `_jit` suites.
+
+### 4.4 Open after 2026-11-27
+
+- **Next phase: F-fanout and TPC-H Q9** (`cte_fix_plan.md`, "Deferred
+  feature work"). An aggregation that reads columns of sibling branches
+  that are not ancestors of its leaf is refused at prepare
+  (`linked_source_is_leaf_ancestor`). Chain INNER-join PK / unique-key
+  lookup siblings into a line when the query aggregates, as the planner
+  does for sibling CTE_LOOKUPs, then clear Q9's skip in
+  `ronsqltpch/handler_test.go`.
+- **Untested paths of the 2026-11-26 fixes:**
+  - the CTE_LOOKUP probe and CTE ORDER BY paths of `e226cead16a`, and
+    the single-table paths of `b306c658e03` (a GROUP BY column id past
+    the table) and `9d013e4d714` (a TEXT GROUP BY column):
+    testSpjMalformed cannot build a CTE and its table has no TEXT
+    column;
+  - `2ce87f392be` and the reused-connection case of `81e0f764713`
+    (timing that no test can force).
+- **NdbAggregator follows no CASE arms:** a program in which a string
+  reaches arithmetic on one path only passes the builder; the data node
+  refuses it (`checkAggSlotKinds`).
+- **Tables created through the NDB API in tests:** every testSpjMalformed
+  MTR wrapper has the program create `TEST_DB.T1` (`--stop-on-error T1`),
+  and P46 / P49 create an ordered index on it, through the NDB API,
+  against the rule in §1. Move them to the wrappers (mysqld) as P53 does.
+- **Watch items:**
+  - a RonSQL CTE output column of undefined type used as an outer
+    GROUP BY key could now get 1869 from `publishGBTypes`
+    (`9d013e4d714`); the `ronsql_cte` suites would show it;
+  - `ndb_scan_protocol_timeout`: the "Leaks" lines of its results decide
+    whether the force-release on a close after a receive timeout
+    (`81e0f764713` (c)) stays;
+  - `evictOneGroup` still pops the group before it checks the size
+    (§4.2).
 
 ## 5. Rest of the analysis report (not started)
 
