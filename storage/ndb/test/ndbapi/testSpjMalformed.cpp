@@ -2286,12 +2286,12 @@ class SpjMalformedChecker {
 
   /* ---- P-53: a column compared with a constant of the program -------- *
    * An interpreted read (P-41's sendInterpretedRead) of the row with
-   * primary key 1 of the table P53_CMP, which the step creates:
-   * ID Unsigned (the key), VC VARCHAR(8) latin1 'abcd' and F FLOAT 1.5,
-   * attribute ids 0, 1 and 2.  Its program compares one column with a
-   * constant (BRANCH_ATTR_OP_ARG, DBTUP's handleBranchAttrOp) and
-   * refuses the read with kRefuseCode when the two are equal and
-   * kRefuseNotEqual when not:
+   * primary key 1 of the table test.p53_cmp, which the MTR test creates
+   * through MySQL: ID Unsigned (the key), VC VARCHAR(8) latin1 'abcd'
+   * and F FLOAT 1.5, attribute ids 0, 1 and 2.  Its program compares
+   * one column with a constant (BRANCH_ATTR_OP_ARG, DBTUP's
+   * handleBranchAttrOp) and refuses the read with kRefuseCode when the
+   * two are equal and kRefuseNotEqual when not:
    *   0      BRANCH_ATTR_OP_ARG EQ to the last word
    *   1      (attrId << 16) | the constant's length
    *   2..    the constant
@@ -3533,70 +3533,64 @@ int runP49(NDBT_Context *ctx, NDBT_Step *step) {
   return res;
 }
 
-/* P-53's row of P53_CMP: ID 1, VC 'abcd', F 1.5. */
-int insertP53Row(Ndb *pNdb, const NdbDictionary::Table *tab) {
-  NdbTransaction *trans = pNdb->startTransaction();
-  if (trans == nullptr) {
-    g_err << "P-53: startTransaction failed: " << pNdb->getNdbError()
-          << endl;
+/* P-53's table test.p53_cmp, with the row ID 1, VC 'abcd', F 1.5.
+ * Tables are created through MySQL, never through the NDB API: the MTR
+ * test test_spj_malformed_p53 creates and loads it before the case and
+ * drops it after, and the step only looks it up.  MySQL's database test
+ * is the NDB database "test", schema "def"; the step's Ndb object uses
+ * TEST_DB (NDBT), so it uses "test" for the lookup and gets TEST_DB
+ * back after it.  runP53 reads attribute ids 0, 1 and 2 as ID Unsigned
+ * (the key), VC Varchar(8) (a 1-byte length prefix) and F Float. */
+int lookupP53Table(Ndb *pNdb, Uint32 &tableId, Uint32 &tableVersion) {
+  const char *const dbName = "test";
+  const char *const tabName = "p53_cmp";
+  const BaseString savedDb(pNdb->getDatabaseName());
+  if (pNdb->setDatabaseName(dbName) != 0) {
+    g_err << "P-53: setDatabaseName(" << dbName
+          << ") failed: " << pNdb->getNdbError() << endl;
     return -1;
   }
-  const char vc[5] = {4, 'a', 'b', 'c', 'd'};
-  const float f = 1.5f;
-  NdbOperation *op = trans->getNdbOperation(tab);
+  NdbDictionary::Dictionary *dict = pNdb->getDictionary();
+  const NdbDictionary::Table *tab = dict->getTable(tabName);
   int res = -1;
-  if (op != nullptr && op->insertTuple() == 0 &&
-      op->equal("ID", Uint32(1)) == 0 && op->setValue("VC", vc) == 0 &&
-      op->setValue("F", f) == 0 &&
-      trans->execute(NdbTransaction::Commit) == 0) {
-    res = 0;
+  if (tab == nullptr) {
+    g_err << "P-53: table " << dbName << "." << tabName
+          << " not found: " << dict->getNdbError()
+          << ".  The MTR test test_spj_malformed_p53 creates it through "
+             "MySQL; run P53 from there." << endl;
+  } else if (tab->getNoOfColumns() != 3 ||
+             tab->getColumn(0)->getType() != NdbDictionary::Column::Unsigned ||
+             !tab->getColumn(0)->getPrimaryKey() ||
+             tab->getColumn(1)->getType() != NdbDictionary::Column::Varchar ||
+             tab->getColumn(1)->getLength() != 8 ||
+             tab->getColumn(2)->getType() != NdbDictionary::Column::Float) {
+    g_err << "P-53: table " << dbName << "." << tabName
+          << " does not have the columns that test_spj_malformed_p53 "
+             "creates: ID INT UNSIGNED PRIMARY KEY, VC VARCHAR(8) "
+             "CHARACTER SET latin1, F FLOAT." << endl;
   } else {
-    g_err << "P-53: inserting the row failed: " << trans->getNdbError()
-          << endl;
+    tableId = Uint32(tab->getObjectId());
+    tableVersion = Uint32(tab->getObjectVersion());
+    res = 0;
   }
-  pNdb->closeTransaction(trans);
+  (void)pNdb->setDatabaseName(savedDb.c_str());
   return res;
 }
 
 /* P-53 reads a table with a VARCHAR and a FLOAT column, which T1 does
- * not have: the step creates it, with one row, and drops it after the
- * case. */
+ * not have: test.p53_cmp, which the MTR test creates through MySQL. */
 int runP53(NDBT_Context *ctx, NDBT_Step *step) {
   Ndb *pNdb = nullptr;
   SignalSender *ss = nullptr;
   NdbRestarter *restarter = nullptr;
   SpjMalformedChecker *c = makeChecker(ctx, step, pNdb, ss, restarter);
   if (c == nullptr) return NDBT_FAILED;
-  NdbDictionary::Dictionary *dict = pNdb->getDictionary();
-  const char *const tabName = "P53_CMP";
-  (void)dict->dropTable(tabName);  /* an earlier run's */
-  NdbDictionary::Table tab(tabName);
-  NdbDictionary::Column id("ID");
-  id.setType(NdbDictionary::Column::Unsigned);
-  id.setPrimaryKey(true);
-  tab.addColumn(id);
-  NdbDictionary::Column vc("VC");
-  vc.setType(NdbDictionary::Column::Varchar);  /* latin1 by default */
-  vc.setLength(8);
-  vc.setNullable(true);
-  tab.addColumn(vc);
-  NdbDictionary::Column f("F");
-  f.setType(NdbDictionary::Column::Float);
-  f.setNullable(true);
-  tab.addColumn(f);
+  Uint32 tableId = 0;
+  Uint32 tableVersion = 0;
   int res = NDBT_FAILED;
-  const NdbDictionary::Table *created = nullptr;
-  if (dict->createTable(tab) != 0) {
-    g_err << "P-53: creating table " << tabName << " failed: "
-          << dict->getNdbError() << endl;
-  } else if ((created = dict->getTable(tabName)) == nullptr) {
-    g_err << "P-53: table " << tabName << " not found: "
-          << dict->getNdbError() << endl;
-  } else if (insertP53Row(pNdb, created) == 0) {
-    res = c->runP53(Uint32(created->getObjectId()),
-                    Uint32(created->getObjectVersion()));
+  if (lookupP53Table(pNdb, tableId, tableVersion) == 0) {
+    res = c->runP53(tableId, tableVersion);
   }
-  (void)dict->dropTable(tabName);
   delete c;
   delete ss;
   delete restarter;
@@ -3761,7 +3755,8 @@ TESTCASE("P52",
 }
 TESTCASE("P53",
          "interpreted read comparing a column with a constant its compare "
-         "function cannot take") {
+         "function cannot take (reads test.p53_cmp, which the MTR test "
+         "test_spj_malformed_p53 creates through MySQL)") {
   STEP(runP53);
 }
 TESTCASE("P54",

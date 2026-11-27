@@ -1,3 +1,9 @@
+CREATE TABLE p53_cmp (
+ID INT UNSIGNED NOT NULL PRIMARY KEY,
+VC VARCHAR(8) CHARACTER SET latin1 NULL,
+F FLOAT NULL
+) ENGINE=NDB;
+INSERT INTO p53_cmp VALUES (1, 'abcd', 1.5);
 # Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
 Running command
 Result of command: 0
@@ -6,3 +12,4 @@ Test program success!
 Running command
 Result of command: 0
 Test program success!
+DROP TABLE p53_cmp;

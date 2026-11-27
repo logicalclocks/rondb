@@ -1,17 +1,30 @@
 --source include/have_ndb.inc
 
 # P-53: a plain interpreted read, not through DBSPJ, whose program
-# compares a column with a constant (BRANCH_ATTR_OP_ARG) on a table the
-# case creates (P53_CMP: an Unsigned key, a VARCHAR(8) and a FLOAT):
-# a VARCHAR constant whose length byte runs past it and a NaN FLOAT
-# failed the require of cmpVarchar and cmpFloat, which stopped any data
-# node; an 8-byte constant for the Unsigned key failed cmpUnsigned's
-# assert in a debug data node. DBTUP now refuses them (error 40). The
-# controls, 'abcd' and 1.5, must compare equal with every data node
-# started.
+# compares a column with a constant (BRANCH_ATTR_OP_ARG) on the table
+# p53_cmp (an Unsigned key, a VARCHAR(8) and a FLOAT): a VARCHAR
+# constant whose length byte runs past it and a NaN FLOAT failed the
+# require of cmpVarchar and cmpFloat, which stopped any data node; an
+# 8-byte constant for the Unsigned key failed cmpUnsigned's assert in a
+# debug data node. DBTUP now refuses them (error 40). The controls,
+# 'abcd' and 1.5, must compare equal with every data node started.
+# Tables are created through MySQL, never through the NDB API: this test
+# creates p53_cmp and its row, and testSpjMalformed only looks it up in
+# the NDB database test. The name is lowercase, so that it is the same
+# in NDB with any lower_case_table_names. VC must be a Varchar (a 1-byte
+# length prefix) and ID a 4-byte key, attribute ids 0, 1 and 2.
 # One testSpjMalformed case per MTR test, see
 # suite/ndb_spj/include/spj_malformed_case.inc.
+
+CREATE TABLE p53_cmp (
+  ID INT UNSIGNED NOT NULL PRIMARY KEY,
+  VC VARCHAR(8) CHARACTER SET latin1 NULL,
+  F FLOAT NULL
+) ENGINE=NDB;
+INSERT INTO p53_cmp VALUES (1, 'abcd', 1.5);
 
 --let $spj_case = P53
 --let $spj_case_title = P-53: interpreted read comparing a column with a constant its compare function cannot take
 --source suite/ndb_spj/include/spj_malformed_case.inc
+
+DROP TABLE p53_cmp;
