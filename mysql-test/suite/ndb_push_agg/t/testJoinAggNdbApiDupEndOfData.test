@@ -23,8 +23,14 @@
 --exec grep -E "^(Test 26|FAILED|All tests|Some tests)" $dup_eod_out
 --remove_file $dup_eod_out
 
-# The program clears 8320, but not if it died: clear it here too.
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+# The program clears 8320, but not if it died: clear it here too.  The
+# mgm output goes to a test-local file that is removed again, so that
+# check-testcase sees the same vardir before and after: appending to
+# the shared $NDB_TOOLS_OUTPUT (ndb_testrun.log) fails the first test on
+# a worker that creates it.
+--let $dup_eod_mgm = $MYSQLTEST_VARDIR/tmp/testJoinAggNdbApiDupEndOfData_mgm.log
+--exec $NDB_MGM -e "all error 0" >> $dup_eod_mgm
+--remove_file $dup_eod_mgm
 
 # Clean up database created by test program
 DROP DATABASE IF EXISTS test_db;
