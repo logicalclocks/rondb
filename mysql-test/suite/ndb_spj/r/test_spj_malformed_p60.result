@@ -1,0 +1,8 @@
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# P-60: an instruction cut off at the end of its program
+Running command
+Result of command: 0
+Test program success!

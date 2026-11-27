@@ -100,6 +100,13 @@
  * P-59 groups by a linked value typed TEXT, BLOB, undefined or unknown,
  * types without a compare function, which fails the row (RONDB-1124,
  * AggInterpreterBase::publishGBTypes).
+ * P-60 sends interpreted reads whose program ends inside an instruction
+ * (a load, a BRANCH_ATTR_*, a BRANCH_MEM_OP_ARG*, a
+ * BRANCH_LINKED_OP_LINKED), whose operand words DBTUP read past the
+ * program, which DBTUP must fail with ZOUTSIDE_OF_PROGRAM_ERROR, and
+ * BRANCH_ATTR_OP_PARAM reads whose parameter section is missing or
+ * shorter than its length word, which must fail the same way
+ * (RONDB-1124).
  * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
  * re-send (passQueue), which only DBTC itself may set (RONDB-1124).
  * S-1 and S-2 send join aggregation signals that only data nodes send
@@ -3016,6 +3023,321 @@ class SpjMalformedChecker {
     return result;
   }
 
+  /* ---- P-60: an instruction cut off at the end of its program --------- *
+   * Interpreted reads (P-41's sendInterpretedRead) of the row of T1 with
+   * KOL1 = 1 whose program ends inside an instruction.  The header gives
+   * each section its real length, so the operand words the instruction
+   * misses are not in the program section: DBTUP's handlers read them
+   * from the final read section after it, or, where the program is the
+   * last section, from the words of cinBuffer after the AttrInfo.
+   *
+   * The branches run in this frame and refuse the read with kRefuseCode
+   * when they are taken:
+   *   0      BRANCH to 2
+   *   1      EXIT_REFUSE kRefuseCode
+   *   2..    pre, the instructions before the branch
+   *   b      the branch, back to word 1
+   *   b+1..  its operand words
+   * and, for the whole instruction, EXIT_REFUSE kRefuseNotEqual after
+   * them. */
+
+  static std::vector<Uint32> branchBackProgram(
+      const std::vector<Uint32> &pre, Uint32 insn,
+      const std::vector<Uint32> &operands, bool whole) {
+    std::vector<Uint32> prog = {
+        Interpreter::BRANCH | (2u << 16),
+        Interpreter::EXIT_REFUSE | (kRefuseCode << 16)};
+    prog.insert(prog.end(), pre.begin(), pre.end());
+    const Uint32 back = Uint32(prog.size()) - 1;
+    prog.push_back(insn | (back << 16) | (1u << 31));
+    prog.insert(prog.end(), operands.begin(), operands.end());
+    if (whole) {
+      prog.push_back(Interpreter::EXIT_REFUSE | (kRefuseNotEqual << 16));
+    }
+    return prog;
+  }
+
+  /* The AttrInfo of an interpreted read: the 5-word header, the program,
+   * a final read section and a subroutine section, each of the two
+   * possibly empty. */
+  static std::vector<Uint32> interpretedReadAttrInfo(
+      const std::vector<Uint32> &prog, const std::vector<Uint32> &finalRead,
+      const std::vector<Uint32> &sub) {
+    std::vector<Uint32> ai = {0, Uint32(prog.size()), 0,
+                              Uint32(finalRead.size()), Uint32(sub.size())};
+    ai.insert(ai.end(), prog.begin(), prog.end());
+    ai.insert(ai.end(), finalRead.begin(), finalRead.end());
+    ai.insert(ai.end(), sub.begin(), sub.end());
+    return ai;
+  }
+
+  int runP60() {
+    /* The handlers of a multi-word instruction read its operand words
+     * without checking them against the end of the program.  The
+     * interpreter fails a program that runs past its end with
+     * ZOUTSIDE_OF_PROGRAM_ERROR, but only when it fetches the next
+     * instruction, after the handler has read the words after the
+     * program and run on them.  The handlers now check the words first
+     * and fail the read with ZOUTSIDE_OF_PROGRAM_ERROR before they read
+     * one.  Before, with a final read section after the program, the
+     * branches below took its attribute headers as operands, so the read
+     * got another reply, given with each case; where the program is the
+     * last section the reply depended on the stale words after it.  The
+     * loads went on past the end and got ZOUTSIDE_OF_PROGRAM_ERROR then,
+     * after the read.
+     *
+     * BRANCH_ATTR_OP_PARAM finds its parameter in the subroutine
+     * section, whose first word gives its length.  That word is the
+     * sender's: lookupInterpreterParameter now refuses one longer than
+     * the section, or a missing section, and handleBranchAttrOp fails
+     * the read with ZOUTSIDE_OF_PROGRAM_ERROR (it gave 99, unknown to
+     * ndberror, for a missing parameter).
+     *
+     * Each control, the same read with the instruction or the section
+     * whole, must get TCKEYREF kRefuseCode: without them a harness whose
+     * read never reaches the instruction would pass.  The controls run
+     * first, so that no read expected to succeed follows one that may
+     * stop a data node. */
+    const Uint32 refuse = Interpreter::EXIT_REFUSE | (kRefuseCode << 16);
+    /* Final read sections: KOL1 or KOL2, as attribute headers */
+    const std::vector<Uint32> readKol1 = {AttributeHeader(0, 0).m_value};
+    const std::vector<Uint32> readKol2 = {AttributeHeader(1, 0).m_value};
+    const std::vector<Uint32> readKol12 = {AttributeHeader(0, 0).m_value,
+                                           AttributeHeader(1, 0).m_value};
+    const std::vector<Uint32> none;
+    const std::vector<Uint32> readLinked0 = {
+        Interpreter::READ_LINKED_TO_MEM | (0u << 16)};
+    const Uint32 breakOut = Uint32(Interpreter::IF_NULL_BREAK_OUT) << 6;
+    const Uint32 colNe =
+        Interpreter::BranchCol(Interpreter::NE, Interpreter::NULL_CMP_EQUAL);
+    const Uint32 colEqCol = Interpreter::BranchColAttrId(
+        Interpreter::EQ, Interpreter::NULL_CMP_EQUAL);
+    const Uint32 memEq = Interpreter::BranchMem(
+        Interpreter::EQ, Interpreter::IF_NULL_BREAK_OUT);
+    const Uint32 memInlineEq = Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE |
+                               breakOut |
+                               (Uint32(Interpreter::EQ) << 12);
+    const Uint32 linkedEq = Interpreter::BranchLinkedLinked(
+        Interpreter::EQ, Interpreter::IF_NULL_BREAK_OUT);
+    const Uint32 paramEq = Interpreter::BranchColParameter(
+        Interpreter::EQ, Interpreter::NULL_CMP_EQUAL);
+    const Uint32 unsignedType = Uint32(NDB_TYPE_UNSIGNED) << 16;
+    /* Parameter 0: [table id][version][KOL1's header, 4 bytes][1], after
+     * the length word of the section */
+    const std::vector<Uint32> param1 = {5, m_tableId, m_schemaVersion,
+                                        AttributeHeader(0, 4).m_value, 1};
+    const std::vector<Uint32> param1Cut(param1.begin(), (param1.end() - 1));
+
+    struct Case {
+      const char *id;
+      std::vector<Uint32> control;
+      std::vector<Uint32> cut;
+      Uint32 error;
+    };
+    const Case cases[] = {
+        /* Before: 876 after reading the word after the program */
+        {"P-60a LOAD_CONST32 without its constant, the program last",
+         interpretedReadAttrInfo(
+             {Interpreter::LoadConst32(0), 7, refuse}, none, none),
+         interpretedReadAttrInfo({Interpreter::LoadConst32(0)}, none, none),
+         kOutsideOfProgram},
+        /* Before: 876 after reading KOL1's header as the high word */
+        {"P-60b LOAD_CONST64 with one of its two constant words, a final "
+         "read after it",
+         interpretedReadAttrInfo(
+             {Interpreter::LoadConst64(0), 7, 0, refuse}, readKol1, none),
+         interpretedReadAttrInfo({Interpreter::LoadConst64(0), 7}, readKol1,
+                                 none),
+         kOutsideOfProgram},
+        /* Before: 876 after reading the two words after the program */
+        {"P-60c LOAD_DOUBLE_CONST without its constant, the program last",
+         interpretedReadAttrInfo(
+             {Interpreter::LoadDoubleConst(0), 0, 0x3FF00000u, refuse}, none,
+             none),
+         interpretedReadAttrInfo({Interpreter::LoadDoubleConst(0)}, none,
+                                 none),
+         kOutsideOfProgram},
+        /* Before: 876 after copying the word after the program to the
+         * heap */
+        {"P-60d LOAD_CONST_MEM with one of the two words of its constant, "
+         "the program last",
+         interpretedReadAttrInfo({Interpreter::LoadConst16(0, 0),
+                                  Interpreter::LoadConstMem(0, 1, 8),
+                                  0x64636261u, 0x68676665u, refuse},
+                                 none, none),
+         interpretedReadAttrInfo({Interpreter::LoadConst16(0, 0),
+                                  Interpreter::LoadConstMem(0, 1, 8),
+                                  0x64636261u},
+                                 none, none),
+         kOutsideOfProgram},
+        /* Before: 899, KOL2's header named KOL2, which is not NULL */
+        {"P-60e BRANCH_ATTR_NE_NULL without its attribute word, a final "
+         "read of KOL2 after it",
+         interpretedReadAttrInfo(
+             branchBackProgram(none, Interpreter::BRANCH_ATTR_NE_NULL,
+                               {Interpreter::BranchCol_2(1)}, true),
+             readKol2, none),
+         interpretedReadAttrInfo(
+             branchBackProgram(none, Interpreter::BRANCH_ATTR_NE_NULL, none,
+                               false),
+             readKol2, none),
+         kOutsideOfProgram},
+        /* Before: the stale word after the program as its word 1, most
+         * likely KOL2's header that P-60e left there: KOL2 against an
+         * empty constant, not equal, 899 */
+        {"P-60f BRANCH_ATTR_OP_ARG without its length word, the program "
+         "last",
+         interpretedReadAttrInfo(
+             branchBackProgram(none, colNe,
+                               {Interpreter::BranchCol_2(0, 4), 0}, true),
+             none, none),
+         interpretedReadAttrInfo(branchBackProgram(none, colNe, none, false),
+                                 none, none),
+         kOutsideOfProgram},
+        /* Before: 899, KOL1's header as the constant 0, KOL1 = 1 is not 0 */
+        {"P-60g BRANCH_ATTR_OP_ARG whose length word gives a constant word "
+         "the program does not have, a final read after it",
+         interpretedReadAttrInfo(
+             branchBackProgram(none, colNe,
+                               {Interpreter::BranchCol_2(0, 4), 0}, true),
+             readKol1, none),
+         interpretedReadAttrInfo(
+             branchBackProgram(none, colNe, {Interpreter::BranchCol_2(0, 4)},
+                               false),
+             readKol1, none),
+         kOutsideOfProgram},
+        /* Before: 899, KOL1's header as word 1: KOL1 = KOL1 */
+        {"P-60h BRANCH_ATTR_OP_ATTR without its word 1, a final read after "
+         "it",
+         interpretedReadAttrInfo(
+             branchBackProgram(none, colEqCol,
+                               {Interpreter::BranchColAttrId_2(0, 0)}, true),
+             readKol1, none),
+         interpretedReadAttrInfo(
+             branchBackProgram(none, colEqCol, none, false), readKol1, none),
+         kOutsideOfProgram},
+        /* Before: 40, the headers as table id 0 and schema version
+         * 0x10000, which is not that of table 0 */
+        {"P-60i BRANCH_MEM_OP_ARG without its table id, schema version and "
+         "constant, a final read after it",
+         interpretedReadAttrInfo(
+             branchBackProgram(readLinked0, memEq,
+                               {Interpreter::BranchMem_2(0, 4), m_tableId,
+                                m_schemaVersion, 1},
+                               true),
+             readKol12, none),
+         interpretedReadAttrInfo(
+             branchBackProgram(readLinked0, memEq,
+                               {Interpreter::BranchMem_2(0, 4)}, false),
+             readKol12, none),
+         kOutsideOfProgram},
+        /* Before: 899, KOL1's header as size 0 and collation 0, and the
+         * staged value is NULL */
+        {"P-60j BRANCH_MEM_OP_ARG_INLINE_TYPE without its size word and "
+         "constant, a final read after it",
+         interpretedReadAttrInfo(
+             branchBackProgram(readLinked0, memInlineEq,
+                               {unsignedType | 4u, (4u << 16) | 0u, 1},
+                               true),
+             readKol1, none),
+         interpretedReadAttrInfo(
+             branchBackProgram(readLinked0, memInlineEq,
+                               {unsignedType | 4u}, false),
+             readKol1, none),
+         kOutsideOfProgram},
+        /* Before: 40, KOL1's header as the type word: the undefined type,
+         * which has no compare function */
+        {"P-60k BRANCH_LINKED_OP_LINKED without its type and size words, a "
+         "final read after it",
+         interpretedReadAttrInfo(
+             branchBackProgram(none, linkedEq,
+                               {Interpreter::BranchLinkedLinked_2(0, 0),
+                                unsignedType | 0u, (4u << 16) | 4u},
+                               true),
+             readKol1, none),
+         interpretedReadAttrInfo(
+             branchBackProgram(none, linkedEq,
+                               {Interpreter::BranchLinkedLinked_2(0, 0)},
+                               false),
+             readKol1, none),
+         kOutsideOfProgram},
+        /* Before: the stale word after the AttrInfo as the length of the
+         * section, most likely the 0 of P-60j's final read: an ndbassert
+         * stopped a debug data node, a release one gave 99 */
+        {"P-60l BRANCH_ATTR_OP_PARAM without a subroutine section",
+         interpretedReadAttrInfo(
+             branchBackProgram(none, paramEq,
+                               {Interpreter::BranchColParameter_2(0, 0)},
+                               true),
+             none, param1),
+         interpretedReadAttrInfo(
+             branchBackProgram(none, paramEq,
+                               {Interpreter::BranchColParameter_2(0, 0)},
+                               true),
+             none, none),
+         kOutsideOfProgram},
+        /* Before: the stale word after the AttrInfo as the value, most
+         * likely the 1 the controls left there: 899 */
+        {("P-60m BRANCH_ATTR_OP_PARAM whose subroutine section is one word "
+          "shorter than its length word"),
+         interpretedReadAttrInfo(
+             branchBackProgram(none, paramEq,
+                               {Interpreter::BranchColParameter_2(0, 0)},
+                               true),
+             none, param1),
+         interpretedReadAttrInfo(
+             branchBackProgram(none, paramEq,
+                               {Interpreter::BranchColParameter_2(0, 0)},
+                               true),
+             none, param1Cut),
+         kOutsideOfProgram},
+    };
+    const char *findingId = "P-60 an instruction cut off at the end of its "
+                            "program";
+
+    for (const Case &c : cases) {
+      const Reply control = sendInterpretedRead(c.control);
+      g_info << "CONTROL of " << c.id << endl;
+      printReply("CONTROL (the instruction or section whole)", control);
+      if (control.gsn != GSN_TCKEYREF || control.errorCode != kRefuseCode) {
+        g_err << "The control of " << c.id << " did not get TCKEYREF "
+              << kRefuseCode << " (got " << gsnName(control.gsn) << ", err "
+              << control.errorCode << ").  The raw interpreted read does "
+                 "not reach the instruction; fix this before trusting the "
+                 "result of P-60." << endl;
+        return clusterHealthy() ? NDBT_FAILED : failNodeDown(findingId);
+      }
+    }
+
+    std::vector<Reply> reps;
+    for (const Case &c : cases) {
+      reps.push_back(sendInterpretedRead(c.cut));
+      printReply(c.id, reps.back());
+    }
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    int result = NDBT_OK;
+    Uint32 i = 0;
+    for (const Case &c : cases) {
+      const Reply &rep = reps[i++];
+      if (rep.gsn != GSN_TCKEYREF || rep.errorCode != c.error) {
+        g_err << c.id << ": FAIL -- expected TCKEYREF " << c.error
+              << ", got " << gsnName(rep.gsn) << " " << rep.errorCode
+              << endl;
+        result = NDBT_FAILED;
+      } else {
+        g_info << c.id << ": PASS (all data nodes started; TCKEYREF "
+               << rep.errorCode << ")" << endl;
+      }
+    }
+    return result;
+  }
+
   /* ---- Q cases: DBTC's rate queue re-send mark sent by the API -------- *
    * DBTC's rate queue handler re-sends a queued request to its own DBTC
    * instance with a mark: the passQueue flag of TCKEYREQ, TCINDXREQ and
@@ -3703,6 +4025,7 @@ CASE_STEP(runP56, runP56)
 CASE_STEP(runP57, runP57)
 CASE_STEP(runP58, runP58)
 CASE_STEP(runP59, runP59)
+CASE_STEP(runP60, runP60)
 CASE_STEP(runQ1, runQ1)
 CASE_STEP(runQ2, runQ2)
 CASE_STEP(runQ3, runQ3)
@@ -4038,6 +4361,11 @@ TESTCASE("P59",
          "join aggregation: GROUP BY a linked value whose type has no "
          "compare function") {
   STEP(runP59);
+}
+TESTCASE("P60",
+         "interpreted read: an instruction cut off at the end of its "
+         "program, a parameter section shorter than its length word") {
+  STEP(runP60);
 }
 TESTCASE("Q1", "TCKEYREQ with the rate queue flag from the API") {
   STEP(runQ1);

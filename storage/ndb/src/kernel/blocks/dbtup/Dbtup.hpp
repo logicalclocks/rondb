@@ -3437,9 +3437,10 @@ public:
    * compare, and applies the same NULL-semantics + condition mapping as the
    * interpreter's handleBranchAttrOp. Returns 1 to take the branch, 0 to
    * fall through, or a negative error code (read failure / missing param /
-   * unsupported type or condition) which the caller treats as fatal. */
+   * unsupported type or condition) which the caller treats as fatal.
+   * param_len is the length of the param region in words. */
   int evalBranchColForJit(KeyReqStruct *req_struct, const Uint32 *inst,
-                          const Uint32 *param_buf);
+                          const Uint32 *param_buf, Uint32 param_len);
 
   /* ronsql_jit slice 2 item 5: JIT evaluation of BRANCH_MEM_OP_ARG /
    * BRANCH_MEM_OP_ARG_INLINE_TYPE — compares the cheapMemory[0] value
@@ -3458,8 +3459,11 @@ public:
 
 private:
 
+  /* The parameter paramNo in the subroutine section of sectionLen words
+   * at subptr, nullptr when it is not inside the section. */
   const Uint32 *lookupInterpreterParameter(Uint32 paramNo,
-                                           const Uint32 *subptr) const;
+                                           const Uint32 *subptr,
+                                           Uint32 sectionLen) const;
 
   // *****************************************************************
   // Signal Sending methods.

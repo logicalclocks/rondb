@@ -80,6 +80,9 @@ struct dbtup_jit_call_ctx {
    * lookupInterpreterParameter by evalBranchColForJit. nullptr when the
    * scan has no param region (or on the aggregation path). */
   const Uint32       *param_buf;
+  /* Its length in words (RsubLen), which bounds the lookup; 0 with a
+   * nullptr param_buf. */
+  Uint32              param_len;
   /* Phase 5F-1: the row's aggregate-result array (the same pointer
    * dbtup_jit_invoke writes back through) — the fused string MIN/MAX
    * helper hands it to AggInterpreterBase::jitMinMaxStringCol, whose
@@ -351,6 +354,7 @@ bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
                                   JitEntry             entry_fn,
                                   const Uint32        *prog_buf,
                                   const Uint32        *param_buf,
+                                  Uint32               param_len,
                                   int                 *out_error);
 
 #endif /* DBTUP_JIT_GLUE_HPP_ */

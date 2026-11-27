@@ -1369,7 +1369,8 @@ ndb_jit_h_branch_attr_op_arg(JitState *s, uint32_t inst_word_off) {
     return 0;
   }
   int rc = ctx->block_tup->evalBranchColForJit(
-      ctx->req_struct, ctx->prog_buf + inst_word_off, ctx->param_buf);
+      ctx->req_struct, (ctx->prog_buf + inst_word_off), ctx->param_buf,
+      ctx->param_len);
   if (unlikely(rc < 0)) {
     /* Kernel-eval error: the interpreter's handleBranchAttrOp returns
      * this same negative and its loop TUPKEY_aborts with -rc. ronsql_jit
@@ -1877,6 +1878,7 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
    * null. */
   ctx.prog_buf   = agg->agg_program() + agg->agg_prog_start_pos();
   ctx.param_buf  = nullptr;
+  ctx.param_len  = 0;
   ctx.agg_res_ptr = agg_res_ptr;
   ctx.error_code = 0;
 #ifdef ERROR_INSERT
@@ -2416,6 +2418,7 @@ bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
                                   JitEntry             entry_fn,
                                   const Uint32        *prog_buf,
                                   const Uint32        *param_buf,
+                                  Uint32               param_len,
                                   int                 *out_error) {
   *out_error = 0;
   /* Per-row context: no aggregation instance. The cold-call helpers
@@ -2431,6 +2434,7 @@ bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
   ctx.req_struct = req_struct;
   ctx.prog_buf   = prog_buf;
   ctx.param_buf  = param_buf;
+  ctx.param_len  = param_len;
   ctx.agg_res_ptr = nullptr;   /* scan filters have no aggregate slots */
   ctx.error_code = 0;
 #ifdef ERROR_INSERT

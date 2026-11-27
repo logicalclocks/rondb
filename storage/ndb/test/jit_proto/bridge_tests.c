@@ -6017,6 +6017,145 @@ static void test_write_after_other_const_reject(void) {
                   JIT_BRIDGE_UNSUPPORTED_OP, 7, EMB_WRITE_INTERP_OUTPUT);
 }
 
+/* ------------------------------------------------------------------ */
+/* RONDB-1124: an instruction cut off at the end of its block.  The   */
+/* DBTUP handlers read the operand words of such an instruction past  */
+/* the end of the program; they now fail the row with                 */
+/* ZOUTSIDE_OF_PROGRAM_ERROR.  The bridge checks the length of every  */
+/* multi-word instruction it admits before it reads an operand word   */
+/* and refuses a cut one as MALFORMED, naming the instruction word.   */
+/* T10, T58d and T74e covered the outer kOpLoadConst, the DECIMAL     */
+/* kOpLoadCol and the literal of BRANCH_MEM_OP_ARG; T87a-T87j cover   */
+/* the others.  In an aggregation program the outer words after the   */
+/* block are what such an instruction would have read.               */
+/* ------------------------------------------------------------------ */
+
+/* T87a: LOAD_CONST64 with one of its two constant words. */
+static void test_emb_const64_cut_reject(void) {
+  uint32_t prog[5] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
+    enc_emb_load_const64_hdr(/*reg=*/1),
+    0x00000005u,               /* the low word; the high one is cut */
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T87a emb_const64_cut_reject", prog, 5,
+                  JIT_BRIDGE_MALFORMED, 1, EMB_LOAD_CONST64);
+}
+
+/* T87b: LOAD_DOUBLE_CONST with neither of its two constant words. */
+static void test_emb_double_const_cut_reject(void) {
+  uint32_t prog[4] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/1),
+    enc_emb_load_double_hdr(/*reg=*/1),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T87b emb_double_const_cut_reject", prog, 4,
+                  JIT_BRIDGE_MALFORMED, 1, EMB_LOAD_DOUBLE_CONST);
+}
+
+/* T87c: a scan filter whose last instruction, a BRANCH_ATTR_NE_NULL,
+ * has no attribute word.  The BRANCH_ATTR_EQ_NULL before it is whole
+ * and branches to it. */
+static void test_scan_filter_attr_null_cut_reject(void) {
+  uint32_t filter_prog[3] = {
+    enc_emb_branch_attr_null(EMB_BRANCH_ATTR_EQ_NULL, /*offset=*/2),
+    enc_emb_attr_id(/*attrId=*/1),
+    enc_emb_branch_attr_null(EMB_BRANCH_ATTR_NE_NULL, /*offset=*/1),
+  };
+  assert_scan_filter_rejected("T87c scan_filter_attr_null_cut_reject",
+                              filter_prog, 3, JIT_BRIDGE_MALFORMED,
+                              /*want_word=*/3, EMB_BRANCH_ATTR_NE_NULL);
+}
+
+/* T87d: a BRANCH_ATTR_OP_ARG without its length word. */
+static void test_scan_filter_attr_op_arg_no_len_reject(void) {
+  uint32_t filter_prog[1] = {
+    enc_emb_op_word(EMB_BRANCH_ATTR_OP_ARG,
+                    (3u << 6) | (4u << 12) | (1u << 16)),
+  };
+  assert_scan_filter_rejected("T87d scan_filter_attr_op_arg_no_len_reject",
+                              filter_prog, 1, JIT_BRIDGE_MALFORMED,
+                              /*want_word=*/1, EMB_BRANCH_ATTR_OP_ARG);
+}
+
+/* T87e: a BRANCH_ATTR_OP_ARG whose length word gives 8 bytes, two
+ * words, where one follows.  Its branch lands inside the filter, so
+ * the length check refuses it. */
+static void test_scan_filter_attr_op_arg_cut_reject(void) {
+  uint32_t filter_prog[3] = {
+    enc_emb_op_word(EMB_BRANCH_ATTR_OP_ARG,
+                    (3u << 6) | (4u << 12) | (2u << 16)),
+    (1u << 16) | 8u,
+    0x00000005u,
+  };
+  assert_scan_filter_rejected("T87e scan_filter_attr_op_arg_cut_reject",
+                              filter_prog, 3, JIT_BRIDGE_MALFORMED,
+                              /*want_word=*/1, EMB_BRANCH_ATTR_OP_ARG);
+}
+
+/* T87f: a BRANCH_ATTR_OP_PARAM without its word 1. */
+static void test_scan_filter_attr_op_param_cut_reject(void) {
+  uint32_t filter_prog[1] = {
+    enc_emb_op_word(EMB_BRANCH_ATTR_OP_PARAM,
+                    (3u << 6) | (4u << 12) | (1u << 16)),
+  };
+  assert_scan_filter_rejected("T87f scan_filter_attr_op_param_cut_reject",
+                              filter_prog, 1, JIT_BRIDGE_MALFORMED,
+                              /*want_word=*/1, EMB_BRANCH_ATTR_OP_PARAM);
+}
+
+/* T87g: a BRANCH_ATTR_OP_ATTR without its word 1. */
+static void test_scan_filter_attr_op_attr_cut_reject(void) {
+  uint32_t filter_prog[1] = {
+    enc_emb_op_word(EMB_BRANCH_ATTR_OP_ATTR,
+                    (3u << 6) | (2u << 12) | (1u << 16)),
+  };
+  assert_scan_filter_rejected("T87g scan_filter_attr_op_attr_cut_reject",
+                              filter_prog, 1, JIT_BRIDGE_MALFORMED,
+                              /*want_word=*/1, EMB_BRANCH_ATTR_OP_ATTR);
+}
+
+/* T87h: a BRANCH_MEM_OP_ARG without its length word. */
+static void test_emb_branch_mem_no_len_reject(void) {
+  uint32_t prog[4] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/1),
+    enc_emb_op_word(EMB_BRANCH_MEM_OP_ARG,
+                    (3u << 6) | (0u << 12) | (1u << 16)),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T87h emb_branch_mem_no_len_reject", prog, 4,
+                  JIT_BRIDGE_MALFORMED, 1, EMB_BRANCH_MEM_OP_ARG);
+}
+
+/* T87i: a BRANCH_MEM_OP_ARG_INLINE_TYPE without its type word and its
+ * 8-byte literal: 5 words, 2 in the block. */
+static void test_emb_branch_mem_inline_cut_reject(void) {
+  uint32_t prog[5] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/2),
+    enc_emb_op_word(EMB_BRANCH_MEM_OP_ARG_INLINE,
+                    (3u << 6) | (0u << 12) | (1u << 16)),
+    ((uint32_t)NDB_TYPE_BIGINT << 16) | 8u,   /* typeId, argLen=8 */
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/0),
+  };
+  assert_rejected("T87i emb_branch_mem_inline_cut_reject", prog, 5,
+                  JIT_BRIDGE_MALFORMED, 1, EMB_BRANCH_MEM_OP_ARG_INLINE);
+}
+
+/* T87j: a kOpEmbeddedInterp whose block of 3 words runs past the
+ * program, which has 1 word after it. */
+static void test_embedded_block_cut_reject(void) {
+  uint32_t prog[2] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  assert_rejected("T87j embedded_block_cut_reject", prog, 2,
+                  JIT_BRIDGE_MALFORMED, 0, kOpEmbeddedInterp);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -6252,6 +6391,16 @@ int main(void) {
   test_ne_null_unwritten_reg_reject();
   test_branch_onto_write_reject();
   test_write_after_other_const_reject();
+  test_emb_const64_cut_reject();
+  test_emb_double_const_cut_reject();
+  test_scan_filter_attr_null_cut_reject();
+  test_scan_filter_attr_op_arg_no_len_reject();
+  test_scan_filter_attr_op_arg_cut_reject();
+  test_scan_filter_attr_op_param_cut_reject();
+  test_scan_filter_attr_op_attr_cut_reject();
+  test_emb_branch_mem_no_len_reject();
+  test_emb_branch_mem_inline_cut_reject();
+  test_embedded_block_cut_reject();
 
   printf("\nbridge_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

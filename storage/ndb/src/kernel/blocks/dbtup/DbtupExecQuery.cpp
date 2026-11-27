@@ -5968,7 +5968,8 @@ retry:
  * 2nd column of the same row) — called from the JIT cold-call helper
  * ndb_jit_h_branch_attr_op_arg. `inst` points at word 0 of the
  * instruction in the program buffer; `param_buf` is the subroutine/param
- * region (only used for OP_PARAM; may be nullptr otherwise). This mirrors
+ * region of `param_len` words (only used for OP_PARAM; may be nullptr
+ * otherwise). This mirrors
  * InterpreterContext::handleBranchAttrOp (DbtupExecQuery.cpp ~8826) — same
  * descriptor walk, same NdbSqlUtil compare, same NULL-semantics and
  * condition mapping — so the JIT and interpreter agree bit-for-bit. The byte
@@ -5979,7 +5980,8 @@ retry:
  * into TUPKEY_abort(-rc); the JIT helper routes it the same way. */
 int Dbtup::evalBranchColForJit(KeyReqStruct *req_struct,
                                const Uint32 *inst,
-                               const Uint32 *param_buf) {
+                               const Uint32 *param_buf,
+                               Uint32 param_len) {
   const Uint32 w0 = inst[0];                 // opcode | nulls | cond | offset
   const Uint32 w1 = inst[1];                 // (attrId << 16) | argLen|paramNo
   const Uint32 attrId = Interpreter::getBranchCol_AttrId(w1);
@@ -6031,12 +6033,15 @@ int Dbtup::evalBranchColForJit(KeyReqStruct *req_struct,
   } else if (opCode == Interpreter::BRANCH_ATTR_OP_PARAM) {
     /* w1 low 16 = paramNo; value lives in the subroutine/param region. */
     const Uint32 paramNo = Interpreter::getBranchCol_ParamNo(w1);
+    /* A missing or malformed parameter section is a malformed program,
+     * as in handleBranchAttrOp. */
     if (unlikely(param_buf == nullptr)) {
-      return -99;
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
     }
-    const Uint32 *paramPtr = lookupInterpreterParameter(paramNo, param_buf);
+    const Uint32 *paramPtr =
+        lookupInterpreterParameter(paramNo, param_buf, param_len);
     if (unlikely(paramPtr == nullptr)) {
-      return -99;  // matches handleBranchAttrOp's missing-param path
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;  // as handleBranchAttrOp
     }
     argLen = AttributeHeader::getByteSize(*paramPtr);
     s2 = (const char *)(paramPtr + 1);
@@ -6458,7 +6463,8 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         /* prog_buf = the exec region (the filter program); the helper reads
          * its instruction + inline literal by the bridge-recorded offset.
          * param_buf = the subroutine/param region, where BRANCH_ATTR_OP_PARAM
-         * parameters live (lookupInterpreterParameter reads its [0] length).
+         * parameters live (lookupInterpreterParameter reads its [0] length,
+         * which must lie within the RsubLen words of the region).
          * It sits after the read/exec/final-update/final-read regions —
          * RfinalUpdateLen is 0 for an admitted filter, but include it so the
          * offset matches interpreterNextLab's RsubPC exactly. */
@@ -6467,7 +6473,7 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         int jit_error = 0;
         bool accepted = dbtup_jit_invoke_scan_filter(
             this, req_struct, reinterpret_cast<JitEntry>(jit_filter),
-            &cinBuffer[RinstructionCounter], &cinBuffer[RsubPC],
+            &cinBuffer[RinstructionCounter], &cinBuffer[RsubPC], RsubLen,
             &jit_error);
         if (unlikely(jit_error != 0)) {
           jam();
@@ -6966,15 +6972,24 @@ inline Uint32 Dbtup::brancher(Uint32 TheInstruction, Uint32 TprogramCounter) {
 }
 
 const Uint32 *Dbtup::lookupInterpreterParameter(Uint32 paramNo,
-                                                const Uint32 *subptr) const {
+                                                const Uint32 *subptr,
+                                                Uint32 sectionLen) const {
   /**
    * The parameters are stored in the subroutine section.
    * Each entry has format: [tableId] [tableVersion] [AH] [data...]
    * where tableId and tableVersion identify the source table of the
    * linked attribute (for schema version validation).
+   *
+   * The section starts with its length in words, which DBSPJ writes;
+   * sectionLen is the length the AttrInfo header gives the section.  The
+   * length word is the sender's: one longer than the section, or the
+   * word read in place of an empty section, took the words after the
+   * AttrInfo in cinBuffer as parameters, and a length of 0 failed an
+   * ndbassert (RONDB-1124).
    */
+  if (unlikely(sectionLen == 0 || subptr == nullptr)) return nullptr;
   const Uint32 sublen = *subptr;
-  ndbassert(sublen > 0);
+  if (unlikely(sublen == 0 || sublen > sectionLen)) return nullptr;
 
   Uint32 pos = 1;
   while (paramNo) {
@@ -7108,6 +7123,20 @@ struct Dbtup::InterpreterContext {
   // other registers hold an undefined value or one of an earlier row.
   Uint32 aggRegistersLoaded;
 
+  /* True when the n operand words after the instruction word run past
+   * the end of the current program (RONDB-1124).  The handlers read
+   * them from TcurrentProgram: an instruction cut off at the end of its
+   * program took the words after it, those of a later region of
+   * cinBuffer or stale ones, as its operands.  Such an instruction now
+   * fails with ZOUTSIDE_OF_PROGRAM_ERROR, as running past the end does.
+   * The dispatch loops step past the instruction word only when
+   * TprogramCounter < TcurrentSize, so here TprogramCounter <=
+   * TcurrentSize and the subtraction does not wrap. */
+  static inline bool operandsPastEnd(const InterpreterContext& ctx,
+                                     Uint32 n) {
+    return n > ctx.TcurrentSize - ctx.TprogramCounter;
+  }
+
   /* ============================================================
    * Phase A handlers — extracted case bodies
    *
@@ -7141,6 +7170,9 @@ struct Dbtup::InterpreterContext {
 
   /* LOAD_CONST32 — load 32-bit constant from next program word */
   static inline int handleLoadConst32(InterpreterContext& ctx) {
+    if (unlikely(operandsPastEnd(ctx, 1))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
     *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
       *(ctx.TcurrentProgram + ctx.TprogramCounter);
@@ -7150,6 +7182,9 @@ struct Dbtup::InterpreterContext {
 
   /* LOAD_CONST64 — load 64-bit constant from next two program words */
   static inline int handleLoadConst64(InterpreterContext& ctx) {
+    if (unlikely(operandsPastEnd(ctx, 2))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
     ctx.TregMemBuffer[ctx.theRegister + 2] =
       *(ctx.TcurrentProgram + ctx.TprogramCounter++);
@@ -7166,6 +7201,9 @@ struct Dbtup::InterpreterContext {
    * memcpy the double's 8-byte bit pattern into a Uint32[2] when
    * emitting the program. */
   static inline int handleLoadDoubleConst(InterpreterContext& ctx) {
+    if (unlikely(operandsPastEnd(ctx, 2))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_DOUBLE;
     ctx.TregMemBuffer[ctx.theRegister + 2] =
       *(ctx.TcurrentProgram + ctx.TprogramCounter++);
@@ -7637,6 +7675,10 @@ struct Dbtup::InterpreterContext {
     Uint32 registerOffsetType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 Tsize = ctx.theInstruction >> 16;
     Uint32 words = (Tsize + 3) / 4;
+    /* The constant follows the instruction word, up to 16384 words. */
+    if (unlikely(operandsPastEnd(ctx, words))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     Int64 Toffset = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
     if (unlikely(registerOffsetType == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
@@ -8205,6 +8247,9 @@ struct Dbtup::InterpreterContext {
 
   /* BRANCH_ATTR_EQ_NULL — branch if tuple attribute is NULL */
   static inline int handleBranchAttrEqNull(InterpreterContext& ctx) {
+    if (unlikely(operandsPastEnd(ctx, 1))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     Uint32 ins2 = ctx.TcurrentProgram[ctx.TprogramCounter];
     Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;
 
@@ -8255,6 +8300,9 @@ struct Dbtup::InterpreterContext {
 
   /* BRANCH_ATTR_NE_NULL — branch if tuple attribute is NOT NULL */
   static inline int handleBranchAttrNeNull(InterpreterContext& ctx) {
+    if (unlikely(operandsPastEnd(ctx, 1))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     Uint32 ins2 = ctx.TcurrentProgram[ctx.TprogramCounter];
     Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;
 
@@ -9036,9 +9084,16 @@ struct Dbtup::InterpreterContext {
    * literal constants via this instruction. */
   static inline int handleBranchMemOpArg(InterpreterContext& ctx) {
     thrjamDebug(ctx.tup->jamBuffer());
+    if (unlikely(operandsPastEnd(ctx, 3))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     const Uint32 ins2 = ctx.TcurrentProgram[ctx.TprogramCounter];
     Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2);
     Uint32 argLen = Interpreter::getBranchCol_Len(ins2);
+    /* argLen < 2^16, so the sum does not wrap. */
+    if (unlikely(operandsPastEnd(ctx, 3 + ((argLen + 3) >> 2)))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     Uint32 tableId = ctx.TcurrentProgram[ctx.TprogramCounter + 1];
     Uint32 schemaVersion = ctx.TcurrentProgram[ctx.TprogramCounter + 2];
 
@@ -9192,9 +9247,16 @@ struct Dbtup::InterpreterContext {
    */
   static inline int handleBranchMemOpArgInlineType(InterpreterContext& ctx) {
     thrjamDebug(ctx.tup->jamBuffer());
+    if (unlikely(operandsPastEnd(ctx, 2))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     const Uint32 ins2 = ctx.TcurrentProgram[ctx.TprogramCounter];
     const Uint32 typeId = Interpreter::getBranchCol_AttrId(ins2);
     const Uint32 argLen = Interpreter::getBranchCol_Len(ins2);
+    /* argLen < 2^16, so the sum does not wrap. */
+    if (unlikely(operandsPastEnd(ctx, 2 + ((argLen + 3) >> 2)))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     const Uint32 meta   = ctx.TcurrentProgram[ctx.TprogramCounter + 1];
     Uint32 attrLen = (meta >> 16) & 0xFFFF;
     const Uint32 csNumber = meta & 0xFFFF;
@@ -9292,6 +9354,9 @@ struct Dbtup::InterpreterContext {
    * operand sourcing mirrors handleReadLinkedColumnToReg. */
   static inline int handleBranchLinkedOpLinked(InterpreterContext& ctx) {
     thrjamDebug(ctx.tup->jamBuffer());
+    if (unlikely(operandsPastEnd(ctx, 3))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     const Uint32 posWord  = ctx.TcurrentProgram[ctx.TprogramCounter];
     const Uint32 typeWord = ctx.TcurrentProgram[ctx.TprogramCounter + 1];
     const Uint32 sizeWord = ctx.TcurrentProgram[ctx.TprogramCounter + 2];
@@ -9764,6 +9829,9 @@ struct Dbtup::InterpreterContext {
    * attribute-vs-value/parameter/attribute comparison. Shared body for six
    * case labels that differ only in how the second operand is obtained. */
   static inline int handleBranchAttrOp(InterpreterContext& ctx) {
+    if (unlikely(operandsPastEnd(ctx, 1))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     const Uint32 ins2 = ctx.TcurrentProgram[ctx.TprogramCounter];
     Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;
     const Uint32 opCode =
@@ -9826,6 +9894,10 @@ struct Dbtup::InterpreterContext {
     if (likely(opCode == Interpreter::BRANCH_ATTR_OP_ARG)) {
       thrjamDebug(ctx.tup->jamBuffer());
       argLen = Interpreter::getBranchCol_Len(ins2);
+      /* argLen < 2^16, so the sum does not wrap. */
+      if (unlikely(operandsPastEnd(ctx, 1 + ((argLen + 3) >> 2)))) {
+        return -ZOUTSIDE_OF_PROGRAM_ERROR;
+      }
       step = argLen;
       s2 = (char*)&ctx.TcurrentProgram[ctx.TprogramCounter + 1];
     } else if (opCode == Interpreter::BRANCH_ATTR_OP_PARAM) {
@@ -9834,11 +9906,16 @@ struct Dbtup::InterpreterContext {
       assert(ctx.req_struct->operPtrP != nullptr);
       const Uint32 paramNo = Interpreter::getBranchCol_ParamNo(ins2);
       const Uint32* paramPos = ctx.subroutineProg;
-      const Uint32* paramptr =
-          ctx.tup->lookupInterpreterParameter(paramNo, paramPos);
+      const Uint32* paramptr = ctx.tup->lookupInterpreterParameter(
+          paramNo, paramPos, ctx.TsubroutineLen);
       if (unlikely(paramptr == nullptr)) {
+        /* No parameter paramNo inside the section the AttrInfo gives:
+         * a missing section, a length word past it, or a parameter
+         * past its length word.  Malformed as an instruction cut off
+         * at the end of its program (RONDB-1124; was -99, an error
+         * code ndberror does not know). */
         thrjam(ctx.tup->jamBuffer());
-        return -99;  // TODO — unclear error code
+        return -ZOUTSIDE_OF_PROGRAM_ERROR;
       }
       argLen = AttributeHeader::getByteSize(*paramptr);
       step = 0;
