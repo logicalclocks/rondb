@@ -8,8 +8,9 @@
 # define none of that work, so a statement whose rows all batch into the one
 # Commit execute (a multi-row autocommit insert, INSERT ... SELECT, or any
 # insert under transaction_allow_batching) committed its rows and then tried
-# to send the blob work on the committed transaction. That failed with
-# "Got error 0 'No error' from NDB" (error 122) while the rows stayed.
+# to send the blob work on the committed transaction. The client got
+# "Got error 122 'Unknown error code' from NDBCLUSTER", with the warning
+# "Got error 0 'No error' from NDB", while the rows stayed.
 #
 # Every insert below must succeed, and every row must read back. The
 # controls (a one-row insert, non-NULL values) passed before the fix too.
