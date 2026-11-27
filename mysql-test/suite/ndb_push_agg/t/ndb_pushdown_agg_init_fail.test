@@ -1,6 +1,13 @@
 --source include/have_ndb.inc
 --source have_ndb_error_insert.inc
 
+# ndb_mgm output goes to a test-local file that is removed at the end,
+# so that check-testcase sees the same vardir before and after.  The
+# shared $NDB_TOOLS_OUTPUT (ndb_testrun.log) fails the first test on a
+# worker that creates it, and removing it fails when an earlier test
+# left it.
+--let $init_fail_mgm = $MYSQLTEST_VARDIR/tmp/ndb_pushdown_agg_init_fail_mgm.log
+
 --echo ############################################################
 --echo # RONDB-1124: a pushed aggregation that cannot create its
 --echo # interpreter fails the scan, not the data node
@@ -45,7 +52,7 @@ SET ndb_pushdown_aggregate = ON;
 --echo ############################################################
 --echo # B: ERROR_INSERT 4046, the interpreter's Init fails
 --echo ############################################################
---exec $NDB_MGM -e "all error 4046" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4046" >> $init_fail_mgm
 --error ER_GET_TEMPORARY_ERRMSG
 --eval $q_group
 --error ER_GET_TEMPORARY_ERRMSG
@@ -57,7 +64,7 @@ SET ndb_pushdown_aggregate = OFF;
 --eval $q_group
 --eval $q_scalar
 SET ndb_pushdown_aggregate = ON;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $init_fail_mgm
 
 --echo ############################################################
 --echo # C: the data node is still up and the pushed queries succeed
@@ -70,4 +77,4 @@ SELECT COUNT(*) AS started_data_nodes FROM ndbinfo.nodes
 
 SET ndb_pushdown_aggregate = DEFAULT;
 DROP TABLE t1;
---remove_file $NDB_TOOLS_OUTPUT
+--remove_file $init_fail_mgm
