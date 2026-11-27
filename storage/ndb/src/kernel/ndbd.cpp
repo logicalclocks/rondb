@@ -620,6 +620,24 @@ static int get_multithreaded_config(EmulatorData &ed) {
   return 0;
 }
 
+#if defined(__linux__)
+/*
+  PGO: the exit function below ends the process with _exit(), which does
+  not write the profile of a -fprofile-generate build, so it calls
+  __gcov_dump() first. The reference is weak: it is null in other
+  builds, where the call is skipped. The training build links
+  __gcov_dump in on purpose, see cmake/fprofile.cmake. The code is the
+  same in the training build and the release build, as -fprofile-use
+  requires.
+*/
+extern "C" void __gcov_dump(void) __attribute__((weak));
+[[maybe_unused]] static void dump_profile_if_training_build() {
+  if (__gcov_dump != nullptr) __gcov_dump();
+}
+#else
+[[maybe_unused]] static void dump_profile_if_training_build() {}
+#endif
+
 static void ndbd_exit(int code) {
   // Don't allow negative return code
   if (code < 0) code = 255;
@@ -630,6 +648,7 @@ static void ndbd_exit(int code) {
 #ifdef HAVE_GCOV
   exit(code);
 #else
+  dump_profile_if_training_build();
   _exit(code);
 #endif
 }
