@@ -294,6 +294,11 @@ void DblqhProxy::execNDB_TAMPER(Signal *signal) {
    * they parked, past the hold armed on every LDM.  Forward the codes
    * from ZFIRST_QUERY_THREAD_ERROR_INSERT on to DbqlqhProxy, which fans
    * them out to its workers; code 0 reaches every proxy from CMVMI. */
+  if (signal->theData[0] >= 5155 && signal->theData[0] <= 5157) {
+    /* Node-wide one-shot inserts (Dblqh.hpp): one token per node, armed
+     * here once, before the instances get the insert. */
+    lqh_arm_node_one_shot_error();
+  }
   if (signal->theData[0] >= ZFIRST_QUERY_THREAD_ERROR_INSERT &&
       globalData.ndbMtQueryWorkers > 0) {
     jam();
@@ -2835,17 +2840,19 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                         signal->getLength(), &handle);
     return;
   }
-  if (ERROR_INSERTED(5150) &&
+  if ((ERROR_INSERTED(5150) || ERROR_INSERTED(5161)) &&
       getNodeInfo(refToNode(senderRef)).m_connected &&
       (joinAggIdentityParkedClasses(req->transid, queryTag, cteIndex) &
-       (1u << JAI_PARK_CLASS_NULLROW)) == 0) {
+       (1u << (ERROR_INSERTED(5161) ? JAI_PARK_CLASS_SCANFRAG
+                                    : JAI_PARK_CLASS_NULLROW))) == 0) {
     jam();
-    /* Test hook (PK-8): hold the SETUP, 20 ms at a time, until a
-     * JOIN_AGG_NULL_ROW_REQ has parked on its identity (the LDM / query
-     * instances hold the sweepers meanwhile), then let it succeed: the
-     * flush detaches the parked consumers and the instances hold their
-     * replay until the coordinator fails.  A SETUP whose coordinator is
-     * already gone proceeds to the normal rejection below. */
+    /* Test hook (PK-8, PK-8b): hold the SETUP, 20 ms at a time, until a
+     * JOIN_AGG_NULL_ROW_REQ (5150) or a SCAN_FRAGREQ (5161) has parked
+     * on its identity (the LDM / query instances hold the sweepers
+     * meanwhile), then let it succeed: the flush detaches the parked
+     * consumers and the instances hold their replay until the
+     * coordinator fails.  A SETUP whose coordinator is already gone
+     * proceeds to the normal rejection below. */
     SectionHandle handle(this, signal);
     sendSignalWithDelay(reference(), GSN_JOIN_AGG_SETUP_REQ, signal, 20,
                         signal->getLength(), &handle);
@@ -2856,7 +2863,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     /* Leave ONE identity unfilled so the sweeper rejects its consumers.
      * Still complete the SETUP round: a live node silently losing its
      * reply leaves DBTC waiting forever, including during API failure.
-     * Delay the REF to give the 10 ms sweeper time to run first. */
+     * Delay the REF well past the sweeper (JOIN_AGG_PARK_SWEEP_DELAY_MS)
+     * so that it runs first. */
     CLEAR_ERROR_INSERT_VALUE;
     SectionHandle handle(this, signal);
     releaseSections(handle);
@@ -2865,7 +2873,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     signal->theData[2] = senderData;
     signal->theData[3] = requestId;
     signal->theData[4] = cteIndex;
-    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 200, 5);
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal,
+                        5 * JOIN_AGG_PARK_SWEEP_DELAY_MS, 5);
     return;
   }
 #endif
@@ -3665,6 +3674,18 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
             abort();
           }
         }
+      } else if (lp.m_n_agg_results == 0) {
+        /* A single-row CTE projection program (NdbAggregator::
+         * SetSingleRowMode, cte_single_row_kernel_plan.md) declares its
+         * outputs as GROUP BY columns and has zero aggregate slots, so
+         * no instructions follow the header: there is nothing to
+         * compile and the interpreter runs none per row.  That is not
+         * a compile failure, so 5120 does not apply. */
+        jam();
+        DEB_JIT_IF(log_jit_decision,
+                   ("[RONDB-1056] JIT not needed key=%u leaf %u "
+                    "(no aggregate slots, no bytecode)",
+                    key, jit_leaf));
       } else if (fatal_compile_failure) {
         g_eventLogger->error(
             "ERROR_INSERT 5120: JIT setup found no aggregation bytecode "

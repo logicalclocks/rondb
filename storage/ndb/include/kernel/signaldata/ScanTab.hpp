@@ -379,7 +379,7 @@ inline void ScanTabReq::clearRequestInfo(UintR &requestInfo) {
 
 inline void ScanTabReq::setReadCommittedBaseFlag(UintR &requestInfo,
                                                  Uint32 type) {
-  ASSERT_MAX(type, 1, "ScanTabReq::setReadCommittedBase");
+  ASSERT_MAX(type, 1, "ScanTabReq::setReadCommittedBaseFlag");
   requestInfo = (requestInfo & ~(1 << SCAN_READ_COMMITTED_BASE_SHIFT)) |
                 ((type & 1) << SCAN_READ_COMMITTED_BASE_SHIFT);
 }
@@ -391,6 +391,8 @@ inline void ScanTabReq::setParallelism(UintR &requestInfo, Uint32 type) {
 }
 
 inline void ScanTabReq::setAggregation(UintR & requestInfo, Uint32 flag) {
+  ASSERT_BOOL(flag, "ScanTabReq::setAggregation");
+  requestInfo &= ~(Uint32(SCAN_AGGREGATION_MASK) << SCAN_AGGREGATION_SHIFT);
   requestInfo |= (flag << SCAN_AGGREGATION_SHIFT);
 }
 
@@ -460,7 +462,7 @@ inline Uint8 ScanTabReq::getDistributionKeyFlag(const UintR &requestInfo) {
 
 inline void ScanTabReq::setDistributionKeyFlag(UintR &requestInfo,
                                                Uint32 flag) {
-  ASSERT_BOOL(flag, "ScanTabReq::setKeyinfoFlag");
+  ASSERT_BOOL(flag, "ScanTabReq::setDistributionKeyFlag");
   requestInfo = (requestInfo & ~(SCAN_DISTR_KEY_MASK << SCAN_DISTR_KEY_SHIFT)) |
                 ((flag & SCAN_DISTR_KEY_MASK) << SCAN_DISTR_KEY_SHIFT);
 }
@@ -516,7 +518,7 @@ inline UintR ScanTabReq::getNoDiskFlag(const UintR &requestInfo) {
 }
 
 inline void ScanTabReq::setNoDiskFlag(UintR &requestInfo, Uint32 flag) {
-  ASSERT_BOOL(flag, "TcKeyReq::setNoDiskFlag");
+  ASSERT_BOOL(flag, "ScanTabReq::setNoDiskFlag");
   requestInfo = (requestInfo & ~(SCAN_NODISK_MASK << SCAN_NODISK_SHIFT)) |
                 ((flag & SCAN_NODISK_MASK) << SCAN_NODISK_SHIFT);
 }
@@ -526,7 +528,8 @@ inline UintR ScanTabReq::getViaSPJFlag(const UintR &requestInfo) {
 }
 
 inline void ScanTabReq::setViaSPJFlag(UintR &requestInfo, Uint32 flag) {
-  ASSERT_BOOL(flag, "TcKeyReq::setViaSPJFlag");
+  ASSERT_BOOL(flag, "ScanTabReq::setViaSPJFlag");
+  requestInfo &= ~(Uint32(1) << SCAN_SPJ_SHIFT);
   requestInfo |= (flag << SCAN_SPJ_SHIFT);
 }
 
@@ -535,7 +538,8 @@ inline UintR ScanTabReq::getPassAllConfsFlag(const UintR &requestInfo) {
 }
 
 inline void ScanTabReq::setPassAllConfsFlag(UintR &requestInfo, Uint32 flag) {
-  ASSERT_BOOL(flag, "TcKeyReq::setPassAllConfs");
+  ASSERT_BOOL(flag, "ScanTabReq::setPassAllConfsFlag");
+  requestInfo &= ~(Uint32(1) << SCAN_PASS_CONF_SHIFT);
   requestInfo |= (flag << SCAN_PASS_CONF_SHIFT);
 }
 
@@ -545,6 +549,7 @@ inline UintR ScanTabReq::getExtendedConf(const UintR &requestInfo) {
 
 inline void ScanTabReq::setExtendedConf(UintR &requestInfo, Uint32 flag) {
   ASSERT_BOOL(flag, "ScanTabReq::setExtendedConf");
+  requestInfo &= ~(Uint32(1) << SCAN_EXTENDED_CONF_SHIFT);
   requestInfo |= (flag << SCAN_EXTENDED_CONF_SHIFT);
 }
 
@@ -557,7 +562,7 @@ inline UintR ScanTabReq::getMultiFragFlag(const UintR &requestInfo) {
 }
 
 inline void ScanTabReq::setMultiFragFlag(UintR &requestInfo, Uint32 flag) {
-  ASSERT_BOOL(flag, "TcKeyReq::setMultiFragFlag");
+  ASSERT_BOOL(flag, "ScanTabReq::setMultiFragFlag");
   requestInfo = (requestInfo & ~(1 << SCAN_MULTI_FRAG_SHIFT)) |
                 (flag << SCAN_MULTI_FRAG_SHIFT);
 }
@@ -574,7 +579,7 @@ ScanTabReq::getTTLIgnoreFlag(const UintR & requestInfo) {
 inline
 void
 ScanTabReq::setTTLIgnoreFlag(UintR & requestInfo, Uint32 flag) {
-  ASSERT_BOOL(flag, "TcKeyReq::setTTLIgnoreFlag");
+  ASSERT_BOOL(flag, "ScanTabReq::setTTLIgnoreFlag");
   requestInfo= (requestInfo & ~(1 << SCAN_TTL_IGNORE_SHIFT)) |
                (flag << SCAN_TTL_IGNORE_SHIFT);
 }
@@ -587,7 +592,7 @@ ScanTabReq::getTTLOnlyExpiredFlag(const UintR & requestInfo) {
 inline
 void
 ScanTabReq::setTTLOnlyExpiredFlag(UintR & requestInfo, Uint32 flag) {
-  ASSERT_BOOL(flag, "TcKeyReq::setTTLOnlyExpiredFlag");
+  ASSERT_BOOL(flag, "ScanTabReq::setTTLOnlyExpiredFlag");
   requestInfo= (requestInfo & ~(1 << SCAN_TTL_ONLY_EXPIRED_SHIFT)) |
                (flag << SCAN_TTL_ONLY_EXPIRED_SHIFT);
 }
@@ -607,7 +612,7 @@ ScanTabReq::getRingBufferShowMetaFlag(const UintR & requestInfo) {
 inline
 void
 ScanTabReq::setUserIdFlag(UintR & requestInfo, Uint32 flag) {
-  ASSERT_BOOL(flag, "TcKeyReq::setUserIdFlag");
+  ASSERT_BOOL(flag, "ScanTabReq::setUserIdFlag");
   requestInfo= (requestInfo & ~(1 << SCAN_USER_ID_SHIFT)) |
                (flag << SCAN_USER_ID_SHIFT);
 }

@@ -469,11 +469,27 @@ static const Uint32* keyEntryAt(const char* data, Uint32 key_len,
   const Uint32* end = p + (key_len >> 2);
   Uint32 i = 0;
   while (p < end) {
+    const Uint32 words = 1 + AttributeHeader::getDataSize(*p);
+    if (unlikely(words > Uint32(end - p))) {
+      return nullptr;  // The entry runs past the key
+    }
     if (i == col_idx) return p;
-    p += 1 + AttributeHeader::getDataSize(*p);
+    p += words;
     i++;
   }
   return nullptr;
+}
+
+const GBColTypeInfo* JoinAggInterpreter::orderGroupByType(
+    const OrderCol& oc) const {
+  if (oc.is_agg || !m_gb_types_inited || oc.idx >= m_n_gb_cols) {
+    return nullptr;
+  }
+  const GBColTypeInfo* const type = &m_gb_types[oc.idx];
+  if (unlikely(type->cmpFn == nullptr)) {
+    return nullptr;
+  }
+  return type;
 }
 
 int JoinAggInterpreter::compareGroupsByOrderSpec(
@@ -490,18 +506,27 @@ int JoinAggInterpreter::compareGroupsByOrderSpec(
       const AttributeHeader ahb(*eb);
       const bool na = aha.isNULL();
       const bool nb = ahb.isNULL();
+      const GBColTypeInfo* const type = orderGroupByType(oc);
       if (na || nb) {
         /* MySQL: NULLs order first ascending. */
         r = (na && nb) ? 0 : (na ? -1 : 1);
-      } else if (m_gb_types_inited && oc.idx < m_n_gb_cols &&
-                 m_gb_types[oc.idx].cmpFn != nullptr) {
-        r = (*m_gb_types[oc.idx].cmpFn)(
-            m_gb_types[oc.idx].cs,
-            ea + 1, aha.getByteSize(),
-            eb + 1, ahb.getByteSize());
+      } else if (type != nullptr &&
+                 likely(NdbSqlUtil::check_compare_values(
+                     type->typeId, ea + 1, aha.getByteSize(),
+                     eb + 1, ahb.getByteSize()))) {
+        /* checkGroupKey let only values the compare function takes
+         * become a group: a VARCHAR length prefix past its value failed
+         * cmpVarchar's require, a NaN DOUBLE cmpDouble's, in any data
+         * node.  Two of them that it cannot compare with each other
+         * (DECIMAL or BINARY values of two sizes) order as equal. */
+        r = (*type->cmpFn)(type->cs,
+                           ea + 1, aha.getByteSize(),
+                           eb + 1, ahb.getByteSize());
       } else {
-        /* Types not initialised (no rows processed) — nothing to
-         * order; treat as equal. */
+        /* No type (orderGroupByType: the types not initialised, no
+         * rows processed), or two values the compare function cannot
+         * take together: order as equal.  This sets only the order of
+         * the groups, never which groups there are. */
         r = 0;
       }
     } else {
@@ -554,6 +579,38 @@ int JoinAggInterpreter::compareGroupsByOrderSpec(
     if (r != 0) return r;
   }
   return 0;
+}
+
+bool JoinAggInterpreter::checkGroupKey(const char* key,
+                                       Uint32 key_len) const {
+  if (unlikely(!m_gb_map->checkKey(key, key_len))) {
+    return false;
+  }
+  for (Uint32 c = 0; c < m_n_order_cols; c++) {
+    /* The columns compareGroupsByOrderSpec gives to a compare function,
+     * as it chooses them */
+    const GBColTypeInfo* const type = orderGroupByType(m_order_spec[c]);
+    if (type == nullptr) {
+      continue;
+    }
+    const Uint32* e = keyEntryAt(key, key_len, m_order_spec[c].idx);
+    if (e == nullptr) {
+      continue;  // compareGroupsByOrderSpec skips the column too
+    }
+    const AttributeHeader ah(*e);
+    if (ah.isNULL()) {
+      continue;
+    }
+    /* The value against itself: what the compare function needs of
+     * every value (its size for a fixed-size type, not NaN, a length
+     * prefix inside it) */
+    if (unlikely(!NdbSqlUtil::check_compare_values(
+            type->typeId, e + 1, ah.getByteSize(), e + 1,
+            ah.getByteSize()))) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /* Bounded candidate heap for the LIMIT select phase: the WORST kept
@@ -867,30 +924,20 @@ void JoinAggInterpreter::cacheMultiLeafAggOps(const LeafProgram* leaves,
 Int32 JoinAggInterpreter::readLinkedAttrIntoBuf(
     Uint32 position, Int64 load_program_offset,
     AttributeHeader **out_header, Uint32 *out_w0, Uint32 *out_w1) {
-  if (m_linked_attr_data == nullptr) {
-    return ZAGG_OTHER_ERROR;
-  }
-  const Uint32* p = m_linked_attr_data;
-  const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
-  Uint32 pos_count = 0;
-  while (p < p_end) {
-    if (pos_count == position) break;
-    p += 2;
-    p += 1 + AttributeHeader::getDataSize(*p);
-    pos_count++;
-  }
-  if (p + 2 >= p_end) {
+  const Uint32* ah = CteLinkedAttr::linkedEntryAH(
+      m_linked_attr_data, m_linked_attr_len, position);
+  if (unlikely(ah == nullptr)) {
     g_eventLogger->debug("JoinAggInterpreter::readLinkedAttrIntoBuf "
         "ZAGG_OTHER_ERROR: linked position %u not found in buffer "
-        "(linked_len=%u)", position, m_linked_attr_len);
+        "or malformed (linked_len=%u)", position, m_linked_attr_len);
     return ZAGG_OTHER_ERROR;
   }
-  Uint32 linked_word0 = p[0];
-  Uint32 linked_word1 = p[1];
+  Uint32 linked_word0 = ah[-2];
+  Uint32 linked_word1 = ah[-1];
   bool resolved = CteLinkedAttr::isCteMarker(linked_word0);
   if (!resolved) {
     const Uint32 linked_attr_id =
-        AttributeHeader(p[2]).getAttributeId();
+        AttributeHeader(*ah).getAttributeId();
     const ColumnMeta *column_meta =
         findColumnMeta(linked_word0, linked_word1, linked_attr_id);
     if (column_meta != nullptr) {
@@ -912,9 +959,11 @@ Int32 JoinAggInterpreter::readLinkedAttrIntoBuf(
       return ZAGG_OTHER_ERROR;
     }
   }
-  p += 2;
-  Uint32 words = 1 + AttributeHeader::getDataSize(*p);
-  memcpy(m_attr_read_buf + m_attr_read_pos, p, words * sizeof(Uint32));
+  const Uint32 words = 1 + AttributeHeader::getDataSize(*ah);
+  if (unlikely(words > g_attr_read_buf_len_ - m_attr_read_pos)) {
+    return ZAGG_OTHER_ERROR;
+  }
+  memcpy(m_attr_read_buf + m_attr_read_pos, ah, words * sizeof(Uint32));
   *out_header = reinterpret_cast<AttributeHeader*>(
       m_attr_read_buf + m_attr_read_pos);
   *out_w0 = linked_word0;
@@ -957,27 +1006,6 @@ Int32 JoinAggInterpreter::jitMinMaxStringLinked(
   return minMaxString(kScratchReg, agg_index, agg_res_ptr, is_max);
 }
 
-/*
- * E-4: the AttributeHeader word of entry `position` of a linked attribute
- * buffer ([tableId, schemaVersion, AttributeHeader, data] per entry), or
- * nullptr when the buffer has no such complete entry.  The callers read
- * nullptr as NULL, as Dbtup::readLinkedToMemBuffer does.
- */
-static const Uint32* nullRowLinkedEntry(const Uint32* linked,
-                                        Uint32 linked_len,
-                                        Uint32 position) {
-  if (linked == nullptr) return nullptr;
-  const Uint32* p = linked;
-  const Uint32* const p_end = linked + linked_len;
-  for (Uint32 pos = 0;; pos++) {
-    if (p_end - p < 3) return nullptr;
-    const Uint32 data_words = AttributeHeader::getDataSize(p[2]);
-    if (Uint32(p_end - p - 3) < data_words) return nullptr;
-    if (pos == position) return p + 2;
-    p += 3 + data_words;
-  }
-}
-
 /* E-4: whether a BRANCH_*_OP_ARG style compare branches, from res1 as
  * the DBTUP handlers compute it.  The inequalities are inverted: LT
  * branches when the argument is less than the column. */
@@ -1010,9 +1038,10 @@ static bool nullRowCondHolds(Uint32 cond, int res1) {
  * compare them as the DBTUP handlers do.  BRANCH_MEM_OP_ARG takes the
  * column type from the parent table's descriptor through meta_tup;
  * without it the program is EMB_NULL_ROW_UNSUPPORTED.  Init has
- * validated the opcodes, the instruction lengths and that every branch
- * goes forward within the program; the operand words are still bounded
- * here.
+ * validated the opcodes, the instruction lengths, that every branch
+ * goes forward within the program to the first word of an instruction
+ * and the type and collation of each BRANCH_MEM_OP_ARG_INLINE_TYPE; the
+ * operand words are still bounded here.
  *
  * READ_AGG_REG_TO_REG copies one of agg_regs, the aggregation registers,
  * as Dbtup's handleReadAggRegToReg does, and fails as it does for a
@@ -1092,87 +1121,80 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
         pc += 2;
         break;
       case Interpreter::READ_LINKED_TO_MEM:
-        mem_entry = nullRowLinkedEntry(linked_attr_data, linked_attr_len,
-                                       (instr >> 16) & 0xFF);
+        /* nullptr reads as NULL, as in Dbtup::readLinkedToMemBuffer */
+        mem_entry = CteLinkedAttr::linkedEntryAH(
+            linked_attr_data, linked_attr_len, (instr >> 16) & 0xFF);
         break;
       case Interpreter::READ_LINKED_COLUMN_TO_REG: {
-        /* As Dbtup's handleReadLinkedColumnToReg */
-        const Uint32* entry = nullRowLinkedEntry(
+        /* As Dbtup's handleReadLinkedColumnToReg: a missing entry, a
+         * NULL one and one with fewer bytes than the type decodes
+         * (CteLinkedAttr::linkedColumnBytes) read as NULL, so each arm
+         * below has the bytes it reads.  A type the handler does not
+         * load has 0 there and fails the row below. */
+        const Uint32 ndb_type = (instr >> 24) & 0xFF;
+        const Uint32* entry = CteLinkedAttr::linkedEntryAH(
             linked_attr_data, linked_attr_len, (instr >> 16) & 0xFF);
-        if (entry == nullptr || AttributeHeader(*entry).isNULL()) {
+        if (entry == nullptr || AttributeHeader(*entry).isNULL() ||
+            AttributeHeader(*entry).getByteSize() <
+                CteLinkedAttr::linkedColumnBytes(ndb_type)) {
           reg_type[reg] = Interpreter::REG_TYPE_NULL;
           break;
         }
-        const Uint32 byte_size = AttributeHeader(*entry).getByteSize();
         const char* data = reinterpret_cast<const char*>(entry + 1);
         Uint32 type = Interpreter::REG_TYPE_INT;
         Int64 value = 0;
-        Uint32 need = 0;
-        switch ((instr >> 24) & 0xFF) {
+        switch (ndb_type) {
           case NDB_TYPE_TINYINT:
-            need = 1;
-            if (byte_size >= need) value = *reinterpret_cast<const Int8*>(data);
+            value = *reinterpret_cast<const Int8*>(data);
             break;
           case NDB_TYPE_TINYUNSIGNED:
-            need = 1;
             type = Interpreter::REG_TYPE_UINT;
-            if (byte_size >= need) value = *reinterpret_cast<const Uint8*>(data);
+            value = *reinterpret_cast<const Uint8*>(data);
             break;
           case NDB_TYPE_SMALLINT:
-            need = 2;
-            if (byte_size >= need) value = sint2korr(data);
+            value = sint2korr(data);
             break;
           case NDB_TYPE_SMALLUNSIGNED:
-            need = 2;
             type = Interpreter::REG_TYPE_UINT;
-            if (byte_size >= need) value = uint2korr(data);
+            value = uint2korr(data);
             break;
           case NDB_TYPE_MEDIUMINT:
-            need = 3;
-            if (byte_size >= need) value = sint3korr(data);
+            value = sint3korr(data);
             break;
           case NDB_TYPE_MEDIUMUNSIGNED:
           case NDB_TYPE_DATE:
-            need = 3;
             type = Interpreter::REG_TYPE_UINT;
-            if (byte_size >= need) value = uint3korr(data);
+            value = uint3korr(data);
             break;
           case NDB_TYPE_INT:
-            need = 4;
-            if (byte_size >= need) value = sint4korr(data);
+            value = sint4korr(data);
             break;
           case NDB_TYPE_UNSIGNED:
-            need = 4;
             type = Interpreter::REG_TYPE_UINT;
-            if (byte_size >= need) value = uint4korr(data);
+            value = uint4korr(data);
             break;
           case NDB_TYPE_BIGINT:
           case NDB_TYPE_BIGUNSIGNED:
           case NDB_TYPE_DOUBLE:
-            need = 8;
-            if (((instr >> 24) & 0xFF) == NDB_TYPE_BIGUNSIGNED) {
+            if (ndb_type == NDB_TYPE_BIGUNSIGNED) {
               type = Interpreter::REG_TYPE_UINT;
-            } else if (((instr >> 24) & 0xFF) == NDB_TYPE_DOUBLE) {
+            } else if (ndb_type == NDB_TYPE_DOUBLE) {
               type = Interpreter::REG_TYPE_DOUBLE;
             }
-            if (byte_size >= need) memcpy(&value, data, 8);
+            memcpy(&value, data, 8);
             break;
           case NDB_TYPE_FLOAT: {
-            need = 4;
             type = Interpreter::REG_TYPE_DOUBLE;
-            if (byte_size >= need) {
-              float f;
-              memcpy(&f, data, 4);
-              const double d = static_cast<double>(f);
-              memcpy(&value, &d, 8);
-            }
+            float f;
+            memcpy(&f, data, 4);
+            const double d = static_cast<double>(f);
+            memcpy(&value, &d, 8);
             break;
           }
           default:
             /* ZNO_INSTRUCTION_ERROR in DBTUP */
             return EMB_NULL_ROW_ERROR;
         }
-        if (unlikely(byte_size < need)) return EMB_NULL_ROW_ERROR;
         reg_type[reg] = type;
         reg_value[reg] = value;
         break;
@@ -1341,9 +1363,11 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
           type_id = Interpreter::getBranchCol_AttrId(ins2);
           attr_len = emb_prog[pc + 1] >> 16;
           const Uint32 cs_number = emb_prog[pc + 1] & 0xFFFF;
-          if (cs_number != 0) {
-            cs = NdbSqlUtil::get_collation(cs_number);
-            if (unlikely(cs == nullptr)) return EMB_NULL_ROW_ERROR;
+          /* A string type needs a known collation, the other types
+           * none (validateEmbeddedProgram refused the others) */
+          if (unlikely(!NdbSqlUtil::get_compare_collation(type_id,
+                                                          cs_number, &cs))) {
+            return EMB_NULL_ROW_ERROR;
           }
         } else {
           if (meta_tup == nullptr) return EMB_NULL_ROW_UNSUPPORTED;
@@ -1382,10 +1406,18 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
             /* The entry holds the column as stored; do not read past it */
             const Uint32 byte_size = AttributeHeader(*mem_entry).getByteSize();
             if (attr_len > byte_size) attr_len = byte_size;
-            res1 = (*sql_type.m_cmp)(
-                cs, reinterpret_cast<const char*>(mem_entry + 1), attr_len,
-                reinterpret_cast<const char*>(&emb_prog[pc + meta_words]),
-                arg_len);
+            /* As DBTUP: only values the compare function takes, CHAR
+             * values of different lengths padded */
+            const char* const val_l =
+                reinterpret_cast<const char*>(mem_entry + 1);
+            const char* const val_r =
+                reinterpret_cast<const char*>(&emb_prog[pc + meta_words]);
+            if (unlikely(!NdbSqlUtil::check_compare_values(
+                             type_id, val_l, attr_len, val_r, arg_len))) {
+              return EMB_NULL_ROW_ERROR;
+            }
+            res1 = (*NdbSqlUtil::getStringResultCmp(type_id))(
+                cs, val_l, attr_len, val_r, arg_len);
           }
           take_branch =
               nullRowCondHolds(Interpreter::getBinaryCondition(instr), res1);
@@ -1405,13 +1437,13 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
             NdbSqlUtil::getType(type_word >> 16);
         if (unlikely(sql_type.m_cmp == nullptr)) return EMB_NULL_ROW_ERROR;
         const CHARSET_INFO* cs = nullptr;
-        if ((type_word & 0xFFFF) != 0) {
-          cs = NdbSqlUtil::get_collation(type_word & 0xFFFF);
-          if (unlikely(cs == nullptr)) return EMB_NULL_ROW_ERROR;
+        if (unlikely(!NdbSqlUtil::get_compare_collation(
+                         type_word >> 16, type_word & 0xFFFF, &cs))) {
+          return EMB_NULL_ROW_ERROR;
         }
-        const Uint32* left = nullRowLinkedEntry(
+        const Uint32* left = CteLinkedAttr::linkedEntryAH(
             linked_attr_data, linked_attr_len, pos_word >> 16);
-        const Uint32* right = nullRowLinkedEntry(
+        const Uint32* right = CteLinkedAttr::linkedEntryAH(
             linked_attr_data, linked_attr_len, pos_word & 0xFFFF);
         const bool l_null = (left == nullptr) || AttributeHeader(*left).isNULL();
         const bool r_null =
@@ -1439,9 +1471,16 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
             if (size_r > AttributeHeader(*right).getByteSize()) {
               size_r = AttributeHeader(*right).getByteSize();
             }
-            res1 = (*sql_type.m_cmp)(
-                cs, reinterpret_cast<const char*>(left + 1), size_l,
-                reinterpret_cast<const char*>(right + 1), size_r);
+            const char* const val_l = reinterpret_cast<const char*>(left + 1);
+            const char* const val_r =
+                reinterpret_cast<const char*>(right + 1);
+            if (unlikely(!NdbSqlUtil::check_compare_values(
+                             type_word >> 16, val_l, size_l, val_r,
+                             size_r))) {
+              return EMB_NULL_ROW_ERROR;
+            }
+            res1 = (*NdbSqlUtil::getStringResultCmp(type_word >> 16))(
+                cs, val_l, size_l, val_r, size_r);
           }
           take_branch =
               nullRowCondHolds(Interpreter::getBinaryCondition(instr), res1);
@@ -1586,27 +1625,23 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         Uint32 position = attr_id & 0x7FFF;
         thrjamDataDebug(jamBuf, position);
         thrjamDataDebug(jamBuf, m_linked_attr_len);
-        const Uint32* p = m_linked_attr_data;
-        const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
-        Uint32 pos_count = 0;
-        while (p < p_end) {
-          thrjamDebug(jamBuf);
-          if (pos_count == position) break;
-          p += 2;
-          Uint32 data_size = AttributeHeader::getDataSize(*p);
-          p += (1 + data_size);
-          pos_count++;
-          thrjamDataDebug(jamBuf, data_size);
-        }
-        if (p >= p_end) {
+        const Uint32* ah = CteLinkedAttr::linkedEntryAH(
+            m_linked_attr_data, m_linked_attr_len, position);
+        if (unlikely(ah == nullptr)) {
           g_eventLogger->debug("JoinAggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
               "Linked GROUP BY position %u not found in linked buffer "
-              "(linked_len=%u)", position, m_linked_attr_len);
+              "or malformed (linked_len=%u)", position, m_linked_attr_len);
           return ZAGG_OTHER_ERROR;
         }
-        p += 2;
-        Uint32 words = 1 + AttributeHeader::getDataSize(*p);
-        memcpy(m_attr_read_buf + m_attr_read_pos, p, words * sizeof(Uint32));
+        const Uint32 words = 1 + AttributeHeader::getDataSize(*ah);
+        thrjamDataDebug(jamBuf, words);
+        if (unlikely(words > g_attr_read_buf_len_ - m_attr_read_pos)) {
+          g_eventLogger->debug("JoinAggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
+              "Linked GROUP BY position %u does not fit the key buffer "
+              "(pos=%u words=%u)", position, m_attr_read_pos, words);
+          return ZAGG_OTHER_ERROR;
+        }
+        memcpy(m_attr_read_buf + m_attr_read_pos, ah, words * sizeof(Uint32));
         header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
         m_attr_read_pos += words;
       } else {
@@ -1660,6 +1695,19 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     }
 
     Uint32 len_in_char = m_attr_read_pos * sizeof(Uint32);
+    /* A linked GROUP BY column's value comes from the linked buffer,
+     * which DBSPJ copies from the API's P_DATA tokens, and its type
+     * from a CTE marker or the setup metadata.  A VARCHAR value whose
+     * length byte runs past it was hashed from past the key, and two
+     * such rows in one bucket stopped the data node on cmpVarchar's
+     * require, debug or release. */
+    if (unlikely(!checkGroupKey(reinterpret_cast<const char*>(m_attr_read_buf),
+                                len_in_char))) {
+      g_eventLogger->debug("JoinAggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
+          "a GROUP BY value its type cannot hash or compare (key_len=%u)",
+          len_in_char);
+      return ZAGG_OTHER_ERROR;
+    }
     /* One hash per row: a new group is inserted into the bucket the
      * lookup used (nothing changes the table in between). */
     const Uint32 gb_bucket = m_gb_map->hashKey(
@@ -1678,10 +1726,18 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
       if (m_max_groups > 0 && m_n_groups >= m_max_groups) {
         return AGG_EVICT_NEEDED;
       }
+      Uint32 alloc_error = 0;
       agg_rec = allocGroupData(len_in_char +
                                m_n_agg_results * sizeof(AggResItem),
-                               len_in_char);
+                               len_in_char, &alloc_error);
       if (unlikely(agg_rec == nullptr)) {
+        if (alloc_error == ZAGG_GROUP_TOO_LARGE) {
+          /* The group does not fit one query memory chunk: no eviction
+           * makes room for it, so fail at once, with a permanent error,
+           * instead of evicting every group and then failing as out of
+           * query memory. */
+          return ZAGG_GROUP_TOO_LARGE;
+        }
         /* Nothing may change before this return: handleJoinAggRow
          * evicts a group and re-runs ProcessRec, whose entry check
          * requires read_length == 0. */
@@ -2244,7 +2300,9 @@ static Int32 mergeStringAccumulator(AggResItem* dst,
       string_results[agg_index].prefix_bytes : stringPrefixBytes(src->type);
   const Uint32 src_len = prefix + src_payload_len;
   const Uint32 dst_len = prefix + dst_payload_len;
-  /* A CASE's arms can be CHAR columns of different sizes */
+  /* A CASE's arms can be CHAR columns of different sizes.  src->type is
+   * CHAR, VARCHAR or LONGVARCHAR (mergeAccumulators calls this only for
+   * those), each with a compare function. */
   NdbSqlUtil::Cmp* const cmp_fn = NdbSqlUtil::getStringResultCmp(src->type);
   const CHARSET_INFO* charset = (string_results != nullptr) ?
       string_results[agg_index].charset : nullptr;
@@ -2626,16 +2684,19 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
     }
   } else {
     /* New key — allocate and insert */
-    char *new_group = allocGroupData(keyLen + v_len, keyLen);
+    Uint32 alloc_error = 0;
+    char *new_group = allocGroupData(keyLen + v_len, keyLen, &alloc_error);
     if (new_group == nullptr) {
-      /* Out of query memory: a temporary error, unlike the -1 returns
+      /* Out of query memory (ZAGG_ALLOC_MEM_FAILED), a temporary error,
+       * or a group larger than one query memory chunk
+       * (ZAGG_GROUP_TOO_LARGE), a permanent one; unlike the -1 returns
        * above for a malformed request. */
       if (payload_len > 0) {
         for (Uint32 i = 0; i < m_n_agg_results; i++) {
           freeStringAggSlot(&local_items[i]);
         }
       }
-      return ZAGG_ALLOC_MEM_FAILED;
+      return static_cast<Int32>(alloc_error);
     }
 
     memcpy(new_group, key, keyLen);
@@ -2758,36 +2819,25 @@ Int32 JoinAggInterpreter::initGBTypesForNullLocal(EmulatedJamBuffer *jamBuf) {
       if (unlikely(m_linked_attr_data == nullptr)) {
         return ZAGG_OTHER_ERROR;
       }
-      Uint32 position = attr_id & 0x7FFF;
-      const Uint32* p = m_linked_attr_data;
-      const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
-      Uint32 pos_count = 0;
-      while (p < p_end && pos_count < position) {
-        p += 2;
-        p += 1 + AttributeHeader::getDataSize(*p);
-        pos_count++;
-      }
-      if (p + 2 < p_end) {
-        Uint32 word0 = p[0];
-        Uint32 word1 = p[1];
+      const Uint32* ah = CteLinkedAttr::linkedEntryAH(
+          m_linked_attr_data, m_linked_attr_len, attr_id & 0x7FFF);
+      if (ah != nullptr) {
+        Uint32 word0 = ah[-2];
+        Uint32 word1 = ah[-1];
         if (CteLinkedAttr::isCteMarker(word0)) {
           thrjamDebug(jamBuf);
-          info.typeId = CteLinkedAttr::decodeTypeId(word0);
-          info.maxBytes = CteLinkedAttr::decodeMaxBytes(word0);
-          info.cs = nullptr;
-          Uint32 csNumber = CteLinkedAttr::decodeCsNumber(word1);
-          if (csNumber != 0) {
-            thrjamDebug(jamBuf);
-            info.cs = NdbSqlUtil::get_collation(csNumber);
-            if (unlikely(info.cs == nullptr)) {
-              return ZAGG_OTHER_ERROR;
-            }
+          /* As initGBTypes: the collation must fit the type */
+          if (unlikely(!initGBColType(
+                  info, CteLinkedAttr::decodeTypeId(word0),
+                  CteLinkedAttr::decodeMaxBytes(word0),
+                  CteLinkedAttr::decodeCsNumber(word1)))) {
+            return ZAGG_OTHER_ERROR;
           }
         } else {
           thrjamDebug(jamBuf);
           Uint32 tableId = word0;
           Uint32 tableVersion = word1;
-          Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
+          Uint32 linkedAttrId = AttributeHeader(*ah).getAttributeId();
           if (unlikely(tableId == 0 || tableId == RNIL)) {
             g_eventLogger->debug("initGBTypesForNullLocal: linked GROUP BY "
                 "column has untyped synthetic metadata prefix tableId=%u "
@@ -2797,15 +2847,10 @@ Int32 JoinAggInterpreter::initGBTypesForNullLocal(EmulatedJamBuffer *jamBuf) {
           const ColumnMeta *meta =
               findColumnMeta(tableId, tableVersion, linkedAttrId);
           if (meta != nullptr) {
-            info.typeId = meta->typeId;
-            info.maxBytes = meta->maxBytes;
-            info.cs = nullptr;
-            if (meta->csNumber != 0) {
-              thrjamDebug(jamBuf);
-              info.cs = NdbSqlUtil::get_collation(meta->csNumber);
-              if (unlikely(info.cs == nullptr)) {
-                return ZAGG_OTHER_ERROR;
-              }
+            thrjamDebug(jamBuf);
+            if (unlikely(!initGBColType(info, meta->typeId, meta->maxBytes,
+                                        meta->csNumber))) {
+              return ZAGG_OTHER_ERROR;
             }
           } else {
             g_eventLogger->debug("initGBTypesForNullLocal: missing metadata "
@@ -2822,8 +2867,6 @@ Int32 JoinAggInterpreter::initGBTypesForNullLocal(EmulatedJamBuffer *jamBuf) {
           "for local GROUP BY column attr_id=%u", attr_id);
       return ZAGG_OTHER_ERROR;
     }
-    const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
-    info.cmpFn = sqlType.m_cmp;
   }
   return publishGBTypes(jamBuf);
 }

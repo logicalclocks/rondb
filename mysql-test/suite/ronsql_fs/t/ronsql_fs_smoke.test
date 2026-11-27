@@ -8,13 +8,10 @@
 # shape of shape_catalog.md through the MySQL-vs-RonSQL differential
 # harness (suite/ronsql/include/ronsql_compare.inc).
 #
-# Strictness: the single-table shapes (S1, S2, S6b) are asserted
-# ($strict_diff=yes).  The shapes whose engine support this phase is meant
-# to DISCOVER (S3 batch IN, S6 CTE-form collect = risk R1, S7 snowflake,
-# S8b LEFT snowflake, string keys, hash-only PK, TIMESTAMP(3), composite
-# keys) run with $strict_diff unset: the diff (or the RonSQL error text)
-# is RECORDED in the .result file, not asserted.  E3 turns the green ones
-# strict and moves the rejected ones to the expectation table.
+# Strictness: ronsql_compare.inc asserts every comparison (T-1, T-24); the
+# $strict_diff settings below are kept but change nothing.  A known wrong
+# result is asserted against its exact diff in suite/ronsql/known_diffs
+# ($known_diff), so a changed wrong value fails instead of being recorded.
 #
 # Queries that contain a quoted literal use the QUERY_FILE form: the
 # `let $QUERY=` path of ronsql_compare.inc passes the text through a
@@ -30,10 +27,6 @@
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
-
-# Join shapes: ronsql_cli does not refresh its NDB dictionary cache for
-# joins, so compare the mysql client against RDRS only (CTE-suite convention).
---let $suppress_ronsql_cli=yes
 
 --echo === Create and load the feature-store data set (sf 0.01) ===
 --source suite/ronsql_fs/include/fs_schema.inc
@@ -246,9 +239,12 @@ SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`
 
 --echo
 --echo === PROBE EDGE-NULL-A2: mixed-NULL group, DECIMAL(18,2) MIN/MAX ===
+# O-7 (fixed): DECIMAL(18,2) results print at scale 2, as in mysqld.
+--let $strict_diff=yes
 let $QUERY=
 SELECT MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 1;|
 --source suite/ronsql/include/ronsql_compare.inc
+--let $strict_diff=
 --echo == Expected result ==
 --sorted_result
 SELECT MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 1|
@@ -289,9 +285,12 @@ SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max`
 
 --echo
 --echo === PROBE EDGE-NULL-A: mixed-NULL group, the combined statement (F1, fixed) ===
+# O-7 (fixed): DECIMAL(18,2) results print at scale 2, as in mysqld.
+--let $strict_diff=yes
 let $QUERY=
 SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max`, MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, MAX(`s_val`) AS `s_max`, MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1;|
 --source suite/ronsql/include/ronsql_compare.inc
+--let $strict_diff=
 --echo == Expected result ==
 --sorted_result
 SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max`, MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, MAX(`s_val`) AS `s_max`, MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1|
@@ -364,6 +363,11 @@ SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) 
 --echo === PROBE EDGE-BIG-B: signed limits (SUM = 0) and large DECIMAL(18,2) ===
 let $QUERY=
 SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) AS `big_max`, SUM(`dec_big`) AS `dec_sum`, MAX(`dec_big`) AS `dec_max` FROM `edge_big_1` WHERE `entity_id` = 2;|
+# Known wrong result F5 (findings/BUGS_TODO.md; Q-6 in
+# storage/ndb/claude_files/ronsql_executor/README.md): the data nodes
+# aggregate DECIMAL(18,2) as a double, so MAX 999999999999999.99 prints
+# 1000000000000000.00.  The diff must stay exactly the known one.
+--let $known_diff=F5_fs_smoke_edge_big_b.diff
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result

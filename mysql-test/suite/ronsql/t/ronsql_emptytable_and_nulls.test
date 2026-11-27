@@ -4,9 +4,6 @@ call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
 
-# Compare MySQL against RonSQL using RDRS only
---let $suppress_ronsql_cli=yes
-
 # RONDB-831 tests
 
 #todo Remove the canonicalization scripts when AVG formatting is fixed

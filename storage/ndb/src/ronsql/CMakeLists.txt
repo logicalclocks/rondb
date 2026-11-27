@@ -70,3 +70,14 @@ TARGET_LINK_LIBRARIES(ronsql_cli mytime) # Needed for DATE_SUB etc.
 # todo check that unit tests are not included in tarball
 NDB_ADD_TEST(KeywordsUnitTest KeywordsUnitTest.cpp LIBS ronsql ndbclient_so)
 NDB_ADD_TEST(OverflowUnitTest OverflowUnitTest.cpp LIBS ronsql ndbclient_so)
+
+# T-16, F-22: executor unit tests that run without a cluster.  Linked as
+# ronsql_cli is: they reach RonSQLPreparer.cpp, which needs mytime.
+NDB_ADD_TEST(ResultPrinterUnitTest ResultPrinterUnitTest.cpp
+             LIBS ronsql ndbclient_so mytime)
+NDB_ADD_TEST(ErrorClassUnitTest ErrorClassUnitTest.cpp
+             LIBS ronsql ndbclient_so mytime)
+NDB_ADD_TEST(EncodeConstantUnitTest EncodeConstantUnitTest.cpp
+             LIBS ronsql ndbclient_so mytime)
+NDB_ADD_TEST(ProgramSizeUnitTest ProgramSizeUnitTest.cpp
+             LIBS ronsql ndbclient_so mytime)

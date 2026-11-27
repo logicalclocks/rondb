@@ -1,0 +1,175 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== sf-1: scan aggregate with GROUP BY (5156, NDB error 1217) ===
+== Query ==
+SELECT g, COUNT(*) AS n, SUM(v) AS s FROM stf GROUP BY g;
+== RDRS, error insert 5156 armed ==
+HTTP 200
+Number of output lines, including header: 8
+== Diff with mysqld ==
+== The first attempt failed, the second succeeded (must be attempts=2) ==
+attempts=2
+== ronsql_cli, error insert 5156 armed ==
+== Diff with mysqld ==
+== Retried once, on NDB error 1217 (must be 1 and 1) ==
+1
+1
+== Expected result ==
+SELECT g, COUNT(*) AS n, SUM(v) AS s FROM stf GROUP BY g;
+g	n	s
+0	114	137655
+1	115	138000
+2	115	138345
+3	114	136287
+4	114	136629
+5	114	136971
+6	114	137313
+
+=== sf-2: COUNT(*) shortcut (5156, NDB error 1217) ===
+== Query ==
+SELECT COUNT(*) AS n FROM stf;
+== RDRS, error insert 5156 armed ==
+HTTP 200
+Number of output lines, including header: 2
+== Diff with mysqld ==
+== The first attempt failed, the second succeeded (must be attempts=2) ==
+attempts=2
+== ronsql_cli, error insert 5156 armed ==
+== Diff with mysqld ==
+== Retried once, on NDB error 1217 (must be 1 and 1) ==
+1
+1
+== Expected result ==
+SELECT COUNT(*) AS n FROM stf;
+n
+800
+
+=== sf-3: primary-key lookup aggregate (5155, NDB error 1218) ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(v) AS s FROM stf WHERE id IN (1, 2, 3);
+== RDRS, error insert 5155 armed ==
+HTTP 200
+Number of output lines, including header: 2
+== Diff with mysqld ==
+== The first attempt failed, the second succeeded (must be attempts=2) ==
+attempts=2
+== ronsql_cli, error insert 5155 armed ==
+== Diff with mysqld ==
+== Retried once, on NDB error 1218 (must be 1 and 1) ==
+1
+1
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(v) AS s FROM stf WHERE id IN (1, 2, 3);
+n	s
+3	18
+
+=== sf-4: pass-through primary-key lookups (5155, NDB error 1218) ===
+== Query ==
+SELECT id, v FROM stf WHERE id IN (1, 2, 3);
+== RDRS, error insert 5155 armed ==
+HTTP 200
+Number of output lines, including header: 4
+== Diff with mysqld ==
+== The first attempt failed, the second succeeded (must be attempts=2) ==
+attempts=2
+== ronsql_cli, error insert 5155 armed ==
+== Diff with mysqld ==
+== Retried once, on NDB error 1218 (must be 1 and 1) ==
+1
+1
+== Expected result ==
+SELECT id, v FROM stf WHERE id IN (1, 2, 3);
+id	v
+1	3
+2	6
+3	9
+
+=== sf-5: pass-through scan with a filter (5156, NDB error 1217) ===
+== Query ==
+SELECT id, v FROM stf WHERE id > 790;
+== RDRS, error insert 5156 armed ==
+HTTP 200
+Number of output lines, including header: 11
+== Diff with mysqld ==
+== The first attempt failed, the second succeeded (must be attempts=2) ==
+attempts=2
+== ronsql_cli, error insert 5156 armed ==
+== Diff with mysqld ==
+== Retried once, on NDB error 1217 (must be 1 and 1) ==
+1
+1
+== Expected result ==
+SELECT id, v FROM stf WHERE id > 790;
+id	v
+791	2373
+792	2376
+793	2379
+794	2382
+795	2385
+796	2388
+797	2391
+798	2394
+799	2397
+800	2400
+
+=== sf-6: pass-through scan sorted in RonSQL (5156, NDB error 1217) ===
+== Query ==
+SELECT id, v FROM stf WHERE g = 5 ORDER BY v DESC LIMIT 4;
+== RDRS, error insert 5156 armed ==
+HTTP 200
+Number of output lines, including header: 5
+== Diff with mysqld ==
+== The first attempt failed, the second succeeded (must be attempts=2) ==
+attempts=2
+== ronsql_cli, error insert 5156 armed ==
+== Diff with mysqld ==
+== Retried once, on NDB error 1217 (must be 1 and 1) ==
+1
+1
+== Expected result ==
+SELECT id, v FROM stf WHERE g = 5 ORDER BY v DESC LIMIT 4;
+id	v
+796	2388
+789	2367
+782	2346
+775	2325
+
+=== sf-7: aggregate over the last N rows in RonSQL (5156, NDB error 1217) ===
+== Query ==
+WITH t AS (SELECT id, v FROM stf ORDER BY id DESC LIMIT 10) SELECT COUNT(*) AS n, SUM(v) AS s, MIN(id) AS lo FROM t;
+== RDRS, error insert 5156 armed ==
+HTTP 200
+Number of output lines, including header: 2
+== Diff with mysqld ==
+== The first attempt failed, the second succeeded (must be attempts=2) ==
+attempts=2
+== ronsql_cli, error insert 5156 armed ==
+== Diff with mysqld ==
+== Retried once, on NDB error 1217 (must be 1 and 1) ==
+1
+1
+== Expected result ==
+WITH t AS (SELECT id, v FROM stf ORDER BY id DESC LIMIT 10) SELECT COUNT(*) AS n, SUM(v) AS s, MIN(id) AS lo FROM t;
+n	s	lo
+10	23865	791
+
+=== sf-8: an error after rows reached the output (5157, NDB error 274) ===
+== Query ==
+SELECT id, v FROM stf;
+== RDRS, error insert 5157 armed: retried after it wrote the first batch (X-7) ==
+HTTP 200
+Number of output lines, including header: 801
+== Diff with mysqld ==
+== The last attempt drained 800 rows, after one retry (must be rows=800,attempts=2) ==
+rows=800,attempts=2
+== ronsql_cli, error insert 5157 armed: not retried after it printed rows ==
+ronsql_cli failed
+partial output: the header and the first batch
+0 rows printed twice
+Error handling: SRE,te,nu,od->RPE
+ronsql_cli caught exception: Single-table pass-through scan failed.
+== Expected result (summary) ==
+SELECT COUNT(*) AS n, MIN(id) AS lo, MAX(id) AS hi, SUM(v) AS sum_v FROM stf;
+n	lo	hi	sum_v
+800	1	800	961200

@@ -9,7 +9,6 @@ call mtr.add_suppression("Participant timeout");
 # index scan with ASC/DESC ordering and maxRows=1 when the aggregate
 # argument is a direct NOT NULL indexed column.
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 --let $EXPLAIN_FILE=$MYSQL_TMP_DIR/ronsql-minmax-index-explain.out
 

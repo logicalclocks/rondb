@@ -9,7 +9,13 @@
 
 --source include/have_ndb.inc
 
+# T-21: with MTR_REQUIRE_RONSQL_TOOLS set in the environment (CI), a missing
+# tool fails the test instead of skipping it, so its coverage cannot go
+# missing unseen.
 if (!$RONDB_CLI) {
+  if ($MTR_REQUIRE_RONSQL_TOOLS) {
+    --die rondb-cli binary not found, and MTR_REQUIRE_RONSQL_TOOLS is set
+  }
   --skip rondb-cli binary not found
 }
 

@@ -20,11 +20,7 @@ call mtr.add_suppression("Participant timeout");
 # Uncertain shapes are recorded as NEXT-PHASE probes (never executed):
 # an IN-subquery reading a CTE, and a DATE-typed scalar subquery.
 #
-# Same convention as ronsql_cte_basic.test: skip ronsql_cli (which
-# doesn't refresh dictionary cache for join queries) and rely on
-# RDRS comparison against MySQL.
 # See test_benchmark_extension_plan.md (Phase T4).
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --echo

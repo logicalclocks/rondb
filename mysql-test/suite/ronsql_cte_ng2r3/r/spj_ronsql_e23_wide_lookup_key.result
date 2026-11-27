@@ -1,0 +1,10 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== e23l-0: the plan is root scan -> CTE_LOOKUP into the grouped CTE ===
+== Explain Query ==
+
+=== e23l-1: CTE_LOOKUP with 5000-byte keys is a limit error ===
+[limit] Caught exception: The GROUP BY columns of a CTE can need more than 4092 bytes, counted at the declared column sizes.
+
+=== e23l-2: no DBSPJ request left behind ===

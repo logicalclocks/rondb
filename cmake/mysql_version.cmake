@@ -30,6 +30,11 @@ SET(SHARED_LIB_MAJOR_VERSION "25")
 SET(SHARED_LIB_MINOR_VERSION "2")
 SET(PROTOCOL_VERSION "10")
 
+# Version and SOVERSION of the shared NDB API library, librondbclient.
+# Set here at top level, not in storage/ndb/src, so that the packaging
+# files, configured outside storage/ndb, can use @NDB_SHARED_LIB_VERSION@.
+SET(NDB_SHARED_LIB_VERSION "7.0.0")
+
 # Generate "something" to trigger cmake rerun when MYSQL_VERSION changes
 CONFIGURE_FILE(
   ${CMAKE_SOURCE_DIR}/MYSQL_VERSION

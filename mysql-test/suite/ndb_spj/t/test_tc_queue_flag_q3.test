@@ -1,0 +1,12 @@
+--source include/have_ndb.inc
+
+# RONDB-1124, Q-3: SCAN_NEXTREQ marked as sent from the rate queue by the API.
+# A SCAN_NEXTREQ with stopScan bit 2 (sent from the queue) on an
+# invalid connection. Before, ndbrequire(!sent_from_queue) stopped the
+# data node.
+# See suite/ndb_spj/include/tc_queue_flag_case.inc.
+
+--let $spj_case = Q3
+--let $spj_case_title = Q-3: SCAN_NEXTREQ marked as sent from the rate queue by the API
+--let $tc_queue_flag_reported = 1
+--source suite/ndb_spj/include/tc_queue_flag_case.inc

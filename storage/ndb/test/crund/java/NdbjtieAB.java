@@ -178,7 +178,7 @@ public class NdbjtieAB extends CrundLoad {
 
         // load native library (better diagnostics doing it explicitely)
         out.println();
-        Driver.loadSystemLibrary("ndbclient");
+        Driver.loadSystemLibrary("rondbclient");
 
         // instantiate NDB cluster singleton
         out.print("creating cluster connection ...");

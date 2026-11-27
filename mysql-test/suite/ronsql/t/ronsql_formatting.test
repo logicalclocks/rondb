@@ -4,9 +4,6 @@ call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
 
-# Compare MySQL against RonSQL using RDRS only
---let $suppress_ronsql_cli=yes
-
 --let RAND_SEED=42
 --let NUM_ROWS=10
 --source suite/ronsql/include/ronsql_create_table_api_scan.inc

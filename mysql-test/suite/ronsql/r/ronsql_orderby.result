@@ -592,29 +592,52 @@ Number of output lines, including header: 5
 
 
 
-ORDER BY unsupported VARBINARY:
-c_varbinary	count(*)
-NULL	4
-Error handling: RPE
-ronsql_cli caught exception: RonSQL feature not implemented: Print GROUP BY column of type Varbinary
+ORDER BY c_varbinary ASC:
+== Query ==
+SELECT c_varbinary, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_varbinary
+ORDER BY c_varbinary;
 
-ORDER BY unsupported TIME:
-c_time	count(*)
-NULL	4
-Error handling: RPE
-ronsql_cli caught exception: RonSQL feature not implemented: Print GROUP BY column of type Time2
+Number of output lines, including header: 9
 
-ORDER BY unsupported YEAR:
-c_year	count(*)
-NULL	4
-Error handling: RPE
-ronsql_cli caught exception: RonSQL feature not implemented: Print GROUP BY column of type Year
+== Diff ==
+==========
+
+
+
+ORDER BY c_time ASC:
+== Query ==
+SELECT c_time, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_time
+ORDER BY c_time;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_year ASC:
+== Query ==
+SELECT c_year, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_year
+ORDER BY c_year;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
 
 ORDER BY unsupported BIT:
-c_bit	count(*)
-NULL	4
 Error handling: RPE
-ronsql_cli caught exception: RonSQL feature not implemented: Print GROUP BY column of type Bit
+ronsql_cli caught exception: The SELECT output `c_bit` has type BIT, which RonSQL cannot return.
 
 Cleanup
 DROP TABLE orderby_test;

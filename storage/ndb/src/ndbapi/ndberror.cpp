@@ -577,10 +577,12 @@ ErrorBundle ErrorCodes[] = {
   { 1870,  DMEC, TR, "Failed to allocate memory, check error log on data node for more details" },
   { 1871,  DMEC, AE, "The vector search results size is too big, check error log on data node for more details" },
   { 1872,  DMEC, AE, "Embedded interpreter error" },
+  { 1873,  DMEC, AE, "Aggregation group too large: its GROUP BY key and aggregate slots exceed one query memory chunk" },
   { 2200,  DMEC, AE, "Dirty reads and dirty writes are supported, not other operation types" },
   { 2201,  DMEC, AE, "Parallel Ordered Index scan flag set requires even number of receiver ids" },
   { 2202,  DMEC, AE, "Parallel Ordered Index scan flag set requires ReadCommittedMode" },
   { 2204,  DMEC, AE, "Scan pruned to one partition is not supported on table with partition hash fanout" },
+  { 2207,  DMEC, AE, "A request names another rate limit user than its transaction" },
 
   /** 
    * Scan application errors

@@ -30,7 +30,6 @@
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 --source suite/ronsql_cte/include/cte_schema.inc
 --source suite/ronsql_cte/include/cte_data.inc
@@ -475,8 +474,7 @@ SELECT MIN(s) AS mns, MAX(s) AS mxs, SUM(n) AS sn, COUNT(*) AS g FROM x|
 
 # ============================================================
 # PROBES (form 1): clean permanent rejection via ronsql_cli --error 1.
-# Rejection happens at prepare time, so the join dictionary-cache caveat
-# does not apply.
+# Rejection happens at prepare time, before any NDB execution.
 # ============================================================
 
 DELIMITER ;|

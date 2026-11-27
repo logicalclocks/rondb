@@ -1,0 +1,141 @@
+# The ordered index that a join's root reads through, dropped and created
+# between two requests (README findings J-7, J-22).
+#
+# A join root whose WHERE binds its whole primary key, in an aggregate
+# query without a CTE, cannot be a readTuple (a lookup root cannot
+# aggregate there), so it is an index scan with the key as an equal bound
+# on an ordered index that leads with the key columns; without one it is a
+# table scan (decide_root_access).  The index comes from RDRS's schema
+# cache since J-7; before, every execution listed the table's indexes
+# through DICT.  The cache keeps a table's index list while its version is
+# unchanged (Internal.SchemaCacheTTLSecs, 10 s), so the list can name an
+# index that is gone.
+#
+# jr_r has a hash primary key and the ordered index jr_ix on it.  Through
+# mysqld every index DDL is an ALTER TABLE that bumps the table's version,
+# so RDRS lists the indexes again at once; ndb_drop_index drops the index
+# without touching the table, which leaves the cached list stale.
+#
+#   jr-1  control: through RDRS and ronsql_cli, compared with mysqld; the
+#         root reads through jr_ix
+#   jr-2  DROP INDEX through mysqld, the query through RDRS at once:
+#         HTTP 200, the result of mysqld, at most one retry; the root
+#         scans the table
+#   jr-3  CREATE INDEX through mysqld, then the same; jr_ix again
+#   jr-4  DROP INDEX and CREATE INDEX of the same name through mysqld,
+#         then the same
+#   jr-5  ndb_drop_index jr_ix, the query through RDRS at once: HTTP 200,
+#         the result of mysqld, at most one retry; the cached list names
+#         jr_ix, which the dictionary no longer has, so the root scans the
+#         table; ronsql_cli gives the result of mysqld
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE jr_r (
+  id INT NOT NULL,
+  g  INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX jr_ix (id)
+) ENGINE=NDB;
+INSERT INTO jr_r VALUES (1, 10), (2, 20), (3, 30), (4, 40);
+CREATE TABLE jr_c (
+  rid INT NOT NULL PRIMARY KEY,
+  x   INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO jr_c VALUES (1, 100), (2, 200), (3, 300), (4, 400);
+--enable_warnings
+--enable_query_log
+
+# The query of every case: the root's WHERE binds its key, the child is
+# read by its own key.
+--exec printf '{"query":"SELECT COUNT(*) AS n, SUM(c.x) AS s, MAX(r.g) AS m FROM jr_r AS r JOIN jr_c AS c ON c.rid = r.id WHERE r.id = 2;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/jr-body
+
+DELIMITER |;
+
+--echo
+--echo === jr-1: control; the root reads through jr_ix ===
+let $QUERY= SELECT COUNT(*) AS n, SUM(c.x) AS s, MAX(r.g) AS m FROM jr_r AS r JOIN jr_c AS c ON c.rid = r.id WHERE r.id = 2;|
+--source suite/ronsql_cte/include/root_access.inc
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*) AS n, SUM(c.x) AS s, MAX(r.g) AS m FROM jr_r AS r JOIN jr_c AS c ON c.rid = r.id WHERE r.id = 2|
+
+DELIMITER ;|
+
+--echo
+--echo === jr-2: DROP INDEX through mysqld, the query through RDRS at once ===
+DROP INDEX jr_ix ON jr_r;
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/jr-hdrs -o $MYSQL_TMP_DIR/jr-rdrs.out -X POST -H "Content-Type: application/json" -H "x-ronsql-phases: 1" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/jr-body
+--exec $MYSQL -D test -e 'SELECT COUNT(*) AS n, SUM(c.x) AS s, MAX(r.g) AS m FROM jr_r AS r JOIN jr_c AS c ON c.rid = r.id WHERE r.id = 2' > $MYSQL_TMP_DIR/jr-mysql.out
+--echo == Diff with mysqld ==
+--exec diff -u --label mysql.out $MYSQL_TMP_DIR/jr-mysql.out --label ronsql.out $MYSQL_TMP_DIR/jr-rdrs.out
+--echo == At most one retry (must be 1) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/jr-hdrs | tr -d '\r' | grep -cE ',attempts=[12],'
+--let $QUERY=SELECT COUNT(*) AS n, SUM(c.x) AS s, MAX(r.g) AS m FROM jr_r AS r JOIN jr_c AS c ON c.rid = r.id WHERE r.id = 2;
+--source suite/ronsql_cte/include/root_access.inc
+
+--echo
+--echo === jr-3: CREATE INDEX through mysqld, the query through RDRS at once ===
+CREATE INDEX jr_ix ON jr_r (id);
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/jr-hdrs -o $MYSQL_TMP_DIR/jr-rdrs.out -X POST -H "Content-Type: application/json" -H "x-ronsql-phases: 1" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/jr-body
+--exec $MYSQL -D test -e 'SELECT COUNT(*) AS n, SUM(c.x) AS s, MAX(r.g) AS m FROM jr_r AS r JOIN jr_c AS c ON c.rid = r.id WHERE r.id = 2' > $MYSQL_TMP_DIR/jr-mysql.out
+--echo == Diff with mysqld ==
+--exec diff -u --label mysql.out $MYSQL_TMP_DIR/jr-mysql.out --label ronsql.out $MYSQL_TMP_DIR/jr-rdrs.out
+--echo == At most one retry (must be 1) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/jr-hdrs | tr -d '\r' | grep -cE ',attempts=[12],'
+--let $QUERY=SELECT COUNT(*) AS n, SUM(c.x) AS s, MAX(r.g) AS m FROM jr_r AS r JOIN jr_c AS c ON c.rid = r.id WHERE r.id = 2;
+--source suite/ronsql_cte/include/root_access.inc
+
+--echo
+--echo === jr-4: DROP INDEX and CREATE INDEX of the same name through mysqld, the query through RDRS at once ===
+DROP INDEX jr_ix ON jr_r;
+CREATE INDEX jr_ix ON jr_r (id);
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/jr-hdrs -o $MYSQL_TMP_DIR/jr-rdrs.out -X POST -H "Content-Type: application/json" -H "x-ronsql-phases: 1" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/jr-body
+--exec $MYSQL -D test -e 'SELECT COUNT(*) AS n, SUM(c.x) AS s, MAX(r.g) AS m FROM jr_r AS r JOIN jr_c AS c ON c.rid = r.id WHERE r.id = 2' > $MYSQL_TMP_DIR/jr-mysql.out
+--echo == Diff with mysqld ==
+--exec diff -u --label mysql.out $MYSQL_TMP_DIR/jr-mysql.out --label ronsql.out $MYSQL_TMP_DIR/jr-rdrs.out
+--echo == At most one retry (must be 1) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/jr-hdrs | tr -d '\r' | grep -cE ',attempts=[12],'
+
+# jr-5 must follow jr-4 within the cache's TTL (10 s): the query of jr-4
+# put the list with the new jr_ix into RDRS's schema cache, and
+# ndb_drop_index leaves the table's version as it is, so the list stays.
+# mysqld still has jr_ix in its data dictionary and would read through it,
+# so the result of mysqld is the one of jr-4 (the rows are the same).
+--echo
+--echo === jr-5: ndb_drop_index, the query through RDRS at once ===
+--exec $NDB_DROP_INDEX -d test jr_r jr_ix >> $NDB_TOOLS_OUTPUT
+--exec curl -s -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/jr-hdrs -o $MYSQL_TMP_DIR/jr-rdrs.out -X POST -H "Content-Type: application/json" -H "x-ronsql-phases: 1" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/jr-body
+--echo == Diff with mysqld ==
+--exec diff -u --label mysql.out $MYSQL_TMP_DIR/jr-mysql.out --label ronsql.out $MYSQL_TMP_DIR/jr-rdrs.out
+--echo == At most one retry (must be 1) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/jr-hdrs | tr -d '\r' | grep -cE ',attempts=[12],'
+--let $QUERY=SELECT COUNT(*) AS n, SUM(c.x) AS s, MAX(r.g) AS m FROM jr_r AS r JOIN jr_c AS c ON c.rid = r.id WHERE r.id = 2;
+--source suite/ronsql_cte/include/root_access.inc
+--echo == ronsql_cli, which lists the indexes itself ==
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n, SUM(c.x) AS s, MAX(r.g) AS m FROM jr_r AS r JOIN jr_c AS c ON c.rid = r.id WHERE r.id = 2;' > $MYSQL_TMP_DIR/jr-cli.out
+--exec diff -u --label mysql.out $MYSQL_TMP_DIR/jr-mysql.out --label ronsql-cli.out $MYSQL_TMP_DIR/jr-cli.out
+
+--remove_file $MYSQL_TMP_DIR/jr-body
+--remove_file $MYSQL_TMP_DIR/jr-hdrs
+--remove_file $MYSQL_TMP_DIR/jr-rdrs.out
+--remove_file $MYSQL_TMP_DIR/jr-mysql.out
+--remove_file $MYSQL_TMP_DIR/jr-cli.out
+
+--let $QUERY=
+
+--disable_query_log
+--disable_warnings
+DROP TABLE jr_c;
+DROP TABLE jr_r;
+--enable_warnings
+--enable_query_log
+--remove_file $NDB_TOOLS_OUTPUT

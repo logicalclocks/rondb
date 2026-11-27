@@ -34,10 +34,6 @@ call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
 
-# Join queries: compare mysql client against RDRS only (the CTE-suite
-# convention; ronsql_cli does not refresh its dictionary cache for
-# joins).
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --echo === Bulk-load large dataset (20000 cust, 100000 orders) ===

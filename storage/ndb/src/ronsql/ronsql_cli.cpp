@@ -95,11 +95,23 @@ main(int argc, char** argv)
   }
 
   ndb_init();
+  // -T: the time of each phase of the run, printed at exit, to see where
+  // a run spends its time (connect, waiting for the data nodes, the
+  // statement, tearing down the connection).
+  const NDB_TICKS t_start = NdbTick_getCurrentTicks();
+  NDB_TICKS t_connected = t_start;
+  NDB_TICKS t_ready = t_start;
+  NDB_TICKS t_ndb_init = t_start;
+  NDB_TICKS t_run_end = t_start;
   // Block scope for ndb cluster connection
   {
     // Ndb connection
     Ndb_cluster_connection cluster_connection(config.connectstring);
-    if (cluster_connection.connect(4, 5, 1))
+    // Retry every second for 30 s: a node id the previous ronsql_cli used
+    // is refused until the data nodes finish its API failure handling,
+    // and with a 5 s retry delay every back-to-back run in the tests
+    // waited 5 s for it.  The retries print nothing.
+    if (cluster_connection.connect(30, 1, 1))
     {
       cerr << "Unable to connect to cluster within 30 secs." << endl;
       return 1;
@@ -111,7 +123,9 @@ main(int argc, char** argv)
     // it has not activated yet (QMGR API_REGREQ -> ENABLE_COMREQ), so a
     // query started after the first alive node can lose rows and wait
     // for them until the API timeout (node_failure_test_plan.md F-11).
+    t_connected = NdbTick_getCurrentTicks();
     const int ready = cluster_connection.wait_until_ready(30, 30);
+    t_ready = NdbTick_getCurrentTicks();
     if (ready < 0)
     {
       cerr << "Cluster was not ready within 30 secs." << endl;
@@ -130,6 +144,7 @@ main(int argc, char** argv)
       return 1;
     }
     params.ndb = &myNdb;
+    t_ndb_init = NdbTick_getCurrentTicks();
     // Execute, perhaps timing it
     if (config.time_info)    {
       NDB_TICKS start = NdbTick_getCurrentTicks();
@@ -142,10 +157,23 @@ main(int argc, char** argv)
     {
       exit_code = run_ronsql(params);
     }
+    t_run_end = NdbTick_getCurrentTicks();
   }
   // End of block scope. This is necessary to clean up the cluster connection
   // before calling ndb_end.
+  const NDB_TICKS t_closed = NdbTick_getCurrentTicks();
   ndb_end(config.time_info ? MY_GIVE_INFO : 0);
+  if (config.time_info) {
+    const NDB_TICKS t_end = NdbTick_getCurrentTicks();
+    cerr << "Phases (ms): connect="
+         << NdbTick_Elapsed(t_start, t_connected).milliSec()
+         << " wait_until_ready=" << NdbTick_Elapsed(t_connected, t_ready).milliSec()
+         << " ndb_init=" << NdbTick_Elapsed(t_ready, t_ndb_init).milliSec()
+         << " run=" << NdbTick_Elapsed(t_ndb_init, t_run_end).milliSec()
+         << " close=" << NdbTick_Elapsed(t_run_end, t_closed).milliSec()
+         << " ndb_end=" << NdbTick_Elapsed(t_closed, t_end).milliSec()
+         << endl;
+  }
 
   return exit_code;
 }

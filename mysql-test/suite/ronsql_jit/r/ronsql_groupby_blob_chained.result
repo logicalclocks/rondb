@@ -1,0 +1,139 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== gbc-1: TEXT key one CTE up, GROUP BY of the main query ===
+Error handling: RPE
+ronsql_cli caught exception: GROUP BY on a BLOB or TEXT column is not supported.
+
+=== gbc-2: BLOB key one CTE up, GROUP BY of the main query ===
+Error handling: RPE
+ronsql_cli caught exception: GROUP BY on a BLOB or TEXT column is not supported.
+
+=== gbc-3: TEXT key two CTEs up, GROUP BY of the main query ===
+Error handling: RPE
+ronsql_cli caught exception: GROUP BY on a BLOB or TEXT column is not supported.
+
+=== gbc-4: BLOB key two CTEs up, GROUP BY of the main query ===
+Error handling: RPE
+ronsql_cli caught exception: GROUP BY on a BLOB or TEXT column is not supported.
+
+=== gbc-5: TEXT key one CTE up, GROUP BY of a CTE body ===
+Error handling: RPE
+ronsql_cli caught exception: GROUP BY on a BLOB or TEXT column is not supported.
+
+=== gbc-6: BLOB key one CTE up, GROUP BY of a CTE body ===
+Error handling: RPE
+ronsql_cli caught exception: GROUP BY on a BLOB or TEXT column is not supported.
+
+=== gbc-7: TEXT key two CTEs up, GROUP BY of a CTE body ===
+Error handling: RPE
+ronsql_cli caught exception: GROUP BY on a BLOB or TEXT column is not supported.
+
+=== gbc-8: BLOB key two CTEs up, GROUP BY of a CTE body ===
+Error handling: RPE
+ronsql_cli caught exception: GROUP BY on a BLOB or TEXT column is not supported.
+
+=== gbc-9: gbc-3 through RDRS ===
+HTTP 400
+x-ronsql-error-class: unsupported
+== RDRS still answers ==
+HTTP 200
+
+=== gbc-10: TEXT column passed on by a CTE without GROUP BY on it (O-13) ===
+Error handling: RPE
+ronsql_cli caught exception: The SELECT output `txt` has type TEXT, which RonSQL cannot return.
+
+=== gbc-c1: control, VARCHAR key one CTE up ===
+== Query ==
+WITH a AS (SELECT vc, COUNT(*) AS n FROM gbc_t GROUP BY vc)
+SELECT vc, SUM(n) AS s FROM a GROUP BY vc;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT vc, COUNT(*) AS n FROM gbc_t GROUP BY vc)
+SELECT vc, SUM(n) AS s FROM a GROUP BY vc|
+vc	s
+apple	2
+banana	1
+fig	1
+pear	2
+
+=== gbc-c2: control, VARCHAR key two CTEs up ===
+== Query ==
+WITH a AS (SELECT vc, COUNT(*) AS n FROM gbc_t GROUP BY vc),
+b AS (SELECT vc, SUM(n) AS n2 FROM a GROUP BY vc)
+SELECT vc, SUM(n2) AS s FROM b GROUP BY vc;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT vc, COUNT(*) AS n FROM gbc_t GROUP BY vc),
+b AS (SELECT vc, SUM(n) AS n2 FROM a GROUP BY vc)
+SELECT vc, SUM(n2) AS s FROM b GROUP BY vc|
+vc	s
+apple	2
+banana	1
+fig	1
+pear	2
+
+=== gbc-c3: control, INT key three CTEs up ===
+== Query ==
+WITH a AS (SELECT k, COUNT(*) AS n FROM gbc_t GROUP BY k),
+b AS (SELECT k, SUM(n) AS n2 FROM a GROUP BY k),
+c AS (SELECT k, SUM(n2) AS n3 FROM b GROUP BY k)
+SELECT k, SUM(n3) AS s FROM c GROUP BY k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT k, COUNT(*) AS n FROM gbc_t GROUP BY k),
+b AS (SELECT k, SUM(n) AS n2 FROM a GROUP BY k),
+c AS (SELECT k, SUM(n2) AS n3 FROM b GROUP BY k)
+SELECT k, SUM(n3) AS s FROM c GROUP BY k|
+k	s
+1	3
+2	2
+3	1
+
+=== gbc-c4: control, pass-through of a grouped CTE ===
+== Query ==
+WITH a AS (SELECT k, COUNT(*) AS n FROM gbc_t GROUP BY k)
+SELECT k, n FROM a;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT k, COUNT(*) AS n FROM gbc_t GROUP BY k)
+SELECT k, n FROM a|
+k	n
+1	3
+2	2
+3	1
+
+=== Cleanup ===
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_groupby_blob_chained_jit_fallback_delta;
+ronsql_groupby_blob_chained_jit_fallback_delta
+0

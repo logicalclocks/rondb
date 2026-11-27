@@ -83,9 +83,15 @@ int NdbTransaction::receiveSCAN_TABREF(const NdbApiSignal *aSignal) {
   if (checkState_TransId(&ref->transId1)) {
     if (theScanningOp) {
       theScanningOp->execCLOSE_SCAN_REP(ref->errorCode, ref->closeNeeded);
+    } else if (m_scanningQuery != nullptr) {
+      if (!m_scanningQuery->execCLOSE_SCAN_REP(ref->errorCode,
+                                               ref->closeNeeded)) {
+        return -1;
+      }
     } else {
-      assert(m_scanningQuery);
-      m_scanningQuery->execCLOSE_SCAN_REP(ref->errorCode, ref->closeNeeded);
+      /* NdbQueryImpl::close() has detached its query and is about to
+       * release this scan transaction: nothing waits for the scan. */
+      return -1;
     }
     return 0;
   } else {
@@ -133,9 +139,16 @@ int NdbTransaction::receiveSCAN_TABCONF(const NdbApiSignal *aSignal,
                   "execCLOSE_SCAN_REP\n");
       if (theScanningOp) {
         theScanningOp->execCLOSE_SCAN_REP(0, false);
+      } else if (m_scanningQuery != nullptr) {
+        if (!m_scanningQuery->execCLOSE_SCAN_REP(0, false)) {
+          DBUG_RETURN(-1);  // Stale answer to a crossed close, dropped
+        }
       } else {
-        assert(m_scanningQuery);
-        m_scanningQuery->execCLOSE_SCAN_REP(0, false);
+        /* NdbQueryImpl::close() has detached its query and is about to
+         * release this scan transaction.  This is DBTC's answer to a
+         * close that crossed the end of the scan
+         * (NdbQueryImpl::execCLOSE_SCAN_REP()); drop it. */
+        DBUG_RETURN(-1);
       }
       DBUG_RETURN(1); // -> Finished
     }

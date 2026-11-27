@@ -83,14 +83,14 @@ else
   echo "Not on x86_64; the platform independent ClusterJ jar is deployed by the x86_64 job"
 fi
 
-echo "Extracting libndbclient from tarball"
-# The tarball has lib/libndbclient.so as a symlink to the versioned real file, e.g.
-# libndbclient.so.6.1.0. Extract both and resolve the symlink, so this does not depend on
+echo "Extracting librondbclient from tarball"
+# The tarball has lib/librondbclient.so as a symlink to the versioned real file, e.g.
+# librondbclient.so.7.0.0. Extract both and resolve the symlink, so this does not depend on
 # the soversion and the file we hand over is the real library, not a link.
-tar xf $TAR_FILE_ABS --wildcards "$TARBALL_NAME/lib/libndbclient.so*"
-LIBNDB_FILE=$(readlink -f "$TARBALL_NAME/lib/libndbclient.so")
+tar xf $TAR_FILE_ABS --wildcards "$TARBALL_NAME/lib/librondbclient.so*"
+LIBNDB_FILE=$(readlink -f "$TARBALL_NAME/lib/librondbclient.so")
 if [[ ! -f "$LIBNDB_FILE" || -L "$LIBNDB_FILE" ]]; then
-  echo "Error: Unable to find the libndbclient shared library in '$TARBALL_NAME/lib'"
+  echo "Error: Unable to find the librondbclient shared library in '$TARBALL_NAME/lib'"
   exit 1
 fi
 echo "Using $LIBNDB_FILE"

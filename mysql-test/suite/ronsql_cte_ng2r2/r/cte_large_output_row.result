@@ -1,0 +1,46 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== lr-1: CTE_SCAN root, rows of about 2000 words ===
+== Query ==
+WITH c AS (SELECT k, MAX(s) AS ms, MIN(t) AS mt
+FROM lr_src GROUP BY k)
+SELECT k, ms, mt FROM c;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== lr-2: join to a single-group CTE, repeated hits (G2b cache) ===
+== Query ==
+WITH c AS (SELECT k, MAX(s) AS ms, MIN(t) AS mt
+FROM lr_src WHERE k = 1 GROUP BY k)
+SELECT d.id AS id, c.ms AS ms, c.mt AS mt
+FROM lr_drv AS d JOIN c ON c.k = d.k;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+
+=== lr-3: join to the grouped CTE ===
+== Query ==
+WITH c AS (SELECT k, MAX(s) AS ms, MIN(t) AS mt
+FROM lr_src GROUP BY k)
+SELECT d.id AS id, c.k AS k, c.ms AS ms, c.mt AS mt
+FROM lr_drv AS d JOIN c ON c.k = d.k;
+
+Number of output lines, including header: 11
+
+== Diff ==
+==========
+
+
+

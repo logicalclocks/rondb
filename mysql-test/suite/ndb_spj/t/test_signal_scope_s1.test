@@ -1,0 +1,12 @@
+--source include/have_ndb.inc
+
+# RONDB-1124, S-1: JOIN_AGG_SEND_REQ from the API to DBTC.
+# DBTC answered a JOIN_AGG_SEND_REQ from any node with a
+# JOIN_AGG_SEND_CONF to the block reference in the request. No block unit
+# test sends it, so it is Remote in debug builds too: the case runs on
+# debug and release data nodes.
+# See suite/ndb_spj/include/signal_scope_case.inc.
+
+--let $spj_case = S1
+--let $spj_case_title = S-1: JOIN_AGG_SEND_REQ from the API to DBTC
+--source suite/ndb_spj/include/signal_scope_case.inc

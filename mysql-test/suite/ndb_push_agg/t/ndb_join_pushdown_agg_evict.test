@@ -1,6 +1,13 @@
 --source include/have_ndb.inc
 --source have_ndb_error_insert.inc
 
+# ndb_mgm output goes to a test-local file that is removed at the end,
+# so that check-testcase sees the same vardir before and after.  The
+# shared $NDB_TOOLS_OUTPUT (ndb_testrun.log) fails the first test on a
+# worker that creates it, and removing it fails when an earlier test
+# left it.
+--let $evict_mgm = $MYSQLTEST_VARDIR/tmp/ndb_join_pushdown_agg_evict_mgm.log
+
 --echo ############################################################
 --echo # RONDB-733 Phase 13: Eviction Testing via ERROR_INSERT
 --echo ############################################################
@@ -92,13 +99,13 @@ FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
 
 --echo # With error insert 5126 (maxGroups=3) and pushdown
---exec $NDB_MGM -e "all error 5126" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 5126" >> $evict_mgm
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t3.amount), COUNT(*)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $evict_mgm
 
 --echo ############################################################
 --echo # Test A2: 3-way join, all aggregate functions with eviction
@@ -109,13 +116,13 @@ SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
 
---exec $NDB_MGM -e "all error 5126" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 5126" >> $evict_mgm
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $evict_mgm
 
 --echo ############################################################
 --echo # Test A3: 2-way join with eviction (t1 -> t2)
@@ -126,13 +133,13 @@ SELECT t1.grp, SUM(t2.discount), COUNT(*), MIN(t2.discount), MAX(t2.discount)
 FROM t1 JOIN t2 ON t2.pk = t1.pk
 GROUP BY t1.grp;
 
---exec $NDB_MGM -e "all error 5126" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 5126" >> $evict_mgm
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t2.discount), COUNT(*), MIN(t2.discount), MAX(t2.discount)
 FROM t1 JOIN t2 ON t2.pk = t1.pk
 GROUP BY t1.grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $evict_mgm
 
 --echo ############################################################
 --echo # Test A4: Multiple aggregates on different leaf columns
@@ -143,13 +150,13 @@ SELECT t1.grp, SUM(t3.amount), SUM(t3.qty), MIN(t3.qty), MAX(t3.qty)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
 
---exec $NDB_MGM -e "all error 5126" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 5126" >> $evict_mgm
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t3.amount), SUM(t3.qty), MIN(t3.qty), MAX(t3.qty)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $evict_mgm
 
 --echo ############################################################
 --echo # Test A5: GROUP BY on middle table column with eviction
@@ -160,13 +167,13 @@ SELECT t2.cat, SUM(t3.amount), COUNT(*)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t2.cat;
 
---exec $NDB_MGM -e "all error 5126" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 5126" >> $evict_mgm
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t2.cat, SUM(t3.amount), COUNT(*)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t2.cat;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $evict_mgm
 
 --echo ============================================================
 --echo Section B: ERROR_INSERT 4041 (intermittent eviction)
@@ -181,13 +188,13 @@ SELECT t1.grp, SUM(t3.amount), COUNT(*)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
 
---exec $NDB_MGM -e "all error 4041" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4041" >> $evict_mgm
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t3.amount), COUNT(*)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $evict_mgm
 
 --echo ############################################################
 --echo # Test B2: All aggregate functions with intermittent eviction
@@ -199,14 +206,14 @@ SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount),
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
 
---exec $NDB_MGM -e "all error 4041" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4041" >> $evict_mgm
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount),
        SUM(t3.qty), MIN(t3.qty), MAX(t3.qty)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $evict_mgm
 
 --echo ############################################################
 --echo # Test B3: 2-way join with intermittent eviction
@@ -217,13 +224,13 @@ SELECT t1.grp, SUM(t2.discount), COUNT(*)
 FROM t1 JOIN t2 ON t2.pk = t1.pk
 GROUP BY t1.grp;
 
---exec $NDB_MGM -e "all error 4041" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4041" >> $evict_mgm
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t2.discount), COUNT(*)
 FROM t1 JOIN t2 ON t2.pk = t1.pk
 GROUP BY t1.grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $evict_mgm
 
 --echo ############################################################
 --echo # Test B4: With HAVING + ORDER BY + LIMIT under eviction
@@ -237,7 +244,7 @@ HAVING total > 5000
 ORDER BY total DESC
 LIMIT 4;
 
---exec $NDB_MGM -e "all error 4041" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4041" >> $evict_mgm
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t3.amount) AS total, COUNT(*) AS cnt
@@ -246,7 +253,7 @@ GROUP BY t1.grp
 HAVING total > 5000
 ORDER BY total DESC
 LIMIT 4;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $evict_mgm
 
 --echo ============================================================
 --echo Section C: ERROR_INSERT 4041 additional tests
@@ -261,13 +268,13 @@ SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
 
---exec $NDB_MGM -e "all error 4041" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4041" >> $evict_mgm
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $evict_mgm
 
 --echo ############################################################
 --echo # Test C2: 4041 intermittent eviction — 2-way join
@@ -278,13 +285,13 @@ SELECT t1.grp, SUM(t2.discount), COUNT(*), MIN(t2.discount), MAX(t2.discount)
 FROM t1 JOIN t2 ON t2.pk = t1.pk
 GROUP BY t1.grp;
 
---exec $NDB_MGM -e "all error 4041" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4041" >> $evict_mgm
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t2.discount), COUNT(*), MIN(t2.discount), MAX(t2.discount)
 FROM t1 JOIN t2 ON t2.pk = t1.pk
 GROUP BY t1.grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $evict_mgm
 
 --echo ############################################################
 --echo # Test C3: 4041 intermittent eviction — all aggregates on both columns
@@ -296,15 +303,15 @@ SELECT t1.grp, SUM(t3.amount), SUM(t3.qty), COUNT(*),
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
 
---exec $NDB_MGM -e "all error 4041" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 4041" >> $evict_mgm
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT t1.grp, SUM(t3.amount), SUM(t3.qty), COUNT(*),
        MIN(t3.amount), MAX(t3.amount), MIN(t3.qty), MAX(t3.qty)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
---exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "all error 0" >> $evict_mgm
 
 --echo # Cleanup
 DROP TABLE t3, t2, t1;
---remove_file $NDB_TOOLS_OUTPUT
+--remove_file $evict_mgm

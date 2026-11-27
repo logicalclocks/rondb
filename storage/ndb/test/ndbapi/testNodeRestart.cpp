@@ -12638,12 +12638,32 @@ static const Uint32 CTE_NF_ROWS = 32768;
 static const Uint32 CTE_NF_GROUPS = 64;
 static const Uint32 CTE_NF_ITERATIONS = 3;
 
-static int runCteNfCreateTables(NDBT_Context *ctx, NDBT_Step *step) {
+/* pkIndex also creates the ordered index that MySQL names PRIMARY on
+ * cte_nf_src(pk): ScanAggMain's aggregate leaf scans it. These fixtures
+ * are created through the NDB API while the mysqlds are down, so nothing
+ * else creates it (testPartitioning does the same). */
+static int cteNfCreateTables(NDBT_Context *ctx, NDBT_Step *step,
+                             bool pkIndex) {
   Ndb *ndb = GETNDB(step);
   if (CteQueryUtil::createTables(ndb) != 0) {
     g_err << "CteQueryUtil::createTables failed: "
           << ndb->getDictionary()->getNdbError().message << endl;
     return NDBT_FAILED;
+  }
+  if (pkIndex) {
+    NdbDictionary::Dictionary *dict = ndb->getDictionary();
+    NdbDictionary::Index idx;
+    idx.setType(NdbDictionary::Index::OrderedIndex);
+    idx.setLogging(false);
+    idx.setTable(CteQueryUtil::SRC_TABLE);
+    idx.setName("PRIMARY");
+    idx.addColumnName("pk");
+    if (dict->createIndex(idx) != 0) {
+      g_err << "Creating the PRIMARY ordered index of "
+            << CteQueryUtil::SRC_TABLE << " failed: "
+            << dict->getNdbError().message << endl;
+      return NDBT_FAILED;
+    }
   }
   const Uint32 groups = ctx->getProperty("CteNfGroups", CTE_NF_GROUPS);
   if (CteQueryUtil::loadTable(ndb, CTE_NF_ROWS, groups) != 0) {
@@ -12651,6 +12671,14 @@ static int runCteNfCreateTables(NDBT_Context *ctx, NDBT_Step *step) {
     return NDBT_FAILED;
   }
   return NDBT_OK;
+}
+
+static int runCteNfCreateTables(NDBT_Context *ctx, NDBT_Step *step) {
+  return cteNfCreateTables(ctx, step, /* pkIndex */ false);
+}
+
+static int runCteNfCreateTablesPkIndex(NDBT_Context *ctx, NDBT_Step *step) {
+  return cteNfCreateTables(ctx, step, /* pkIndex */ true);
 }
 
 static int runCteNfDropTables(NDBT_Context *ctx, NDBT_Step *step) {
@@ -13316,7 +13344,8 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
     /* Match the complete marker, including node and iteration; a
      * requester-naming marker is matched up to the requester field. */
     BaseString expected, line;
-    const bool matchParkedReplay = hold.insert == 5150;
+    /* PK-8 (5150) and PK-8b (5161) name the held replay they observe. */
+    const bool matchParkedReplay = hold.insert == 5150 || hold.insert == 5161;
     Uint32 replayInstance = 0, replayPark = RNIL, replayCoordinator = 0;
     if (matchParkedReplay) {
       expected.assfmt("[%s node=%u iteration=%u instance=", hold.eventTag,
@@ -13366,13 +13395,17 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
     }
     if (matchParkedReplay) {
       const char *marker = strstr(line.c_str(), expected.c_str());
+      /* A held NULL_ROW names its coordinator. A held SCAN_FRAGREQ (5161)
+       * does not carry it and reports 0; its rejection marker names it. */
+      const Uint32 expectedCoordinator =
+          hold.insert == 5150 ? ctx->getProperty("CteNfTc", (Uint32)0) : 0;
       if (marker == nullptr ||
           sscanf(marker + strlen(expected.c_str()),
                  "%u park=%u coordinator=%u]", &replayInstance,
                  &replayPark, &replayCoordinator) != 3 ||
           replayInstance == 0 || replayPark == RNIL ||
-          replayCoordinator != ctx->getProperty("CteNfTc", (Uint32)0)) {
-        g_err << "Invalid NULL_ROW replay marker: " << line.c_str() << endl;
+          replayCoordinator != expectedCoordinator) {
+        g_err << "Invalid parked replay marker: " << line.c_str() << endl;
         ctx->stopTest();
         return NDBT_FAILED;
       }
@@ -13431,7 +13464,8 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
       /* The armed node must see the failure and say so. */
       BaseString needle;
       if (matchParkedReplay) {
-        // Match the exact NULL_ROW selected before killing its coordinator.
+        // Match the exact NULL_ROW or SCAN_FRAGREQ selected before
+        // killing its coordinator.
         needle.assfmt("[%s node=%u failed=%u iteration=%u instance=%u "
                       "park=%u]", hold.postKillTag, (Uint32)armed,
                       (Uint32)victim, iter + 1, replayInstance, replayPark);
@@ -14358,7 +14392,9 @@ static int runCteCoordinatorReleaseKiller(NDBT_Context *ctx,
  * replays run against a failed coordinator: the NULL_ROW replays must
  * reach the coordinator guard (P reports JOIN_AGG_NULL_ROW_REJECTED
  * naming the coordinator and the same iteration, instance and park
- * record). Ordinary late NULL_ROW requests cannot satisfy this check.
+ * record). The guard ignores m_connected for that replay, so the host
+ * record's ZNODE_DOWN must refuse it (RONDB-1124 bug 8). Ordinary late
+ * NULL_ROW requests cannot satisfy this check.
  * The LQHKEYREQ replays are aborted with
  * ZNODEFAIL_BEFORE_COMMIT or, once the state is reclaimed, swept as
  * STATE_NOT_FOUND.  The query fails with a node-failure error; after the
@@ -14422,6 +14458,45 @@ static int runCteCoordinatorParkedReplayQuery(NDBT_Context *ctx,
 static int runCteCoordinatorParkedReplayKiller(NDBT_Context *ctx,
                                                NDBT_Step *step) {
   return runCteNfHoldKiller(ctx, step, CTE_PK8_HOLD);
+}
+
+/*
+ * PK-8b CteCoordinatorDiesParkedScanReplay (RONDB-1124 bug 8): PK-8 for
+ * a SCAN_FRAGREQ feed, the guard in initScanrec. The query is
+ * ScanAggMain: the aggregate leaf is an index scan of cte_nf_src's
+ * PRIMARY ordered index, so its feeds are SCAN_FRAGREQs. Error insert
+ * 5161 on a peer P holds its SETUP until a SCAN_FRAGREQ has parked on
+ * the SETUP's identity, then holds the replays as 5150 does, and
+ * CTE_PK8_REPLAY_HELD selects one held SCAN_FRAGREQ per instance (with
+ * coordinator 0: the request does not name it). The coordinator is
+ * killed after this event. NODE_FAILREP on P marks it down and, for 5161,
+ * queues the held replays ahead of P's own node-failure handling, so they
+ * run before JOIN_AGG_NODE_FAIL_REP can release the state and their
+ * identity lookup still finds it. The guard ignores m_connected for the
+ * selected replay, as if DISCONNECT_REP lagged the node-failure protocol,
+ * so only the host record's ZNODE_DOWN can refuse it: P must report
+ * JOIN_AGG_SCAN_FRAGREQ_REJECTED naming the coordinator, the iteration,
+ * instance and park record, and answer SCAN_FRAGREF 286. Before the fix
+ * this guard tested m_connected only: with DISCONNECT_REP late, the
+ * replay entered the state that the proxy was about to release. Then
+ * the query must fail with a node-failure error, and after the
+ * coordinator restarted the leak dumps must be clean. Runs on 2 nodes.
+ */
+static const CteNfHoldCase CTE_PK8B_HOLD = {
+    "CteCoordinatorDiesParkedScanReplay", 5161, "CTE_PK8_REPLAY_HELD",
+    "the API never learned that its coordinator died while parked "
+    "SCAN_FRAGREQ replays were held",
+    CteQueryUtil::ScanAggMain, cteNfPickPeer, CTE_NF_KILL_COORDINATOR,
+    "JOIN_AGG_SCAN_FRAGREQ_REJECTED", nullptr, false, false, true};
+
+static int runCteCoordinatorParkedScanReplayQuery(NDBT_Context *ctx,
+                                                  NDBT_Step *step) {
+  return runCteNfHoldQuery(ctx, step, CTE_PK8B_HOLD);
+}
+
+static int runCteCoordinatorParkedScanReplayKiller(NDBT_Context *ctx,
+                                                   NDBT_Step *step) {
+  return runCteNfHoldKiller(ctx, step, CTE_PK8B_HOLD);
 }
 
 /*
@@ -15909,6 +15984,18 @@ TESTCASE("CteCoordinatorDiesParkedReplay",
   INITIALIZER(runCteNfCreateTables);
   STEP(runCteCoordinatorParkedReplayQuery);
   STEP(runCteCoordinatorParkedReplayKiller);
+  FINALIZER(runCteNfDropTables);
+}
+TESTCASE("CteCoordinatorDiesParkedScanReplay",
+         "RONDB-1124 bug 8 PK-8b: error insert 5161 on a peer lets the "
+         "SETUP succeed once a SCAN_FRAGREQ has parked, then holds the "
+         "replay of the parked consumers; killing the coordinator must make "
+         "the SCAN_FRAGREQ replay hit the coordinator guard on the host "
+         "record's ZNODE_DOWN alone (SCAN_FRAGREF 286) and leave the state, "
+         "identity and park pools clean") {
+  INITIALIZER(runCteNfCreateTablesPkIndex);
+  STEP(runCteCoordinatorParkedScanReplayQuery);
+  STEP(runCteCoordinatorParkedScanReplayKiller);
   FINALIZER(runCteNfDropTables);
 }
 TESTCASE("CteCoordinatorDiesWaitingScan",

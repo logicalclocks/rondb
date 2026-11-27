@@ -273,6 +273,8 @@ const char *ndb_jit_bridge_reason_name(JitBridgeReason reason) {
       return "type_mismatch";
     case JIT_BRIDGE_REG_NOT_LOADED:
       return "reg_not_loaded";
+    case JIT_BRIDGE_EMBEDDED_NO_OUTPUT:
+      return "embedded_no_output";
     default:
       return "unknown";
   }
@@ -558,6 +560,14 @@ static inline int embedded_filters_enabled(void) {
 /* embedded block, it doesn't try to handle any — partial coverage    */
 /* would be unsafe (we'd silently miss filter conditions).            */
 /*                                                                    */
+/* In an aggregation program every path through the block must end   */
+/* by EXIT_REFUSE, or by EXIT_OK right after WRITE_INTERP_OUTPUT; a   */
+/* path that ends without output 0 fails the row on the interpreter,  */
+/* so such a block rejects (JIT_BRIDGE_EMBEDDED_NO_OUTPUT, RONDB-1124).*/
+/* The WRITE must follow the LOAD_CONST16 of its register, and only a */
+/* folded BRANCH_REG_EQ_NULL may land on it: the lowering jumps by    */
+/* that constant (UNSUPPORTED_OP otherwise).                          */
+/*                                                                    */
 /* Branch target translation: the embedded block has its own pc-      */
 /* space (0..emb_len-1). We track each instruction's output Op index  */
 /* in emb_pc_to_op_idx[]. After the linear walk, a fixup pass walks   */
@@ -614,6 +624,141 @@ typedef struct {
  * collide. Callers that capture the code init their local to this before
  * calling translate_embedded_block. */
 #define BR_NO_REFUSE_CODE 0xFFFFFFFFu
+
+/* RONDB-1124: interpreter output 0 on the paths through an embedded
+ * block (translate_embedded_block walks them).  AggInterpreter and
+ * JoinAggInterpreter clear output 0 before they run the block, and fail
+ * the row with ZAGG_EMBEDDED_INTERP_ERROR (1872) when it ends by EXIT_OK
+ * without having written output 0, or runs past its last word
+ * (ZOUTSIDE_OF_PROGRAM_ERROR).  The state of a pc merges the branches
+ * into it; MISSING is below WRITTEN, so a merge keeps the smaller. */
+#define BR_OUT0_NO_EDGE  0u   /* no branch into the pc yet */
+#define BR_OUT0_MISSING  1u   /* a branch into the pc without output 0 */
+#define BR_OUT0_WRITTEN  2u   /* every branch into the pc wrote output 0 */
+
+static void br_merge_out0(uint8_t *state, int written) {
+  const uint8_t edge =
+      (uint8_t)(written ? BR_OUT0_WRITTEN : BR_OUT0_MISSING);
+  if (*state == BR_OUT0_NO_EDGE || edge < *state) {
+    *state = edge;
+  }
+}
+
+/* The target of an embedded branch instruction, for the path walk of
+ * translate_embedded_block: 1 with *target set for the opcodes that
+ * branch, 0 for the others.  The opcode's case in translate_embedded_block
+ * has checked that the branch is forward and inside the block. */
+static int br_emb_branch_target(uint8_t emb_op, uint32_t inst,
+                                uint32_t inst_pc, uint32_t emb_len,
+                                uint32_t *target) {
+  switch (emb_op) {
+    case BR_EMB_BRANCH:
+    case BR_EMB_BRANCH_REG_EQ_NULL:
+    case BR_EMB_BRANCH_REG_NE_NULL:
+    case BR_EMB_BRANCH_EQ_REG_REG:
+    case BR_EMB_BRANCH_NE_REG_REG:
+    case BR_EMB_BRANCH_LT_REG_REG:
+    case BR_EMB_BRANCH_LE_REG_REG:
+    case BR_EMB_BRANCH_GT_REG_REG:
+    case BR_EMB_BRANCH_GE_REG_REG:
+    case BR_EMB_BRANCH_ATTR_OP_ARG:
+    case BR_EMB_BRANCH_ATTR_EQ_NULL:
+    case BR_EMB_BRANCH_ATTR_NE_NULL:
+    case BR_EMB_BRANCH_ATTR_OP_PARAM:
+    case BR_EMB_BRANCH_ATTR_OP_ATTR:
+    case BR_EMB_BRANCH_MEM_OP_ARG:
+    case BR_EMB_BRANCH_MEM_OP_ARG_INLINE:
+    case BR_EMB_BRANCH_LINKED_EQ_NULL:
+    case BR_EMB_BRANCH_LINKED_NE_NULL: {
+      const uint32_t t = inst_pc + ((inst >> 16) & 0x7FFFu);
+      if (t >= emb_len) {
+        return 0;
+      }
+      *target = t;
+      return 1;
+    }
+    default:
+      return 0;
+  }
+}
+
+/* RONDB-1124: the pc of the first branch before end_pc that lands on
+ * the embedded word target, for the error of a branch into the operand
+ * words of an instruction.  The instruction starts before end_pc are
+ * the pcs with an op index in emb_pc_to_op_idx (0xFF inside an
+ * instruction; an op index is below BC_MAX_OPS).  end_pc when there is
+ * none. */
+static uint32_t br_emb_branch_into(const uint32_t *emb_prog,
+                                   uint32_t emb_len,
+                                   const uint8_t *emb_pc_to_op_idx,
+                                   uint32_t end_pc, uint32_t target) {
+  for (uint32_t pc = 0; pc < end_pc; pc++) {
+    if (emb_pc_to_op_idx[pc] == 0xFF) continue;
+    const uint32_t inst = emb_prog[pc];
+    const uint8_t op = (uint8_t)((inst & 0x3Fu) |
+                                 (((inst >> 15) & 0x1u) << 6));
+    uint32_t t = 0;
+    if (br_emb_branch_target(op, inst, pc, emb_len, &t) && t == target) {
+      return pc;
+    }
+  }
+  return end_pc;
+}
+
+/* RONDB-1124: the embedded registers an embedded instruction reads and
+ * writes, bit r = register r, for the path walk of
+ * translate_embedded_block; the fields are the ones its cases decode.
+ * The loads and constants write the register in bits 6-8; the
+ * register compares read the ones in bits 6-8 and 9-11, the null tests
+ * and WRITE_INTERPRETER_OUTPUT the one in bits 6-8; ADD and SUB read
+ * bits 6-8 and 9-11 and write bits 16-18, MUL writes bits 12-14.
+ * READ_AGG_REG_TO_REG reads an outer register, which K-1 checks
+ * (outer_reg_loaded). */
+static void br_emb_reg_use(uint8_t emb_op, uint32_t inst, uint8_t *reads,
+                           uint8_t *writes) {
+  const uint8_t reg6 = (uint8_t)(1u << ((inst >> 6) & 0x7u));
+  const uint8_t reg9 = (uint8_t)(1u << ((inst >> 9) & 0x7u));
+  *reads = 0;
+  *writes = 0;
+  switch (emb_op) {
+    case BR_EMB_READ_ATTR:
+    case BR_EMB_LOAD_CONST16:
+    case BR_EMB_LOAD_CONST64:
+    case BR_EMB_LOAD_DOUBLE_CONST:
+    case BR_EMB_READ_AGG_REG_TO_REG:
+    case BR_EMB_READ_LINKED_COL_TO_REG:
+    case BR_EMB_READ_UINT8_MEM_TO_REG:
+    case BR_EMB_READ_UINT16_MEM_TO_REG:
+    case BR_EMB_READ_UINT32_MEM_TO_REG:
+    case BR_EMB_READ_INT64_MEM_TO_REG:
+      *writes = reg6;
+      break;
+    case BR_EMB_ADD_REG_REG:
+    case BR_EMB_SUB_REG_REG:
+      *reads = (uint8_t)(reg6 | reg9);
+      *writes = (uint8_t)(1u << ((inst >> 16) & 0x7u));
+      break;
+    case BR_EMB_MUL_REG_REG:
+      *reads = (uint8_t)(reg6 | reg9);
+      *writes = (uint8_t)(1u << ((inst >> 12) & 0x7u));
+      break;
+    case BR_EMB_BRANCH_REG_EQ_NULL:
+    case BR_EMB_BRANCH_REG_NE_NULL:
+    case BR_EMB_WRITE_INTERP_OUTPUT:
+      *reads = reg6;
+      break;
+    case BR_EMB_BRANCH_EQ_REG_REG:
+    case BR_EMB_BRANCH_NE_REG_REG:
+    case BR_EMB_BRANCH_LT_REG_REG:
+    case BR_EMB_BRANCH_LE_REG_REG:
+    case BR_EMB_BRANCH_GT_REG_REG:
+    case BR_EMB_BRANCH_GE_REG_REG:
+      *reads = (uint8_t)(reg6 | reg9);
+      break;
+    default:
+      break;
+  }
+}
 
 /* Phase 5D-3: null-path safety scan for the READ_ATTR +
  * BRANCH_REG_EQ_NULL fusion.
@@ -708,8 +853,8 @@ static int emb_null_path_reg_safe(const uint32_t *emb_prog, uint32_t emb_len,
           break;
         /* ronsql_jit slice 2 item 3: the unconditional jump has ONE
          * successor — the target. (A zero offset stalls on visited[]
-         * and ends the path; translate rejects it as MALFORMED before
-         * any scan verdict matters.) */
+         * and ends the path; translate rejects a zero offset of any
+         * branch as MALFORMED before any scan verdict matters.) */
         case BR_EMB_BRANCH:
           if ((inst >> 31) != 0) return 0;             /* backward */
           pc += (inst >> 16) & 0x7FFFu;
@@ -939,7 +1084,18 @@ static JitBridgeReason translate_embedded_block(
     uint32_t outer_reg_loaded) {
 
   if (emb_len == 0) {
-    /* Empty embedded block — equivalent to "always pass". */
+    /* An empty block inside an aggregation program ends without output
+     * 0: the interpreter fails every row (ZOUTSIDE_OF_PROGRAM_ERROR,
+     * then 1872), so the program stays on the interpreter (RONDB-1124).
+     * An empty scan filter keeps the lowering it had: accept. */
+    if (exit_ok_kind == BR_EXIT_OK_FALLTHROUGH) {
+      if (out_err) {
+        out_err->reason         = JIT_BRIDGE_EMBEDDED_NO_OUTPUT;
+        out_err->offending_word = outer_word_pos;
+        out_err->offending_op   = BR_kOpEmbeddedInterp;
+      }
+      return JIT_BRIDGE_EMBEDDED_NO_OUTPUT;
+    }
     return JIT_BRIDGE_OK;
   }
   if (emb_len > BR_EMB_MAX_LEN) {
@@ -1007,6 +1163,49 @@ static JitBridgeReason translate_embedded_block(
   memset(emb_reg_u64, 0, sizeof(emb_reg_u64));
   for (int tr = 0; tr < 8; ++tr) emb_reg_read_attr[tr] = -1;
 
+  /* RONDB-1124: the paths of the interpreter through the block, for the
+   * output 0 rule (BR_OUT0_*).  Every branch is forward, so the walk in
+   * pc order has merged every branch into a pc (emb_in_out0) when it
+   * gets there.  path_live: the instruction at emb_pc is reached, by the
+   * fall-through of the one before it or by a branch; out0_written:
+   * every such path wrote output 0.  An instruction no path reaches is
+   * translated but not checked.  Each conditional branch counts both of
+   * its edges, the folded ones included (the interpreter takes them). */
+  uint8_t emb_in_out0[BR_EMB_MAX_LEN];
+  memset(emb_in_out0, BR_OUT0_NO_EDGE, sizeof(emb_in_out0));
+  int path_live = 1;
+  int out0_written = 0;
+  /* RONDB-1124: the embedded registers every path to emb_pc wrote (bit
+   * r = register r; br_emb_reg_use), merged at branch targets like
+   * output 0 (emb_in_regs is valid where emb_in_out0 is not
+   * BR_OUT0_NO_EDGE).  interpreterJumpTable starts the block with its
+   * eight registers NULL, where the JIT's are 0: a compare of a
+   * register no write reached fails the row on the interpreter
+   * (ZREGISTER_INIT_ERROR), and a null test of it goes the NULL way,
+   * which a folded BRANCH_REG_EQ_NULL / BRANCH_REG_NE_NULL never does.
+   * An instruction that reads such a register rejects the program
+   * (JIT_BRIDGE_REG_NOT_LOADED), as K-1 does for the outer registers. */
+  uint8_t emb_in_regs[BR_EMB_MAX_LEN];
+  memset(emb_in_regs, 0, sizeof(emb_in_regs));
+  uint8_t regs_written = 0;
+  /* RONDB-1124: the value of output 0.  A WRITE_INTERPRETER_OUTPUT
+   * lowers to a jump by const16_by_reg, the LOAD_CONST16 of the linear
+   * path, so a branch that lands between that LOAD_CONST16 and the
+   * WRITE brings the register's value of another path, and the JIT
+   * takes another CASE arm than the interpreter.  emb_jit_branch_in
+   * marks the pcs that a branch the JIT can take lands on: every edge
+   * but that of a folded BRANCH_REG_EQ_NULL, which no row the JIT
+   * completes takes (its register is written on every path and holds no
+   * NULL on such a row).  last_lc16_reg: the register of the instruction
+   * just before, if it was a LOAD_CONST16, else 0xFF. */
+  uint8_t emb_jit_branch_in[BR_EMB_MAX_LEN];
+  memset(emb_jit_branch_in, 0, sizeof(emb_jit_branch_in));
+  uint8_t last_lc16_reg = 0xFF;
+  /* RONDB-1124: a bit for each pc that a branch of the block lands on,
+   * on a path or not, the folded branches included. */
+  uint32_t emb_branch_in_bits[(BR_EMB_MAX_LEN + 31) / 32];
+  memset(emb_branch_in_bits, 0, sizeof(emb_branch_in_bits));
+
   /* Pass 1: linear walk, emit Ops with target_emb_pc in c. */
   uint32_t emb_pc = 0;
   while (emb_pc < emb_len) {
@@ -1014,6 +1213,9 @@ static JitBridgeReason translate_embedded_block(
     uint8_t  prev_read_attr_dst     = read_attr_dst;
     uint16_t prev_read_attr_op_idx  = read_attr_op_idx;
     read_attr_pending = 0;
+    const uint8_t prev_lc16_reg = last_lc16_reg;
+    last_lc16_reg = 0xFF;
+    int branch_folded = 0;
     uint32_t inst = emb_prog[emb_pc];
     /* NDB normal-interpreter opcode encoding (different from the
      * aggregation interpreter's bits 31..26 layout): bits 5..0 +
@@ -1024,6 +1226,43 @@ static JitBridgeReason translate_embedded_block(
     uint8_t  out_op_idx = (uint8_t)out_prog->n_ops;
 
     emb_pc_to_op_idx[emb_pc] = out_op_idx;
+
+    /* RONDB-1124: join the branches into this instruction to the
+     * fall-through from the one before it. */
+    const uint32_t inst_pc = emb_pc;
+    if (emb_in_out0[inst_pc] != BR_OUT0_NO_EDGE) {
+      const int edge_written = (emb_in_out0[inst_pc] == BR_OUT0_WRITTEN);
+      if (path_live) {
+        out0_written = out0_written && edge_written;
+        regs_written = (uint8_t)(regs_written & emb_in_regs[inst_pc]);
+      } else {
+        out0_written = edge_written;
+        regs_written = emb_in_regs[inst_pc];
+      }
+      path_live = 1;
+    }
+
+    /* RONDB-1124: a branch of length 0, of any form, lands on itself:
+     * the interpreter's brancher runs the same word again, forever once
+     * taken.  Only BR_EMB_BRANCH refused it.  The other cases check the
+     * direction and the end of the block, so such a branch resolved to
+     * the op of its own pc, which only jit1's admission refused, or, a
+     * BRANCH_REG_EQ_NULL, was folded to "never taken", where the
+     * interpreter loops on a NULL.  The data nodes refuse it in an
+     * aggregation program (validateEmbeddedProgram) before the JIT. */
+    {
+      uint32_t self_target = 0;
+      if (br_emb_branch_target(emb_op, inst, inst_pc, emb_len,
+                               &self_target) &&
+          self_target == inst_pc) {
+        if (out_err) {
+          out_err->reason         = JIT_BRIDGE_MALFORMED;
+          out_err->offending_word = outer_word_pos + 1 + emb_pc;
+          out_err->offending_op   = emb_op;
+        }
+        return JIT_BRIDGE_MALFORMED;
+      }
+    }
 
     switch (emb_op) {
       case BR_EMB_READ_ATTR: {
@@ -1213,7 +1452,19 @@ static JitBridgeReason translate_embedded_block(
            * entirely. An EQ_NULL branch is therefore never taken on a
            * completing row; emb_pc_to_op_idx for this pc (recorded at
            * the loop top) resolves any branch INTO it to the next
-           * emitted op, exactly like the fused guard. */
+           * emitted op, exactly like the fused guard.
+           *
+           * RONDB-1124: that holds for a register every path to the
+           * guard wrote; a register no write reached is NULL on the
+           * interpreter, and the read check after this switch rejects
+           * the guard (JIT_BRIDGE_REG_NOT_LOADED).  For a register of
+           * READ_LINKED_COLUMN_TO_REG, ndb_jit_h_load_linked_col takes
+           * the per-row fallback wherever handleReadLinkedColumnToReg
+           * gives NULL: no linked buffer or no entry at the position,
+           * a NULL entry, or an entry with fewer bytes than its type
+           * (519404769c7, CteLinkedAttr::linkedColumnBytes), so the
+           * fold is exact for it. */
+          branch_folded = 1;
           emb_pc += 1;
           break;
         }
@@ -1237,7 +1488,8 @@ static JitBridgeReason translate_embedded_block(
         /* ronsql_jit slice 2 item 2: by the completing-row invariant
          * (see the EQ_NULL fold above) the register is never NULL, so
          * NE_NULL is ALWAYS taken — lower to an unconditional
-         * OP_JUMP to the branch target. */
+         * OP_JUMP to the branch target.  (RONDB-1124: a register a
+         * path to here did not write rejects after the switch.) */
         if (!allow_reg_ops) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
@@ -1703,7 +1955,9 @@ static JitBridgeReason translate_embedded_block(
          * flags NULL rows for interpreter fallback — or, when fused
          * with a BRANCH_REG_EQ_NULL guard (5D-3), branches around the
          * compare on NULL — so the hot compare on raw i64 values is
-         * exact for every row the JIT completes. */
+         * exact for every row the JIT completes.  (RONDB-1124: both
+         * registers must be written on every path to the compare; the
+         * read check after the switch rejects the others.) */
         if (!allow_reg_ops) {
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
@@ -2253,6 +2507,7 @@ static JitBridgeReason translate_embedded_block(
         emb_reg_f64[reg] = 0;
         emb_reg_u64[reg] = 0;
         emb_reg_read_attr[reg] = -1;
+        last_lc16_reg = (uint8_t)reg;
         emb_pc += 1;
         break;
       }
@@ -2273,6 +2528,43 @@ static JitBridgeReason translate_embedded_block(
             out_err->offending_op   = emb_op;
           }
           return JIT_BRIDGE_UNSUPPORTED_OP;
+        }
+        /* RONDB-1124: the jump below takes output 0 at this WRITE; the
+         * interpreter takes it at EXIT_OK, after whatever runs between
+         * them, which may write output 0 again, refuse the row or fail
+         * it.  The two agree when EXIT_OK is the next instruction, as
+         * in the output blocks every emitter lays out (LOAD_CONST16,
+         * WRITE_INTERPRETER_OUTPUT, EXIT_OK). */
+        if (exit_ok_kind == BR_EXIT_OK_FALLTHROUGH && path_live) {
+          uint8_t next_op = 0;
+          if (emb_pc + 1 < emb_len) {
+            const uint32_t next = emb_prog[emb_pc + 1];
+            next_op = (uint8_t)((next & 0x3Fu) |
+                                (((next >> 15) & 0x1u) << 6));
+          }
+          if (next_op != BR_EMB_EXIT_OK) {
+            if (out_err) {
+              out_err->reason         = JIT_BRIDGE_EMBEDDED_NO_OUTPUT;
+              out_err->offending_word = outer_word_pos + 1 + emb_pc;
+              out_err->offending_op   = emb_op;
+            }
+            return JIT_BRIDGE_EMBEDDED_NO_OUTPUT;
+          }
+          /* RONDB-1124: every path the JIT takes into this WRITE comes
+           * through the LOAD_CONST16 of its register just before it, so
+           * the jump's constant is the value written on each of them.
+           * The emitters' output blocks are LOAD_CONST16,
+           * WRITE_INTERPRETER_OUTPUT, EXIT_OK, and only the folded guard
+           * of RonSQL's COUNT(*) ROWID guard lands on such a WRITE. */
+          if ((uint32_t)prev_lc16_reg != reg ||
+              emb_jit_branch_in[emb_pc] != 0) {
+            if (out_err) {
+              out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
+              out_err->offending_word = outer_word_pos + 1 + emb_pc;
+              out_err->offending_op   = emb_op;
+            }
+            return JIT_BRIDGE_UNSUPPORTED_OP;
+          }
         }
         uint16_t skip_offset = const16_by_reg[reg];
         uint32_t case_target =
@@ -2367,7 +2659,23 @@ static JitBridgeReason translate_embedded_block(
          * following OP_FILTER_REJECT_EXIT and reject every accepted row.
          * So emit OP_EXIT — the function-return terminator that leaves
          * JitState::row_filter_rejected == 0 (accept). A branch that
-         * targets EXIT_OK then resolves to this OP_EXIT, also correct. */
+         * targets EXIT_OK then resolves to this OP_EXIT, also correct.
+         *
+         * RONDB-1124: in the aggregation model, a row that gets here on
+         * a path that did not write output 0 fails on the interpreter
+         * (1872), where the JIT would go on into whatever is emitted
+         * next.  The emitters reach EXIT_OK only from the
+         * WRITE_INTERPRETER_OUTPUT just before it, whose jump the JIT
+         * has taken already. */
+        if (exit_ok_kind == BR_EXIT_OK_FALLTHROUGH && path_live &&
+            !out0_written) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_EMBEDDED_NO_OUTPUT;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_EMBEDDED_NO_OUTPUT;
+        }
         if (exit_ok_kind != BR_EXIT_OK_FALLTHROUGH) {
           if (!emit_op(out_prog, exit_ok_kind, 0, 0, 0, 0)) {
             if (out_err) {
@@ -2430,6 +2738,91 @@ static JitBridgeReason translate_embedded_block(
         }
         return JIT_BRIDGE_UNSUPPORTED_OP;
     }
+
+    /* RONDB-1124: a branch must land on the first word of an
+     * instruction.  One that lands on its operand words (a constant, an
+     * attribute header, a length word) makes the interpreter run them as
+     * instructions, which this walk does not see: the path state merged
+     * into such a pc was never used, a folded branch had no fixup, and
+     * the other branches got UNSUPPORTED_OP only in pass 2.  Every
+     * branch goes forward, so all branches into the words of this
+     * instruction, its own included, are recorded by now. */
+    {
+      uint32_t target_pc = 0;
+      if (br_emb_branch_target(emb_op, inst, inst_pc, emb_len,
+                               &target_pc)) {
+        emb_branch_in_bits[target_pc >> 5] |= 1u << (target_pc & 31u);
+      }
+      for (uint32_t word = inst_pc + 1; word < emb_pc; word++) {
+        if (((emb_branch_in_bits[word >> 5] >> (word & 31u)) & 1u) != 0) {
+          if (out_err) {
+            const uint32_t branch_pc = br_emb_branch_into(
+                emb_prog, emb_len, emb_pc_to_op_idx, inst_pc + 1, word);
+            const uint32_t branch_inst = emb_prog[branch_pc];
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + branch_pc;
+            out_err->offending_op   =
+                (uint8_t)((branch_inst & 0x3Fu) |
+                          (((branch_inst >> 15) & 0x1u) << 6));
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+      }
+    }
+
+    /* RONDB-1124: check the registers this instruction reads, then
+     * carry the path state to the branch target and past this
+     * instruction.  Only the aggregation path lowers register
+     * instructions (allow_reg_ops). */
+    if (path_live) {
+      if (allow_reg_ops) {
+        uint8_t reads = 0;
+        uint8_t writes = 0;
+        br_emb_reg_use(emb_op, inst, &reads, &writes);
+        if ((reads & ~regs_written) != 0) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_REG_NOT_LOADED;
+            out_err->offending_word = outer_word_pos + 1 + inst_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_REG_NOT_LOADED;
+        }
+        regs_written = (uint8_t)(regs_written | writes);
+      }
+      uint32_t target_pc = 0;
+      if (br_emb_branch_target(emb_op, inst, inst_pc, emb_len,
+                               &target_pc)) {
+        if (emb_in_out0[target_pc] == BR_OUT0_NO_EDGE) {
+          emb_in_regs[target_pc] = regs_written;
+        } else {
+          emb_in_regs[target_pc] =
+              (uint8_t)(emb_in_regs[target_pc] & regs_written);
+        }
+        br_merge_out0(&emb_in_out0[target_pc], out0_written);
+        if (!branch_folded) {
+          emb_jit_branch_in[target_pc] = 1;
+        }
+      }
+      if (emb_op == BR_EMB_WRITE_INTERP_OUTPUT) {
+        out0_written = 1;
+      } else if (emb_op == BR_EMB_BRANCH || emb_op == BR_EMB_EXIT_OK ||
+                 emb_op == BR_EMB_EXIT_REFUSE) {
+        path_live = 0;
+      }
+    }
+  }
+
+  /* RONDB-1124: the last instruction falls through past the end of the
+   * block.  The interpreter fails the row (ZOUTSIDE_OF_PROGRAM_ERROR,
+   * then 1872), where the aggregation lowering goes on into the outer
+   * program. */
+  if (exit_ok_kind == BR_EXIT_OK_FALLTHROUGH && path_live) {
+    if (out_err) {
+      out_err->reason         = JIT_BRIDGE_EMBEDDED_NO_OUTPUT;
+      out_err->offending_word = outer_word_pos;
+      out_err->offending_op   = BR_kOpEmbeddedInterp;
+    }
+    return JIT_BRIDGE_EMBEDDED_NO_OUTPUT;
   }
 
   /* Pass 2: fix up branch targets. Only walk Ops emitted by THIS
@@ -2458,7 +2851,10 @@ static JitBridgeReason translate_embedded_block(
        * via the trailing tail. */
       /* TODO Phase 5.1: handle this more cleanly. For Phase
        * 5.0's narrow scope (BRANCH_ATTR_NE_NULL → EXIT_REFUSE)
-       * this case shouldn't arise. Reject defensively. */
+       * this case shouldn't arise. Reject defensively.
+       * (RONDB-1124: every pc with no op index lies inside an
+       * instruction, and pass 1 refuses a branch there as
+       * MALFORMED, so this is not reached.) */
       if (out_err) {
         out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
         out_err->offending_word = outer_word_pos;

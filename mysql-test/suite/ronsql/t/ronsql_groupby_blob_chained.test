@@ -33,8 +33,10 @@
 #   gbc-8  BLOB key two CTEs up, GROUP BY of a CTE body
 #   gbc-9  gbc-3 through RDRS: HTTP 400 with error class unsupported, and
 #          RDRS answers the next request with HTTP 200
-#   gbc-10 unchanged: a TEXT column that a CTE passes on to the main query
-#          with no GROUP BY on it is not checked; it keeps the execute-time
+#   gbc-10 a TEXT column that a CTE passes on to the main query with no
+#          GROUP BY on it is not a GROUP BY key; since O-13 it is refused
+#          at prepare time as a printed TEXT column
+#          (check_printed_output_types), where it got the execute-time
 #          error of its virtual column (RonSQL prints no TEXT or BLOB
 #          value, so such a pass-through has no result to compare)
 #   gbc-c1..gbc-c4  controls compared with mysqld (strict_diff), over the
@@ -48,7 +50,6 @@ call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --disable_query_log
@@ -123,7 +124,7 @@ INSERT INTO gbc_t VALUES
 --remove_file $MYSQL_TMP_DIR/gbc-hdrs
 
 --echo
---echo === gbc-10: TEXT column passed on by a CTE without GROUP BY on it (unchanged) ===
+--echo === gbc-10: TEXT column passed on by a CTE without GROUP BY on it (O-13) ===
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH a AS (SELECT txt, COUNT(*) AS n FROM gbc_t GROUP BY txt) SELECT txt, n FROM a;' 2>&1
 

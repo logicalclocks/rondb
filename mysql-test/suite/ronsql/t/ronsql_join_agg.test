@@ -4,10 +4,6 @@
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
-# ronsql_cli does not properly refresh NDB dictionary cache for join queries,
-# causing "Invalid schema version (code 1227)" errors. Suppress ronsql_cli
-# and rely on RDRS comparison (which handles schema refresh correctly).
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --echo
@@ -837,39 +833,11 @@ GROUP BY s.s_name|
 
 DELIMITER ;|
 
---echo
---echo
---echo === Test 44: Group eviction with ERROR_INSERT 5126 ===
-
-# ERROR_INSERT 5126 forces maxGroups=3 in the data node so the query path
-# exercises the eviction + merge code. In production builds ERROR_INSERT
-# is compiled out — the "ALL ERROR 5126" command is silently a no-op — so
-# the query runs on the normal (non-evicting) path. The logical query
-# result is identical in both cases, so the test runs unconditionally and
-# the recorded .result matches.
-# In production ndb_mgm rejects "ALL ERROR …" with non-zero exit; accept
-# either success or failure so the test keeps running on both builds.
---error 0,1,255
---exec $NDB_MGM -e "ALL ERROR 5126" > /dev/null 2>&1
-
-DELIMITER |;
-
-let $QUERY=
-SELECT o.o_id, SUM(l.l_quantity)
-FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
-GROUP BY o.o_id;|
---source suite/ronsql/include/ronsql_compare.inc
-
---echo == Expected result ==
---sorted_result
-SELECT o.o_id, SUM(l.l_quantity)
-FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
-GROUP BY o.o_id|
-
-DELIMITER ;|
-
---error 0,1,255
---exec $NDB_MGM -e "ALL ERROR 0" > /dev/null 2>&1
+# Test 44 (group eviction with ERROR_INSERT 5126) is gone (RONDB-1124
+# T-18): it ran with "--error 0,1,255" so that builds without error
+# inserts, where ndb_mgm refuses ALL ERROR, would pass, and nothing showed
+# that the eviction path ran.  ronsql_large_mem_leak_errors e5126 and
+# e5126c arm 5126 on debug data nodes and check the results.
 
 --echo
 --echo
@@ -1079,6 +1047,9 @@ SELECT o.o_custkey, SUM(l.l_quantity) AS total_qty
 FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
 GROUP BY o.o_custkey
 ORDER BY total_qty;|
+# The ORDER BY has ties (customers 200 and 300 both have 75), which
+# mysqld and RonSQL may give in either order: compare sorted.
+--let $force_sort=yes
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
@@ -1097,6 +1068,9 @@ SELECT o.o_custkey, SUM(l.l_quantity) AS total_qty
 FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
 GROUP BY o.o_custkey
 ORDER BY total_qty DESC;|
+# The ORDER BY has ties (customers 200 and 300 both have 75): compare
+# sorted.
+--let $force_sort=yes
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
@@ -1116,6 +1090,9 @@ FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
 GROUP BY o.o_custkey
 ORDER BY total_qty DESC
 LIMIT 2;|
+# The ORDER BY has ties (customers 200 and 300 both have 75, both within
+# the LIMIT; the third has 50): compare sorted.
+--let $force_sort=yes
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==
@@ -1173,6 +1150,8 @@ JOIN orders AS o ON o.o_custkey = c.c_id
 JOIN lineitem AS l ON l.l_orderkey = o.o_id
 GROUP BY c.c_name
 ORDER BY total DESC;|
+# The ORDER BY has ties (Bob and Charlie both have 75): compare sorted.
+--let $force_sort=yes
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo == Expected result ==

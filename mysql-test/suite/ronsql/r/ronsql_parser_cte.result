@@ -137,6 +137,7 @@ CTE definitions:
 
 Join plan (2 operations):
 ├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+│    Root access: scanTable
 ╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
      CTE outputs: g, cnt, s
      Key: g = p.b
@@ -178,6 +179,7 @@ CTE definitions:
 
 Join plan (2 operations):
 ├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+│    Root access: scanTable
 ╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
      CTE outputs: g, cnt
      Key: g = p.b
@@ -211,6 +213,7 @@ CTE definitions:
 
 Join plan (2 operations):
 ├─ 0: [ROOT] TABLE_SCAN pt1 AS p 1
+│    Root access: scanTable
 ╰─ 1: [INNER] CTE_LOOKUP CTE:my cte AS my cte  <- p 1
      CTE outputs: the group, row count
      Key: the group = p 1.b
@@ -244,6 +247,7 @@ CTE definitions:
 
 Join plan (2 operations):
 ├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+│    Root access: scanTable
 ╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
      CTE outputs: g, cnt
      Key: g = p.b
@@ -285,13 +289,14 @@ CTE definitions:
 
 Join plan (4 operations):
 ├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+│    Root access: scanTable
 ├─ 1: [INNER] CTE_LOOKUP CTE:c1 AS c1  <- p
 │    CTE outputs: g, n
 │    Key: g = p.b
-├─ 2: [INNER] CTE_LOOKUP CTE:c2 AS c2  <- p
+├─ 2: [INNER] CTE_LOOKUP CTE:c2 AS c2  <- c1
 │    CTE outputs: g, s
 │    Key: g = p.b
-╰─ 3: [INNER] CTE_LOOKUP CTE:c3 AS c3  <- p
+╰─ 3: [INNER] CTE_LOOKUP CTE:c3 AS c3  <- c2
      CTE outputs: g, m
      Key: g = p.b
      ** Aggregation leaf **
@@ -334,6 +339,11 @@ CTE definitions:
     GROUP BY: col_2
     Body root: CTE_SCAN
 
+Join plan (1 operation):
+╰─ 0: [ROOT] CTE_SCAN CTE:top2 AS top2
+     CTE outputs: g, m
+     Root access: scanCte
+
 Query parse tree:
 SELECT
   Out_0:`COUNT(*)`
@@ -362,6 +372,7 @@ CTE definitions:
 
 Join plan (2 operations):
 ├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+│    Root access: scanTable
 ╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
      CTE outputs: g, cnt
      Key: g = p.b
@@ -395,6 +406,7 @@ CTE definitions:
 
 Join plan (2 operations):
 ├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+│    Root access: scanTable
 ╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
      CTE outputs: g, cnt
      Key: g = p.b
@@ -432,6 +444,7 @@ CTE definitions:
 
 Join plan (2 operations):
 ├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+│    Root access: scanTable
 ╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
      CTE outputs: g, cnt
      Key: g = p.b
@@ -469,6 +482,7 @@ CTE definitions:
 
 Join plan (2 operations):
 ├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+│    Root access: scanTable
 ╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
      CTE outputs: g, cnt
      Key: g = p.b
@@ -502,6 +516,7 @@ CTE definitions:
 
 Join plan (2 operations):
 ├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+│    Root access: scanTable
 ╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
      CTE outputs: g, cnt
      Key: g = p.b
@@ -566,6 +581,7 @@ CTE definitions:
 
 Join plan (2 operations):
 ├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+│    Root access: scanTable
 ╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
      CTE outputs: g, cnt
      Key: g = p.b
@@ -601,6 +617,7 @@ CTE definitions:
 
 Join plan (2 operations):
 ├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+│    Root access: scanTable
 ╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
      CTE outputs: g, cnt
      Key: g = p.b
@@ -634,6 +651,7 @@ CTE definitions:
 
 Join plan (2 operations):
 ├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+│    Root access: scanTable
 ╰─ 1: [INNER] CTE_LOOKUP CTE:agg2 AS agg2  <- p
      CTE outputs: g, s
      Key: g = p.b
@@ -678,6 +696,7 @@ CTE definitions:
 
 Join plan (2 operations):
 ├─ 0: [ROOT] TABLE_SCAN pt1 AS p
+│    Root access: scanTable
 ╰─ 1: [INNER] CTE_LOOKUP CTE:pt2 AS pt2  <- p
      CTE outputs: g, cnt
      Key: g = p.b
@@ -715,6 +734,7 @@ CTE definitions:
 Join plan (2 operations):
 ├─ 0: [ROOT] CTE_SCAN CTE:mk AS mk
 │    CTE outputs: g1, g2, cnt
+│    Root access: scanCte
 ╰─ 1: [INNER] PK_LOOKUP pt1 AS p  <- mk
      Key: a = mk.g1
      ** Aggregation leaf **

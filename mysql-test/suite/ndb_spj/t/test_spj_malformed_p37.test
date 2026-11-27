@@ -1,0 +1,15 @@
+--source include/have_ndb.inc
+
+# P-37: a join aggregation whose embedded program compares a linked
+# column as BINARY with a charset (BRANCH_MEM_OP_ARG_INLINE_TYPE).
+# cmpBinary asserts that it has no collation, so a debug data node
+# stopped on a row with a linked value; validateEmbeddedProgram now
+# rejects the program at JOIN_AGG_SETUP_REQ.
+# The case runs a well-formed join aggregation first, then the malformed
+# one, which must get SCAN_TABREF with every data node still started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P37
+--let $spj_case_title = P-37: join aggregation inline-type BINARY compare with a charset
+--source suite/ndb_spj/include/spj_malformed_case.inc

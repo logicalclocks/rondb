@@ -1,0 +1,15 @@
+--source include/have_ndb.inc
+
+# P-36: a join aggregation whose embedded program compares a linked
+# column as CHAR with charset 0 (BRANCH_MEM_OP_ARG_INLINE_TYPE). Charset
+# 0 left the collation nullptr, which cmpChar dereferences for a row
+# with a linked value, so a data node stopped; validateEmbeddedProgram
+# now rejects the program at JOIN_AGG_SETUP_REQ.
+# The case runs a well-formed join aggregation first, then the malformed
+# one, which must get SCAN_TABREF with every data node still started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P36
+--let $spj_case_title = P-36: join aggregation inline-type CHAR compare with charset 0
+--source suite/ndb_spj/include/spj_malformed_case.inc

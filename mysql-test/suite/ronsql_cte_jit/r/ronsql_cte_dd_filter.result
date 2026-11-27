@@ -7676,17 +7676,9 @@ g	n
 2	1
 3	2
 
-=== filter-P1 (rejection): mixed INT vs SMALLINT UNSIGNED ===
-Error handling: RPE
-ronsql_cli caught exception: Column-vs-column comparison in a CTE body WHERE clause requires columns of identical type, precision, length, scale and character set (BLOB/TEXT excluded) — cast one side or compare against a constant.
-
-=== filter-P2 (rejection): mixed FLOAT vs DOUBLE ===
-Error handling: RPE
-ronsql_cli caught exception: Column-vs-column comparison in a CTE body WHERE clause requires columns of identical type, precision, length, scale and character set (BLOB/TEXT excluded) — cast one side or compare against a constant.
-
 === filter-P3 (rejection): DECIMAL precision/scale mismatch (12,2 vs 8,0) ===
 Error handling: RPE
-ronsql_cli caught exception: Column-vs-column comparison in a CTE body WHERE clause requires columns of identical type, precision, length, scale and character set (BLOB/TEXT excluded) — cast one side or compare against a constant.
+ronsql_cli caught exception: A comparison of two columns in a WHERE clause is not supported for these types: the columns must have the same type, precision, length, scale and character set (BLOB/TEXT excluded), or both be integer, FLOAT or DOUBLE columns. Compare a column to a constant instead.
 
 === filter-P4 (rejection): pair on a non-root op of a join body ===
 Syntax error in SQL statement: Unexpected at this point

@@ -396,7 +396,8 @@ class FsReadWriteReq;
  * 60 is ZCONTINUE_JOIN_AGG_FLUSH_HELD, 61 ZCONTINUE_JOIN_AGG_SEND. */
 #define ZCONTINUE_CTE_DROP_ZERO_FINALIZE 62
 #ifdef ERROR_INSERT
-/* Test hook 5150: one timer per instance re-checks the held replays. */
+/* Test hooks 5150 / 5161: one timer per instance re-checks the held
+ * replays. */
 #define ZCONTINUE_JOIN_AGG_FLUSH_HELD 60
 #endif
 
@@ -534,6 +535,25 @@ class FsReadWriteReq;
 #define ZFIRST_QUERY_THREAD_ERROR_INSERT 5128
 #endif
 
+#ifdef ERROR_INSERT
+/* Node-wide one-shot error inserts 5155 (read LQHKEYREQ), 5156
+ * (SCAN_FRAGREQ) and 5157 (SCAN_NEXTREQ): every LQH instance of the node,
+ * LDM or query worker, is armed (the codes are >=
+ * ZFIRST_QUERY_THREAD_ERROR_INSERT), but only the first instance that
+ * meets such a request after the arming acts on it, by setting its own
+ * one-shot 5047, 5055 or 5030 for the code that follows.  A nonzero extra
+ * value ("<node> ERROR 5155 <table id>") limits the insert to requests on
+ * that table: other traffic on the node (mysqld, RDRS background reads)
+ * then can neither take the token nor clear the insert.  DblqhProxy arms
+ * one token per node when it gets the NDB_TAMPER; an instance takes it
+ * with lqh_take_node_one_shot_error.  In ndbd, with one LQH instance and
+ * no proxy, the insert itself is the one shot.  RONDB-1124 T-4
+ * (ronsql_single_table_faults): a committed read or scan may run on any
+ * instance, so the LDM-only 5047, 5055 and 5030 may not fire at all. */
+void lqh_arm_node_one_shot_error();
+bool lqh_take_node_one_shot_error();
+#endif
+
 /* Join aggregation error codes (outside DBLQH_C for DblqhProxy) */
 #define ZJOIN_AGG_STATE_ALLOC_FAILED       1250
 #define ZJOIN_AGG_STATE_NOT_FOUND          1251
@@ -553,7 +573,8 @@ class FsReadWriteReq;
 #define ZJOIN_AGG_INVALID_SECTION_COUNT    1261
 #define ZATTRINFO_TOO_LARGE                1262
 /* Aggregation-read flag on an operation that is not a committed
- * interpreted read (RONDB-1124 WP-F F1b).  Same code as DBTUP's
+ * interpreted read (RONDB-1124 WP-F F1b), or an aggregation scan
+ * without an interpreted program.  Same code as DBTUP's
  * ZAGG_WRONG_OPERATION, which is only visible inside DBTUP. */
 #define ZAGG_READ_WRONG_OPERATION          1868
 /* DBTUP's ZAGG_ALLOC_MEM_FAILED (out of query memory, temporary). */
@@ -3593,14 +3614,50 @@ private:
                       const Uint32 *cinBuf, Uint32 attrInfoLen,
                       const CteLookupReq *req);
 #endif
+  /* The regions of an interpreted AttrInfo section: the 5-word header
+   * [initReadLen][interpretLen][finalUpdateLen][finalReadLen][subLen]
+   * and then the regions in that order.  In a join aggregation or CTE
+   * request from DBSPJ the subroutine region is [paramLen] followed by
+   * the linked attribute buffer. */
+  struct CteAttrInfoRegions {
+    Uint32 interpretStart;
+    Uint32 interpretLen;
+    Uint32 finalReadStart;
+    Uint32 finalReadLen;
+    Uint32 subStart;
+    Uint32 subLen;
+  };
+
+  /* Parse the header of the interpreted AttrInfo attrInfo[0..attrInfoLen).
+   * Returns false when the section is shorter than the header or its
+   * regions run past its end; each caller decides between a REF and its
+   * fallback (RONDB-1124 bug 12). */
+  static bool parseCteAttrInfo(const Uint32 *attrInfo, Uint32 attrInfoLen,
+                               CteAttrInfoRegions &regions) {
+    if (unlikely(attrInfoLen < 5)) return false;
+    const Uint64 end = Uint64(5) + attrInfo[0] + attrInfo[1] +
+                       attrInfo[2] + attrInfo[3] + attrInfo[4];
+    if (unlikely(end > attrInfoLen)) return false;
+    regions.interpretStart = 5 + attrInfo[0];
+    regions.interpretLen = attrInfo[1];
+    regions.finalReadStart = regions.interpretStart + attrInfo[1] +
+                             attrInfo[2];
+    regions.finalReadLen = attrInfo[3];
+    regions.subStart = regions.finalReadStart + attrInfo[3];
+    regions.subLen = attrInfo[4];
+    return true;
+  }
+
   /* Assemble linked_attr_data for a CTE group row into outBuf.  Layout:
    * [optional parent linked columns from AttrInfo subroutine section]
    * followed by [GROUP BY key columns] and [aggregate result columns].
    * CTE result entries use the CteLinkedAttr typed 2-word header followed
    * by [AttrHeader][data...].
    * Shared by cteLookupAggFeed (downstream agg feed) and the filter
-   * gate in execCTE_LOOKUP_REQ (WHERE-clause evaluation). */
-  void buildCteLinkedBuffer(const JoinAggInterpreter *interp,
+   * gate in execCTE_LOOKUP_REQ (WHERE-clause evaluation).  Returns false
+   * when the AttrInfo regions run past its end or the row does not fit in
+   * ZATTR_BUFFER_SIZE words. */
+  bool buildCteLinkedBuffer(const JoinAggInterpreter *interp,
                             const char *groupData, Uint32 keyLen,
                             const Uint32 *attrInfoBuf, Uint32 attrInfoLen,
                             Uint32 *outBuf, Uint32 *lenOut);
@@ -3783,7 +3840,7 @@ private:
                               Uint32 aggStateKey, Uint32 senderAggStateKey,
                               Uint32 identWord, const Uint32 transid[2],
                               BlockReference replyRef);
-  bool isJoinAggCoordinatorFailed(Uint32 coordinatorRef);
+  bool joinAggCoordinatorDown(Uint32 coordinatorRef);
   bool joinAggParkCapReached();
   bool checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
                               Uint32 senderRef);
@@ -3792,9 +3849,9 @@ private:
                             Uint32 senderRef, Uint32 senderData,
                             Uint32 requestId);
   void continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
-                           Uint32 num_result_rows, Uint32 total_bytes,
+                           Uint32 num_result_rows, Uint32 send_batch_bytes,
                            Uint32 senderRef, Uint32 senderData,
-                           Uint32 requestId);
+                           Uint32 requestId, Uint32 send_batch_rows);
   void execSCAN_NEXTREQ(Signal* signal);
   void execACC_SCANREF(Signal* signal, TcConnectionrecPtr);
   void execNEXT_SCANREF(Signal* signal);
@@ -3939,6 +3996,10 @@ private:
       Signal *signal, Uint32 gsn, const Uint32 *transid, Uint32 identWord,
       Uint32 *keyOut);
   void joinAggParkSweep(Signal *signal);
+  bool failUndeliveredJoinAggFinalRep(Signal *signal, Uint32 senderNodeId,
+                                      Uint32 identWord, Uint32 transId1,
+                                      Uint32 transId2, Uint32 repErrorCode,
+                                      Uint32 errorCode);
   void joinAggFlushParked(Signal *signal, Uint32 parkRecI);
 #ifdef ERROR_INSERT
   void joinAggReleaseHeldFlush(Signal *signal);
@@ -4783,20 +4844,23 @@ public:
    */
   Uint32 m_delay_copy_park_tc = RNIL;
   /**
-   * ERROR_INSERT 5150 (PK-8): park records whose replay this instance
-   * holds until NODE_FAILREP clears the insert, chained through m_next,
-   * and whether the single re-check timer is scheduled.  One timer per
-   * instance, never one per record: the time queue holds 512 entries.
+   * ERROR_INSERT 5150 (PK-8) and 5161 (PK-8b): park records whose replay
+   * this instance holds until NODE_FAILREP clears the insert, chained
+   * through m_next, and whether the single re-check timer is scheduled.
+   * One timer per instance, never one per record: the time queue holds
+   * 512 entries.
    */
   Uint32 m_join_agg_held_flush_head = RNIL;
   bool m_join_agg_held_flush_timer = false;
   /**
-   * PK-8 selects one held NULL_ROW per instance and arming. The park
-   * record index identifies that request until replay; the iteration
-   * distinguishes later uses of the same pool slot or coordinator.
-   * The guard may report rejection only during this record's replay.
+   * PK-8 selects one held NULL_ROW, PK-8b one held SCAN_FRAGREQ, per
+   * instance and arming. The park record index identifies that request
+   * until replay; the iteration distinguishes later uses of the same
+   * pool slot or coordinator. The guard may report rejection only during
+   * this record's replay, and joinAggCoordinatorDown ignores m_connected
+   * for it.
    */
-  Uint32 m_join_agg_observed_null_row = RNIL;
+  Uint32 m_join_agg_observed_park = RNIL;
   Uint32 m_join_agg_observed_iteration = 0;
   bool m_join_agg_observed_replay = false;
 #endif

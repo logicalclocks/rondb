@@ -1,0 +1,19 @@
+--source include/have_ndb.inc
+
+# P-35: a join aggregation leaf whose linked attribute buffer has an
+# entry that runs past the end of the buffer (RONDB-1124 bug 12). The
+# leaf's NI_ATTR_LINKED pattern is a P_DATA token, which DBSPJ copies
+# verbatim into the linked buffer of every LQHKEYREQ of the leaf. Its
+# one entry claims 8192 data words; the GROUP BY walk copied them from
+# past the end of the buffer into the DBTUP read buffer, 16 times over.
+# The entry is now checked against the end of the buffer, and each row
+# fails with 1869.
+# The case runs the same join aggregation with a well-formed entry
+# first, then the malformed one, which must get SCAN_TABREF with every
+# data node still started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P35
+--let $spj_case_title = P-35: join aggregation linked attribute entry past the linked buffer
+--source suite/ndb_spj/include/spj_malformed_case.inc

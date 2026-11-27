@@ -63,9 +63,9 @@ my $ndbclient_lib = my_find_file($bindir,
                                   "lib*/*",
                                   "lib"
                                 ],
-                                [ "ndbclient.dll",
-                                  "libndbclient.so",
-                                  "libndbclient.dylib"
+                                [ "rondbclient.dll",
+                                  "librondbclient.so",
+                                  "librondbclient.dylib"
                                 ],
                                 NOT_REQUIRED);
 
@@ -91,11 +91,11 @@ if ($clusterj_test_jar) {
 if ($ndbclient_lib) {
   my $ndbclient_lib_dir = dirname($ndbclient_lib);
   print $F "--let \$NDBCLIENT_LIB_DIR= $ndbclient_lib_dir\n";
-  print $F "--echo Found ndbclient library\n"
+  print $F "--echo Found rondbclient library\n"
 } else {
   # Test runs only when ndb is compiled and enabled.
-  # If not able to find libndbclient, probably an issue with this script.
-  print $F "die Did not find libndbclient\n";
+  # If not able to find librondbclient, probably an issue with this script.
+  print $F "die Did not find librondbclient\n";
 }
 
 $F->close();

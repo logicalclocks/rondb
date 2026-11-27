@@ -1,0 +1,17 @@
+--source include/have_ndb.inc
+
+# P-39: a join aggregation leaf whose CASE loads a BIGINT into a register
+# in its THEN arm and a CHAR column into it in its ELSE arm, then takes
+# one MAX of the register: the slot gets a number from some rows and a
+# string from others. checkProgram (checkAggSlotKinds) rejects the
+# program at JOIN_AGG_SETUP_REQ.
+# The case first sends the CASE with a BIGINT and a DOUBLE arm, which
+# must still get SCAN_TABCONF, then a well-formed join aggregation, then
+# the malformed one, which must get SCAN_TABREF with every data node
+# still started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P39
+--let $spj_case_title = P-39: join aggregation MAX of a register that is a BIGINT or a CHAR
+--source suite/ndb_spj/include/spj_malformed_case.inc

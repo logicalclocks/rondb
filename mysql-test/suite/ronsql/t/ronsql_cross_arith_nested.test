@@ -32,7 +32,6 @@ call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --disable_query_log

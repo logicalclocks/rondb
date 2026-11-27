@@ -130,9 +130,28 @@ class NdbSqlUtil {
    * The comparison method for string MIN/MAX results of type typeId.  As
    * getType(typeId).m_cmp, except that two CHAR values may have different
    * lengths: a MIN/MAX over a CASE takes its values from CHAR columns of
-   * different sizes, and cmpChar requires one length.
+   * different sizes, and cmpChar requires one length.  Also the method
+   * for a compare whose values came in a request (check_compare_values),
+   * and for GROUP BY keys.
    */
   static Cmp *getStringResultCmp(Uint32 typeId);
+
+  /**
+   * Whether getStringResultCmp(typeId) can compare the values p1 of n1
+   * bytes and p2 of n2 bytes, which came in a request (an operand of an
+   * interpreted program, an entry of a linked attribute buffer) and are
+   * not NULL.  The compare functions only assert or require what they
+   * need: a type of fixed size needs both values of that size, and
+   * FLOAT and DOUBLE values that are not NaN; BINARY, DECIMAL and the
+   * fractional-second temporal types need one length; VARCHAR,
+   * VARBINARY and their long forms need each length prefix inside its
+   * value; BIT needs two values of at least one byte.  CHAR takes any
+   * lengths (cmpCharAnyLength).  A type without a compare function
+   * (BLOB, TEXT, an unknown id) takes none.  The collation is checked
+   * by get_compare_collation.
+   */
+  static bool check_compare_values(Uint32 typeId, const void *p1,
+                                   unsigned n1, const void *p2, unsigned n2);
 
   /**
    * Check character set.
@@ -161,6 +180,20 @@ class NdbSqlUtil {
    * collation id that came in a request rather than from a table.
    */
   static const CHARSET_INFO *get_collation(Uint32 csNumber);
+
+  /**
+   * The collation for a compare of type typeId, from a collation id
+   * csNumber that came in a request (the inline type word of an
+   * interpreted program).  CHAR, VARCHAR and LONGVARCHAR compare with a
+   * collation, so they need a known one; the other types compare
+   * without one, so csNumber must be 0.  Sets *cs (nullptr for the other
+   * types) and returns true, or returns false: for a string type with 0
+   * or an unknown id, whose compare function would dereference a null
+   * collation, and for another type with an id, whose compare function
+   * asserts that it has none.
+   */
+  static bool get_compare_collation(Uint32 typeId, Uint32 csNumber,
+                                    const CHARSET_INFO **cs);
 
   /**
    * Convert attribute data to/from network byte order

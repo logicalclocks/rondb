@@ -1,0 +1,673 @@
+SELECT COUNT(*) AS data_nodes FROM ndbinfo.nodes;
+data_nodes
+4
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for subquery aggregation tests ===
+
+
+=== Test 1: Single subquery SUM per entity ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val
+FROM sq_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val
+FROM sq_entity AS e|
+id	sum_val
+1	60
+2	150
+3	240
+4	330
+
+
+=== Test 2: Two subqueries SUM + COUNT per entity ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e|
+id	sum_val	cnt_evt
+1	60	2
+2	150	2
+3	240	2
+4	330	2
+
+
+=== Test 3: Three subqueries SUM + COUNT + MAX per entity ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt,
+(SELECT MAX(ev2.event_type) FROM sq_events AS ev2 WHERE ev2.entity_id = e.id) AS max_evt
+FROM sq_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt,
+(SELECT MAX(ev2.event_type) FROM sq_events AS ev2 WHERE ev2.entity_id = e.id) AS max_evt
+FROM sq_entity AS e|
+id	sum_val	cnt_evt	max_evt
+1	60	2	2
+2	150	2	4
+3	240	2	6
+4	330	2	8
+
+
+=== Test 4: Same-table merge SUM + MIN per entity ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT MIN(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id) AS min_val
+FROM sq_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT MIN(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id) AS min_val
+FROM sq_entity AS e|
+id	sum_val	min_val
+1	60	10
+2	150	40
+3	240	70
+4	330	100
+
+
+=== Test 5: Mix — merged + separate leaf per entity ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT MAX(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id) AS max_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT MAX(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id) AS max_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e|
+id	sum_val	max_val	cnt_evt
+1	60	30	2
+2	150	60	2
+3	240	90	2
+4	330	120	2
+
+
+=== Test 6: Entity columns + subquery ===
+== Query ==
+SELECT e.id, e.grp,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val
+FROM sq_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id, e.grp,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val
+FROM sq_entity AS e|
+id	grp	sum_val
+1	1	60
+2	1	150
+3	2	240
+4	2	330
+
+
+=== Test 7: Same-table triple merge SUM + MIN + MAX ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT MIN(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id) AS min_val,
+(SELECT MAX(m3.val) FROM sq_measures AS m3 WHERE m3.entity_id = e.id) AS max_val
+FROM sq_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT MIN(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id) AS min_val,
+(SELECT MAX(m3.val) FROM sq_measures AS m3 WHERE m3.entity_id = e.id) AS max_val
+FROM sq_entity AS e|
+id	sum_val	min_val	max_val
+1	60	10	30
+2	150	40	60
+3	240	70	90
+4	330	100	120
+
+
+=== Test 8: Entity with no matching rows (NULL result) ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e|
+id	sum_val	cnt_evt
+1	60	2
+2	150	2
+3	240	2
+4	330	2
+5	NULL	0
+
+
+=== Test 9: Partial match — entity 5 has measures but no events ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e|
+id	sum_val	cnt_evt
+1	60	2
+2	150	2
+3	240	2
+4	330	2
+5	1800	0
+
+
+=== Test 12: HAVING cnt_evt > 0 filters unmatched entities ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING cnt_evt > 0;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING cnt_evt > 0|
+id	sum_val	cnt_evt
+1	60	2
+2	150	2
+3	240	2
+4	330	2
+
+
+=== Test 13: HAVING sum_val IS NOT NULL ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING sum_val IS NOT NULL;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM sq_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM sq_entity AS e
+HAVING sum_val IS NOT NULL|
+id	sum_val	cnt_evt
+1	60	2
+2	150	2
+3	240	2
+4	330	2
+5	1800	0
+
+
+=== Test 14: Same table, different inner filters ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts > 1) AS sum_late,
+(SELECT COUNT(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id AND m2.val > 50) AS cnt_big
+FROM sq_entity AS e;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts > 1) AS sum_late,
+(SELECT COUNT(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id AND m2.val > 50) AS cnt_big
+FROM sq_entity AS e|
+id	sum_late	cnt_big
+1	50	0
+2	110	1
+3	170	3
+4	230	3
+5	1300	3
+6	NULL	0
+
+
+=== Test 15: Filtered and unfiltered subquery on the same table ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_all,
+(SELECT MAX(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id AND m2.ts < 3) AS max_early
+FROM sq_entity AS e;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_all,
+(SELECT MAX(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id AND m2.ts < 3) AS max_early
+FROM sq_entity AS e|
+id	sum_all	max_early
+1	60	20
+2	150	50
+3	240	80
+4	330	110
+5	1800	600
+6	NULL	NULL
+== Query ==
+SELECT e.id,
+(SELECT MAX(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id AND m2.ts < 3) AS max_early,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_all
+FROM sq_entity AS e;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT MAX(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id AND m2.ts < 3) AS max_early,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_all
+FROM sq_entity AS e|
+id	max_early	sum_all
+1	20	60
+2	50	150
+3	80	240
+4	110	330
+5	600	1800
+6	NULL	NULL
+
+
+=== Test 16: Same table, identical inner filters ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts > 1) AS sum_late,
+(SELECT MIN(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id AND m2.ts > 1) AS min_late
+FROM sq_entity AS e;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts > 1) AS sum_late,
+(SELECT MIN(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id AND m2.ts > 1) AS min_late
+FROM sq_entity AS e|
+id	sum_late	min_late
+1	50	20
+2	110	50
+3	170	80
+4	230	110
+5	1300	600
+6	NULL	NULL
+
+=== Create large tables for DBSPJ path tests ===
+Warnings:
+Note	1051	Unknown table 'test.lg_events'
+Warnings:
+Note	1051	Unknown table 'test.lg_measures'
+Warnings:
+Note	1051	Unknown table 'test.lg_entity'
+
+
+=== Test 10: Large dataset multi-batch (200 entities, 50 groups) ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM lg_entity AS e;
+
+Number of output lines, including header: 201
+
+== Diff ==
+==========
+
+
+
+== Expected result (first 5 rows) ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT COUNT(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS cnt_evt
+FROM lg_entity AS e
+ORDER BY e.id
+LIMIT 5|
+id	sum_val	cnt_evt
+1	65	3
+2	115	3
+3	165	3
+4	215	3
+5	265	3
+
+
+=== Test 11: Asymmetric fan-out (5 measures vs 3 events/entity) ===
+== Query ==
+SELECT e.id, e.grp,
+(SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
+FROM lg_entity AS e;
+
+Number of output lines, including header: 201
+
+== Diff ==
+==========
+
+
+
+== Expected result (first 5 rows) ==
+SELECT e.id, e.grp,
+(SELECT SUM(m.val) FROM lg_measures AS m WHERE m.entity_id = e.id) AS sum_val,
+(SELECT MAX(ev.event_type) FROM lg_events AS ev WHERE ev.entity_id = e.id) AS max_evt
+FROM lg_entity AS e
+ORDER BY e.id
+LIMIT 5|
+id	grp	sum_val	max_evt
+1	1	65	1
+2	2	115	2
+3	3	165	3
+4	4	215	4
+5	5	265	5
+
+=== I3: COUNT arguments and nullable inner rows ===
+== Query ==
+SELECT e.id,
+(SELECT COUNT(*) FROM sq_count_values AS m WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT e.id,
+(SELECT COUNT(0) FROM sq_count_values AS m WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT e.id,
+(SELECT COUNT(-1) FROM sq_count_values AS m WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT e.id,
+(SELECT COUNT(1 + 2) FROM sq_count_values AS m WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT e.id,
+(SELECT COUNT(m.val) FROM sq_count_values AS m WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+=== I3: COUNT(*) handles missing rows and merged filters ===
+== Query ==
+SELECT
+(SELECT COUNT(*) FROM sq_count_values AS m
+WHERE m.entity_id = e.id AND m.ts > e.id) AS n_filtered,
+e.id,
+(SELECT COUNT(*) FROM sq_count_values AS m2 WHERE m2.entity_id = e.id) AS n_all
+FROM sq_count_entity AS e;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+=== I3: reject COUNT(m.val + 1) ===
+400
+SELECT-list subquery aggregate argument must be a simple column reference, COUNT(*), or COUNT of an integer constant.
+=== I3: reject COUNT(CASE WHEN m.val IS NULL THEN m.val ELSE 1 END) ===
+400
+SELECT-list subquery aggregate argument must be a simple column reference, COUNT(*), or COUNT of an integer constant.
+=== I3: reject COUNT(1 / 2) ===
+400
+SELECT-list subquery aggregate argument must be a simple column reference, COUNT(*), or COUNT of an integer constant.
+
+=== HAVING IN resolves a nullable SUM subquery alias ===
+Expected: id=1, total=5
+== Query ==
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_count_values AS m
+   WHERE m.entity_id = e.id) AS total
+FROM sq_count_entity AS e
+HAVING total IN
+  (SELECT MAX(v.val) FROM sq_count_values AS v GROUP BY v.entity_id);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== HAVING NOT IN resolves a COUNT subquery alias ===
+Expected: id=3, n=0
+== Query ==
+SELECT e.id,
+  (SELECT COUNT(*) FROM sq_count_values AS m
+   WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e
+HAVING NOT (n IN
+  (SELECT MIN(v.entity_id) FROM sq_count_values AS v GROUP BY v.entity_id));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== HAVING IN resolves a subquery alias inside arithmetic ===
+Expected: id=2, n=1; id=3, n=0
+== Query ==
+SELECT e.id,
+  (SELECT COUNT(*) FROM sq_count_values AS m
+   WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e
+HAVING (n + 1) IN
+  (SELECT MAX(v.ts) FROM sq_count_values AS v GROUP BY v.entity_id);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
+=== COUNT row guard: binary index scan and missing rows ===
+Expected counts for ids 1,2,3,4: 2,1,0,0
+== Query ==
+SELECT e.id,
+(SELECT COUNT(*) FROM sq_count_binary_values AS m
+WHERE m.entity_key = e.entity_key) AS n
+FROM sq_count_binary_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+
+=== COUNT row guard: binary primary-key lookup ===
+Expected counts for ids 1,2,3,4: 1,1,0,0
+== Query ==
+SELECT e.id,
+(SELECT COUNT(0) FROM sq_count_binary_values AS m
+WHERE m.row_key = e.entity_key) AS n
+FROM sq_count_binary_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+
+=== COUNT row guard: merged filtered and unfiltered aggregates ===
+Expected (n_filtered,id,n_all,n_present): (1,1,2,1), (0,2,1,0), (0,3,0,0), (0,4,0,0)
+== Query ==
+SELECT
+(SELECT COUNT(*) FROM sq_count_binary_values AS m
+WHERE m.entity_key = e.entity_key AND m.score > e.min_score) AS n_filtered,
+e.id,
+(SELECT COUNT(0) FROM sq_count_binary_values AS m2
+WHERE m2.entity_key = e.entity_key) AS n_all,
+(SELECT COUNT(m3.val) FROM sq_count_binary_values AS m3
+WHERE m3.entity_key = e.entity_key) AS n_present
+FROM sq_count_binary_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+
+=== Cleanup ===

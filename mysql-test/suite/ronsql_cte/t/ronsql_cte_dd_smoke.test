@@ -5,10 +5,6 @@ call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
 
-# All data-driven CTE tests involve joins; ronsql_cli does not refresh the NDB
-# dictionary cache for join queries, so we compare the mysql client against
-# RDRS only (matching the ronsql suite's CTE convention).
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --source suite/ronsql_cte/include/cte_schema.inc

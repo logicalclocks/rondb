@@ -33,7 +33,8 @@ NDB_ADD_EXECUTABLE(error_handling_test error_handling_test.cpp
 # with STATIC_NDBCLIENT the NdbApi came before libronsql.a, so the
 # NdbScanFilter calls of RonSQLPreparer stayed undefined on Linux.
 NDB_ADD_EXECUTABLE(ronsql_oom_test ronsql_oom_test.cpp
-                   ronsql_parse_only_test.cpp STATIC_NDBCLIENT)
+                   ronsql_parse_only_test.cpp
+                   ronsql_http_code_test.cpp STATIC_NDBCLIENT)
 # ronsql and ndbclient_static are listed here, in this order, for GNU ld,
 # which takes an archive member only if an object before it on the link line
 # needs it. libronsql.a needs NdbScanFilter from the NDB API library, but
@@ -191,4 +192,7 @@ add_test(NAME ronsql_parser_list_stack_test COMMAND ronsql_oom_test
 # Authorization inventories and scope guards need no cluster.
 add_test(NAME ronsql_parser_access_test COMMAND ronsql_oom_test
          --gtest_filter=RonSQLParseOnlyInventory.*:RonSQLParseOnlyRejection.*)
+# T-16: the HTTP status of each RonSQL error class and message wording.
+add_test(NAME ronsql_http_code_test COMMAND ronsql_oom_test
+         --gtest_filter=RonSQLHttpCode.*)
 add_test(NAME probe_server_http_test COMMAND probe_server_http_test)

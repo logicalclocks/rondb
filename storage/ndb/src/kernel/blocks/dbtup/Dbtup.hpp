@@ -264,6 +264,10 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZAGG_ALLOC_MEM_FAILED 1870
 #define ZAGG_VS_TOO_BIG_RESULT 1871
 #define ZAGG_EMBEDDED_INTERP_ERROR 1872
+/* A group whose resident part (its GROUP BY key and aggregate slots)
+ * does not fit one query memory chunk (AggInterpreterBase::
+ * allocGroupData): permanent, unlike ZAGG_ALLOC_MEM_FAILED. */
+#define ZAGG_GROUP_TOO_LARGE 1873
 
 /* SOME WORD POSITIONS OF FIELDS IN SOME HEADERS */
 
@@ -1728,6 +1732,8 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     ~storedProc() {}
 
     Uint32 storedProcIVal;
+    /* Word offset of the parameter area of an interpreted scan program,
+     * 0 when scanCopyAttrinfo refused the program's header. */
     Uint32 storedParamAreaStart;
     Uint32 storedParamOffset; // Cumulative word offset to current param
     Uint32 lastSegment;
@@ -3319,13 +3325,13 @@ public:
    *       synthetic CTE row).  Implicit in the CTE filter path.
    *
    *   IFLAG_DISALLOW_BACKWARD_JUMPS — after every handler dispatch,
-   *       check that the new TprogramCounter is not less than the
-   *       pre-dispatch value; violations set
-   *       ZBACKWARD_JUMP_NOT_ALLOWED and return -1.  Combined with a
-   *       handler table that omits CALL / RETURN, this makes the
-   *       program provably terminating — so the 16000-instruction
-   *       fuse is dropped in this mode for the aggregation
-   *       interpreter's embedded programs.
+   *       check that the new TprogramCounter is past the
+   *       pre-dispatch value (a branch of offset 0 lands on itself);
+   *       violations set ZBACKWARD_JUMP_NOT_ALLOWED and return -1.
+   *       Combined with a handler table that omits CALL / RETURN,
+   *       this makes the program provably terminating — so the
+   *       16000-instruction fuse is dropped in this mode for the
+   *       aggregation interpreter's embedded programs.
    */
   enum InterpreterJumpTableFlags {
     IFLAG_REJECT_RETURNS_NEG       = 0x1,
@@ -3431,9 +3437,10 @@ public:
    * compare, and applies the same NULL-semantics + condition mapping as the
    * interpreter's handleBranchAttrOp. Returns 1 to take the branch, 0 to
    * fall through, or a negative error code (read failure / missing param /
-   * unsupported type or condition) which the caller treats as fatal. */
+   * unsupported type or condition) which the caller treats as fatal.
+   * param_len is the length of the param region in words. */
   int evalBranchColForJit(KeyReqStruct *req_struct, const Uint32 *inst,
-                          const Uint32 *param_buf);
+                          const Uint32 *param_buf, Uint32 param_len);
 
   /* ronsql_jit slice 2 item 5: JIT evaluation of BRANCH_MEM_OP_ARG /
    * BRANCH_MEM_OP_ARG_INLINE_TYPE — compares the cheapMemory[0] value
@@ -3452,8 +3459,11 @@ public:
 
 private:
 
+  /* The parameter paramNo in the subroutine section of sectionLen words
+   * at subptr, nullptr when it is not inside the section. */
   const Uint32 *lookupInterpreterParameter(Uint32 paramNo,
-                                           const Uint32 *subptr) const;
+                                           const Uint32 *subptr,
+                                           Uint32 sectionLen) const;
 
   // *****************************************************************
   // Signal Sending methods.
@@ -3551,8 +3561,10 @@ private:
   ALWAYS_INLINE int readSingleAttribute(KeyReqStruct *req_struct,
                                         Uint32 attrId, Uint32 *outBuf,
                                         Uint32 maxWords) {
-    ndbassert(!(attrId & AttributeHeader::PSEUDO));
-    ndbassert(attrId < req_struct->tablePtrP->m_no_of_attributes);
+    /* attrId is a field of an aggregation program (kOpLoadCol, a GROUP
+     * BY column) or of a JIT-compiled scan filter, which an API node
+     * writes: refused with an error, not an ndbassert that stops a
+     * debug data node. */
     if (unlikely((attrId & AttributeHeader::PSEUDO) ||
                  attrId >= req_struct->tablePtrP->m_no_of_attributes)) {
       thrjam(req_struct->jamBuffer);
@@ -3635,6 +3647,9 @@ private:
 
   /* Error insert 4046, see DbtupExecQuery.cpp. False in release builds. */
   bool pushdownInitErrorInserted() const;
+
+  /* Error insert 4047, see DbtupExecQuery.cpp. False in release builds. */
+  bool scanParamBlocksErrorInserted() const;
 
   // Read only PK attributes, without AttributeHeader.
   // Optinally xfrm'ing the key in preparation for hash
@@ -4028,18 +4043,29 @@ private:
                          Uint32 resultData, Uint32 routeRef);
 public:
   /* Returns the length of the scan's attrinfo, 0 if it could not be
-   * cached.  When the interpreter of a pushed aggregation or vector
-   * search cannot be created for scan_rec, *pushdownError (if given) is
-   * set to the error to fail the scan with; the scan record is left
-   * without an interpreter. */
+   * cached.  *scanError (if given) is set to the error to fail the scan
+   * with when an interpreted program's header does not fit its section
+   * or the parameter block of the current range does not lie within the
+   * parameter area (ZTOTAL_LEN_ERROR), when the section does not fit
+   * cinBuffer (ZSTORED_TOO_MUCH_ATTRINFO_ERROR), or when the interpreter
+   * of a pushed aggregation or vector search cannot be created for
+   * scan_rec (the scan record is then left without an interpreter). */
   Uint32 scanCopyAttrinfo(Uint32 storedProcId,
                           bool interpretedFlag,
                           bool first_call,
                           void* scan_rec = nullptr,
-                          Uint32* pushdownError = nullptr);
+                          Uint32* scanError = nullptr);
   Uint32 keyCopyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal);
 
-  void nextAttrInfoParam(Uint32 storedProcId);
+  /* Called at each range after the first of an interpreted scan.
+   * paramBlockPerRange is true for a scan from DBSPJ, whose parameter
+   * area holds one parameter block per range: the scan moves on to the
+   * block of its next range.  Any other scan's parameter area is the
+   * subroutine region of its program, which every range runs whole, so
+   * nothing moves.  Returns 0, or ZTOTAL_LEN_ERROR, the error to fail
+   * the scan with, when the current block does not lie within the
+   * parameter area or the program's header was refused. */
+  Uint32 nextAttrInfoParam(Uint32 storedProcId, bool paramBlockPerRange);
   bool cacheFromCinBuffer(storedProc* sp, Uint32 len);
 
   /* Sets *errorCode (non-zero) when the result cannot be sent; the

@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
-"""Refresh the RONDB-1056 JIT mirror suites' .result files from their base
-suites after a rebase.
+"""Refresh the RONDB-1056 JIT mirror suite ndb_push_agg_jit's .result files
+from its base suite after a rebase, then the RonSQL mirror suites.
 
-Every mirror wrapper in ndb_push_agg_jit / ronsql_jit / ronsql_cte_jit is
+The RonSQL mirror suites (ronsql_jit, ronsql_cte_jit, ronsql_fs_jit and the
+topology suites ronsql_cte_ng*, ronsql_fs_ng* and ronsql_ng2r2) are generated
+by mysql-test/suite/ronsql/mirrors/ronsql_mirrors.pl from
+ronsql_mirrors.cfg, which also holds their recorded fallback-delta pins;
+this script only runs it (--write, or --check with --check).  Use that
+script directly for the RonSQL suites.
+
+Every mirror wrapper in ndb_push_agg_jit is
    SET @<var> = ...;  --source <base test>;  SELECT ... AS <name>_jit_fallback_delta;
 (the strict-arming includes emit nothing), so its .result MUST be exactly
    SET line + the base suite's .result + the SELECT block with the pin.
@@ -17,11 +24,10 @@ mysql-test/. Pins may still be wrong after a base test grew — the next
 run shows the census number. With --check nothing is written: the stale
 mirrors are listed and the exit status is 1 if there are any.
 """
-import glob, os, re, sys
+import glob, os, re, subprocess, sys
 
-PAIRS = [('ndb_push_agg', 'ndb_push_agg_jit'),
-         ('ronsql', 'ronsql_jit'),
-         ('ronsql_cte', 'ronsql_cte_jit')]
+PAIRS = [('ndb_push_agg', 'ndb_push_agg_jit')]
+RONSQL_MIRRORS = 'suite/ronsql/mirrors/ronsql_mirrors.pl'
 SET_RE = re.compile(rb'^SET @(\w+) = \(SELECT SUM\(programs_fallback\) '
                     rb'FROM ndbinfo\.jit\);$', re.M)
 
@@ -69,4 +75,9 @@ def main(check):
 if __name__ == '__main__':
     if not os.path.isdir('suite'):
         sys.exit('run from mysql-test/')
-    sys.exit(main('--check' in sys.argv[1:]))
+    check = '--check' in sys.argv[1:]
+    rc = main(check)
+    sys.stdout.flush()
+    rc_ronsql = subprocess.call(['perl', RONSQL_MIRRORS,
+                                 '--check' if check else '--write'])
+    sys.exit(1 if rc or rc_ronsql else 0)

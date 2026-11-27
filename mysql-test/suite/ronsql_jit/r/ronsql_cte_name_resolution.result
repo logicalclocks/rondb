@@ -93,7 +93,8 @@ ronsql_cli caught exception: Ambiguous column.
 === Test 6: CTE cannot reference a future CTE ===
 Expected error: Table not found
 Table 'c1' not found.
-Error handling: RPE
+Error handling: dictionary->RPE
+NDB Permanent error 723, Schema error, MySQL 155: No such table existed
 ronsql_cli caught exception: Table not found.
 
 

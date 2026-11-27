@@ -1,0 +1,9 @@
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# Q-4: short TCINDXREQ whose key length sets the flag bit
+Running command
+Result of command: 0
+Test program success!
+# Not reported: OK

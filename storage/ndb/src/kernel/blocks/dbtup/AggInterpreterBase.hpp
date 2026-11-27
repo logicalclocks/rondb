@@ -216,12 +216,21 @@ class AggInterpreterBase : public PushdownInterpreter {
    * RG_QUERY_MEMORY; allocGroupData carves from the current chunk,
    * freeGroupData decrements the chunk's live count and releases the
    * page when it hits zero.  Same shape both interpreters end up using
-   * in Step 2b. */
+   * in Step 2b.
+   *
+   * allocGroupData returns nullptr when it cannot carve the `len` bytes
+   * of a group (its key, `key_len` of them, then its AggResItem slots),
+   * with *error_code ZAGG_GROUP_TOO_LARGE when the group is larger than
+   * one chunk holds, which no amount of query memory changes (a
+   * permanent error: the API refuses only a key or values over the
+   * 16-bit lengths of a result record, at the declared column sizes),
+   * and ZAGG_ALLOC_MEM_FAILED when the chunk budget or RG_QUERY_MEMORY
+   * is exhausted (temporary). */
   void initChunkAllocator(Uint32 thread_id, Uint32 budget_pages,
                           Uint32 available_pages);
   bool bookMoreMemory();
   MemChunk* allocNewChunk();
-  char* allocGroupData(Uint32 len, Uint32 key_len);
+  char* allocGroupData(Uint32 len, Uint32 key_len, Uint32* error_code);
   void freeGroupData(char* ptr);
   void freeAllChunks();
 
@@ -283,8 +292,15 @@ class AggInterpreterBase : public PushdownInterpreter {
    *   - DECIMAL precision and scale are those of a possible column
    *     (bin2decimal trusts them);
    *   - constants have a type executeStandardOpcode loads;
-   *   - embedded programs pass validateEmbeddedProgram;
-   *   - a kOpSkip lands on an instruction or at the end.
+   *   - embedded programs pass validateEmbeddedProgram, which also
+   *     checks that each branch lands on an instruction, and the type
+   *     and collation of each inline-type compare;
+   *   - a kOpSkip lands on an instruction or at the end;
+   *   - no aggregate slot may get both a string MIN / MAX and a number
+   *     from another aggregate or a MIN / MAX of another type, or two
+   *     different aggregates, and no arithmetic or aggregate other than
+   *     MIN, MAX and COUNT may read a string register
+   *     (PushdownInterpreter::checkAggSlotKinds).
    * insn_starts (insnStartWords(prog_len) words) gets a bit set for
    * every word where an instruction starts, for embeddedSkipTarget.
    * *uses_avg, unless nullptr, tells whether the program has kOpAvg.
@@ -570,8 +586,14 @@ class AggInterpreterBase : public PushdownInterpreter {
    * enforced an opcode allow-list and rejected backward branches).  The
    * stricter JoinAgg form is adopted here for both — the allow-list
    * covers every opcode either path emits, and the backward-branch
-   * reject closes a potential infinite-loop class.  Pure function over
-   * arguments; no instance state needed.
+   * reject closes a potential infinite-loop class, as does the reject
+   * of a branch of offset 0, a branch to itself.  A branch must land on
+   * the first word of an instruction, not on its operand words, which
+   * would run as instructions that this check did not see.  Every
+   * instruction must lie inside the program, and a
+   * BRANCH_MEM_OP_ARG_INLINE_TYPE carry a collation exactly for a
+   * string type (NdbSqlUtil::get_compare_collation).  Pure function
+   * over arguments; no instance state needed.
    */
   static bool validateEmbeddedProgram(const Uint32* emb_prog, Uint32 emb_len);
 
@@ -774,6 +796,20 @@ class AggInterpreterBase : public PushdownInterpreter {
   Int32 initGBTypesFromMetadata(const Uint32* metadata,
                                 Uint32 metadataLen,
                                 EmulatedJamBuffer *jamBuf);
+  /* Describes a GROUP BY column in info from a type, size and collation
+   * id that came in a request: the setup metadata, a CTE marker of a
+   * linked entry, or the column metadata of a linked entry's table
+   * column.  The collation must fit the type
+   * (NdbSqlUtil::get_compare_collation): a CHAR GROUP BY column with
+   * collation 0 left info.cs nullptr, and the ORDER BY top-N compare of
+   * a CTE called cmpChar with it; a non-string column with a collation
+   * failed the assert of its compare function in the group hash table.
+   * Returns false for such a column.  CHAR keys compare padded
+   * (NdbSqlUtil::getStringResultCmp). */
+  static bool initGBColType(GBColTypeInfo& info,
+                            Uint32 typeId,
+                            Uint32 maxBytes,
+                            Uint32 csNumber);
   Int32 initStringAggSlotFromMetadata(Uint32 aggIndex,
                                       Uint32 typeId,
                                       Uint32 maxBytes,
@@ -794,6 +830,10 @@ class AggInterpreterBase : public PushdownInterpreter {
   const ColumnMeta* findColumnMeta(Uint32 tableId,
                                    Uint32 tableVersion,
                                    Uint32 columnId) const;
+  /* Checks m_gb_types[] and publishes it to m_gb_map (m_gb_types_inited).
+   * Refuses a GROUP BY column whose type has no compare function (BLOB,
+   * TEXT, an undefined or unknown type), so every published cmpFn is
+   * set. */
   Int32 publishGBTypes(EmulatedJamBuffer *jamBuf);
 
   /* Step 3a-B — m_buf_block-resident pointer buffers.

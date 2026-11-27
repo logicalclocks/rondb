@@ -196,6 +196,22 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
     }
   }
 
+  /* The value of a linked column is an entry of the linked buffer, which
+   * DBSPJ copies from the API's P_DATA tokens, typed by the program.
+   * A fixed-size type decoded its bytes whatever the entry's size, so a
+   * BIGINT of a 4-byte entry read 4 bytes from past it: from what the
+   * per-LDM-thread read buffer held before, rows of other queries
+   * included.  READ_LINKED_COLUMN_TO_REG reads such an entry as NULL; a
+   * kOpLoadCol fails the row, as it does for a missing entry. */
+  if (unlikely(!header->isNULL() &&
+               header->getByteSize() <
+                   CteLinkedAttr::linkedColumnBytes(type))) {
+    g_eventLogger->debug("%s::ProcessRec ZAGG_LOAD_COL_WRONG_TYPE: "
+        "type %u for a value of %u bytes",
+        class_name, Uint32(type), header->getByteSize());
+    return ZAGG_LOAD_COL_WRONG_TYPE;
+  }
+
   /* The value decode is shared with aggregation in the RonSQL layer
    * (include/util/AggColumnLoad.hpp, RONDB-1124 WP-J J5), so both turn a
    * stored value into the same register.  Strings come back as
@@ -281,6 +297,18 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
                        attrDescriptor != nullptr ? declared
                                                  : header->getByteSize(),
                        &prefix, &payload_len);
+      /* The length prefix of a linked VARCHAR comes from the API: a
+       * prefix past the value had kOpMax / kOpMin copy up to 65535
+       * bytes of the read buffer past it into the result, rows of other
+       * queries included. */
+      if (unlikely(Uint32(prefix) + Uint32(payload_len) >
+                   header->getByteSize())) {
+        g_eventLogger->debug("%s::ProcessRec ZAGG_LOAD_COL_WRONG_TYPE: "
+            "a string of %u + %u bytes in a value of %u bytes",
+            class_name, Uint32(prefix), Uint32(payload_len),
+            header->getByteSize());
+        return ZAGG_LOAD_COL_WRONG_TYPE;
+      }
       StringResult& sr = m_register_string_data[reg_index];
       sr.ptr = base;
       sr.length = payload_len;
@@ -616,7 +644,9 @@ const char* AggInterpreterBase::checkProgram(const Uint32* prog,
       }
     }
   }
-  return nullptr;
+  /* Last, as it relies on the checks above: no slot may get both a
+   * string MIN / MAX and a number (bug 1c of the RonSQL analysis). */
+  return PushdownInterpreter::checkAggSlotKinds(prog, prog_len, start);
 }
 
 /**
@@ -630,6 +660,18 @@ const char* AggInterpreterBase::checkProgram(const Uint32* prog,
  */
 bool AggInterpreterBase::validateEmbeddedProgram(
     const Uint32* emb_prog, Uint32 emb_len) {
+  /* checkProgram refused a longer program, so the bitmap below fits. */
+  if (emb_len > MAX_AGG_PROGRAM_WORD_SIZE) {
+    g_eventLogger->debug("validateEmbeddedProgram: %u words", emb_len);
+    return false;
+  }
+  /* A bit for each word that a branch lands on.  A branch into the
+   * operand words of an instruction (a constant, a length word or an
+   * attribute header) runs them as instructions, which this walk does
+   * not see.  Every branch goes forward, so the walk has recorded such a
+   * branch by the end of the instruction it lands in. */
+  Uint32 targets[(MAX_AGG_PROGRAM_WORD_SIZE + 31) >> 5];
+  memset(targets, 0, insnStartWords(emb_len) * sizeof(Uint32));
   Uint32 pc = 0;
   while (pc < emb_len) {
     Uint32 instr = emb_prog[pc];
@@ -711,6 +753,15 @@ bool AggInterpreterBase::validateEmbeddedProgram(
         return false;
       }
       Uint32 offset = (instr >> 16) & 0x7FFF;
+      /* The offset counts from the branch word (Dbtup::brancher), so 0
+       * is a branch to itself: taken once, it is taken again on the
+       * same registers, and interpreterAggEmbedded runs without an
+       * instruction limit. */
+      if (offset == 0) {
+        g_eventLogger->debug(
+            "validateEmbeddedProgram: branch to itself at pc=%u", pc);
+        return false;
+      }
       Uint32 target = pc + offset;
       if (target >= emb_len) {
         g_eventLogger->warning(
@@ -718,8 +769,19 @@ bool AggInterpreterBase::validateEmbeddedProgram(
             "(emb_len=%u) at pc=%u", target, emb_len, pc);
         return false;
       }
+      targets[target >> 5] |= 1U << (target & 31);
     }
 
+    /* getInstructionPreProcessingInfo reads the length of these from
+     * their word 1. */
+    if ((opCode == Interpreter::BRANCH_ATTR_OP_ARG ||
+         opCode == Interpreter::BRANCH_MEM_OP_ARG ||
+         opCode == Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE) &&
+        emb_len - pc < 2) {
+      g_eventLogger->debug(
+          "validateEmbeddedProgram: instruction past the end at pc=%u", pc);
+      return false;
+    }
     Interpreter::InstructionPreProcessing processing;
     Uint32* next = Interpreter::getInstructionPreProcessingInfo(
         const_cast<Uint32*>(&emb_prog[pc]), processing);
@@ -729,6 +791,42 @@ bool AggInterpreterBase::validateEmbeddedProgram(
       return false;
     }
     Uint32 instr_len = (Uint32)(next - &emb_prog[pc]);
+    /* The DBTUP handlers read the operand words of an instruction
+     * without checking them against the end of the program: an
+     * instruction past the end took the words after the embedded
+     * program, or after the whole program, as its operands. */
+    if (instr_len > emb_len - pc) {
+      g_eventLogger->debug(
+          "validateEmbeddedProgram: instruction past the end at pc=%u", pc);
+      return false;
+    }
+    for (Uint32 word = pc + 1; word < pc + instr_len; word++) {
+      if (((targets[word >> 5] >> (word & 31)) & 1) != 0) {
+        g_eventLogger->debug(
+            "validateEmbeddedProgram: branch to word %u inside the "
+            "instruction at pc=%u",
+            word, pc);
+        return false;
+      }
+    }
+    if (opCode == Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE) {
+      /* [instr][typeId << 16 | argLen][size << 16 | csNumber][arg].  A
+       * CHAR, VARCHAR or LONGVARCHAR needs a known collation and the
+       * other types none: csNumber 0 on a string type reached cmpChar /
+       * cmpVarchar with a null collation in Dbtup's
+       * handleBranchMemOpArgInlineType and in evalEmbeddedForNullRow.
+       * Refused here once, before any row. */
+      const Uint32 type_id =
+          Interpreter::getBranchCol_AttrId(emb_prog[pc + 1]);
+      const Uint32 cs_number = emb_prog[pc + 2] & 0xFFFF;
+      const CHARSET_INFO* cs = nullptr;
+      if (!NdbSqlUtil::get_compare_collation(type_id, cs_number, &cs)) {
+        g_eventLogger->warning(
+            "validateEmbeddedProgram: type %u with collation %u at pc=%u",
+            type_id, cs_number, pc);
+        return false;
+      }
+    }
     pc += instr_len;
   }
   return true;
@@ -1575,6 +1673,21 @@ Int32 AggInterpreterBase::minMaxString(Uint32 reg_index, Uint32 agg_index,
     slot.prefix_bytes = src.prefix_bytes;
     slot.declared_size = src.declared_size;
   }
+  /* The slot compares and stores its values as the string type it was
+   * described with: the first value, or the setup metadata.  A value of
+   * another string type (the arm of a CASE, a register loaded as another
+   * type than the metadata gives) was compared with the slot's length
+   * prefix, and cmpVarchar or cmpLongvarchar failed its require, which
+   * stopped any data node.  NdbAggregator::RepeatAgg refuses CASE arms
+   * of different string types. */
+  if (unlikely(slot.prefix_bytes != src.prefix_bytes)) {
+    g_eventLogger->debug("AggInterpreterBase::minMaxString "
+                         "ZAGG_WRONG_OPERATION: a value with a %u-byte "
+                         "length prefix for slot %u of a %u-byte one",
+                         Uint32(src.prefix_bytes), m_acc_offset + agg_index,
+                         Uint32(slot.prefix_bytes));
+    return ZAGG_WRONG_OPERATION;
+  }
   AggResItem& dst = agg_res_ptr[agg_index];
   const Uint32 needed_payload = src.prefix_bytes + src.length;
   Uint32 alloc_size = (4 + needed_payload + 15) & ~15U;
@@ -1949,6 +2062,11 @@ Int32 AggInterpreterBase::executeStandardOpcode(
       reg_index = (value >> 12) & 0x0F;
       reg_index2 = (value >> 8) & 0x0F;
       m_registers[reg_index] = m_registers[reg_index2];
+      /* A string register's value is its capture: a kOpMax / kOpMin of
+       * the copy read the capture of an earlier load of reg_index, whose
+       * bytes the buffer no longer holds (a length prefix that no longer
+       * fits failed cmpVarchar's require). */
+      m_register_string_data[reg_index] = m_register_string_data[reg_index2];
       PA_INTERP_TRACE(m_frag_id,
                       "Move [%u]->[%u]",
                       reg_index2, reg_index);
@@ -1959,8 +2077,14 @@ Int32 AggInterpreterBase::executeStandardOpcode(
       if (m_registers[reg_index].type == NDB_TYPE_UNDEFINED) {
         m_registers[reg_index].type = NDB_TYPE_BIGINT;
         m_registers[reg_index].is_unsigned = false;
-        m_registers[reg_index].value.val_int64 = 0;
       }
+      /* A NULL register holds 0, as a NULL load and a NULL result of
+       * arithmetic leave it (SetRegisterNull).  The value the register
+       * had before went into a group's slot with the NULL, when the
+       * group's first row was NULL: Sum then asserted that a NULL slot
+       * holds 0 on the next row, and a release build added the old
+       * value to the sum. */
+      m_registers[reg_index].value.val_int64 = 0;
       m_registers[reg_index].is_null = true;
       PA_INTERP_TRACE(m_frag_id, "SetRegNull[%u]", reg_index);
       return 0;
@@ -2171,16 +2295,27 @@ MemChunk* AggInterpreterBase::allocNewChunk() {
   return chunk;
 }
 
-char* AggInterpreterBase::allocGroupData(Uint32 len, Uint32 key_len) {
+char* AggInterpreterBase::allocGroupData(Uint32 len, Uint32 key_len,
+                                         Uint32* error_code) {
   Uint32 total = ((GROUP_LINK_OVERHEAD + len) + 7) & ~7u;
+  /* A chunk's capacity, as allocNewChunk sets it.  Checked before any
+   * chunk is allocated: a larger group fits no chunk, and booking or
+   * allocating one for it would only waste query memory. */
+  static constexpr Uint32 chunk_capacity = MEM_CHUNK_SIZE - sizeof(MemChunk);
+  if (unlikely(total > chunk_capacity)) {
+    *error_code = ZAGG_GROUP_TOO_LARGE;
+    return nullptr;
+  }
   MemChunk* chunk = m_current_chunk;
   if (chunk == nullptr || chunk->used + total > chunk->capacity) {
     chunk = allocNewChunk();
     if (chunk == nullptr) {
+      *error_code = ZAGG_ALLOC_MEM_FAILED;
       return nullptr;
     }
     m_current_chunk = chunk;
-    if (total > chunk->capacity) {
+    if (unlikely(total > chunk->capacity)) {
+      *error_code = ZAGG_GROUP_TOO_LARGE;
       return nullptr;
     }
   }
@@ -2241,6 +2376,16 @@ void AggInterpreterBase::freeAllChunks() {
   m_total_chunk_bytes = 0;
 }
 
+bool AggInterpreterBase::initGBColType(GBColTypeInfo& info,
+                                       Uint32 typeId,
+                                       Uint32 maxBytes,
+                                       Uint32 csNumber) {
+  info.typeId = typeId;
+  info.maxBytes = maxBytes;
+  info.cmpFn = NdbSqlUtil::getStringResultCmp(typeId);
+  return NdbSqlUtil::get_compare_collation(typeId, csNumber, &info.cs);
+}
+
 /*
  * Step 2b — shared GROUP BY type-metadata initializer.
  *
@@ -2280,40 +2425,36 @@ Int32 AggInterpreterBase::initGBTypes(
         return ZAGG_OTHER_ERROR;
       }
       Uint32 position = attr_id & 0x7FFF;
-      const Uint32* p = linked_attr_data;
-      const Uint32* p_end = linked_attr_data + linked_attr_len;
-      Uint32 pos_count = 0;
-      while (p < p_end && pos_count < position) {
-        p += 2;
-        p += 1 + AttributeHeader::getDataSize(*p);
-        pos_count++;
-      }
-      if (unlikely(p + 2 >= p_end)) {
-        g_eventLogger->debug("initGBTypes: linked buffer too short for "
-            "position %u (linked_len=%u)", position, linked_attr_len);
+      const Uint32* ah = CteLinkedAttr::linkedEntryAH(
+          linked_attr_data, linked_attr_len, position);
+      if (unlikely(ah == nullptr)) {
+        g_eventLogger->debug("initGBTypes: linked buffer too short or "
+            "malformed for position %u (linked_len=%u)", position,
+            linked_attr_len);
         return ZAGG_OTHER_ERROR;
       }
-      Uint32 word0 = p[0];
-      Uint32 word1 = p[1];
+      Uint32 word0 = ah[-2];
+      Uint32 word1 = ah[-1];
 
       if (CteLinkedAttr::isCteMarker(word0)) {
         thrjamDebug(jamBuf);
-        info.typeId = CteLinkedAttr::decodeTypeId(word0);
-        info.maxBytes = CteLinkedAttr::decodeMaxBytes(word0);
-        info.cs = nullptr;
-        Uint32 csNumber = CteLinkedAttr::decodeCsNumber(word1);
-        if (csNumber != 0) {
-          thrjamDebug(jamBuf);
-          info.cs = NdbSqlUtil::get_collation(csNumber);
-          if (unlikely(info.cs == nullptr)) {
-            return ZAGG_OTHER_ERROR;
-          }
+        /* The marker comes from DBLQH (a CTE row) or, copied by DBSPJ,
+         * from the API (the virtual columns of a CTE_LOOKUP). */
+        if (unlikely(!initGBColType(info,
+                                    CteLinkedAttr::decodeTypeId(word0),
+                                    CteLinkedAttr::decodeMaxBytes(word0),
+                                    CteLinkedAttr::decodeCsNumber(word1)))) {
+          g_eventLogger->debug("initGBTypes: linked GROUP BY column %u of "
+              "type %u has a collation %u that does not fit it", i,
+              CteLinkedAttr::decodeTypeId(word0),
+              CteLinkedAttr::decodeCsNumber(word1));
+          return ZAGG_OTHER_ERROR;
         }
       } else {
         thrjamDebug(jamBuf);
         Uint32 tableId = word0;
         Uint32 tableVersion = word1;
-        Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
+        Uint32 linkedAttrId = AttributeHeader(*ah).getAttributeId();
         if (unlikely(tableId == 0 || tableId == RNIL)) {
           g_eventLogger->debug("initGBTypes: linked GROUP BY column has "
               "untyped synthetic metadata prefix tableId=%u schemaVersion=%u",
@@ -2323,18 +2464,14 @@ Int32 AggInterpreterBase::initGBTypes(
         const ColumnMeta *meta =
             findColumnMeta(tableId, tableVersion, linkedAttrId);
         if (meta != nullptr) {
-          info.typeId = meta->typeId;
-          info.maxBytes = meta->maxBytes;
-          info.cs = nullptr;
-          if (meta->csNumber != 0) {
-            thrjamDebug(jamBuf);
-            info.cs = NdbSqlUtil::get_collation(meta->csNumber);
-            if (unlikely(info.cs == nullptr)) {
-              return ZAGG_OTHER_ERROR;
-            }
+          thrjamDebug(jamBuf);
+          if (unlikely(!initGBColType(info, meta->typeId, meta->maxBytes,
+                                      meta->csNumber))) {
+            g_eventLogger->debug("initGBTypes: linked GROUP BY column %u "
+                "of type %u has a collation %u that does not fit it", i,
+                meta->typeId, meta->csNumber);
+            return ZAGG_OTHER_ERROR;
           }
-          const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
-          info.cmpFn = sqlType.m_cmp;
           continue;
         }
         g_eventLogger->debug("initGBTypes: missing metadata for linked "
@@ -2356,6 +2493,15 @@ Int32 AggInterpreterBase::initGBTypes(
             "metadata source", attr_id);
         return ZAGG_OTHER_ERROR;
       }
+      /* attr_id is a field of the program: an id past the table read
+       * the descriptor array out of bounds, and a charset position from
+       * there indexed charsetArray. */
+      if (unlikely(attr_id >= req_struct->tablePtrP->m_no_of_attributes)) {
+        g_eventLogger->debug("initGBTypes: local GROUP BY column attr_id=%u "
+            "past the table's %u columns", attr_id,
+            Uint32(req_struct->tablePtrP->m_no_of_attributes));
+        return ZATTRIBUTE_ID_ERROR;
+      }
       const Uint32* attrDesc = req_struct->tablePtrP->tabDescriptor +
           attr_id * ZAD_SIZE;
       info.typeId = AttributeDescriptor::getType(attrDesc[0]);
@@ -2366,9 +2512,9 @@ Int32 AggInterpreterBase::initGBTypes(
         Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
         info.cs = req_struct->tablePtrP->charsetArray[csPos];
       }
+      /* The table's own type and collation, which fit each other */
+      info.cmpFn = NdbSqlUtil::getStringResultCmp(info.typeId);
     }
-    const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
-    info.cmpFn = sqlType.m_cmp;
   }
   return publishGBTypes(jamBuf);
 }
@@ -2446,18 +2592,14 @@ Int32 AggInterpreterBase::initGBTypesFromMetadata(
         return ZAGG_OTHER_ERROR;
       }
 
-      GBColTypeInfo &info = m_gb_types[slotIndex];
-      info.typeId = typeId;
-      info.maxBytes = maxBytes;
-      info.cs = nullptr;
-      if (csNumber != 0) {
-        info.cs = NdbSqlUtil::get_collation(csNumber);
-        if (unlikely(info.cs == nullptr)) {
-          return ZAGG_OTHER_ERROR;
-        }
+      /* Refused here, at JOIN_AGG_SETUP_REQ, before any row */
+      if (unlikely(!initGBColType(m_gb_types[slotIndex], typeId, maxBytes,
+                                  csNumber))) {
+        g_eventLogger->debug("initGBTypesFromMetadata: GROUP BY column "
+            "%u of type %u has a collation %u that does not fit it",
+            slotIndex, typeId, csNumber);
+        return ZAGG_OTHER_ERROR;
       }
-      const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
-      info.cmpFn = sqlType.m_cmp;
       found[slotIndex] = true;
       foundCount++;
     }
@@ -2499,6 +2641,25 @@ Int32 AggInterpreterBase::publishGBTypes(EmulatedJamBuffer *jamBuf) {
   Uint32 max_xfrm_len = 0;
   for (Uint32 i = 0; i < m_n_gb_cols; i++) {
     thrjamDebug(jamBuf);
+    /* A GROUP BY column needs a compare function: the group hash table
+     * compares a column with a collation with it (findInBucket, DBLQH's
+     * single-row CTE probe), and the ORDER BY top-N of a CTE every
+     * GROUP BY column (compareGroupsByOrderSpec).  BLOB, TEXT, the
+     * undefined type and an unknown type id have none.  The API refuses
+     * a BLOB or TEXT group key (NdbAggregator::GroupBy), but the type of
+     * a linked column comes from a request (a CTE marker, the setup
+     * metadata), and a single-table aggregation program can name any
+     * column of its table.  A TEXT column of the table has a collation:
+     * its keys matched no group, so each row became a group of its own,
+     * and hashing them asserted a string type for a NO PAD collation.
+     * In the ORDER BY such a column failed every row (checkGroupKey).
+     * Refused here, before any group, so that no published GROUP BY type
+     * has a nullptr cmpFn. */
+    if (unlikely(m_gb_types[i].cmpFn == nullptr)) {
+      g_eventLogger->debug("publishGBTypes: GROUP BY column %u of type %u "
+          "has no compare function", i, m_gb_types[i].typeId);
+      return ZAGG_OTHER_ERROR;
+    }
     if (m_gb_types[i].cs != nullptr) {
       Uint32 lb = 0;
       if (m_gb_types[i].typeId == NDB_TYPE_VARCHAR) lb = 1;

@@ -1407,12 +1407,12 @@ fi
 %files ndbclient
 %defattr(-, root, root, -)
 %doc %{?license_files_server}
-%attr(755, root, root) %{_libdir}/mysql/libndbclient.so.6.1.0
+%attr(755, root, root) %{_libdir}/mysql/librondbclient.so.@NDB_SHARED_LIB_VERSION@
 
 %files ndbclient-devel
 %doc %{?license_files_server}
-%attr(644, root, root) %{_libdir}/mysql/libndbclient_static.a
-%{_libdir}/mysql/libndbclient.so
+%attr(644, root, root) %{_libdir}/mysql/librondbclient_static.a
+%{_libdir}/mysql/librondbclient.so
 %{_includedir}/mysql/storage
 
 %if 0%{?ndb_nodejs_extras_path:1}

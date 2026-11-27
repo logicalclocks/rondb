@@ -43,22 +43,27 @@ import (
 
 // TPC-H queries adapted for RonSQL.
 // These match the bench_*_ndbapi programs in block_unit_test/.
-// BETWEEN rewritten to >= AND <=; ORDER BY omitted (sort externally).
+// BETWEEN rewritten to >= AND <=.  Without ORDER BY the rows of RonSQL and
+// MySQL are paired by their GROUP BY key (the first Keys columns); the
+// *-ordered variants keep a top-N ORDER BY ... LIMIT and are compared in
+// order (RONDB-1124 T-21).
 var tpchQueries = []struct {
-	Name string
-	SQL  string
-	Skip string // non-empty: reason to skip (RonSQL limitation)
+	Name    string
+	SQL     string
+	Skip    string // non-empty: reason to skip (RonSQL limitation)
+	Keys    int    // leading GROUP BY key columns of each row
+	Ordered bool   // the query has an ORDER BY: compare rows in order
 }{
 	{"Q4", `SELECT o.o_orderpriority, COUNT(*)
 		FROM tpch_lineitem AS l
 		JOIN tpch_orders AS o ON o.o_orderkey = l.l_orderkey
-		GROUP BY o.o_orderpriority;`, ""},
+		GROUP BY o.o_orderpriority;`, "", 1, false},
 
 	{"minmax", `SELECT n.n_name,
 		MIN(s.s_acctbal), MAX(s.s_acctbal), COUNT(*), SUM(s.s_acctbal)
 		FROM tpch_supplier AS s
 		JOIN tpch_nation AS n ON n.n_nationkey = s.s_nationkey
-		GROUP BY n.n_name;`, ""},
+		GROUP BY n.n_name;`, "", 1, false},
 
 	{"Q3", `SELECT o.o_orderyear, o.o_orderpriority,
 		SUM(l.l_extendedprice * (1 - l.l_discount)), COUNT(*)
@@ -66,7 +71,7 @@ var tpchQueries = []struct {
 		JOIN tpch_orders AS o ON o.o_orderkey = l.l_orderkey
 		JOIN tpch_customer AS c ON c.c_custkey = o.o_custkey
 		WHERE c.c_mktsegment = 'BUILDING'
-		GROUP BY o.o_orderyear, o.o_orderpriority;`, ""},
+		GROUP BY o.o_orderyear, o.o_orderpriority;`, "", 2, false},
 
 	{"Q5", `SELECT n.n_name,
 		SUM(l.l_extendedprice * (1 - l.l_discount))
@@ -76,7 +81,7 @@ var tpchQueries = []struct {
 		JOIN tpch_nation AS n ON n.n_nationkey = c.c_nationkey
 		JOIN tpch_region AS r ON r.r_regionkey = n.n_regionkey
 		WHERE r.r_name = 'ASIA'
-		GROUP BY n.n_name;`, ""},
+		GROUP BY n.n_name;`, "", 1, false},
 
 	{"Q2", `SELECT r.r_name,
 		MIN(ps.ps_supplycost), MAX(ps.ps_supplycost),
@@ -87,7 +92,7 @@ var tpchQueries = []struct {
 		JOIN tpch_nation AS n ON n.n_nationkey = s.s_nationkey
 		JOIN tpch_region AS r ON r.r_regionkey = n.n_regionkey
 		WHERE p.p_size > 25
-		GROUP BY r.r_name;`, ""},
+		GROUP BY r.r_name;`, "", 1, false},
 
 	{"Q10", `SELECT c.c_name,
 		SUM(l.l_extendedprice * (1 - l.l_discount)), COUNT(*)
@@ -95,7 +100,7 @@ var tpchQueries = []struct {
 		JOIN tpch_orders AS o ON o.o_orderkey = l.l_orderkey
 		JOIN tpch_customer AS c ON c.c_custkey = o.o_custkey
 		JOIN tpch_nation AS n ON n.n_nationkey = c.c_nationkey
-		GROUP BY c.c_name;`, ""},
+		GROUP BY c.c_name;`, "", 1, false},
 
 	{"Q11", `SELECT ps.ps_partkey,
 		SUM(ps.ps_supplycost * ps.ps_availqty)
@@ -103,7 +108,7 @@ var tpchQueries = []struct {
 		JOIN tpch_supplier AS s ON s.s_suppkey = ps.ps_suppkey
 		JOIN tpch_nation AS n ON n.n_nationkey = s.s_nationkey
 		WHERE n.n_name = 'GERMANY'
-		GROUP BY ps.ps_partkey;`, ""},
+		GROUP BY ps.ps_partkey;`, "", 1, false},
 
 	{"nogroup", `SELECT COUNT(*),
 		SUM(l.l_extendedprice), SUM(l.l_quantity),
@@ -111,7 +116,7 @@ var tpchQueries = []struct {
 		FROM tpch_lineitem AS l
 		JOIN tpch_orders AS o ON o.o_orderkey = l.l_orderkey
 		JOIN tpch_customer AS c ON c.c_custkey = o.o_custkey
-		WHERE c.c_mktsegment = 'AUTOMOBILE';`, ""},
+		WHERE c.c_mktsegment = 'AUTOMOBILE';`, "", 0, false},
 
 	{"orderscan", `SELECT o.o_orderyear,
 		SUM(o.o_totalprice), COUNT(*),
@@ -119,15 +124,23 @@ var tpchQueries = []struct {
 		FROM tpch_orders AS o
 		JOIN tpch_customer AS c ON c.c_custkey = o.o_custkey
 		WHERE o.o_orderyear >= 1994 AND o.o_orderyear <= 1996
-		GROUP BY o.o_orderyear;`, ""},
+		GROUP BY o.o_orderyear;`, "", 1, false},
 
 	{"datescan", `SELECT l.l_shipmode,
 		SUM(l.l_extendedprice * (1 - l.l_discount)), COUNT(*)
 		FROM tpch_lineitem AS l
 		JOIN tpch_orders AS o ON o.o_orderkey = l.l_orderkey
 		WHERE l.l_shipdate >= '1994-01-01' AND l.l_shipdate <= '1994-12-31'
-		GROUP BY l.l_shipmode;`, ""},
+		GROUP BY l.l_shipmode;`, "", 1, false},
 
+	// Q9 is a star on lineitem (part, orders, supplier and partsupp join
+	// it, nation joins supplier) whose aggregation reads three branches:
+	// o.o_orderyear and n.n_name in the GROUP BY, ps.ps_supplycost in the
+	// SUM.  The pushed aggregation runs on one leaf and reads only that
+	// leaf's ancestors, so RonSQL refuses it at prepare
+	// (linked_source_is_leaf_ancestor, HTTP 400).  Supporting it is the
+	// next phase (F-fanout in pushdown_join_aggregation/cte_fix_plan.md):
+	// clear the skip when that lands.
 	{"Q9", `SELECT n.n_name, o.o_orderyear,
 		SUM(l.l_extendedprice * (1 - l.l_discount) - ps.ps_supplycost * l.l_quantity) AS amount
 		FROM tpch_lineitem AS l
@@ -138,7 +151,9 @@ var tpchQueries = []struct {
 			AND ps.ps_suppkey = l.l_suppkey
 		JOIN tpch_nation AS n ON n.n_nationkey = s.s_nationkey
 		WHERE p.p_name LIKE '%green%'
-		GROUP BY n.n_name, o.o_orderyear;`, "Q9 tree topology: partsupp join keys reference root across intermediate nodes"},
+		GROUP BY n.n_name, o.o_orderyear;`,
+		"Q9 aggregates columns of sibling branches that are not ancestors of the aggregation leaf (next phase: F-fanout)",
+		2, false},
 
 	{"Q12", `SELECT l.l_shipmode,
 		SUM(CASE WHEN o.o_orderpriority = '1-URGENT'
@@ -150,7 +165,37 @@ var tpchQueries = []struct {
 		JOIN tpch_orders AS o ON o.o_orderkey = l.l_orderkey
 		WHERE l.l_shipmode IN ('MAIL', 'SHIP')
 		AND l.l_shipdate >= '1994-01-01' AND l.l_shipdate <= '1994-12-31'
-		GROUP BY l.l_shipmode;`, ""},
+		GROUP BY l.l_shipmode;`, "", 1, false},
+
+	// Top-N by an aggregate: the TPC-H order of Q3, Q5 and Q10.
+	{"Q3-ordered", `SELECT o.o_orderyear, o.o_orderpriority,
+		SUM(l.l_extendedprice * (1 - l.l_discount)) AS revenue, COUNT(*)
+		FROM tpch_lineitem AS l
+		JOIN tpch_orders AS o ON o.o_orderkey = l.l_orderkey
+		JOIN tpch_customer AS c ON c.c_custkey = o.o_custkey
+		WHERE c.c_mktsegment = 'BUILDING'
+		GROUP BY o.o_orderyear, o.o_orderpriority
+		ORDER BY revenue DESC LIMIT 10;`, "", 2, true},
+
+	{"Q5-ordered", `SELECT n.n_name,
+		SUM(l.l_extendedprice * (1 - l.l_discount)) AS revenue
+		FROM tpch_lineitem AS l
+		JOIN tpch_orders AS o ON o.o_orderkey = l.l_orderkey
+		JOIN tpch_customer AS c ON c.c_custkey = o.o_custkey
+		JOIN tpch_nation AS n ON n.n_nationkey = c.c_nationkey
+		JOIN tpch_region AS r ON r.r_regionkey = n.n_regionkey
+		WHERE r.r_name = 'ASIA'
+		GROUP BY n.n_name
+		ORDER BY revenue DESC;`, "", 1, true},
+
+	{"Q10-ordered", `SELECT c.c_name,
+		SUM(l.l_extendedprice * (1 - l.l_discount)) AS revenue, COUNT(*)
+		FROM tpch_lineitem AS l
+		JOIN tpch_orders AS o ON o.o_orderkey = l.l_orderkey
+		JOIN tpch_customer AS c ON c.c_custkey = o.o_custkey
+		JOIN tpch_nation AS n ON n.n_nationkey = c.c_nationkey
+		GROUP BY c.c_name
+		ORDER BY revenue DESC LIMIT 20;`, "", 1, true},
 }
 
 func ronsqlURL() string {
@@ -255,8 +300,8 @@ func queryMySQL(t *testing.T, query string) string {
 	return strings.Join(lines, "\n")
 }
 
-// parseTSV splits tab-separated text into a header line and sorted
-// data lines. Empty trailing lines are removed.
+// parseTSV splits tab-separated text into a header line and the data
+// lines in the order they came. Empty trailing lines are removed.
 func parseTSV(tsv string) (header string, dataRows []string) {
 	lines := strings.Split(strings.TrimRight(tsv, "\n"), "\n")
 	if len(lines) == 0 {
@@ -264,8 +309,32 @@ func parseTSV(tsv string) (header string, dataRows []string) {
 	}
 	header = lines[0]
 	dataRows = lines[1:]
-	sort.Strings(dataRows)
 	return header, dataRows
+}
+
+// rowKey is the first keys fields of a row: its GROUP BY key.
+func rowKey(row string, keys int) string {
+	fields := strings.Split(row, "\t")
+	if keys > len(fields) {
+		keys = len(fields)
+	}
+	return strings.Join(fields[:keys], "\t")
+}
+
+// keyedRows maps each row by its GROUP BY key; a key seen twice is an
+// error, since a GROUP BY gives one row per key.
+func keyedRows(t *testing.T, side string, rows []string,
+	keys int) map[string]string {
+	t.Helper()
+	byKey := make(map[string]string, len(rows))
+	for _, row := range rows {
+		k := rowKey(row, keys)
+		if _, dup := byKey[k]; dup {
+			t.Fatalf("%s: two rows with the GROUP BY key %q", side, k)
+		}
+		byKey[k] = row
+	}
+	return byKey
 }
 
 // fieldsApproxEqual compares two tab-separated rows. Numeric fields
@@ -321,10 +390,39 @@ func TestRonSQLTpchQueries(t *testing.T) {
 					len(ronsqlRows), len(mysqlRows))
 			}
 
-			for i := range ronsqlRows {
-				if !fieldsApproxEqual(ronsqlRows[i], mysqlRows[i]) {
-					t.Errorf("row %d mismatch\n  RonSQL: %s\n  MySQL:  %s",
-						i, ronsqlRows[i], mysqlRows[i])
+			// T-21: rows were paired after a sort of whole lines, so a
+			// value formatted differently on the two sides could pair a
+			// row with another group's, and no ORDER BY was checked.  An
+			// ordered query is compared in order, its keys exactly; the
+			// others are paired by their GROUP BY key.
+			if q.Ordered {
+				for i := range ronsqlRows {
+					if rowKey(ronsqlRows[i], q.Keys) !=
+						rowKey(mysqlRows[i], q.Keys) ||
+						!fieldsApproxEqual(ronsqlRows[i], mysqlRows[i]) {
+						t.Errorf("row %d mismatch\n  RonSQL: %s\n  MySQL:  %s",
+							i, ronsqlRows[i], mysqlRows[i])
+					}
+				}
+				return
+			}
+			ronsqlByKey := keyedRows(t, "RonSQL", ronsqlRows, q.Keys)
+			mysqlByKey := keyedRows(t, "MySQL", mysqlRows, q.Keys)
+			keys := make([]string, 0, len(mysqlByKey))
+			for k := range mysqlByKey {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				ronsqlRow, ok := ronsqlByKey[k]
+				if !ok {
+					t.Errorf("group %q missing in RonSQL\n  MySQL:  %s",
+						k, mysqlByKey[k])
+					continue
+				}
+				if !fieldsApproxEqual(ronsqlRow, mysqlByKey[k]) {
+					t.Errorf("group %q mismatch\n  RonSQL: %s\n  MySQL:  %s",
+						k, ronsqlRow, mysqlByKey[k])
 				}
 			}
 		})

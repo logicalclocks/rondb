@@ -1,0 +1,31 @@
+--source include/have_ndb.inc
+
+# P-46: an interpreted range scan of an ordered index, not through
+# DBSPJ, with two ranges (RONDB-1124). For each range after the first,
+# DBTUP moves on to the next parameter block of the program's parameter
+# area (Dbtup::nextAttrInfoParam) and copies it to the start of the area
+# (Dbtup::scanCopyAttrinfo). DBSPJ writes one block per range, but a
+# plain scan carries the block lengths as the API wrote them, and only
+# ndbassert checked them against the section: a release data node read
+# and wrote gigabytes past DBTUP's interpreter buffer, a debug one
+# failed the assert. The header lengths were also summed in 32 bits.
+# The header must now fit the section and each block lie within the
+# area, or the scan fails with ZTOTAL_LEN_ERROR (882).
+# DBTUP now reads parameter blocks only for a scan from DBSPJ; the
+# parameter area of a scan from DBTC is the program's subroutine region,
+# used whole for every range (P-49). Error insert 4047 has DBTUP read
+# this scan's area as blocks all the same, so the block cases run under
+# it, on data nodes built with ERROR_INSERT only.
+# The case creates an ordered index on T1's KOL1 and scans KOL1 = 1 and
+# KOL1 = 2 with two well-formed blocks first, which must get
+# SCAN_TABCONF, then with header lengths that wrap in 32 bits, which
+# must get SCAN_TABREF 882. Under error insert 4047 the well-formed
+# blocks must get SCAN_TABCONF again, and a first block and a second
+# block that run past the area must each get SCAN_TABREF 882. Every
+# data node must still be started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P46
+--let $spj_case_title = P-46: range scan whose parameter blocks run past the parameter area
+--source suite/ndb_spj/include/spj_malformed_case.inc

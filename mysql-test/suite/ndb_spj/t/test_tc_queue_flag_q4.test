@@ -1,0 +1,14 @@
+--source include/have_ndb.inc
+
+# RONDB-1124, Q-4: short TCINDXREQ whose key length sets the flag bit.
+# Not malicious: a short TCINDXREQ with a 16-word key, whose key length
+# sets bit 24 of requestInfo, the bit of the passQueue flag in a long
+# signal, on an invalid connection. Before, DBTC read it as the flag
+# and ndbrequire(!passQueueingFlag) stopped the data node. It must be
+# dropped without a report.
+# See suite/ndb_spj/include/tc_queue_flag_case.inc.
+
+--let $spj_case = Q4
+--let $spj_case_title = Q-4: short TCINDXREQ whose key length sets the flag bit
+--let $tc_queue_flag_reported = 0
+--source suite/ndb_spj/include/tc_queue_flag_case.inc

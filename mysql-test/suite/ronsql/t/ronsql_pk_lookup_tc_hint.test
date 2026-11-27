@@ -1,0 +1,117 @@
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# RONDB-1124 X-16: the key reads of a single-table RonSQL statement start
+# their transaction on a data node that holds a replica of the first key,
+# as RDRS pk-read does (RonSQLPreparer::start_pk_hinted: the partition of
+# the key from Ndb::computeHash).  On a READ_BACKUP table the committed
+# read then runs on the TC's own node, and DBTC counts it in the
+# LOCAL_READS row of ndbinfo.counters.  Without the hint the TC is any
+# data node.  On one node group every node holds every row, so every read
+# is local anyway, and this test only checks that each arm takes the hint
+# and reads its row.  On two node groups (the ronsql_ng2r2 mirror) about
+# half the reads were remote; now every one is local.
+#
+# The arms, each one key read per statement:
+#   pt   pass-through, the WHERE all key equalities (NdbRecAttr readTuple);
+#   ptr  pass-through with a residual conjunct (NdbRecord readTuple with
+#        an interpreted filter);
+#   agg  an aggregate over an IN list of one distinct key (the aggregating
+#        key read of execute_pk_lookup_aggregate);
+#   ci   a VARCHAR key in a case-insensitive collation, written in upper
+#        case, on a table partitioned by part of its primary key: the hash
+#        is that of the normalized value of the distribution key alone.
+# The statements go to the RDRS endpoint without an API key, which reads
+# no other row, so other key reads can only add to LOCAL_READS.
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE th_int (
+  id INT NOT NULL PRIMARY KEY,
+  v INT NOT NULL
+) ENGINE=NDB COMMENT="NDB_TABLE=READ_BACKUP=1";
+INSERT INTO th_int
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 16)
+  SELECT n, n * 10 FROM seq;
+CREATE TABLE th_str (
+  a VARCHAR(16) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL,
+  b INT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY (a, b)
+) ENGINE=NDB COMMENT="NDB_TABLE=READ_BACKUP=1" PARTITION BY KEY (a);
+INSERT INTO th_str
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 16)
+  SELECT CONCAT('key', n), n % 3, n FROM seq;
+--enable_warnings
+--enable_query_log
+
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/tc_hint_explain.out
+
+--echo
+--echo === Each arm is a key read ===
+--let $QUERY=SELECT v FROM th_int WHERE id = 5;
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qxF 'Execute as primary key lookup.' $EXPLAIN_FILE && echo "pt: a key read" || echo "UNEXPECTED: pt is not a key read"
+--let $QUERY=SELECT v FROM th_int WHERE id = 5 AND v > 0;
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qxF 'Execute as primary key lookup.' $EXPLAIN_FILE && grep -qxF 'CONDITIONS (1 key and 1 filter):' $EXPLAIN_FILE && echo "ptr: a key read with a filter" || echo "UNEXPECTED: ptr is not a key read with a filter"
+--let $QUERY=SELECT COUNT(*) AS n FROM th_int WHERE id IN (5, 5) AND v > 0;
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qxF 'Execute as 1 aggregating primary key lookups (IN list on `id`: 2 values, 1 distinct).' $EXPLAIN_FILE && echo "agg: one aggregating key read" || echo "UNEXPECTED: agg is not one aggregating key read"
+# A query with a string literal goes through a file: ronsql_explain.inc
+# quotes $QUERY for the shell.
+--let $QUERY=
+--let $QUERY_FILE=$MYSQL_TMP_DIR/tc_hint_query.sql
+--write_file $QUERY_FILE
+SELECT v FROM th_str WHERE a = 'KEY5' AND b = 2;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qxF 'Execute as primary key lookup.' $EXPLAIN_FILE && echo "ci: a key read" || echo "UNEXPECTED: ci is not a key read"
+--remove_file $EXPLAIN_FILE
+
+--echo
+--echo === 64 key reads, each on its TC's own node ===
+--let $local_before=`SELECT SUM(val) FROM ndbinfo.counters WHERE block_name = 'DBTC' AND counter_name = 'LOCAL_READS'`
+--let $i=1
+while ($i <= 16)
+{
+  --exec printf '{"query":"SELECT v FROM th_int WHERE id = $i;","database":"test","outputFormat":"TEXT_NOHEADER"}' | curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @- >> $MYSQL_TMP_DIR/tc_hint_pt.out
+  --exec printf '{"query":"SELECT v FROM th_int WHERE id = $i AND v > 0;","database":"test","outputFormat":"TEXT_NOHEADER"}' | curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @- >> $MYSQL_TMP_DIR/tc_hint_ptr.out
+  --exec printf '{"query":"SELECT COUNT(*) AS n FROM th_int WHERE id IN ($i, $i) AND v > 0;","database":"test","outputFormat":"TEXT_NOHEADER"}' | curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @- >> $MYSQL_TMP_DIR/tc_hint_agg.out
+  --let $b=`SELECT $i % 3`
+  --exec printf '{"query":"SELECT v FROM th_str WHERE a = \047KEY$i\047 AND b = $b;","database":"test","outputFormat":"TEXT_NOHEADER"}' | curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @- >> $MYSQL_TMP_DIR/tc_hint_ci.out
+  --inc $i
+}
+--let $local_after=`SELECT SUM(val) FROM ndbinfo.counters WHERE block_name = 'DBTC' AND counter_name = 'LOCAL_READS'`
+--echo pt:
+--exec paste -s -d ' ' $MYSQL_TMP_DIR/tc_hint_pt.out
+--echo ptr:
+--exec paste -s -d ' ' $MYSQL_TMP_DIR/tc_hint_ptr.out
+--echo agg:
+--exec paste -s -d ' ' $MYSQL_TMP_DIR/tc_hint_agg.out
+--echo ci:
+--exec paste -s -d ' ' $MYSQL_TMP_DIR/tc_hint_ci.out
+if (`SELECT $local_after - $local_before >= 64`)
+{
+  --echo Every key read ran on its TC's own node.
+}
+if (`SELECT $local_after - $local_before < 64`)
+{
+  --let $local_reads=`SELECT $local_after - $local_before`
+  --echo UNEXPECTED: $local_reads of the 64 key reads ran on their TC's own node.
+}
+--remove_file $MYSQL_TMP_DIR/tc_hint_pt.out
+--remove_file $MYSQL_TMP_DIR/tc_hint_ptr.out
+--remove_file $MYSQL_TMP_DIR/tc_hint_agg.out
+--remove_file $MYSQL_TMP_DIR/tc_hint_ci.out
+
+--disable_query_log
+--disable_warnings
+DROP TABLE th_int;
+DROP TABLE th_str;
+--enable_warnings
+--enable_query_log

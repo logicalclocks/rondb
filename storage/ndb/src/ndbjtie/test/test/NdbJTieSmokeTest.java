@@ -46,7 +46,7 @@ public class NdbJTieSmokeTest extends JTieTestBase {
 
     protected int init() {
         // load native library
-        loadSystemLibrary("ndbclient");
+        loadSystemLibrary("rondbclient");
 
         // get system variable for connect string
         mgmdConnect

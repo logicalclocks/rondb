@@ -102,6 +102,9 @@ class NdbScanFilterImpl {
   int cond_col_col(Interpreter::BinaryCondition, Uint32 attrId1,
                    Uint32 attrId2);
 
+  int cond_col_col_typed(Interpreter::BinaryCondition, Uint32 attrId1,
+                         Uint32 attrId2);
+
   int cond_col_param(Interpreter::BinaryCondition, Uint32 attrId,
                      Uint32 paramId);
 
@@ -705,6 +708,143 @@ int NdbScanFilterImpl::cond_col_col(Interpreter::BinaryCondition op,
 }
 
 /**
+ * RonDB: register branch table for cmp_typed().  Unlike the column
+ * branches above, branch_<cond>(RegL, RegR, label) branches when
+ * RegL <cond> RegR, so the table is in the natural order.
+ */
+typedef int (NdbInterpretedCode::*BranchReg2)(Uint32 RegLvalue,
+                                              Uint32 RegRvalue, Uint32 label);
+
+static constexpr BranchReg2 table6[] = {
+    &NdbInterpretedCode::branch_eq,  // EQ
+    &NdbInterpretedCode::branch_ne,  // NE
+    &NdbInterpretedCode::branch_lt,  // LT
+    &NdbInterpretedCode::branch_le,  // LE
+    &NdbInterpretedCode::branch_gt,  // GT
+    &NdbInterpretedCode::branch_ge,  // GE
+};
+
+static constexpr int tab6_sz = sizeof(table6) / sizeof(table6[0]);
+
+/* The registers cmp_typed() reads its two columns into. */
+static constexpr Uint32 TypedCmpRegLeft = 6;
+static constexpr Uint32 TypedCmpRegRight = 7;
+
+/**
+ * Whether READ_ATTR_INTO_REG gives the column's value a register type
+ * that the register compare compares as SQL does: the integer types
+ * (sign- or zero-extended to 64 bits) and FLOAT and DOUBLE (as a double).
+ */
+static bool typed_register_column(const NdbDictionary::Column *col) {
+  if (col->getArrayType() != NdbDictionary::Column::ArrayTypeFixed ||
+      col->getLength() != 1)
+    return false;
+  switch (col->getType()) {
+    case NdbDictionary::Column::Tinyint:
+    case NdbDictionary::Column::Tinyunsigned:
+    case NdbDictionary::Column::Smallint:
+    case NdbDictionary::Column::Smallunsigned:
+    case NdbDictionary::Column::Mediumint:
+    case NdbDictionary::Column::Mediumunsigned:
+    case NdbDictionary::Column::Int:
+    case NdbDictionary::Column::Unsigned:
+    case NdbDictionary::Column::Bigint:
+    case NdbDictionary::Column::Bigunsigned:
+    case NdbDictionary::Column::Float:
+    case NdbDictionary::Column::Double:
+      return true;
+    default:
+      return false;
+  }
+}
+
+int NdbScanFilterImpl::cond_col_col_typed(Interpreter::BinaryCondition op,
+                                          Uint32 attrId1, Uint32 attrId2) {
+  if (m_error.code != 0) return -1;
+
+  if (op < 0 || op >= tab6_sz) {
+    /* Condition is out of bounds */
+    m_error.code = 4262;
+    return -1;
+  }
+
+  /**
+   * Only AND/OR is possible, as NAND/NOR is converted to
+   * negated OR/AND in begin().
+   */
+  if (m_current.m_group != NdbScanFilter::AND &&
+      m_current.m_group != NdbScanFilter::OR) {
+    /* Operator is not defined in NdbScanFilter::Group */
+    m_error.code = 4260;
+    return -1;
+  }
+
+  if (!m_sql_cmp_semantics) {
+    /* Function not implemented yet: the typed compare has the SQL
+     * semantics for NULL only. */
+    m_error.code = 4003;
+    return -1;
+  }
+
+  const NdbDictionary::Table *table = m_code->getTable();
+  if (table == nullptr) {
+    /* NdbInterpretedCode instruction requires that table is set */
+    m_error.code = 4538;
+    return -1;
+  }
+
+  const NdbDictionary::Column *col1 = table->getColumn(attrId1);
+  const NdbDictionary::Column *col2 = table->getColumn(attrId2);
+  if (col1 == nullptr || col2 == nullptr) {
+    /* Column is NULL */
+    m_error.code = 4261;
+    return -1;
+  }
+  if (!typed_register_column(col1) || !typed_register_column(col2)) {
+    /* Column types must be identical when comparing two columns: the
+     * typed compare takes numeric columns only. */
+    m_error.code = 4557;
+    return -1;
+  }
+
+  /**
+   * Find the operation to branch to a conclusive true/false outcome.
+   * Note that both AND and negate implies an inverted condition, having
+   * both of them is a double negation, canceling out each other.
+   */
+  Interpreter::BinaryCondition branchOp;
+  if ((m_current.m_group == NdbScanFilter::AND) != (m_negate))
+    branchOp = negateBinary[op];
+  else
+    branchOp = op;
+
+  /**
+   * A NULL on either side makes the comparison unknown.  As the column
+   * branches do under the SQL semantics that begin() sets by the group,
+   * an unknown in an AND group takes the branch (BranchIfUnknown), and
+   * in an OR group goes on to the next term (ContinueIfUnknown).
+   */
+  const bool branch_if_unknown = (m_current.m_group == NdbScanFilter::AND);
+  const Uint32 null_label =
+      branch_if_unknown ? m_current.m_ownLabel : (Uint32)m_label++;
+  if (m_code->read_attr(TypedCmpRegLeft, attrId1) == -1 ||
+      m_code->branch_eq_null(TypedCmpRegLeft, null_label) == -1 ||
+      m_code->read_attr(TypedCmpRegRight, attrId2) == -1 ||
+      m_code->branch_eq_null(TypedCmpRegRight, null_label) == -1)
+    return propagateErrorFromCode();
+
+  const BranchReg2 branch = table6[branchOp];
+  if ((m_code->*branch)(TypedCmpRegLeft, TypedCmpRegRight,
+                        m_current.m_ownLabel) == -1)
+    return propagateErrorFromCode();
+
+  if (!branch_if_unknown && m_code->def_label(null_label) == -1)
+    return propagateErrorFromCode();
+
+  return 0;
+}
+
+/**
  * Branch table for comparing a column with parameter (in attrInfo).
  *
  * See comment for table3[] wrt. the confusing usage of branch
@@ -841,6 +981,27 @@ int NdbScanFilter::cmp(BinaryCondition cond, int ColId1, int ColId2) {
       return m_impl.cond_col_col(Interpreter::EQ, ColId1, ColId2);
     case COND_NE:
       return m_impl.cond_col_col(Interpreter::NE, ColId1, ColId2);
+    default:
+      /* Condition is out of bounds */
+      m_impl.m_error.code = 4262;
+      return -1;
+  }
+}
+
+int NdbScanFilter::cmp_typed(BinaryCondition cond, int ColId1, int ColId2) {
+  switch (cond) {
+    case COND_LE:
+      return m_impl.cond_col_col_typed(Interpreter::LE, ColId1, ColId2);
+    case COND_LT:
+      return m_impl.cond_col_col_typed(Interpreter::LT, ColId1, ColId2);
+    case COND_GE:
+      return m_impl.cond_col_col_typed(Interpreter::GE, ColId1, ColId2);
+    case COND_GT:
+      return m_impl.cond_col_col_typed(Interpreter::GT, ColId1, ColId2);
+    case COND_EQ:
+      return m_impl.cond_col_col_typed(Interpreter::EQ, ColId1, ColId2);
+    case COND_NE:
+      return m_impl.cond_col_col_typed(Interpreter::NE, ColId1, ColId2);
     default:
       /* Condition is out of bounds */
       m_impl.m_error.code = 4262;

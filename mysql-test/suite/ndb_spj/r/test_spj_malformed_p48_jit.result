@@ -1,0 +1,23 @@
+SET @jit_f0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+SET @jit_c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SET @jit_r0 = (SELECT SUM(rows_executed) FROM ndbinfo.jit);
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# P-48: join aggregation linked attribute entry shorter than its type, JIT on
+Running command
+Result of command: 0
+Test program success!
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) > @jit_f0
+AS p48_outer_join_leaf_refused_by_jit;
+p48_outer_join_leaf_refused_by_jit
+1
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >
+@jit_c0 AS p48_compiled_by_jit;
+p48_compiled_by_jit
+1
+SELECT (SELECT SUM(rows_executed) FROM ndbinfo.jit) > @jit_r0
+AS p48_rows_on_jit;
+p48_rows_on_jit
+1

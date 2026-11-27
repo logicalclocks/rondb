@@ -1173,11 +1173,12 @@ func countRonSQLResultRows(data []byte) int {
 // RonSQL phase timings, emitted when the server is compiled with
 // RONSQL_PHASE_STATS (the default; see RonSQLPerf.hpp) and the request
 // carries the same header (PostWithHeader sends it). Value format:
-// "parse=12,analyze=3,load=45,...,rows=8,attempts=1,fetched=40,...,close=9"
+// "parse=12,analyze=3,load=45,...,rows=8,attempts=1,fetched=40,...,close=9,retry_ndb=0"
 // — timing fields in microseconds, last ronsql_op attempt; rows/attempts/
 // fetched are counters (fetched: rows the NDB API received, rows: rows
 // drained). close (scan, query and transaction close, part of execute)
-// comes last in the header.
+// follows the counters; retry_ndb (the NDB error code that made the last
+// retry, 0 if none) comes last and is not recorded here.
 const ronsqlPhasesHeader = "x-ronsql-phases"
 
 // ronsqlPhaseOrder is the canonical display order of the timing fields.

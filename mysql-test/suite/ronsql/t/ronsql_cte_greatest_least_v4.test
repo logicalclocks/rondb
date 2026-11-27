@@ -32,7 +32,6 @@ call mtr.add_suppression("Participant timeout");
 #   15  CASE arm sizing with nullable pair-op
 #   16  CTE projection + join mixed aggregate
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --echo

@@ -1369,7 +1369,8 @@ ndb_jit_h_branch_attr_op_arg(JitState *s, uint32_t inst_word_off) {
     return 0;
   }
   int rc = ctx->block_tup->evalBranchColForJit(
-      ctx->req_struct, ctx->prog_buf + inst_word_off, ctx->param_buf);
+      ctx->req_struct, (ctx->prog_buf + inst_word_off), ctx->param_buf,
+      ctx->param_len);
   if (unlikely(rc < 0)) {
     /* Kernel-eval error: the interpreter's handleBranchAttrOp returns
      * this same negative and its loop TUPKEY_aborts with -rc. ronsql_jit
@@ -1472,13 +1473,13 @@ ndb_jit_h_branch_linked_null(JitState *s, uint32_t want_null) {
  * schemaVersion, AttrHeader, data) to the packed position and decodes
  * the value BY THE PACKED NDB TYPE into s->regs_i64[dst_reg].
  *
- * NULL / missing buffer / out-of-range position: where the
- * interpreter sets the register's NULL_INDICATOR (so the program's
- * BRANCH_REG_EQ/NE_NULL guards fire), JIT registers carry no null
- * state and the bridge FOLDS those guards — so the row takes the
- * per-row interpreter fallback instead, which replays the exact null
- * path. Completing rows therefore never hold NULL (the 5D
- * invariant). The bridge admits only types exact in signed i64
+ * NULL / missing buffer / out-of-range position / an entry with fewer
+ * bytes than the type: where the interpreter sets the register's
+ * NULL_INDICATOR (so the program's BRANCH_REG_EQ/NE_NULL guards fire),
+ * JIT registers carry no null state and the bridge FOLDS those guards —
+ * so the row takes the per-row interpreter fallback instead, which
+ * replays the exact null path. Completing rows therefore never hold
+ * NULL (the 5D invariant). The bridge admits only types exact in signed i64
  * (signed widths sign-extend, narrow unsigned zero-extend); the
  * default arm is defensive only. */
 extern "C" void
@@ -1496,27 +1497,21 @@ ndb_jit_h_load_linked_col(JitState *s, uint32_t pos_type,
   const Uint32 position = pos_type >> 8;
   const Uint32 type_id  = pos_type & 0xFF;
 
-  const Uint32 *linked = ctx->req_struct->m_linked_attr_data;
-  const Uint32 linked_len = ctx->req_struct->m_linked_attr_len;
-  const Uint32 *p = linked;
-  const Uint32 *p_end = linked + linked_len;
-  if (linked != nullptr) {
-    Uint32 pos_count = 0;
-    while (p < p_end) {
-      if (pos_count == position) break;
-      p += 2;  /* skip tableId, schemaVersion */
-      p += 1 + AttributeHeader::getDataSize(*p);
-      pos_count++;
-    }
-  }
-  if (linked == nullptr || p >= p_end) {
+  /* The interpreter's walk: no buffer, no such entry or a malformed
+   * buffer is NULL there, the per-row fallback here. */
+  const Uint32 *p = CteLinkedAttr::linkedEntryAH(
+      ctx->req_struct->m_linked_attr_data,
+      ctx->req_struct->m_linked_attr_len, position);
+  if (p == nullptr) {
     s->row_fallback = 1;
     s->regs_i64[dst_reg] = 0;
     return;
   }
-  p += 2;  /* skip tableId, schemaVersion */
+  /* So is an entry with fewer bytes than the type decodes: the
+   * interpreter reads it as NULL. */
   AttributeHeader ah(*p);
-  if (ah.isNULL()) {
+  if (ah.isNULL() ||
+      ah.getByteSize() < CteLinkedAttr::linkedColumnBytes(type_id)) {
     s->row_fallback = 1;
     s->regs_i64[dst_reg] = 0;
     return;
@@ -1883,6 +1878,7 @@ Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
    * null. */
   ctx.prog_buf   = agg->agg_program() + agg->agg_prog_start_pos();
   ctx.param_buf  = nullptr;
+  ctx.param_len  = 0;
   ctx.agg_res_ptr = agg_res_ptr;
   ctx.error_code = 0;
 #ifdef ERROR_INSERT
@@ -2422,6 +2418,7 @@ bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
                                   JitEntry             entry_fn,
                                   const Uint32        *prog_buf,
                                   const Uint32        *param_buf,
+                                  Uint32               param_len,
                                   int                 *out_error) {
   *out_error = 0;
   /* Per-row context: no aggregation instance. The cold-call helpers
@@ -2437,6 +2434,7 @@ bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
   ctx.req_struct = req_struct;
   ctx.prog_buf   = prog_buf;
   ctx.param_buf  = param_buf;
+  ctx.param_len  = param_len;
   ctx.agg_res_ptr = nullptr;   /* scan filters have no aggregate slots */
   ctx.error_code = 0;
 #ifdef ERROR_INSERT

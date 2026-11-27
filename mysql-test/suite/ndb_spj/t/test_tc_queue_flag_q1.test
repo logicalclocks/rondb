@@ -1,0 +1,12 @@
+--source include/have_ndb.inc
+
+# RONDB-1124, Q-1: TCKEYREQ with the rate queue flag from the API.
+# A TCKEYREQ with the passQueue flag on a seized connection. Before,
+# the ndbrequire on the transaction's count of re-sent requests
+# stopped the data node.
+# See suite/ndb_spj/include/tc_queue_flag_case.inc.
+
+--let $spj_case = Q1
+--let $spj_case_title = Q-1: TCKEYREQ with the rate queue flag from the API
+--let $tc_queue_flag_reported = 1
+--source suite/ndb_spj/include/tc_queue_flag_case.inc

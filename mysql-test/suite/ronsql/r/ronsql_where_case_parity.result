@@ -1,0 +1,396 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== wc-1: WHERE i < bi ===
+== Query ==
+SELECT COUNT(*) AS n FROM wc WHERE i < bi;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+3
+
+=== wc-1: CASE WHEN i < bi ===
+== Query ==
+SELECT SUM(CASE WHEN i < bi THEN 1 ELSE 0 END) AS n FROM wc;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+3
+
+=== wc-2: WHERE i = si ===
+== Query ==
+SELECT COUNT(*) AS n FROM wc WHERE i = si;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+3
+
+=== wc-2: CASE WHEN i = si ===
+== Query ==
+SELECT SUM(CASE WHEN i = si THEN 1 ELSE 0 END) AS n FROM wc;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+3
+
+=== wc-3: WHERE bi >= bu ===
+== Query ==
+SELECT COUNT(*) AS n FROM wc WHERE bi >= bu;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+3
+
+=== wc-3: CASE WHEN bi >= bu ===
+== Query ==
+SELECT SUM(CASE WHEN bi >= bu THEN 1 ELSE 0 END) AS n FROM wc;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+3
+
+=== wc-4: WHERE ti <> i ===
+== Query ==
+SELECT COUNT(*) AS n FROM wc WHERE ti <> i;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+1
+
+=== wc-4: CASE WHEN ti <> i ===
+== Query ==
+SELECT SUM(CASE WHEN ti <> i THEN 1 ELSE 0 END) AS n FROM wc;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+1
+
+=== wc-5: WHERE f < d ===
+== Query ==
+SELECT COUNT(*) AS n FROM wc WHERE f < d;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+1
+
+=== wc-5: CASE WHEN f < d ===
+== Query ==
+SELECT SUM(CASE WHEN f < d THEN 1 ELSE 0 END) AS n FROM wc;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+1
+
+=== wc-6: WHERE f = d ===
+== Query ==
+SELECT COUNT(*) AS n FROM wc WHERE f = d;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+5
+
+=== wc-6: CASE WHEN f = d ===
+== Query ==
+SELECT SUM(CASE WHEN f = d THEN 1 ELSE 0 END) AS n FROM wc;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+5
+
+=== wc-7: WHERE i <= d ===
+== Query ==
+SELECT COUNT(*) AS n FROM wc WHERE i <= d;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+5
+
+=== wc-7: CASE WHEN i <= d ===
+== Query ==
+SELECT SUM(CASE WHEN i <= d THEN 1 ELSE 0 END) AS n FROM wc;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+5
+
+=== wc-8: WHERE bu > d ===
+== Query ==
+SELECT COUNT(*) AS n FROM wc WHERE bu > d;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+6
+
+=== wc-8: CASE WHEN bu > d ===
+== Query ==
+SELECT SUM(CASE WHEN bu > d THEN 1 ELSE 0 END) AS n FROM wc;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+6
+
+=== wc-9: WHERE si > ti ===
+== Query ==
+SELECT COUNT(*) AS n FROM wc WHERE si > ti;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+4
+
+=== wc-9: CASE WHEN si > ti ===
+== Query ==
+SELECT SUM(CASE WHEN si > ti THEN 1 ELSE 0 END) AS n FROM wc;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+4
+
+=== wc-10: WHERE i < bi OR f = d ===
+== Query ==
+SELECT COUNT(*) AS n FROM wc WHERE i < bi OR f = d;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+5
+
+=== wc-10: CASE WHEN i < bi OR f = d ===
+== Query ==
+SELECT SUM(CASE WHEN i < bi OR f = d THEN 1 ELSE 0 END) AS n FROM wc;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+5
+
+=== wc-11: WHERE NOT (i < bi) ===
+== Query ==
+SELECT COUNT(*) AS n FROM wc WHERE NOT (i < bi);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+4
+
+=== wc-11: CASE WHEN NOT (i < bi), refused ===
+Error handling: RPE
+ronsql_cli caught exception: CASE condition atom: only =, !=, <, <=, >, >= supported.
+
+=== wc-12: WHERE NOT (i < bi OR ti <> i) ===
+== Query ==
+SELECT COUNT(*) AS n FROM wc WHERE NOT (i < bi OR ti <> i);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+n
+4
+
+=== wc-12: CASE WHEN NOT (i < bi OR ti <> i), refused ===
+Error handling: RPE
+ronsql_cli caught exception: CASE condition atom: only =, !=, <, <=, >, >= supported.
+
+=== wc-13: a CTE body WHERE f < d OR bi >= bu ===
+== Query ==
+WITH c AS (SELECT id AS k, COUNT(*) AS n FROM wc WHERE f < d OR bi >= bu GROUP BY id) SELECT COUNT(*) AS g, SUM(c.n) AS n FROM c;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+g	n
+4	4
+
+=== wc-14: the filter of a joined table read by its key ===
+== Query ==
+SELECT k.g, COUNT(*) AS n FROM wk AS k JOIN wc AS w ON w.id = k.id WHERE w.i <= w.d GROUP BY k.g;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+g	n
+0	3
+1	2
+== Explain Query ==
+
+=== wc-15: the residual filter of key reads ===
+== Query ==
+SELECT id, i, bi FROM wc WHERE id IN (3, 4, 9) AND i < bi;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+id	i	bi
+4	7	7000000000
+9	2147483647	2147483648
+
+=== wc-r1: INT against DECIMAL through RDRS, refused as unsupported ===
+HTTP 400
+x-ronsql-error-class: unsupported
+
+=== wc-r2: VARCHAR against INT through ronsql_cli, refused ===
+Error handling: RPE
+ronsql_cli caught exception: A comparison of two columns in a WHERE clause is not supported for these types: the columns must have the same type, precision, length, scale and character set (BLOB/TEXT excluded), or both be integer, FLOAT or DOUBLE columns. Compare a column to a constant instead.

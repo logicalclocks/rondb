@@ -1,0 +1,8 @@
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# P-39: join aggregation MAX of a register that is a BIGINT or a CHAR
+Running command
+Result of command: 0
+Test program success!

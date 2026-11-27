@@ -21,7 +21,6 @@ call mtr.add_suppression("Participant timeout");
 # operands uniformly through the aggregation register machine, so v6
 # turned out to be test-only.
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --echo

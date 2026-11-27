@@ -1,0 +1,37 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== fe-0: the plan is a fe_drv root with a CTE_LOOKUP leaf ===
+== Explain Query ==
+
+=== fe-1: control, no forced eviction ===
+== Query ==
+WITH fc AS (SELECT k, SUM(v) AS t, COUNT(*) AS n
+FROM fe_src GROUP BY k)
+SELECT d.g, COUNT(*), SUM(fc.t), SUM(fc.n)
+FROM fe_drv AS d JOIN fc ON fc.k = d.k
+GROUP BY d.g;
+
+Number of output lines, including header: 21
+
+== Diff ==
+==========
+
+
+
+
+=== fe-2: main aggregation limited to 3 groups (DBLQH 5126) ===
+== Query ==
+WITH fc AS (SELECT k, SUM(v) AS t, COUNT(*) AS n
+FROM fe_src GROUP BY k)
+SELECT d.g, COUNT(*), SUM(fc.t), SUM(fc.n)
+FROM fe_drv AS d JOIN fc ON fc.k = d.k
+GROUP BY d.g;
+
+Number of output lines, including header: 21
+
+== Diff ==
+==========
+
+
+

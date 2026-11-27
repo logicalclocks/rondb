@@ -55,7 +55,7 @@ public class MySqlUtilsTest extends JTieTestBase {
           called only from the process main thread. This is only critical for
           debug build.
         */
-        loadSystemLibrary("ndbclient");
+        loadSystemLibrary("rondbclient");
 
 /*
         static native void dbugPush(String state);
@@ -194,7 +194,7 @@ public class MySqlUtilsTest extends JTieTestBase {
           called only from the process main thread. This is only critical for
           debug build.
         */
-        loadSystemLibrary("ndbclient");
+        loadSystemLibrary("rondbclient");
         CharsetMap csmap = CharsetMap.create();
 
         out.println("--> Test that mysql includes UTF-8 and 16-bit Unicode");
@@ -441,7 +441,7 @@ public class MySqlUtilsTest extends JTieTestBase {
           called only from the process main thread. This is only critical for
           debug build.
         */
-        loadSystemLibrary("ndbclient");
+        loadSystemLibrary("rondbclient");
 
         test_s2b2s("3.3", 2, 1);
         test_s2b2s("124.000", 20, 4);

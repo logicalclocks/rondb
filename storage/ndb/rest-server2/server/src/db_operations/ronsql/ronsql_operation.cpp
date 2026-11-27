@@ -162,6 +162,10 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
     }
     catch (RonSQLRetryableError& e) {
       DEB_TRACE();
+      // Why this attempt is retried (or, on the last one, why the retries
+      // ran out), for the x-ronsql-phases header.
+      STAT_COUNT(params.phase_stats, retry_ndb,
+                 (Uint32)(e.ndb_error_code() > 0 ? e.ndb_error_code() : 0));
       if (is_last_attempt) {
         /*
          * RONDB-1124: an exhausted retry budget is "try again later", not a

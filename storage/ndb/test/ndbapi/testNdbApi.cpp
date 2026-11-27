@@ -7653,6 +7653,202 @@ int runRateQueueAbortKeepsExecFlag(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+static const char *rateLimitUserA = "rl_user_a";
+static const char *rateLimitUserB = "rl_user_b";
+
+static int setRateLimitUser(NdbTransaction *trans, const char *user) {
+  return trans->setUserId(user, Uint32(strlen(user)));
+}
+
+/* Reads row 0 in a batch of its own, committing the transaction if commit. */
+static int readRowZeroBatch(NdbTransaction *trans, const NdbRecord *rowRec,
+                            Uint8 *row, bool commit) {
+  if (trans->readTuple(rowRec, (const char *)row, rowRec, (char *)row,
+                       NdbOperation::LM_CommittedRead) == nullptr) {
+    return -1;
+  }
+  return trans->execute(commit ? NdbTransaction::Commit
+                               : NdbTransaction::NoCommit);
+}
+
+int runRateLimitUserPerTransaction(NDBT_Context *ctx, NDBT_Step *step) {
+  // RONDB-1124: DBTC accounts every request of a transaction to the rate
+  // limit user that the request starting the transaction named, or to none,
+  // and keeps that user in the transaction record. A request that names no
+  // user is accounted to it; a request that names another user, also in a
+  // transaction started without one, aborts the transaction with 2207, and
+  // a scan in the transaction that names another user is refused with
+  // 2207. Before, each request was accounted to the user it named, or to
+  // its table's database, and an operation without a user id that the rate
+  // queue re-sent after a dirty read of the transaction had completed
+  // crashed DBTC. The MTR wrapper creates the USER entities rl_user_a and
+  // rl_user_b. NdbTransaction::setUserId between batches makes the API send
+  // another user.
+  const NdbDictionary::Table *tab = ctx->getTab();
+  Ndb *ndb = GETNDB(step);
+  const NdbRecord *rowRec = tab->getDefaultRecord();
+  const Uint32 len = NdbDictionary::getRecordRowLength(rowRec);
+  HugoCalculator calc(*tab);
+  std::unique_ptr<Uint8[]> row(new Uint8[len]());
+  calc.equalForRow(row.get(), rowRec, 0);
+
+  // 1. One user from the first batch to the commit.
+  {
+    NdbTransaction *trans = ndb->startTransaction();
+    CHECKE(trans != nullptr, (*ndb));
+    CHECKE(setRateLimitUser(trans, rateLimitUserA) == 0, (*trans));
+    CHECKE(readRowZeroBatch(trans, rowRec, row.get(), false) == 0, (*trans));
+    CHECKE(readRowZeroBatch(trans, rowRec, row.get(), true) == 0, (*trans));
+    ndb->closeTransaction(trans);
+  }
+  // 2. Another user in the second batch: the transaction is aborted.
+  {
+    NdbTransaction *trans = ndb->startTransaction();
+    CHECKE(trans != nullptr, (*ndb));
+    CHECKE(setRateLimitUser(trans, rateLimitUserA) == 0, (*trans));
+    CHECKE(readRowZeroBatch(trans, rowRec, row.get(), false) == 0, (*trans));
+    CHECKE(setRateLimitUser(trans, rateLimitUserB) == 0, (*trans));
+    CHECK(readRowZeroBatch(trans, rowRec, row.get(), true) == -1);
+    g_info << "Second user: error " << trans->getNdbError().code << endl;
+    CHECK(trans->getNdbError().code == 2207);
+    ndb->closeTransaction(trans);
+  }
+  // 3. No user in the first batch, a user in the second: aborted.
+  {
+    NdbTransaction *trans = ndb->startTransaction();
+    CHECKE(trans != nullptr, (*ndb));
+    CHECKE(readRowZeroBatch(trans, rowRec, row.get(), false) == 0, (*trans));
+    CHECKE(setRateLimitUser(trans, rateLimitUserA) == 0, (*trans));
+    CHECK(readRowZeroBatch(trans, rowRec, row.get(), true) == -1);
+    g_info << "User after none: error " << trans->getNdbError().code << endl;
+    CHECK(trans->getNdbError().code == 2207);
+    ndb->closeTransaction(trans);
+  }
+  // 4. As 2, through operations defined with getNdbOperation() rather than
+  // an NdbRecord (HugoOperations), which carried no user id before.
+  {
+    HugoOperations hugoOps(*tab);
+    CHECK(hugoOps.startTransaction(ndb) == 0);
+    CHECK(setRateLimitUser(hugoOps.getTransaction(), rateLimitUserA) == 0);
+    CHECK(hugoOps.pkReadRecord(ndb, 0, 1, NdbOperation::LM_CommittedRead) ==
+          0);
+    CHECK(hugoOps.execute_NoCommit(ndb) == 0);
+    CHECK(setRateLimitUser(hugoOps.getTransaction(), rateLimitUserB) == 0);
+    CHECK(hugoOps.pkReadRecord(ndb, 0, 1, NdbOperation::LM_CommittedRead) ==
+          0);
+    const int code = hugoOps.execute_Commit(ndb);
+    g_info << "Second user, NdbOperation: error " << code << endl;
+    CHECK(code == 2207);
+    CHECK(hugoOps.closeTransaction(ndb) == 0);
+  }
+  // 5. A scan in the transaction that names another user is refused.
+  {
+    NdbTransaction *trans = ndb->startTransaction();
+    CHECKE(trans != nullptr, (*ndb));
+    CHECKE(setRateLimitUser(trans, rateLimitUserA) == 0, (*trans));
+    CHECKE(readRowZeroBatch(trans, rowRec, row.get(), false) == 0, (*trans));
+    CHECKE(setRateLimitUser(trans, rateLimitUserB) == 0, (*trans));
+    NdbScanOperation *scanOp =
+        trans->scanTable(rowRec, NdbOperation::LM_CommittedRead);
+    CHECKE(scanOp != nullptr, (*trans));
+    int rc = trans->execute(NdbTransaction::NoCommit);
+    if (rc == 0) {
+      const char *out = nullptr;
+      rc = scanOp->nextResult(&out, true, false);
+    }
+    CHECK(rc == -1);
+    int code = scanOp->getNdbError().code;
+    if (code == 0) {
+      code = trans->getNdbError().code;
+    }
+    g_info << "Scan of a second user: error " << code << endl;
+    CHECK(code == 2207);
+    ndb->closeTransaction(trans);
+  }
+  return NDBT_OK;
+}
+
+int runSetRateQueueHoldErrorInsert(NDBT_Context *ctx, NDBT_Step *step) {
+  // Error insert 8319 in DBTC: every operation of a transaction that a
+  // database with a rate limit accounts is queued in its rate queue, and
+  // each re-send is held for 1 s.
+  NdbRestarter restarter;
+  CHECK(restarter.insertErrorInAllNodes(8319) == 0);
+  return NDBT_OK;
+}
+
+/*
+ * Table t (pk INT PRIMARY KEY, v INT) of database db, which the MTR wrapper
+ * creates with the row (1, 10).
+ */
+static const NdbDictionary::Table *getRateQueueOtherTable(Ndb *ndb,
+                                                         const char *db) {
+  const BaseString saved(ndb->getDatabaseName());
+  if (ndb->setDatabaseName(db) != 0) {
+    return nullptr;
+  }
+  const NdbDictionary::Table *tab = ndb->getDictionary()->getTable("t");
+  ndb->setDatabaseName(saved.c_str());
+  return tab;
+}
+
+int runRateQueueDirtyReadOtherDatabase(NDBT_Context *ctx, NDBT_Step *step) {
+  // RONDB-1124: a transaction keeps its reference to the database whose
+  // rate queue it uses (m_queuedDatabasePtrI) while one of its requests
+  // waits in that queue or has been re-sent from it. Before, the dirty read
+  // that completed the transaction's outstanding LQH operations released
+  // the reference while the next operation waited in the queue, and the
+  // re-sent operation was then taken to its own table's database: a null
+  // database record when that database has no rate limit (DBTC crashed),
+  // and another database's count of re-sent requests when it has one (its
+  // ndbrequire failed, or the first database's count stayed up). With
+  // error insert 8319 both operations of the batch are queued under the
+  // test table's database, which has a rate limit: a committed read of the
+  // test table, then one of a table in another database. Their re-sends
+  // are held for 1 s and come back in order. DBTC releases a dirty read as
+  // soon as it sends it to DBLQH, so the first one completes the
+  // transaction's LQH operations while the second is still on its way.
+  // The MTR wrapper sets the rate limit on the test database and creates
+  // rl_noquota.t, in a database without a rate limit, and rl_quota2.t, in
+  // a database with one.
+  const NdbDictionary::Table *tab = ctx->getTab();
+  Ndb *ndb = GETNDB(step);
+  const NdbRecord *rowRec = tab->getDefaultRecord();
+  const Uint32 len = NdbDictionary::getRecordRowLength(rowRec);
+  HugoCalculator calc(*tab);
+  std::unique_ptr<Uint8[]> row(new Uint8[len]());
+  const char *const databases[] = {"rl_noquota", "rl_quota2"};
+  for (const char *db : databases) {
+    const NdbDictionary::Table *other = getRateQueueOtherTable(ndb, db);
+    CHECKE(other != nullptr, (*ndb->getDictionary()));
+
+    NdbTransaction *trans = ndb->startTransaction();
+    CHECKE(trans != nullptr, (*ndb));
+    calc.equalForRow(row.get(), rowRec, 0);
+    CHECKE(trans->readTuple(rowRec, (const char *)row.get(), rowRec,
+                            (char *)row.get(),
+                            NdbOperation::LM_CommittedRead) != nullptr,
+           (*trans));
+    NdbOperation *op = trans->getNdbOperation(other);
+    CHECKE(op != nullptr, (*trans));
+    CHECKE(op->readTuple(NdbOperation::LM_CommittedRead) == 0, (*op));
+    CHECKE(op->equal("pk", Int32(1)) == 0, (*op));
+    NdbRecAttr *value = op->getValue("v");
+    CHECKE(value != nullptr, (*op));
+    const NDB_TICKS start = NdbTick_getCurrentTicks();
+    CHECKE(trans->execute(NdbTransaction::Commit) == 0, (*trans));
+    const Uint64 ms =
+        NdbTick_Elapsed(start, NdbTick_getCurrentTicks()).milliSec();
+    g_info << db << ": the batch completed after " << ms << " ms" << endl;
+    CHECK(value->int32_value() == 10);
+    // Each re-send is held for 1 s. A faster reply means that the reads
+    // were not queued, and nothing was tested.
+    CHECK(ms >= 1000);
+    ndb->closeTransaction(trans);
+  }
+  return NDBT_OK;
+}
+
 int runDatabaseAndSchemaName(NDBT_Context *ctx, NDBT_Step *) {
   Ndb_cluster_connection *con = &ctx->m_cluster_connection;
 
@@ -8329,6 +8525,26 @@ TESTCASE("RateQueueAbortKeepsExecFlag",
   INITIALIZER(runWriteRecord);
   INITIALIZER(runSetRateQueueAbortErrorInsert);
   STEP(runRateQueueAbortKeepsExecFlag);
+  FINALIZER(runClearErrorInsert);
+  FINALIZER(runClearTable);
+}
+TESTCASE("RateLimitUserPerTransaction",
+         "Check that every request of a transaction is accounted to the rate "
+         "limit user that started it and that a request or scan naming "
+         "another user fails with 2207 (needs the USER entities rl_user_a "
+         "and rl_user_b)") {
+  INITIALIZER(runWriteRecord);
+  STEP(runRateLimitUserPerTransaction);
+  FINALIZER(runClearTable);
+}
+TESTCASE("RateQueueDirtyReadOtherDatabase",
+         "Check that a transaction keeps the database of its rate queue "
+         "while an operation waits in the queue after a dirty read of the "
+         "transaction has completed (needs a database quota on the test "
+         "database and the tables rl_noquota.t and rl_quota2.t)") {
+  INITIALIZER(runWriteRecord);
+  INITIALIZER(runSetRateQueueHoldErrorInsert);
+  STEP(runRateQueueDirtyReadOtherDatabase);
   FINALIZER(runClearErrorInsert);
   FINALIZER(runClearTable);
 }

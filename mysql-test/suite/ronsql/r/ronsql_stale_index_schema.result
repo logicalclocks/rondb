@@ -1,0 +1,55 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== sx-1: control; RDRS's schema cache lists sx_c ===
+== Query ==
+SELECT c, COUNT(*) AS n, SUM(v) AS s FROM sx_t WHERE c >= 2 GROUP BY c;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c, COUNT(*) AS n, SUM(v) AS s FROM sx_t WHERE c >= 2 GROUP BY c|
+c	n	s
+2	2	50
+3	2	90
+4	1	60
+
+=== sx-2: DROP INDEX through mysqld, the query through RDRS at once ===
+DROP INDEX sx_c ON sx_t;
+HTTP 200
+== Diff with mysqld ==
+== At most one retry (must be 1) ==
+1
+
+=== sx-3: CREATE INDEX through mysqld, the query through RDRS at once ===
+CREATE INDEX sx_c ON sx_t (c);
+HTTP 200
+== Diff with mysqld ==
+== At most one retry (must be 1) ==
+1
+
+=== sx-4: DROP INDEX and CREATE INDEX of the same name through mysqld, the query through RDRS at once ===
+DROP INDEX sx_c ON sx_t;
+CREATE INDEX sx_c ON sx_t (c);
+HTTP 200
+== Diff with mysqld ==
+== At most one retry (must be 1) ==
+1
+
+=== sx-5: ndb_drop_index, the query through RDRS at once ===
+HTTP 200
+== Diff with mysqld ==
+== The first attempt found the cached list stale: two attempts (must be 1) ==
+1
+== ronsql_cli, which lists the indexes itself ==
+
+=== sx-6: a table that does not exist ===
+HTTP 400
+x-ronsql-error-class: semantic
+x-ronsql-ndb-error: 723
+[semantic] Caught exception: Failed to get table.

@@ -17,7 +17,6 @@ call mtr.add_suppression("Participant timeout");
 # Test 10 still exercises the nullable-column rejection (now via
 # validate_greatest_least_pair_loads instead of the old CE tracker).
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --echo

@@ -15,7 +15,6 @@ call mtr.add_suppression("Participant timeout");
 # includes consume and remove $QUERY_FILE, hence each query is written
 # twice.
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 --let QUERY_FILE=$MYSQL_TMP_DIR/agg_lookups_query.sql
 --let $EXPLAIN_FILE=$MYSQL_TMP_DIR/agg_lookups_explain.out

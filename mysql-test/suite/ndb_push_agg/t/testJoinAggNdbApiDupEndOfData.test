@@ -1,0 +1,36 @@
+# RONDB-1124: a second pure EndOfData after the one that ends a join
+# aggregation (testJoinAggNdbApi Test 26).  DBTC sends it when an API
+# close crosses the end of the scan ("Confirming scan close"); DBTC
+# error insert 8320 sends the final EndOfData twice.  Each query read to
+# the end must give the right result, each query closed at once must
+# close, and the cluster must stay up.  Before the fix a debug NDB API
+# aborted on assert(m_finalWorkers < getWorkerCount()) in
+# NdbQueryImpl::setFetchTerminated(), or on assert(m_scanningQuery) in
+# NdbTransaction::receiveSCAN_TABCONF().  Debug only: the error insert
+# needs debug data nodes.
+#
+# A debug NDB API may log a dropped EndOfData with a timestamp, so the
+# program's output goes to a file and only its result lines are
+# compared.  A crash fails the --exec; a failed check prints a FAILED
+# line and "Some tests FAILED", which differ from the result file.
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+--let $dup_eod_out = $MYSQLTEST_VARDIR/tmp/testJoinAggNdbApiDupEndOfData.out
+--echo Running testJoinAggNdbApi --only 26
+--error 0,1
+--exec $NDB_PUSH_AGG_DIR/testJoinAggNdbApi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --only 26 > $dup_eod_out 2>&1
+--exec grep -E "^(Test 26|FAILED|All tests|Some tests)" $dup_eod_out
+--remove_file $dup_eod_out
+
+# The program clears 8320, but not if it died: clear it here too.  The
+# mgm output goes to a test-local file that is removed again, so that
+# check-testcase sees the same vardir before and after: appending to
+# the shared $NDB_TOOLS_OUTPUT (ndb_testrun.log) fails the first test on
+# a worker that creates it.
+--let $dup_eod_mgm = $MYSQLTEST_VARDIR/tmp/testJoinAggNdbApiDupEndOfData_mgm.log
+--exec $NDB_MGM -e "all error 0" >> $dup_eod_mgm
+--remove_file $dup_eod_mgm
+
+# Clean up database created by test program
+DROP DATABASE IF EXISTS test_db;

@@ -32,6 +32,7 @@
 #include "RonSQLParser.y.hpp"
 #include "RonSQLLexer.l.hpp"
 #include "RonSQLPreparer.hpp"
+#include "RonSQLPreparerInternal.hpp"
 #include <iostream>
 #include <new>
 #include <sstream>
@@ -182,6 +183,50 @@ check_groupby_limit(const GroupbyColumns* groupby)
 }
 
 /*
+ * RONDB-1124: arithmetic on a CHAR, VARCHAR or LONGVARCHAR value, which
+ * check_string_arithmetic refuses while the statement is planned, and
+ * program_write_or_fail when NdbAggregator refuses it
+ * (kErrStringArithmetic) in a shape that check did not see.
+ */
+static const char* const STRING_ARITHMETIC_UNSUPPORTED =
+    "Arithmetic on string columns is not supported.";
+
+/*
+ * F-15: the aggregation program is too large, a limit error.  The data
+ * nodes take a program of fewer than MAX_AGG_PROGRAM_WORD_SIZE words,
+ * which Finalize() checks.  NdbAggregator writes the program into a
+ * buffer of MAX_VEC_SEARCH_PROGRAM_WORD_SIZE words, and the call whose
+ * words do not fit there fails with the same kErrTooBigProgram before
+ * Finalize() is reached: a program of that size failed as "Failed
+ * writing aggregation program. Please report a bug.", an internal error.
+ * Called where a write or Finalize() failed; returns for any other error.
+ */
+static void
+throw_if_program_too_big(NdbAggregator* agg)
+{
+  if (agg->GetError().errno_ != kErrTooBigProgram) return;
+  throw RonSQLPermanentError(
+      RonSQLErrorClass::LIMIT,
+      "The aggregate expressions are too large: the aggregation program "
+      "must be shorter than " + std::to_string(MAX_AGG_PROGRAM_WORD_SIZE) +
+      " words.");
+}
+
+// F-15: a write to the aggregation program of agg that returned ok, or
+// the limit error of a program too large, or the unsupported error of
+// arithmetic on a string, or msg.
+static void
+program_write_or_fail(NdbAggregator* agg, bool ok, const char* msg)
+{
+  if (likely(ok)) return;
+  throw_if_program_too_big(agg);
+  if (agg->GetError().errno_ == kErrStringArithmetic)
+    throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
+                               STRING_ARITHMETIC_UNSUPPORTED);
+  throw RonSQLPermanentError(msg);
+}
+
+/*
  * RONSQL-14: Finalize the aggregator, or throw.  The GROUP BY and
  * aggregate counts are checked before programming (check_groupby_limit,
  * AggregationAPICompiler::new_agg), but the size of one group's record
@@ -193,20 +238,21 @@ static void
 finalize_aggregator(NdbAggregator* agg, const char* msg)
 {
   if (agg->Finalize()) return;
+  throw_if_program_too_big(agg);
   switch (agg->GetError().errno_)
   {
   case kErrTooBigResult:
     throw RonSQLPermanentError(
         RonSQLErrorClass::LIMIT,
-        "The GROUP BY columns and aggregate results of one group can need "
-        "more than " + std::to_string(MAX_AGG_RESULT_BATCH_BYTES / 1024) +
-        " KB, counted at the declared column sizes.");
-  case kErrTooBigProgram:
+        "The aggregate results of one group can need more than " +
+        std::to_string(MAX_AGG_GROUP_VALUE_BYTES) +
+        " bytes, counted at the declared column sizes.");
+  case kErrTooBigGroupKey:
     throw RonSQLPermanentError(
         RonSQLErrorClass::LIMIT,
-        "The aggregate expressions are too large: the aggregation program "
-        "must be shorter than " + std::to_string(MAX_AGG_PROGRAM_WORD_SIZE) +
-        " words.");
+        "The GROUP BY columns of one group can need more than " +
+        std::to_string(MAX_AGG_GROUP_KEY_BYTES) +
+        " bytes, counted at the declared column sizes.");
   case kErrTooManyGroupbyCols:
     throw RonSQLPermanentError(RonSQLErrorClass::LIMIT,
                                "GROUP BY has more than " +
@@ -269,6 +315,9 @@ groupby_or_fail(NdbAggregator* agg, bool ok, const char* msg,
 RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_conf(conf),
   m_amalloc(conf.amalloc),
+#ifdef ERROR_INSERT
+  m_arena_test_hook(conf.amalloc, conf.allocation_test_hook),
+#endif
   m_context(*this),
   m_columns(conf.amalloc),
   m_column_qualifiers(conf.amalloc),
@@ -329,6 +378,8 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
       check_cte_groupby_key_types();
       check_cte_temporal_outputs();
     }
+    check_string_arithmetic();  // RONDB-1124
+    check_bit_orderby_columns();  // T-15
     if (m_cte_scopes.size() > 0 && is_join_query())
       check_pushed_query_size();
     if (!is_join_query())
@@ -347,6 +398,12 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     STAT_SET(m_conf.phase_stats, compile_us, s_compile_start, s_compile_end);
     determine_explain();
     prepare_avro_outputs();
+    // O-13, O-11: refuse a result the printers cannot write, before any
+    // scan and before any output.  EXPLAIN prints no result rows.
+    if (!m_do_explain) {
+      check_printed_output_types();
+      check_json_output_names();
+    }
     PERF_LOG("  prepare total", t_prep_start, t_compile_end);
     m_status = Status::PREPARED;
   }
@@ -360,6 +417,9 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf, ParseOnly parse_only):
   m_conf(conf),
   m_parse_only(true),
   m_amalloc(conf.amalloc),
+#ifdef ERROR_INSERT
+  m_arena_test_hook(conf.amalloc, conf.allocation_test_hook),
+#endif
   m_context(*this),
   m_columns(conf.amalloc),
   m_column_qualifiers(conf.amalloc),
@@ -1988,9 +2048,13 @@ RonSQLPreparer::load_single_table()
   std::basic_ostream<char>& err = *m_conf.err_stream;
   // Populate m_main_scope.table
   m_main_scope.table = DBG(m_dict->getTable(DBG(m_context.ast_root.table.c_str())));
-  require_prm(m_main_scope.table != NULL,
-              "Failed to get table. Note that RonSQL only supports tables"
-              " with ENGINE=NDB.");
+  if (m_main_scope.table == NULL) {
+    // X-9: the dictionary's error decides; 723 (no such table) is a
+    // semantic error, a temporary error is retried.
+    throw RonSQLDictionaryError("Failed to get table. Note that RonSQL only"
+                                " supports tables with ENGINE=NDB.",
+                                m_dict->getNdbError());
+  }
   // Populate m_indexes — use schema cache if available to skip listIndexes()
   ronsql_require_bug(m_dict != NULL,
                      "load() has no dictionary.");
@@ -2004,14 +2068,17 @@ RonSQLPreparer::load_single_table()
       : nullptr;
 
   NdbDictionary::Dictionary::List index_list;
-  if (cached_indexes == nullptr) {
-    require_sch(m_dict->listIndexes(index_list, *m_main_scope.table) == 0,
-                "Failed to list indexes.");
+  if (cached_indexes == nullptr &&
+      m_dict->listIndexes(index_list, *m_main_scope.table) != 0) {
+    // X-9: listIndexes() does not fail for a schema change (a dropped
+    // table has no indexes), so its error is a temporary one (retried),
+    // an unknown result or an internal one.
+    throw RonSQLDictionaryError("Failed to list indexes.",
+                                m_dict->getNdbError());
   }
 
   // Iterate: either cached index names or the raw list
   Uint32 idx_count = cached_indexes ? cached_indexes->size() : index_list.count;
-  bool err_failed_to_get_index = false;
   bool err_object_status_not_retrieved = false;
   bool err_table_verid_mismatch = false;
   for (Uint32 i = 0; i < idx_count; i++) {
@@ -2041,7 +2108,22 @@ RonSQLPreparer::load_single_table()
                 "Unexpected index type.");
     const NdbDictionary::Index* index = m_dict->getIndex(idx_name, *m_main_scope.table);
     if (index == NULL) {
-      err_failed_to_get_index = true;
+      const NdbError& dict_err = m_dict->getNdbError();
+      if (dict_err.code != 4243 /* Index not found */ &&
+          dict_err.classification != NdbError::SchemaError) {
+        // X-9: the dictionary could not answer; a temporary error is
+        // retried.
+        throw RonSQLDictionaryError("Failed to get index.", dict_err);
+      }
+      // X-10: the list names an index the dictionary does not have (4243,
+      // or 241 for one built for an earlier incarnation of the table): it
+      // was dropped after the list was made.  The RDRS schema cache keeps
+      // a table's list while the table's id and version are unchanged
+      // (and its TTL has not run out), and dropping an index through the
+      // NDB API leaves them so.  m_indexes does not get the index, so
+      // unload_schema would find no change: it reports one for this
+      // flag, invalidates the cache entry, and the statement runs again.
+      m_load_found_dropped_index = true;
       DEB_TRACE();
       continue;
     }
@@ -2060,7 +2142,7 @@ RonSQLPreparer::load_single_table()
   require_sch(DBG(m_main_scope.table->getObjectStatus()) ==
               NdbDictionary::Object::Status::Retrieved,
               "Schema cache for table not up to date.");
-  if (err_failed_to_get_index) {
+  if (m_load_found_dropped_index) {
     DEB_TRACE();
     throw RonSQLMaybeStaleSchema("Failed to get index.");
   }
@@ -2107,6 +2189,7 @@ RonSQLPreparer::load_single_table()
     resolved[col_idx].dict_column = col;
   }
   m_main_scope.resolved_columns = resolved;
+  check_enum_set_columns(m_main_scope);  // T-15
   // F-9, F-11: before plan_index_and_filter takes keys, bounds and
   // filters from the WHERE.
   m_context.ast_root.where_expression = exact_constant_comparisons(
@@ -3610,6 +3693,7 @@ RonSQLPreparer::load_join()
   m_main_scope.table = m_main_scope.join_plan.ops[0].table;
 
   resolve_columns_for_scope(m_main_scope, m_context.ast_root, true);
+  check_enum_set_columns(m_main_scope);  // T-15
 
   // F-9, F-11: comparisons with a stored column; those with a CTE output
   // follow in load(), once the CTE body scopes exist.
@@ -6213,25 +6297,76 @@ check_no_nested_exists(const ConditionalExpression* ce)
 }
 
 /*
+ * F-13: whether a column is one READ_ATTR_INTO_REG loads into a typed
+ * register that the register compare compares as SQL does: the integer
+ * types and FLOAT and DOUBLE.  A CASE condition compares two such columns
+ * in registers (generate_embedded_condition), and so does a WHERE filter
+ * since F-13 (NdbScanFilter::cmp_typed, the same type set).
+ */
+static bool
+numeric_register_column(const NdbDictionary::Column* c)
+{
+  switch (c->getType()) {
+  case NdbDictionary::Column::Tinyint:
+  case NdbDictionary::Column::Tinyunsigned:
+  case NdbDictionary::Column::Smallint:
+  case NdbDictionary::Column::Smallunsigned:
+  case NdbDictionary::Column::Mediumint:
+  case NdbDictionary::Column::Mediumunsigned:
+  case NdbDictionary::Column::Int:
+  case NdbDictionary::Column::Unsigned:
+  case NdbDictionary::Column::Bigint:
+  case NdbDictionary::Column::Bigunsigned:
+  case NdbDictionary::Column::Float:
+  case NdbDictionary::Column::Double:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/*
+ * F-13: whether a WHERE filter can compare these two columns of one
+ * table: the same type (isBindable: type, precision, length, scale and
+ * character set, BLOB/TEXT excluded; NdbScanFilter::cmp,
+ * BRANCH_ATTR_OP_ATTR), or two numeric ones in any mix
+ * (NdbScanFilter::cmp_typed).  apply_filter_cmp emits by the same test,
+ * and check_cte_body_col_vs_col refuses the rest at prepare time.
+ */
+static bool
+filter_can_compare_columns(const NdbDictionary::Column* a,
+                           const NdbDictionary::Column* b)
+{
+  return a->isBindable(*b) == 0 ||
+         (numeric_register_column(a) && numeric_register_column(b));
+}
+
+static const char* const FILTER_COLUMN_PAIR_UNSUPPORTED =
+    "A comparison of two columns in a WHERE clause is not supported for "
+    "these types: the columns must have the same type, precision, length, "
+    "scale and character set (BLOB/TEXT excluded), or both be integer, "
+    "FLOAT or DOUBLE columns. Compare a column to a constant instead.";
+
+/*
  * F-colvscol W2 (cte_body_colvscol_plan.md): walk a CTE-body WHERE tree
  * and validate every comparison predicate that compares two columns
  * (column-vs-column).
  *
- * Tier (a): a col-vs-col comparison is accepted when both operands are
- * stored columns of the body's root op and the pair passes
- * NdbDictionary::Column::isBindable — identical type, precision, length,
- * scale and character set, BLOB/TEXT excluded.  The emit is
- * apply_filter_cmp's attr-vs-attr arm (NdbScanFilter::cmp(cond, attrId1,
- * attrId2) -> BRANCH_ATTR_OP_ATTR), whose API-side validation is the
- * same isBindable call — sharing the predicate keeps gate and emit from
- * drifting (an emit-time 4557 would surface as a retryable
- * RonSQLMaybeStaleSchema and turn into a client retry storm).
+ * A col-vs-col comparison is accepted when both operands are stored
+ * columns of the body's root op and filter_can_compare_columns takes
+ * the pair: the same type (tier (a), NdbScanFilter::cmp ->
+ * BRANCH_ATTR_OP_ATTR), or since F-13 two numeric columns of any types
+ * (tier (b), NdbScanFilter::cmp_typed -> typed registers).
+ * apply_filter_cmp emits by the same test — sharing the predicate keeps
+ * gate and emit from drifting (an emit-time 4557 would surface as a
+ * retryable RonSQLMaybeStaleSchema and turn into a client retry storm).
  *
- * Everything else throws a permanent error: mixed-type pairs (tier (b),
- * deferred until a typed leaf-local register load exists) and pairs not
- * both on the body's root op (child-op and cross-table compares in join
- * bodies).  Column-vs-constant predicates are unaffected.  Main-query
- * col-vs-col does not flow through build_cte_scopes and is unaffected.
+ * Everything else throws a permanent error: other mixed-type pairs
+ * (DECIMAL, strings, temporal types) and pairs not both on the body's
+ * root op (child-op and cross-table compares in join bodies).
+ * Column-vs-constant predicates are unaffected.  Main-query col-vs-col
+ * does not flow through build_cte_scopes; apply_filter_cmp refuses its
+ * unsupported pairs when it builds the filter.
  */
 void
 RonSQLPreparer::check_cte_body_col_vs_col(
@@ -6271,13 +6406,11 @@ RonSQLPreparer::check_cte_body_col_vs_col(
       require_run(left_ref.dict_column != NULL &&
                       right_ref.dict_column != NULL,
                   "CTE-body col-vs-col check: missing column descriptors.");
-      if (left_ref.dict_column->isBindable(*right_ref.dict_column) != 0)
+      if (!filter_can_compare_columns(left_ref.dict_column,
+                                      right_ref.dict_column))
       {
-        throw RonSQLPermanentError(
-            "Column-vs-column comparison in a CTE body WHERE clause "
-            "requires columns of identical type, precision, length, scale "
-            "and character set (BLOB/TEXT excluded) — cast one side or "
-            "compare against a constant.");
+        throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
+                                   FILTER_COLUMN_PAIR_UNSUPPORTED);
       }
     }
     // A comparison's operands are scalar expressions, not boolean
@@ -6456,8 +6589,11 @@ RonSQLPreparer::decorrelate_exists()
     // Look up inner table in dictionary
     const NdbDictionary::Table* inner_table =
         m_dict->getTable(inner_stmt->table.c_str());
-    require_prm(inner_table != NULL,
-                "EXISTS subquery references unknown table.");
+    if (inner_table == NULL) {
+      // X-9: classified by the dictionary's error.
+      throw RonSQLDictionaryError("EXISTS subquery references unknown table.",
+                                  m_dict->getNdbError());
+    }
 
     // Flatten inner WHERE
     ConditionalExpression* inner_conjuncts[MAX_WHERE_CONJUNCTS];
@@ -7892,6 +8028,27 @@ is_having_aggregate_reference(const ConditionalExpression* ce)
        ce->op == T_MAX || ce->op == T_AVG || ce->op == T_IDENTIFIER);
 }
 
+/*
+ * O-8: a MIN or MAX, or the alias of a SELECT-list subquery aggregate,
+ * beside which HAVING takes a string: ResultPrinter compares the string
+ * with a string MIN / MAX in its collation, and with a DATE, DATETIME or
+ * TIMESTAMP one as a datetime, and refuses it beside any other type.
+ */
+static bool
+is_having_min_max(const ConditionalExpression* ce)
+{
+  return ce != NULL &&
+      (ce->op == T_MIN || ce->op == T_MAX || ce->op == T_IDENTIFIER);
+}
+
+static bool
+is_having_string_operand(const ConditionalExpression* operand,
+                         const ConditionalExpression* other)
+{
+  return operand != NULL && operand->op == T_STRING &&
+      is_having_min_max(other);
+}
+
 static void
 validate_having_numeric_expression(const ConditionalExpression* ce)
 {
@@ -7944,8 +8101,11 @@ validate_having_predicate(const ConditionalExpression* ce, bool negated)
   case T_GE:
   case T_LT:
   case T_LE:
-    validate_having_numeric_expression(ce->args.left);
-    validate_having_numeric_expression(ce->args.right);
+    // O-8: a string literal only as the other operand of a MIN or MAX.
+    if (!is_having_string_operand(ce->args.left, ce->args.right))
+      validate_having_numeric_expression(ce->args.left);
+    if (!is_having_string_operand(ce->args.right, ce->args.left))
+      validate_having_numeric_expression(ce->args.right);
     return;
   case T_IS:
     require_unsupported(
@@ -8063,6 +8223,7 @@ RonSQLPreparer::build_cte_scopes()
     scope->table = scope->join_plan.ops[0].table;
     scope->agg = cte->stmt->agg;
     resolve_columns_for_cte_scope(*scope, *cte->stmt);
+    check_enum_set_columns(*scope);  // T-15
     // F-9, F-11: the earlier CTEs' scopes exist, so their outputs are
     // resolved too.
     cte->stmt->where_expression =
@@ -8088,14 +8249,36 @@ RonSQLPreparer::build_cte_scopes()
     reject_index_hints_on_joins(cte->stmt->joins);
     // Phase I.9: try to convert this CTE body's root scan into an
     // ordered index scan when the body's WHERE has bounds on an
-    // indexed column.  Operates only on single-op real-table bodies
-    // (the whole body WHERE belongs to the root op then); chained
-    // CTEs (CTE_SCAN root) and multi-table bodies fall through
-    // unchanged.  The root table's index hint (if any) constrains
-    // index selection.
+    // indexed column.  A single-op real-table body offers its whole
+    // WHERE (all of it belongs to the root op).  J-8: a multi-op body
+    // offers the root-classified conjuncts (join_where_ce[0]), as the
+    // main scope of a join query does, and is skipped when they bind
+    // the root's whole primary key unless FORCE INDEX demands an index
+    // scan (decide_root_access serves that with an equality-bound scan
+    // on an ordered primary-key index).  Before, a multi-op body root
+    // was always a table scan with the WHERE as its filter, and its
+    // index hint was ignored.  A chained CTE (CTE_SCAN root) falls
+    // through unchanged.  The root table's index hint (if any)
+    // constrains index selection.
     if (scope->join_plan.num_ops == 1)
+    {
       select_root_scan_config(*scope, cte->stmt->where_expression,
                               cte->stmt->root_table);
+    }
+    else
+    {
+      const TableRef* body_root_ref = cte->stmt->root_table;
+      const bool body_hint_force =
+          (body_root_ref != NULL &&
+           body_root_ref->hint_kind == TableRef::HintKind::HINT_FORCE);
+      if (scope->join_plan.ops[0].type == JoinOp::TABLE_SCAN &&
+          scope->join_plan.ops[0].table != NULL &&
+          (body_hint_force || !root_pk_equality_covered(*scope)))
+      {
+        select_root_scan_config(*scope, scope->join_where_ce[0],
+                                body_root_ref);
+      }
+    }
     // Phase I.10: scalar MIN/MAX over a NOT NULL indexed column can
     // materialise through a full ordered index scan with maxRows=1.
     select_cte_body_minmax_index(*scope, cte);
@@ -8172,7 +8355,173 @@ RonSQLPreparer::resolve_cte_output_columns()
   resolve_cte_output_columns_for_scope(m_main_scope);
 }
 
+// A column as the statement names it, `q.name` or `name`, for a message.
+static std::string
+column_text(const LexCString& qualifier, const LexCString& name)
+{
+  std::string text = "`";
+  if (qualifier.c_str() != NULL)
+  {
+    text.append(qualifier.str, qualifier.len);
+    text += ".";
+  }
+  text.append(name.str, name.len);
+  text += "`";
+  return text;
+}
+
+/*
+ * C-1, J-2: one CTE row, two layouts.  The API numbers the columns of a
+ * CTE's virtual table in output order (build_cte_virtual_tables), and so
+ * do the readers of the row: lookup_relation_column,
+ * programAggregator_join, emit_cte_lookup_filter and the lookupCte keys
+ * of emit_root_op, taken from the virtual primary key columns in virtual
+ * column order.  The data nodes number the materialized row as the GROUP
+ * BY keys in GROUP BY order, then one aggregate result per slot of the
+ * body's program (Dblqh::emitCteGroupOutput, buildCteLinkedBuffer), and
+ * the body's aggregate compiler gives an aggregate the slot of its first
+ * use.  The two agree only when the outputs are the GROUP BY columns, in
+ * GROUP BY order, followed by the aggregates, each once.  Any other layout
+ * swapped or shifted the columns or read a repeated aggregate as NULL,
+ * and a root lookup keyed on permuted outputs probed another group (J-2).
+ * Such a CTE is refused here, before any program is built; reading other
+ * layouts needs a virtual table in the data nodes' order and a map from
+ * the outputs to it.
+ *
+ * Accepted:
+ *  - with GROUP BY: output i is GROUP BY column i written as the GROUP BY
+ *    writes it (the same col_idx, which is how build_cte_virtual_tables
+ *    and cte_key_coverage find the virtual primary key columns), for each
+ *    GROUP BY column; the outputs after them are aggregates in slots 0,
+ *    1, 2, ... (an AVG is one slot in a CTE body, its hidden COUNT comes
+ *    after the visible slots, and so does the hidden sentinel COUNT of a
+ *    cross-table filter);
+ *  - without GROUP BY (a scalar body): aggregates in slots 0, 1, 2, ...;
+ *  - a single-row body (not checked): its columns are kept in output
+ *    order, one GroupBy() per output.
+ * rewrite_lastn_cte_bodies() makes a last-N body GROUP BY every output, in
+ * output order, and appends COUNT(*), which is accepted.
+ *
+ * The check also covers the key of a CTE lookup (J-2).  The virtual
+ * primary key columns are then outputs 0..n-1 in GROUP BY order, so the
+ * lookupCte key that emit_root_op builds from getPrimaryKey(k), for a
+ * root whose WHERE binds every key and for a single-group (G4) root, is in
+ * the order of the group key the data nodes compare.  A CTE_LOOKUP child's
+ * key, which cte_key_coverage puts in GROUP BY order, binds to the virtual
+ * primary key column of the same position, and so of the same type.
+ */
+void
+RonSQLPreparer::check_cte_output_layouts()
+{
+  Uint32 c = 0;
+  for (const CteDefinition* cte = m_context.ast_root.cte_list;
+       cte != NULL && c < m_cte_scopes.size(); cte = cte->next, c++) {
+    if (m_cte_scopes[c] != NULL && !cte->stmt->is_single_row_cte) {
+      check_cte_output_layout(cte, *m_cte_scopes[c]);
+    }
+  }
+}
+
+void
+RonSQLPreparer::check_cte_output_layout(const CteDefinition* cte,
+                                        const QueryScope& scope)
+{
+  const SelectStatement* stmt = cte->stmt;
+  const GroupbyColumns* gb = stmt->groupby_columns;
+  Uint32 next_slot = 0;
+  Uint32 pos = 1;
+  std::string reason;
+  for (const Outputs* o = stmt->outputs; o != NULL && reason.empty();
+       o = o->next, pos++) {
+    const std::string output =
+        "output " + std::to_string(pos) + " (`" +
+        std::string(o->output_name.str, o->output_name.len) + "`)";
+    if (o->type == Outputs::Type::COLUMN) {
+      const Uint32 col = o->column.col_idx;
+      if (gb == NULL) {
+        reason = output + " is the column " +
+                 column_text(m_column_qualifiers[col], m_columns[col]) +
+                 " after the GROUP BY columns";
+      } else if (col != gb->col_idx) {
+        const std::string gb_text =
+            column_text(m_column_qualifiers[gb->col_idx],
+                        m_columns[gb->col_idx]);
+        const std::string col_text =
+            column_text(m_column_qualifiers[col], m_columns[col]);
+        if (scope.resolved_columns != NULL &&
+            same_resolved_column(scope.resolved_columns[col],
+                                 scope.resolved_columns[gb->col_idx])) {
+          reason = output + " is GROUP BY column " + gb_text +
+                   " written as " + col_text +
+                   "; write it as the GROUP BY does";
+        } else {
+          reason = output + " is the column " + col_text +
+                   " where GROUP BY column " + gb_text + " is expected";
+        }
+      } else {
+        gb = gb->next;
+      }
+      continue;
+    }
+    if (gb != NULL) {
+      reason = output + " is an aggregate where GROUP BY column " +
+               column_text(m_column_qualifiers[gb->col_idx],
+                           m_columns[gb->col_idx]) +
+               " is expected";
+      continue;
+    }
+    Uint32 slot = 0;
+    switch (o->type) {
+    case Outputs::Type::AGGREGATE:
+      slot = o->aggregate.agg_index;
+      break;
+    case Outputs::Type::AVG:
+      slot = o->avg.agg_index_sum;
+      break;
+    default:
+      // register_cte_outputs() refuses a subquery output.
+      ronsql_bug("A CTE output has an unknown type.");
+    }
+    if (slot == next_slot) {
+      next_slot++;
+      continue;
+    }
+    // Every slot below next_slot belongs to an earlier output; a slot
+    // above it was taken by an aggregate that is not an output.
+    reason = output + " does not get the aggregate result of its position:"
+             " the body has an aggregate that is not an output";
+    Uint32 first_pos = 1;
+    for (const Outputs* p = stmt->outputs; p != o;
+         p = p->next, first_pos++) {
+      const bool same_slot =
+          (p->type == Outputs::Type::AGGREGATE &&
+           p->aggregate.agg_index == slot) ||
+          (p->type == Outputs::Type::AVG && p->avg.agg_index_sum == slot);
+      if (same_slot) {
+        reason = output + " repeats the aggregate of output " +
+                 std::to_string(first_pos) + " (`" +
+                 std::string(p->output_name.str, p->output_name.len) + "`)";
+        break;
+      }
+    }
+  }
+  if (reason.empty() && gb != NULL) {
+    reason = "GROUP BY column " +
+             column_text(m_column_qualifiers[gb->col_idx],
+                         m_columns[gb->col_idx]) +
+             " is not an output";
+  }
+  if (reason.empty()) return;
+  throw RonSQLPermanentError(
+      RonSQLErrorClass::UNSUPPORTED,
+      std::string("The outputs of CTE '") + cte->name.c_str() +
+      "' must be its GROUP BY columns, in GROUP BY order, and then its"
+      " aggregates, each aggregate once: " + reason + ".");
+}
+
 // Reject CTE shapes that aren't supported end-to-end.
+//
+// The order of a CTE's outputs: see check_cte_output_layouts().
 //
 // CTE_SCAN as an outer-join child: a defensive tripwire for a shape
 // the planner doesn't currently produce (CTE children always become
@@ -8245,6 +8594,7 @@ RonSQLPreparer::validate_cte_execution_shapes()
       check_plan(m_cte_scopes[c]->join_plan, cte);
     }
   }
+  check_cte_output_layouts();
 }
 
 /*
@@ -8306,6 +8656,278 @@ RonSQLPreparer::check_cte_groupby_key_types(QueryScope& scope,
       throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
                                  GROUPBY_BLOB_UNSUPPORTED);
     }
+  }
+}
+
+/*
+ * O-13: the SQL name of a column type that the result printers cannot
+ * print, or NULL for a type they print.  The GROUP BY key printers
+ * (ResultPrinter::print_record and print_stored_record) and the
+ * pass-through printer (print_passthrough_value) print the same types:
+ * the integers, FLOAT, DOUBLE, DECIMAL, CHAR, VARCHAR, BINARY, VARBINARY,
+ * DATE, YEAR, DATETIME, TIME and TIMESTAMP.  A CTE MIN / MAX of a temporal
+ * column is a BIGINT UNSIGNED, which they decode.
+ */
+static const char*
+unprintable_output_type_name(NdbDictionary::Column::Type type)
+{
+  switch (type) {
+  case NdbDictionary::Column::Tinyint:
+  case NdbDictionary::Column::Tinyunsigned:
+  case NdbDictionary::Column::Smallint:
+  case NdbDictionary::Column::Smallunsigned:
+  case NdbDictionary::Column::Mediumint:
+  case NdbDictionary::Column::Mediumunsigned:
+  case NdbDictionary::Column::Int:
+  case NdbDictionary::Column::Unsigned:
+  case NdbDictionary::Column::Bigint:
+  case NdbDictionary::Column::Bigunsigned:
+  case NdbDictionary::Column::Float:
+  case NdbDictionary::Column::Double:
+  case NdbDictionary::Column::Decimal:
+  case NdbDictionary::Column::Decimalunsigned:
+  case NdbDictionary::Column::Char:
+  case NdbDictionary::Column::Varchar:
+  case NdbDictionary::Column::Longvarchar:
+  case NdbDictionary::Column::Binary:
+  case NdbDictionary::Column::Varbinary:
+  case NdbDictionary::Column::Longvarbinary:
+  case NdbDictionary::Column::Date:
+  case NdbDictionary::Column::Year:
+  case NdbDictionary::Column::Datetime2:
+  case NdbDictionary::Column::Time2:
+  case NdbDictionary::Column::Timestamp2:
+    return NULL;
+  case NdbDictionary::Column::Bit:
+    return "BIT";
+  case NdbDictionary::Column::Blob:
+    return "BLOB";
+  case NdbDictionary::Column::Text:
+    return "TEXT";
+  case NdbDictionary::Column::Olddecimal:
+  case NdbDictionary::Column::Olddecimalunsigned:
+    return "DECIMAL in the format before MySQL 5.0";
+  case NdbDictionary::Column::Datetime:
+    return "DATETIME in the format before MySQL 5.6";
+  case NdbDictionary::Column::Time:
+    return "TIME in the format before MySQL 5.6";
+  case NdbDictionary::Column::Timestamp:
+    return "TIMESTAMP in the format before MySQL 5.6";
+  default:
+    return "UNDEFINED";
+  }
+}
+
+/*
+ * O-13: the result printers refused a GROUP BY key of type YEAR, TIME,
+ * BINARY, VARBINARY or BIT, and a pass-through BIT, BLOB or TEXT column,
+ * only when they met the first value: after the scan, and after the
+ * header and the rows before it were written, which ronsql_cli cannot
+ * take back.  The GROUP BY printers now print YEAR, TIME, BINARY and
+ * VARBINARY as the pass-through printer does; refuse every other type of
+ * a printed column here, before any scan.  A printed column of an
+ * aggregate query is a GROUP BY key, and a BLOB or TEXT key gets the
+ * error that GroupBy() gives it (RONSQL-39).  Aggregates need no check:
+ * the aggregation interpreter refuses to load a column of a type it
+ * cannot aggregate when the program is built, before the scan (F16), and
+ * gives a value of a type the printers print.
+ */
+void
+RonSQLPreparer::check_printed_output_types()
+{
+  if (m_main_scope.resolved_columns == NULL) return;
+  for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
+       o = o->next) {
+    if (o->type != Outputs::Type::COLUMN) continue;
+    if (o->column.col_idx >= m_columns.size()) continue;
+    NdbDictionary::Column::Type type = NdbDictionary::Column::Undefined;
+    Uint32 length = 1;
+    const void* cs = NULL;
+    Int32 scale = 0;
+    Int32 precision = 0;
+    if (!resolve_chained_column_type(m_main_scope, o->column.col_idx, type,
+                                     length, cs, scale, precision))
+      continue;
+    const char* type_name = unprintable_output_type_name(type);
+    if (type_name == NULL) continue;
+    if (m_is_aggregate_query &&
+        (type == NdbDictionary::Column::Blob ||
+         type == NdbDictionary::Column::Text)) {
+      throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
+                                 GROUPBY_BLOB_UNSUPPORTED);
+    }
+    std::ostringstream msg;
+    msg << "The SELECT output " << quoted_identifier(o->output_name)
+        << " has type " << type_name << ", which RonSQL cannot return.";
+    throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, msg.str());
+  }
+}
+
+/*
+ * O-11: under JSON and JSON_ASCII each result row is an object keyed by
+ * the output names, so two outputs of one name, e.g. the `id` of
+ * `SELECT a.id, b.id ...` (the unqualified column name, as in mysqld),
+ * gave a row with a duplicate key, of which a JSON reader keeps one
+ * value.  Refuse such a statement; TEXT output, like mysqld, allows it.
+ * The names compare as the bytes the printers write: names that differ
+ * in case are different keys.
+ */
+void
+RonSQLPreparer::check_json_output_names() const
+{
+  if (m_conf.output_format != RonSQLExecParams::OutputFormat::JSON &&
+      m_conf.output_format != RonSQLExecParams::OutputFormat::JSON_ASCII)
+    return;
+  if (m_conf.outputs_read_by_position) return;
+  for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
+       o = o->next) {
+    for (const Outputs* p = m_context.ast_root.outputs; p != o;
+         p = p->next) {
+      if (!(p->output_name == o->output_name)) continue;
+      std::ostringstream msg;
+      msg << "Two SELECT outputs are named "
+          << quoted_identifier(o->output_name)
+          << ", a duplicate key in each row of the JSON output.  Give them"
+             " different aliases with AS, or use the TEXT output format.";
+      throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, msg.str());
+    }
+  }
+}
+
+/*
+ * T-15: NDB stores an ENUM or SET column as NDBCOL::Char without a
+ * character set (ha_ndbcluster's create_ndb_column), so the dictionary
+ * gives it the binary one: an ENUM holds the index of its member in 1 or
+ * 2 bytes, a SET the bitmap of its members in 1 to 8 bytes, both little
+ * endian.  A MySQL CHAR keeps its character set, and CHAR ... CHARACTER
+ * SET binary is BINARY (NDBCOL::Binary), so in a table made by mysqld
+ * only ENUM and SET columns have this shape.  The dictionary does not
+ * tell ENUM from SET and has no labels: they are in the table's SDI
+ * only, which RonSQL does not read.
+ */
+static bool
+is_enum_or_set_column(const NdbDictionary::Column* col)
+{
+  if (col == NULL || col->getType() != NdbDictionary::Column::Char)
+    return false;
+  const CHARSET_INFO* cs = col->getCharset();
+  return cs != NULL && my_charset_same(cs, &my_charset_bin);
+}
+
+static void
+throw_if_enum_or_set_column(const NdbDictionary::Table* table,
+                            const NdbDictionary::Column* col)
+{
+  if (!is_enum_or_set_column(col)) return;
+  std::ostringstream msg;
+  msg << "Column " << quoted_identifier(col->getName());
+  if (table != NULL)
+    msg << " of table " << quoted_identifier(table->getName());
+  msg << " is an ENUM or SET column, which RonSQL does not support: NDB"
+         " stores the member index or the set bitmap of each value, not"
+         " its labels.";
+  throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, msg.str());
+}
+
+/*
+ * T-15: without the labels RonSQL printed an ENUM or SET value as the
+ * bytes of its index or bitmap, compared it with the bytes of a string
+ * literal (e = 'a' matched no row), refused a number (e = 2), took MIN /
+ * MAX and ORDER BY by those bytes and joined two ENUM columns by index,
+ * where mysqld prints the labels, compares with a string by label and
+ * with a number by index, orders an ENUM by index and a SET by bitmap,
+ * takes MIN / MAX by label and joins by label.  Refuse every statement
+ * that reads one, before any plan or program is built: each column the
+ * scope reads is a resolved stored column (load_single_table resolves
+ * every name of the statement, resolve_columns_for_scope those of the
+ * scope's SELECT), except the ON columns, which only the plan's keys
+ * name.  A subquery run as its own statement checks its own scope.
+ */
+void
+RonSQLPreparer::check_enum_set_columns(const QueryScope& scope) const
+{
+  const JoinPlan& plan = scope.join_plan;
+  if (scope.resolved_columns != NULL) {
+    for (Uint32 c = 0; c < m_columns.size(); c++) {
+      const QueryScope::ResolvedColumnRef& ref = scope.resolved_columns[c];
+      if (ref.kind != QueryScope::ResolvedColumnRef::Kind::StoredColumn)
+        continue;
+      const NdbDictionary::Table* table =
+          (ref.join_op_idx < plan.num_ops) ? plan.ops[ref.join_op_idx].table
+                                           : scope.table;
+      throw_if_enum_or_set_column(table, ref.dict_column);
+    }
+  }
+  for (Uint32 t = 0; t < plan.num_ops; t++) {
+    const JoinOp& op = plan.ops[t];
+    for (Uint32 k = 0; k < op.num_key_cols; k++) {
+      if (op.table != NULL)
+        throw_if_enum_or_set_column(
+            op.table, op.table->getColumn(op.child_key_col_names[k]));
+      const JoinOp& src = plan.ops[op.key_parent_op_idx[k]];
+      if (src.table != NULL)
+        throw_if_enum_or_set_column(
+            src.table, src.table->getColumn(op.parent_key_col_names[k]));
+    }
+  }
+}
+
+/*
+ * T-15: a BIT column of more than 32 bits holds two words, the low 32
+ * bits first, and NdbSqlUtil::cmpBit compares the words in that order,
+ * so it put 2^32 before 1.  The pass-through sort
+ * (compare_passthrough_rows), the GROUP BY key sort
+ * (ResultPrinter::compare_rows) and the ORDER BY ... LIMIT of a CTE body
+ * on the data nodes (JoinAggInterpreter::compareGroupsByOrderSpec) all
+ * use it; mysqld orders a BIT by its value.  BIT(1) to BIT(32) is one
+ * word, compared as the number it is.  Refuse ORDER BY on a wider BIT in
+ * the main query and in each CTE body with a LIMIT (without one the body
+ * is not ordered), before any scan.  An ORDER BY on an aggregate needs
+ * no check: no aggregate loads a BIT column (F16).
+ */
+void
+RonSQLPreparer::check_bit_orderby_columns()
+{
+  check_bit_orderby_columns(m_main_scope, m_context.ast_root);
+  Uint32 c = 0;
+  for (const CteDefinition* cte = m_context.ast_root.cte_list;
+       cte != NULL && c < m_cte_scopes.size(); cte = cte->next, c++) {
+    if (m_cte_scopes[c] != NULL && cte->stmt->limit >= 0)
+      check_bit_orderby_columns(*m_cte_scopes[c], *cte->stmt);
+  }
+}
+
+void
+RonSQLPreparer::check_bit_orderby_columns(QueryScope& scope,
+                                          const SelectStatement& stmt)
+{
+  for (const OrderbyColumns* ob = stmt.orderby_columns; ob != NULL;
+       ob = ob->next) {
+    Uint32 col_idx = 0;
+    if (ob->kind == OrderbyColumns::Kind::OUTPUT_REF) {
+      const Outputs* o = stmt.outputs;
+      for (Uint32 i = 0; o != NULL && i < ob->output_idx; i++) o = o->next;
+      if (o == NULL || o->type != Outputs::Type::COLUMN) continue;
+      col_idx = o->column.col_idx;
+    } else {
+      col_idx = ob->col_idx;
+    }
+    if (col_idx >= m_columns.size()) continue;
+    NdbDictionary::Column::Type type = NdbDictionary::Column::Undefined;
+    Uint32 length = 1;
+    const void* cs = NULL;
+    Int32 scale = 0;
+    Int32 precision = 0;
+    if (!resolve_chained_column_type(scope, col_idx, type, length, cs, scale,
+                                     precision))
+      continue;
+    if (type != NdbDictionary::Column::Bit || length <= 32) continue;
+    std::ostringstream msg;
+    msg << "ORDER BY on column "
+        << quoted_identifier(m_columns[col_idx].c_str())
+        << ", a BIT of more than 32 bits, is not supported: RonSQL would"
+           " order its values by their low 32 bits first.";
+    throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, msg.str());
   }
 }
 
@@ -9576,6 +10198,16 @@ RonSQLPreparer::build_result_column_metadata()
                 static_cast<const CHARSET_INFO*>(rcs));
             column_metadata[col_idx].has_metadata = true;
           }
+          // O-13: a chained TIME, DATETIME or TIMESTAMP GROUP BY key keeps
+          // its fractional-second precision, with which the GROUP BY
+          // printer decodes it.  Without it a DATETIME(3) key two CTEs
+          // up printed without its fraction.
+          if (rt == NdbDictionary::Column::Time2 ||
+              rt == NdbDictionary::Column::Datetime2 ||
+              rt == NdbDictionary::Column::Timestamp2) {
+            column_metadata[col_idx].precision = rprecision;
+            column_metadata[col_idx].has_metadata = true;
+          }
         }
         // O-3: a MIN / MAX of a temporal column passed on by a further
         // CTE has no plumbed dict_column either; its Bigunsigned value
@@ -9835,6 +10467,32 @@ RonSQLPreparer::has_binary_output()
   return false;
 }
 
+/*
+ * X-15: a subquery runs as a statement of its own, with its own error log.
+ * When it fails on an NDB error, that log holds the trace and the NDB
+ * error text, which the exception does not carry.  It goes to the outer
+ * statement's log, each line marked "Subquery: ", so that RDRS and
+ * ronsql_cli report it.  A subquery error without an NDB error (a
+ * refusal, too many rows) is the exception's message alone, as before.
+ */
+static void
+forward_subquery_error_log(const std::ostringstream& ess,
+                           std::basic_ostream<char>* err)
+{
+  if (err == NULL) return;
+  const std::string text = ess.str();
+  size_t start = 0;
+  while (start < text.size())
+  {
+    size_t end = text.find('\n', start);
+    if (end == std::string::npos) end = text.size();
+    *err << "Subquery: ";
+    err->write(text.data() + start, (std::streamsize)(end - start));
+    *err << '\n';
+    start = end + 1;
+  }
+}
+
 void
 RonSQLPreparer::execute_subqueries()
 {
@@ -9904,6 +10562,9 @@ RonSQLPreparer::execute_subqueries()
       inner_params.amalloc = &inner_amalloc;
       inner_params.ndb = m_conf.ndb;
       inner_params.output_format = RonSQLExecParams::OutputFormat::JSON;
+      // O-11: obuf reads a row's values by position, so the outputs may
+      // share a name (a correlation key and an aggregate aliased alike).
+      inner_params.outputs_read_by_position = true;
       inner_params.out_stream = &oss;
       // X-6: oss is dropped when the inner statement fails, and the outer
       // statement has written nothing yet (subqueries run first), so a
@@ -9916,6 +10577,15 @@ RonSQLPreparer::execute_subqueries()
       // rate limits like the main query's.
       inner_params.rate_limit_identity = m_conf.rate_limit_identity;
       inner_params.rate_limit_identity_len = m_conf.rate_limit_identity_len;
+      // X-15: the subquery takes its index lists from the schema cache, as
+      // the outer statement does, instead of listing them through DICT,
+      // and invalidates a stale entry there.  The allocation test hook
+      // counts and fails the subquery's allocations too (X-36).  The
+      // phase statistics stay the outer statement's: the inner
+      // statement's phases would overwrite them, and subquery_us times
+      // the subqueries.
+      inner_params.schema_cache = m_conf.schema_cache;
+      inner_params.allocation_test_hook = m_conf.allocation_test_hook;
 
       // Create and execute inner preparer
       {
@@ -9955,17 +10625,23 @@ RonSQLPreparer::execute_subqueries()
                                              : obuf.value(0, 0);
       }
     }
-    catch (const RonSQLPermanentError&)
+    catch (const RonSQLPermanentError& e)
     {
+      if (e.ndb_error_code() != 0)
+        forward_subquery_error_log(ess, m_conf.err_stream);
       throw;
     }
-    catch (const RonSQLRetryableError&)
+    catch (const RonSQLRetryableError& e)
     {
+      if (e.ndb_error_code() != 0)
+        forward_subquery_error_log(ess, m_conf.err_stream);
       throw;
     }
-    catch (const RonSQLRateLimitError&)
+    catch (const RonSQLRateLimitError& e)
     {
       // The subquery was throttled: the whole query is (HTTP 429).
+      if (e.get_ndb_error_code() != 0)
+        forward_subquery_error_log(ess, m_conf.err_stream);
       throw;
     }
     catch (const std::bad_alloc&)
@@ -9978,6 +10654,7 @@ RonSQLPreparer::execute_subqueries()
     }
     catch (const std::exception& e)
     {
+      forward_subquery_error_log(ess, m_conf.err_stream);
       std::string msg = "Subquery execution failed: ";
       msg += e.what();
       throw RonSQLPermanentError(msg);
@@ -10062,7 +10739,8 @@ RonSQLPreparer::is_subquery_value(const ConditionalExpression* ce) const
 void
 RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
                                                int polarity,
-                                               bool is_condition)
+                                               bool is_condition,
+                                               bool string_operand)
 {
   ConditionalExpression* ce = *ce_ptr;
   if (ce == NULL) return;
@@ -10344,8 +11022,9 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
           substitute_condition_result(ce, result);
           return;
         }
-        // HAVING compares in DOUBLE and takes no string.
-        if (result.is_string && !m_substituting_where)
+        // O-8: HAVING takes a string only beside a MIN or MAX, as it
+        // takes a string literal (validate_having_support).
+        if (result.is_string && !m_substituting_where && !string_operand)
         {
           throw RonSQLPermanentError(
               "Subquery returned a non-numeric result.");
@@ -10428,11 +11107,17 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
   case T_NULL:
     return;
   default:
+  {
     // Other binary/unary operators (comparisons, arithmetic) need the
-    // exact value of an operand: recurse into both sides
-    substitute_subquery_results_ce(&ce->args.left, 0);
-    substitute_subquery_results_ce(&ce->args.right, 0);
+    // exact value of an operand: recurse into both sides.  O-8: an
+    // operand of a comparison beside a MIN or MAX may be a string.
+    const bool cmp = is_comparison_op(ce->op);
+    substitute_subquery_results_ce(&ce->args.left, 0, false,
+                                   cmp && is_having_min_max(ce->args.right));
+    substitute_subquery_results_ce(&ce->args.right, 0, false,
+                                   cmp && is_having_min_max(ce->args.left));
     return;
+  }
   }
 }
 
@@ -10997,9 +11682,9 @@ void
 RonSQLPreparer::execute()
 {
   DEB_TRACE();
-  require_prm(m_status != Status::FAILED,
-              "Attempting RonSQLPreparer::execute while in failed state.");
-  DEB_TRACE();
+  // T-20: a preparer is never in state FAILED here: both constructors set
+  // it only in their catch (...), whose handle_ronsql_exception always
+  // throws, so no caller holds a preparer that failed.
   ronsql_require_bug(m_status == Status::PREPARED,
                      "RonSQLPreparer::execute() needs a prepared statement.");
   DEB_TRACE();
@@ -11065,7 +11750,8 @@ RonSQLPreparer::execute()
       return;
     }
 
-    start_transaction();
+    // X-16: the IN-list key reads of execute_pk_lookup_aggregate.
+    start_transaction(m_pk_lookup && !m_where_never_true);
     // Since ndb exists, m_main_scope.table should have been initialized in load()
     ronsql_require_bug(m_main_scope.table != NULL,
                        "An aggregate query has no table.");
@@ -11928,11 +12614,16 @@ struct PassthroughSortKey {
   Uint32 slot;                        // index into the stored row array
   bool ascending;
   const NdbDictionary::Column* col;   // type + charset for the comparator
+  // O-9: a DOUBLE that is a DECIMAL in MySQL (a SUM, MIN, MAX or AVG
+  // output of a CTE over an integer or DECIMAL) compares at this scale;
+  // 0 compares the values as they are.
+  int decimal_scale;
 };
 
 struct PassthroughSortBuffer {
   DynamicArray<const PassthroughValue**> rows;
   Uint32 num_stored;
+  // O-12: the arena bytes the buffered rows take (buffer_passthrough_row).
   Uint64 bytes = 0;
   PassthroughSortBuffer(ArenaMalloc* am, Uint32 n)
     : rows(am), num_stored(n) {}
@@ -11960,6 +12651,14 @@ compare_passthrough_rows(const PassthroughValue* const* a,
     if (a_null && b_null) continue;
     if (a_null) return k.ascending ? -1 : 1;
     if (b_null) return k.ascending ? 1 : -1;
+    if (k.decimal_scale > 0)
+    {
+      const int cmp = ronsql_compare_at_scale(va->double_value(),
+                                              vb->double_value(),
+                                              k.decimal_scale);
+      if (cmp != 0) return k.ascending ? cmp : -cmp;
+      continue;
+    }
     const NdbSqlUtil::Type& sqlType =
         NdbSqlUtil::getType(static_cast<Uint32>(k.col->getType()));
     int cmp = (*sqlType.m_cmp)(k.col->getCharset(),
@@ -11991,6 +12690,13 @@ buffer_passthrough_row(PassthroughSortBuffer& buf, ArenaMalloc* amalloc,
   }
   Uint32 n = buf.num_stored;
   const PassthroughValue** row = amalloc->alloc_exc<const PassthroughValue*>(n);
+  // O-12: the cap counts what the rows take in the arena, not only their
+  // values' bytes, which undercounted a 4-byte INT 8 times (it takes 32
+  // bytes) and a NULL as nothing: the row's slot array, its pointer in
+  // buf.rows and in the array the sort copies them to, and each value's
+  // copy.
+  buf.bytes += (Uint64)n * sizeof(const PassthroughValue*) +
+               2 * sizeof(const PassthroughValue**);
   for (Uint32 c = 0; c < n; c++) {
     const NdbRecAttr* src = attrs[c];
     if (src == NULL || (ops != NULL && ops[c] != NULL && ops[c]->isRowNULL()))
@@ -11999,7 +12705,7 @@ buffer_passthrough_row(PassthroughSortBuffer& buf, ArenaMalloc* amalloc,
       continue;
     }
     row[c] = PassthroughValue::copy(src, amalloc);
-    buf.bytes += row[c]->get_size_in_bytes();
+    buf.bytes += PassthroughValue::arena_bytes(row[c]->get_size_in_bytes());
   }
   buf.rows.push(row);
 }
@@ -12020,16 +12726,13 @@ for_each_sorted_passthrough_row(PassthroughSortBuffer& buf,
   const PassthroughValue*** arr =
       amalloc->alloc_exc<const PassthroughValue**>(n);
   for (Uint32 i = 0; i < n; i++) arr[i] = buf.rows[i];
-  auto less = [keys, nkeys](const PassthroughValue** ra,
-                            const PassthroughValue** rb) {
-    return compare_passthrough_rows(ra, rb, keys, nkeys) < 0;
-  };
-  Uint32 print_count = n;
-  if (limit >= 0 && (Int64)n > limit) print_count = (Uint32)limit;
-  if (print_count < n)
-    std::partial_sort(arr, arr + print_count, arr + n, less);
-  else
-    std::sort(arr, arr + n, less);
+  // O-16: the top-N sort the aggregate ORDER BY shares.
+  const Uint32 print_count = ronsql_sort_top_n(
+      arr, n, limit,
+      [keys, nkeys](const PassthroughValue** ra,
+                    const PassthroughValue** rb) -> bool {
+        return compare_passthrough_rows(ra, rb, keys, nkeys) < 0;
+      });
   for (Uint32 i = 0; i < print_count; i++) {
     row_fn(const_cast<const PassthroughValue* const*>(arr[i]), i);
   }
@@ -12079,7 +12782,8 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
    * aggregation program loads, and each row that would be printed goes
    * to api_rows instead; nothing is printed here.
    */
-  start_transaction();
+  // X-16: the key reads of the PK-lookup arm below.
+  start_transaction(m_pk_lookup && !m_where_never_true);
   ronsql_require_bug(m_main_scope.table != NULL,
                      "A pass-through query has no table.");
 
@@ -12449,6 +13153,8 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
       sort_keys[n_sort_keys].slot = slot;
       sort_keys[n_sort_keys].ascending = ob->ascending;
       sort_keys[n_sort_keys].col = kcol;
+      // O-9: a stored DOUBLE column is no DECIMAL.
+      sort_keys[n_sort_keys].decimal_scale = 0;
       n_sort_keys++;
     }
   }
@@ -12574,13 +13280,71 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
   }
 }
 
+/*
+ * X-16: the transaction of the single-table key reads starts on a node
+ * that holds a replica of the first key (the primary replica, or with
+ * READ_BACKUP any replica: NdbImpl::select_node), as RDRS pk-read starts
+ * its own, so the first read needs no hop from the TC to the data.  An IN
+ * list's other keys can be anywhere, so they gain nothing and lose
+ * nothing.  Without a hash for the key (a table with user-defined
+ * partitioning, or a key the hash refuses) the transaction starts with no
+ * hint, as before.
+ */
+NdbTransaction*
+RonSQLPreparer::start_pk_hinted(Ndb* ndb)
+{
+  const NdbDictionary::Table* tab = m_main_scope.table;
+  ronsql_require_bug(tab != NULL, "A key lookup has no table.");
+  ronsql_require_bug(m_pk_lookup_const != NULL,
+                     "A key lookup has no key.");
+  ronsql_require_bug(m_pk_lookup_in_col < 0 || m_pk_lookup_in_count >= 1,
+                     "A key lookup has an empty IN list.");
+  const NdbRecord* rec = tab->getDefaultRecord();
+  if (rec == NULL) return ndb->startTransaction();
+  const Uint32 rowlen = NdbDictionary::getRecordRowLength(rec);
+  char* key_row = m_amalloc->alloc_exc<char>(rowlen);
+  memset(key_row, 0, rowlen);
+  const int nkeys = tab->getNoOfPrimaryKeys();
+  for (int k = 0; k < nkeys; k++)
+  {
+    const NdbDictionary::Column* pk_col =
+        tab->getColumn(tab->getPrimaryKey(k));
+    ronsql_require_bug(pk_col != NULL,
+                       "A primary key column of the table is missing.");
+    ConditionalExpression* key = (k == m_pk_lookup_in_col)
+                                     ? m_pk_lookup_in_values[0]
+                                     : m_pk_lookup_const[k];
+    // The column's NdbRecord byte format, as the lookup arms write it.
+    raw_value rv = encode_constant(key, pk_col);
+    char* dst = NdbDictionary::getValuePtr(rec, key_row, pk_col->getAttrId());
+    if (dst == NULL) return ndb->startTransaction();
+    memcpy(dst, rv.val, rv.len);
+  }
+  // As RDRS pk-read: room for the key normalized by its character sets.
+  Uint32 xfrm_buf[MAX_KEY_SIZE_IN_WORDS * MAX_XFRM_MULTIPLY];
+  Uint32 hash = 0;
+  if (Ndb::computeHash(&hash, rec, key_row, xfrm_buf, sizeof(xfrm_buf)) != 0)
+    return ndb->startTransaction();
+  return ndb->startTransaction(tab, tab->getPartitionId(hash));
+}
+
 void
-RonSQLPreparer::start_transaction() {
+RonSQLPreparer::start_transaction(bool hint_pk_lookup) {
   Ndb* ndb = m_conf.ndb;
   ronsql_require_bug(m_trans == NULL,
                      "A transaction was started while another is open.");
-  m_trans = DBG(ndb->startTransaction());
-  require_run(m_trans != NULL, "Failed to start transaction.");
+  m_trans = hint_pk_lookup ? DBG(start_pk_hinted(ndb))
+                           : DBG(ndb->startTransaction());
+  if (m_trans == NULL) {
+    // X-9: startTransaction() clears the Ndb object's error and leaves its
+    // own there, so this is the error of the call that failed (4009 and
+    // 4035-4041 are retried).  handle_ronsql_exception does not read the
+    // Ndb object's error: with no transaction it can be an earlier
+    // statement's.
+    throw_classified_ndb_error(ndb->getNdbError(),
+                               "Failed to start transaction.",
+                               "start transaction");
+  }
   if (m_conf.rate_limit_identity != NULL) {
     /*
      * RONDB-978: tag the transaction so the data nodes account this query's
@@ -13042,11 +13806,12 @@ RonSQLPreparer::execute_join()
   // NdbDictionary::Table objects alive until the end-of-execute cleanup.
   NdbDictionary::Table** cteChildVTAll = NULL;
   if (m_cte_scopes.size() > 0) {
+    // Each checked at once: no allocation after a failed one.
     cteAggs = m_amalloc->calloc<NdbAggregator*>(m_cte_scopes.size());
+    if (unlikely(cteAggs == NULL)) throw std::bad_alloc();
     cteChildVTAll = m_amalloc->calloc<NdbDictionary::Table*>(
         m_cte_scopes.size() * MAX_SPJ_TREE_NODES);
-    if (unlikely(cteAggs == NULL || cteChildVTAll == NULL))
-      throw std::bad_alloc();
+    if (unlikely(cteChildVTAll == NULL)) throw std::bad_alloc();
     objs.cte_aggs = cteAggs;
     objs.cte_child_vts = cteChildVTAll;
     objs.num_ctes = m_cte_scopes.size();
@@ -13596,10 +14361,17 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
     for (const OrderbyColumns* ob = m_context.ast_root.orderby_columns;
          ob != NULL; ob = ob->next) {
       Uint32 slot;
+      // O-9: the column whose metadata gives a DECIMAL scale.
+      Uint32 key_col_idx = ob->col_idx;
       if (ob->kind == OrderbyColumns::Kind::OUTPUT_REF) {
         require_prm(ob->output_idx < num_cols,
                     "ORDER BY alias resolves outside the SELECT outputs.");
         slot = ob->output_idx;
+        const Outputs* o = m_context.ast_root.outputs;
+        for (Uint32 oi = 0; oi < slot && o != NULL; oi++) o = o->next;
+        ronsql_require_bug(o != NULL,
+                           "An ORDER BY alias has no SELECT output.");
+        key_col_idx = o->column.col_idx;
       } else {
         const QueryScope::ResolvedColumnRef& R =
             m_main_scope.resolved_columns[ob->col_idx];
@@ -13655,6 +14427,11 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
       sort_keys[n_sort_keys].slot = slot;
       sort_keys[n_sort_keys].ascending = ob->ascending;
       sort_keys[n_sort_keys].col = kcol;
+      // O-9: a SUM over a DECIMAL of a CTE is a DOUBLE virtual column.
+      sort_keys[n_sort_keys].decimal_scale =
+          (kcol->getType() == NdbDictionary::Column::Double)
+              ? m_resultprinter->double_sort_scale(key_col_idx)
+              : 0;
       n_sort_keys++;
     }
   }
@@ -14042,18 +14819,16 @@ const NdbQueryOperationDef*
 RonSQLPreparer::emit_pk_equality_index_scan_root(
     NdbQueryBuilder* qb, QueryScope& scope,
     const NdbDictionary::Table* root_table,
+    const NdbDictionary::Index* pk_ordered_idx,
     ConditionalExpression* const pk_const[], int nkeys,
     ConditionalExpression* residual,
     NdbQueryOptions& rootOpts)
 {
+  ronsql_require_bug(pk_ordered_idx != NULL,
+                     "A primary key index scan root has no index.");
   const char* pk_col_names[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
   for (int k = 0; k < nkeys; k++)
     pk_col_names[k] = root_table->getPrimaryKey(k);
-  const NdbDictionary::Index* pk_ordered_idx =
-      QueryPlanner::findOrderedIndex(
-          m_dict, root_table, pk_col_names, (Uint32)nkeys);
-  if (pk_ordered_idx == NULL)
-    return NULL;
   /*
    * findOrderedIndex accepts an index whose first nkeys columns are the
    * primary key columns in any order, and the bound gives its k:th
@@ -14114,20 +14889,47 @@ plan_has_outer_child(const JoinPlan& plan)
   return false;
 }
 
-// Emit the root scan/lookup/index-scan for the scope's plan. Chooses PK
-// lookup when WHERE fully covers the PK and no child is a scan; ordered
-// index scan with equality bounds when PK-covered with a scan child;
-// scan-config-selected index scan with WHERE bounds when
-// select_root_scan_config flipped ops[0] to INDEX_SCAN;
-// table scan with WHERE filter otherwise.
-void
-RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
-                              const NdbQueryOperationDef** opDefs,
-                              NdbAggregator* singleAgg,
-                              NdbDictionary::Table** cteVirtualTables)
+// J-9: why decide_root_access did not take a lookup root although the
+// WHERE binds the whole key.  EXPLAIN prints them.
+static const char* const ROOT_REASON_SCAN_CHILD =
+    "a child is a scan, which a lookup root cannot have";
+static const char* const ROOT_REASON_CTE_BODY =
+    "a CTE body aggregates on a scan root";
+static const char* const ROOT_REASON_AGG_NO_CTE =
+    "an aggregate query without a CTE needs a scan root";
+static const char* const ROOT_REASON_OUTER_AGG =
+    "an outer-joined child of an aggregation needs a scan root (F19)";
+static const char* const ROOT_REASON_FILTER_TOO_LARGE =
+    "the rest of the WHERE is too large for a lookup";
+static const char* const ROOT_REASON_TOO_MANY_CONJUNCTS =
+    "the WHERE has too many conjuncts to take the key out of it";
+
+bool
+RonSQLPreparer::scope_aggregates(const QueryScope& scope) const
 {
-  JoinPlan& plan = scope.join_plan;
-  NdbQueryOptions rootOpts;
+  // emit_root_op's test: a CTE body is emitted with its aggregator, the
+  // main query with one when it is an aggregate query.
+  return &scope != &m_main_scope || m_is_aggregate_query ||
+         scope.agg != NULL;
+}
+
+// J-9: the root access of the scope's plan.  Chooses a PK lookup when
+// WHERE fully covers the PK and no child is a scan; an ordered index
+// scan with equality bounds when PK-covered with a scan child; the
+// scan-config-selected index scan with WHERE bounds when
+// select_root_scan_config flipped ops[0] to INDEX_SCAN; a table scan
+// with the WHERE as its filter otherwise.  A CTE root is a lookupCte
+// when its key is bound, else a scanCte.  emit_root_op builds the
+// choice and EXPLAIN prints it (print_root_access); nothing here builds
+// an operation.
+void
+RonSQLPreparer::decide_root_access(QueryScope& scope, bool aggregating,
+                                   const NdbDictionary::Table* cte_vt,
+                                   NdbInterpretedCode* residual_code,
+                                   RootAccess& ra)
+{
+  const JoinPlan& plan = scope.join_plan;
+  ra = RootAccess();
 
   // F19: an aggregating scope with an outer-joined child needs a SCAN
   // root.  DBSPJ builds the NULL-extended row for a miss from the parent
@@ -14142,34 +14944,13 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
   // the scan roots below cost a PK-bound index scan (or a filtered scan)
   // in place of the single-row lookup.
   const bool outer_agg_needs_scan_root =
-      (singleAgg != NULL || scope.agg != NULL) &&
-      plan_has_outer_child(plan);
+      aggregating && plan_has_outer_child(plan);
+  const bool where_never_true =
+      (&scope == &m_main_scope && m_where_never_true);
 
-  // Statement-level FRAGS_PER_WORKER hint: bundle N root fragments per
-  // SPJ worker for aggregate pushed queries.  Applied to the main-query
-  // root options only (rootOpts is shared with emit_index_scan_root);
-  // CTE-body emission is deliberately untouched — the value is
-  // query-global, carried in SCAN_TABREQ.  The NDB API normalizes
-  // (power of two, cap 8), clamps to the per-node fragment count, and
-  // ignores it for non-aggregate queries, ordered/pruned scans and
-  // scanCte-containing queries (see frags_per_worker_plan.md).
-  if (m_context.ast_root.frags_per_worker > 0)
-  {
-    rootOpts.setFragsPerWorker((Uint32)m_context.ast_root.frags_per_worker);
-  }
-
-  // Dispatch CTE_SCAN root before the real-table logic. Reuses the
-  // CTE_LOOKUP filter helper (same opcode family — verified by
-  // testCteNdbApiFilter::testCteScanFilterRoot) and attaches the main
-  // aggregator on the root when the agg leaf IS the root.
   if (plan.ops[0].type == JoinOp::CTE_SCAN)
   {
-    require_run(cteVirtualTables != NULL && cteVirtualTables[0] != NULL,
-                "CTE_SCAN root requires a virtual table.");
-    Uint32 numResultCols = 0;
-    for (const Outputs* o = plan.ops[0].cte_def->stmt->outputs;
-         o != NULL; o = o->next) numResultCols++;
-
+    require_run(cte_vt != NULL, "CTE_SCAN root requires a virtual table.");
     // Single-row CTEs (cte_single_row_kernel_plan.md) also have no
     // GROUP BY but are NOT scalar: as a FROM root they take the
     // scanCte path below (WHERE as a jump-table filter).  The scalar
@@ -14183,8 +14964,6 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
         (plan.ops[0].cte_def != NULL &&
          plan.ops[0].cte_def->stmt->groupby_columns == NULL &&
          !root_cte_is_single_row);
-    const bool where_never_true =
-        (&scope == &m_main_scope && m_where_never_true);
 
     if (where_never_true && !root_cte_is_scalar)
     {
@@ -14195,105 +14974,65 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
       // root with a filter has.  A data node without the K-2 fix also
       // hangs a filtered scalar scanCte whose row is rejected: it counts
       // the row as sent, and the API waits for it.
-      NdbInterpretedCode code(cteVirtualTables[0]);
-      NdbScanFilter filter(&code);
-      apply_reject_all_filter(&filter);
-      require_run(rootOpts.setInterpretedCode(code) == 0,
-                  "Failed to set interpreted code on CTE_SCAN root.");
-      if (singleAgg != NULL && plan.agg_leaf_idx == 0 &&
-          plan.num_agg_leaves == 0 && scope.agg != NULL)
-      {
-        require_run(rootOpts.setAggregation(*singleAgg) == 0,
-                    "Failed to set aggregation on CTE_SCAN root.");
-      }
-      opDefs[0] = qb->scanCte(plan.ops[0].cte_def_idx, numResultCols,
-                              cteVirtualTables[0], &rootOpts);
-      require_qb(qb, opDefs[0] != NULL, "Failed to create scanCte root.");
+      ra.kind = RootAccess::Kind::CTE_SCAN;
+      ra.passes_no_row = true;
+      return;
+    }
+
+    // F19: the filtered scalar root below has only the lookupCte form,
+    // which would drop the misses of an outer-joined child (see
+    // outer_agg_needs_scan_root); refuse the shape instead.  A WHERE
+    // that is never TRUE (X-3) passes no root row, so there is no miss
+    // to NULL-extend and the lookupCte gives the result of no rows.
+    if (root_cte_is_scalar && scope.join_where_ce[0] != NULL &&
+        outer_agg_needs_scan_root && !where_never_true)
+    {
+      ra.kind = RootAccess::Kind::REFUSED;
+      ra.refusal =
+          "Outer join below a filtered scalar CTE root not supported.";
+      return;
+    }
+    if (root_cte_is_scalar &&
+        (scope.join_where_ce[0] != NULL || where_never_true))
+    {
+      // X-3: a WHERE that is never TRUE rejects the one row; the WHERE
+      // may hold the NULL.
+      ra.kind = RootAccess::Kind::CTE_SCALAR_LOOKUP;
+      ra.passes_no_row = where_never_true;
+      ra.filter = where_never_true ? NULL : scope.join_where_ce[0];
       return;
     }
 
     // Phase I.7: when the WHERE clause supplies equality predicates
     // on every virt-table PK column (i.e. every GROUP BY column of
     // the CTE body), convert the scan to a single-row lookupCte
-    // root.  Mirrors the real-table readTuple optimisation just
-    // below.  testCteNdbApi.cpp Test 11 demonstrates the working
-    // NDB API setup: `qb->lookupCte(cteId, numCols, virtTab,
-    // const_keys, opts)` with no parent.
+    // root.  Mirrors the real-table readTuple optimisation below.
+    // testCteNdbApi.cpp Test 11 demonstrates the working NDB API
+    // setup: `qb->lookupCte(cteId, numCols, virtTab, const_keys,
+    // opts)` with no parent.
     bool root_pk_covered = false;
+    bool key_from_body = false;
+    bool flatten_overflow = false;
     int root_nkeys = 0;
-    ConditionalExpression* root_pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
     ConditionalExpression* root_pk_eq[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
     ConditionalExpression* root_residual = NULL;
-    bool root_has_scan_child = false;
-    // F19: the filtered scalar root below has only the lookupCte form,
-    // which would drop the misses of an outer-joined child (see
-    // outer_agg_needs_scan_root); reject the shape instead.  A WHERE
-    // that is never TRUE (X-3) passes no root row, so there is no miss
-    // to NULL-extend and the lookupCte gives the result of no rows.
-    if (root_cte_is_scalar && scope.join_where_ce[0] != NULL &&
-        outer_agg_needs_scan_root && !where_never_true)
-    {
-      ndbrequire(m_conf.err_stream != NULL);  // X-14: kept, see configure()
-      *m_conf.err_stream
-          << "An outer join below a scalar CTE root with a WHERE clause"
-             " is not supported in an aggregate query: the root is a"
-             " single-row CTE lookup, which cannot NULL-extend the"
-             " outer join's misses.\n";
-      throw RonSQLPermanentError(
-          "Outer join below a filtered scalar CTE root not supported.");
-    }
-    if (root_cte_is_scalar &&
-        (scope.join_where_ce[0] != NULL || where_never_true))
-    {
-      NdbInterpretedCode code(cteVirtualTables[0]);
-      if (where_never_true)
-      {
-        // X-3: reject the one row; the WHERE may hold the NULL.
-        NdbScanFilter filter(&code);
-        apply_reject_all_filter(&filter);
-      }
-      else
-      {
-        emit_cte_lookup_filter(code, scope, /*op_idx=*/0,
-                               cteVirtualTables[0],
-                               scope.join_where_ce[0]);
-      }
-      require_run(rootOpts.setInterpretedCode(code) == 0,
-                  "Failed to set interpreted code on scalar CTE root.");
-      if (singleAgg != NULL && plan.agg_leaf_idx == 0 &&
-          plan.num_agg_leaves == 0 && scope.agg != NULL)
-      {
-        require_run(rootOpts.setAggregation(*singleAgg) == 0,
-                    "Failed to set aggregation on scalar CTE root.");
-      }
-      const NdbQueryOperand* scalar_keys[2];
-      scalar_keys[0] = scalar_cte_dummy_key(qb, cteVirtualTables[0]);
-      scalar_keys[1] = nullptr;
-      opDefs[0] = qb->lookupCte(plan.ops[0].cte_def_idx, numResultCols,
-                                cteVirtualTables[0], scalar_keys,
-                                &rootOpts);
-      require_qb(qb, opDefs[0] != NULL,
-                 "Failed to create scalar lookupCte root.");
-      return;
-    }
     if (scope.join_where_ce[0] != NULL && !root_cte_is_scalar &&
         !root_cte_is_single_row)
     {
       ConditionalExpression* w = simplify_ce(scope.join_where_ce[0], -1);
-      root_nkeys = cteVirtualTables[0]->getNoOfPrimaryKeys();
+      root_nkeys = cte_vt->getNoOfPrimaryKeys();
       for (int k = 0; k < root_nkeys; k++)
       {
-        root_pk_const[k] = NULL;
+        ra.key_const[k] = NULL;
         root_pk_eq[k] = NULL;
       }
       if (root_nkeys > 0)
       {
-        collect_pk_equalities(w, cteVirtualTables[0], root_pk_const,
-                              root_pk_eq);
+        collect_pk_equalities(w, cte_vt, ra.key_const, root_pk_eq);
         root_pk_covered = true;
         for (int k = 0; k < root_nkeys; k++)
         {
-          if (root_pk_const[k] == NULL) { root_pk_covered = false; break; }
+          if (ra.key_const[k] == NULL) { root_pk_covered = false; break; }
         }
       }
       // Phase 0a: conjuncts not consumed as virt-PK equalities must be
@@ -14304,6 +15043,7 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
           !build_root_residual(w, root_pk_eq, root_nkeys, &root_residual))
       {
         root_pk_covered = false;
+        flatten_overflow = true;
       }
     }
 
@@ -14313,8 +15053,8 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     // scanCte becomes ONE keyed probe to the constant owner.  Any main
     // WHERE that did not supply the keys itself rides as the residual
     // jump-table filter, unchanged.  Constants are restricted to the
-    // literal kinds the typed key builder below handles; anything else
-    // falls back to scanCte (no regression).
+    // literal kinds the typed key builder in emit_root_op handles;
+    // anything else falls back to scanCte (no regression).
     if (!root_pk_covered && !root_cte_is_scalar && !root_cte_is_single_row &&
         plan.ops[0].cte_def != NULL &&
         plan.ops[0].cte_def_idx < m_cte_scopes.size() &&
@@ -14325,12 +15065,12 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
       QueryScope& body_scope = *m_cte_scopes[plan.ops[0].cte_def_idx];
       const SelectStatement* body = plan.ops[0].cte_def->stmt;
       ConditionalExpression* bw = simplify_ce(body->where_expression, -1);
-      root_nkeys = cteVirtualTables[0]->getNoOfPrimaryKeys();
+      root_nkeys = cte_vt->getNoOfPrimaryKeys();
       bool body_pk_covered = (root_nkeys > 0);
       for (int k = 0; k < root_nkeys && body_pk_covered; k++)
       {
-        root_pk_const[k] = NULL;
-        const char* pk_name = cteVirtualTables[0]->getPrimaryKey(k);
+        ra.key_const[k] = NULL;
+        const char* pk_name = cte_vt->getPrimaryKey(k);
         // The virt PK column is a GROUP BY column exposed as a body
         // output; its bound constant lives in the BODY's WHERE and is
         // found by the same resolved-identity walk the classification
@@ -14363,8 +15103,7 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
         // Pre-validate constant kind vs column type against the typed
         // key builder's expectations — a mismatch must fall back to
         // scanCte, never turn a previously-working query into an error.
-        const NdbDictionary::Column* pk_col =
-            cteVirtualTables[0]->getColumn(pk_name);
+        const NdbDictionary::Column* pk_col = cte_vt->getColumn(pk_name);
         bool kind_ok = false;
         if (pk_col != NULL)
         {
@@ -14395,11 +15134,12 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
           body_pk_covered = false;
           break;
         }
-        root_pk_const[k] = c;
+        ra.key_const[k] = c;
       }
       if (body_pk_covered)
       {
         root_pk_covered = true;
+        key_from_body = true;
         // The whole main WHERE (if any) becomes the residual filter.
         root_residual = (scope.join_where_ce[0] != NULL)
                             ? simplify_ce(scope.join_where_ce[0], -1)
@@ -14407,6 +15147,7 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
       }
     }
 
+    bool root_has_scan_child = false;
     if (root_pk_covered)
     {
       for (Uint32 ci = 1; ci < plan.num_ops; ci++)
@@ -14426,139 +15167,35 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     if (root_pk_covered && !root_has_scan_child &&
         !outer_agg_needs_scan_root)
     {
-      const NdbQueryOperand* lookup_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
-      for (int k = 0; k < root_nkeys; k++)
-      {
-        const char* pk_name = cteVirtualTables[0]->getPrimaryKey(k);
-        const NdbDictionary::Column* pk_col =
-            cteVirtualTables[0]->getColumn(pk_name);
-        ronsql_require_bug(pk_col != NULL,
-                           "A key column of a CTE virtual table is missing.");
-        const ConditionalExpression* ce_const = root_pk_const[k];
-        switch (pk_col->getType()) {
-        case NdbDictionary::Column::Tinyint:
-        case NdbDictionary::Column::Smallint:
-        case NdbDictionary::Column::Mediumint:
-        case NdbDictionary::Column::Int:
-        case NdbDictionary::Column::Bigint:
-        case NdbDictionary::Column::Tinyunsigned:
-        case NdbDictionary::Column::Smallunsigned:
-        case NdbDictionary::Column::Mediumunsigned:
-        case NdbDictionary::Column::Unsigned:
-        case NdbDictionary::Column::Bigunsigned:
-          require_prm(ce_const->op == T_INT,
-                      "Expected integer constant for CTE root lookup key.");
-          // Encoded as on the real-table root, which refuses a literal
-          // outside the column type's domain with a permanent error
-          // (build_cte_virtual_tables sizes the virtual column as the
-          // dictionary would, so the byte-buffer operand binds).  The
-          // typed constValue overloads took the literal cast to Int32,
-          // Uint32 or Uint64, which wrapped it into another key (J-3:
-          // INT 4294967297 probed key 1), and sent a MEDIUMINT key as 4
-          // bytes where the materialized group key has 3.
-          {
-            raw_value rv = encode_constant(
-                const_cast<ConditionalExpression*>(ce_const), pk_col);
-            lookup_keys[k] = query_const_value(qb, rv, pk_col);
-          }
-          break;
-        case NdbDictionary::Column::Float:
-        case NdbDictionary::Column::Double:
-          if (ce_const->op == T_FLOAT) {
-            lookup_keys[k] = qb->constValue(ce_const->constant_float.dbl);
-          } else if (ce_const->op == T_INT) {
-            lookup_keys[k] =
-                qb->constValue((double) ce_const->constant_integer);
-          } else {
-            throw RonSQLPermanentError(
-                "Expected numeric constant for CTE root lookup key.");
-          }
-          break;
-        default:
-          // CHAR / VARCHAR / DECIMAL etc.: fall through to the
-          // byte-buffer variant.  May still fail validation on
-          // synthetic virt-table columns; users hitting this can
-          // fall back to scanCte by removing the equality from
-          // WHERE or expressing the constant as a different type.
-          {
-            raw_value rv = encode_constant(
-                const_cast<ConditionalExpression*>(ce_const), pk_col);
-            lookup_keys[k] = query_const_value(qb, rv, pk_col);
-          }
-          break;
-        }
-        require_qb(qb, lookup_keys[k] != NULL,
-                   "Failed to create const value for CTE root lookup.");
-      }
-      lookup_keys[root_nkeys] = nullptr;
-      if (root_residual != NULL)
-      {
-        // Phase 0a: residual conjuncts ride the same CTE_LOOKUP
-        // jump-table filter the scalar and scanCte branches already
-        // use; emit_cte_lookup_filter finalises the program and throws
-        // a clean error on unsupported atoms (which were silently
-        // dropped before).
-        NdbInterpretedCode residual_code(cteVirtualTables[0]);
-        emit_cte_lookup_filter(residual_code, scope, /*op_idx=*/0,
-                               cteVirtualTables[0], root_residual);
-        require_run(rootOpts.setInterpretedCode(residual_code) == 0,
-                    "Failed to set interpreted code on CTE_LOOKUP root.");
-      }
-      if (singleAgg != NULL && plan.agg_leaf_idx == 0 &&
-          plan.num_agg_leaves == 0 && scope.agg != NULL)
-      {
-        require_run(rootOpts.setAggregation(*singleAgg) == 0,
-                    "Failed to set aggregation on CTE_LOOKUP root.");
-      }
-      opDefs[0] = qb->lookupCte(plan.ops[0].cte_def_idx, numResultCols,
-                                 cteVirtualTables[0], lookup_keys,
-                                 &rootOpts);
-      require_qb(qb, opDefs[0] != NULL,
-                 "Failed to create lookupCte root.");
+      ra.kind = key_from_body ? RootAccess::Kind::CTE_GROUP_PROBE
+                              : RootAccess::Kind::CTE_LOOKUP;
+      ra.nkeys = root_nkeys;
+      ra.filter = root_residual;
       return;
     }
-
-    NdbInterpretedCode code(cteVirtualTables[0]);
-    if (scope.join_where_ce[0] != NULL)
+    ra.kind = RootAccess::Kind::CTE_SCAN;
+    ra.filter = scope.join_where_ce[0];
+    if (root_pk_covered)
     {
-      // emit_cte_lookup_filter already finalises the program
-      // (line ~5406 in this file).  Don't double-finalise.
-      emit_cte_lookup_filter(code, scope, /*op_idx=*/0,
-                             cteVirtualTables[0],
-                             scope.join_where_ce[0]);
-      require_run(rootOpts.setInterpretedCode(code) == 0,
-                  "Failed to set interpreted code on CTE_SCAN root.");
+      ra.reason = root_has_scan_child ? ROOT_REASON_SCAN_CHILD
+                                      : ROOT_REASON_OUTER_AGG;
     }
-    // scope.agg is the per-scope aggregator (main scope OR per-CTE
-    // body scope), so this gate fires correctly whether emit_root_op
-    // is called for the main query (Phase E.1) or for a chained CTE
-    // body (Phase E.2).
-    if (singleAgg != NULL && plan.agg_leaf_idx == 0 &&
-        plan.num_agg_leaves == 0 && scope.agg != NULL)
+    else if (flatten_overflow)
     {
-      require_run(rootOpts.setAggregation(*singleAgg) == 0,
-                  "Failed to set aggregation on CTE_SCAN root.");
+      ra.reason = ROOT_REASON_TOO_MANY_CONJUNCTS;
     }
-    opDefs[0] = qb->scanCte(plan.ops[0].cte_def_idx, numResultCols,
-                            cteVirtualTables[0], &rootOpts);
-    require_qb(qb, opDefs[0] != NULL, "Failed to create scanCte root.");
     return;
   }
 
   const NdbDictionary::Table* root_table = plan.ops[0].table;
 
-  if (&scope == &m_main_scope && m_where_never_true)
+  if (where_never_true)
   {
     // X-3: the WHERE is TRUE for no row, and its key or index bounds may
     // hold the NULL.  Scan the table and pass no row; the rest of the
     // tree still returns the result of no rows.
-    NdbInterpretedCode code(root_table);
-    NdbScanFilter filter(&code);
-    apply_reject_all_filter(&filter);
-    require_run(rootOpts.setInterpretedCode(code) == 0,
-                "Failed to set interpreted code on root scan.");
-    opDefs[0] = qb->scanTable(root_table, &rootOpts);
-    require_qb(qb, opDefs[0] != NULL, "Failed to create root scan.");
+    ra.kind = RootAccess::Kind::TABLE_SCAN;
+    ra.passes_no_row = true;
     return;
   }
 
@@ -14569,22 +15206,22 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
   // serve.  Those branches keep priority by construction: the selector
   // skips fully-PK-equality-covered roots unless FORCE INDEX overrides.
   // Bounds come from condition_handling_map; residual conjuncts go to
-  // the interpreted filter inside the helper, so join_where_ce[0] must
-  // NOT also be applied wholesale (no scanTable fallthrough).
+  // the interpreted filter inside emit_index_scan_root, so
+  // join_where_ce[0] must NOT also be applied wholesale.
   if (plan.ops[0].type == JoinOp::INDEX_SCAN &&
       scope.body_scan_config != NULL &&
       scope.body_scan_config->index == plan.ops[0].index)
   {
-    opDefs[0] = emit_index_scan_root(qb, scope, root_table,
-                                     plan.ops[0].index, rootOpts);
+    ra.kind = RootAccess::Kind::INDEX_SCAN;
+    ra.index = plan.ops[0].index;
     return;
   }
 
   ConditionalExpression* where_ce = NULL;
   bool pk_covered = false;
   bool has_scan_child = false;
+  bool flatten_overflow = false;
   int nkeys = 0;
-  ConditionalExpression* pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
   ConditionalExpression* pk_eq_ce[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
   ConditionalExpression* root_residual = NULL;
 
@@ -14595,14 +15232,14 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
     nkeys = root_table->getNoOfPrimaryKeys();
     for (int k = 0; k < nkeys; k++)
     {
-      pk_const[k] = NULL;
+      ra.key_const[k] = NULL;
       pk_eq_ce[k] = NULL;
     }
-    collect_pk_equalities(where_ce, root_table, pk_const, pk_eq_ce);
+    collect_pk_equalities(where_ce, root_table, ra.key_const, pk_eq_ce);
     pk_covered = true;
     for (int k = 0; k < nkeys; k++)
     {
-      if (pk_const[k] == NULL) { pk_covered = false; break; }
+      if (ra.key_const[k] == NULL) { pk_covered = false; break; }
     }
 
     // Phase 0a: conjuncts not consumed as PK equalities must be applied
@@ -14613,6 +15250,7 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
         !build_root_residual(where_ce, pk_eq_ce, nkeys, &root_residual))
     {
       pk_covered = false;
+      flatten_overflow = true;
     }
 
     if (pk_covered)
@@ -14634,98 +15272,374 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
   // on the scan path — an aggregate LookupQuery reaches DBSPJ with an
   // empty m_aggNodes and fails lookup_send's ndbrequire (node failure;
   // also rejected at prepare time by NdbQueryDefImpl since Phase 0a).
-  // Emit the readTuple root only when nothing aggregates here
+  // Take the readTuple root only when nothing aggregates here
   // (pass-through main query), or when this is the main scope of a
   // CTE-containing query — the CTE materialisation scan makes the
   // compound query scan-rooted (the proven fpw-6 shape) — unless an
   // outer-joined child needs a scan root (F19, outer_agg_needs_scan_root).
   // CTE-body scopes always aggregate and may themselves be op[0], so
   // they always take the scan fallbacks.
-  bool lookup_root_supported = (singleAgg == NULL && scope.agg == NULL);
-  if (!lookup_root_supported && &scope == &m_main_scope &&
-      !outer_agg_needs_scan_root)
+  const char* no_lookup_reason = NULL;
+  if (aggregating)
   {
+    bool plan_has_cte_op = false;
     for (Uint32 ci = 0; ci < plan.num_ops; ci++)
     {
       if (plan.ops[ci].type == JoinOp::CTE_LOOKUP ||
           plan.ops[ci].type == JoinOp::CTE_SCAN)
       {
-        lookup_root_supported = true;
+        plan_has_cte_op = true;
         break;
       }
     }
+    if (&scope != &m_main_scope)
+      no_lookup_reason = ROOT_REASON_CTE_BODY;
+    else if (!plan_has_cte_op)
+      no_lookup_reason = ROOT_REASON_AGG_NO_CTE;
+    else if (outer_agg_needs_scan_root)
+      no_lookup_reason = ROOT_REASON_OUTER_AGG;
   }
 
-  if (pk_covered && !has_scan_child && lookup_root_supported)
+  const char* reason = NULL;
+  if (pk_covered && !has_scan_child && no_lookup_reason == NULL)
   {
     // An over-cap residual falls through to the ordered-PK-index scan /
     // table-scan branches below (scan programs travel in SCAN_FRAGREQ
     // sections instead of LQHKEYREQ; cap rationale at the shared
-    // LOOKUP_FILTER_MAX_WORDS definition).
-    NdbInterpretedCode residual_code(root_table);
+    // LOOKUP_FILTER_MAX_WORDS definition).  emit_root_op attaches the
+    // program built here.
+    NdbInterpretedCode local_code(root_table);
+    NdbInterpretedCode& code =
+        (residual_code != NULL) ? *residual_code : local_code;
     bool residual_fits = true;
     if (root_residual != NULL)
     {
-      build_where_filter(residual_code, scope, root_residual,
+      build_where_filter(code, scope, root_residual,
                          "Failed to build the WHERE filter of the root PK "
                          "lookup.");
-      residual_fits =
-          (residual_code.getWordsUsed() <= LOOKUP_FILTER_MAX_WORDS);
+      residual_fits = (code.getWordsUsed() <= LOOKUP_FILTER_MAX_WORDS);
     }
     if (residual_fits)
     {
-      const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
-      for (int k = 0; k < nkeys; k++)
-      {
-        const char* pk_name = root_table->getPrimaryKey(k);
-        const NdbDictionary::Column* pk_col =
-            root_table->getColumn(pk_name);
-        ronsql_require_bug(pk_col != NULL,
-                           "A primary key column of the table is missing.");
-        raw_value rv = encode_constant(pk_const[k], pk_col);
-        pk_keys[k] = query_const_value(qb, rv, pk_col);
-        require_qb(qb, pk_keys[k] != NULL,
-                   "Failed to create const value for PK lookup.");
-      }
-      pk_keys[nkeys] = nullptr;
-      if (root_residual != NULL)
-      {
-        require_run(rootOpts.setInterpretedCode(residual_code) == 0,
-                    "Failed to set interpreted code on root PK lookup.");
-      }
-      opDefs[0] = qb->readTuple(root_table, pk_keys, &rootOpts);
-      require_qb(qb, opDefs[0] != NULL, "Failed to create root PK lookup.");
+      ra.kind = RootAccess::Kind::PK_LOOKUP;
+      ra.nkeys = nkeys;
+      ra.filter = root_residual;
       return;
     }
+    reason = ROOT_REASON_FILTER_TOO_LARGE;
+  }
+  else if (pk_covered)
+  {
+    reason = has_scan_child ? ROOT_REASON_SCAN_CHILD : no_lookup_reason;
   }
 
   if (pk_covered)
   {
     // Reached with a scan child (a readTuple root cannot have scan
-    // children — NDB API restriction) or with a residual filter too
-    // large for a lookup op.
-    const NdbQueryOperationDef* def =
-        emit_pk_equality_index_scan_root(qb, scope, root_table,
-                                         pk_const, nkeys, root_residual,
-                                         rootOpts);
-    if (def != NULL)
+    // children — NDB API restriction), in an aggregating scope that
+    // cannot have a lookup root, or with a residual filter too large
+    // for a lookup op.
+    const char* pk_col_names[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+    for (int k = 0; k < nkeys; k++)
+      pk_col_names[k] = root_table->getPrimaryKey(k);
+    // J-7: from the schema cache, as every other index choice; without it
+    // each execution and each EXPLAIN listed the table's indexes through
+    // DICT.
+    const char* db = m_conf.ndb ? m_conf.ndb->getDatabaseName() : nullptr;
+    const NdbDictionary::Index* pk_ordered_idx =
+        QueryPlanner::findOrderedIndex(
+            m_dict, root_table, pk_col_names, (Uint32)nkeys,
+            m_conf.schema_cache, db);
+    if (pk_ordered_idx != NULL)
     {
-      opDefs[0] = def;
+      ra.kind = RootAccess::Kind::PK_INDEX_SCAN;
+      ra.index = pk_ordered_idx;
+      ra.nkeys = nkeys;
+      ra.filter = root_residual;
+      ra.reason = reason;
       return;
     }
     // No ordered index on PK — fall through to table scan with filter
+    ra.no_pk_index = true;
   }
 
-  NdbInterpretedCode code(root_table);
-  if (where_ce != NULL)
+  ra.kind = RootAccess::Kind::TABLE_SCAN;
+  ra.filter = where_ce;
+  ra.reason = flatten_overflow ? ROOT_REASON_TOO_MANY_CONJUNCTS : reason;
+}
+
+// Emit the root scan/lookup/index-scan for the scope's plan, as
+// decide_root_access chose it.
+void
+RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
+                              const NdbQueryOperationDef** opDefs,
+                              NdbAggregator* singleAgg,
+                              NdbDictionary::Table** cteVirtualTables)
+{
+  JoinPlan& plan = scope.join_plan;
+  NdbQueryOptions rootOpts;
+
+  // Statement-level FRAGS_PER_WORKER hint: bundle N root fragments per
+  // SPJ worker for aggregate pushed queries.  Applied to the main-query
+  // root options only (rootOpts is shared with emit_index_scan_root);
+  // CTE-body emission is deliberately untouched — the value is
+  // query-global, carried in SCAN_TABREQ.  The NDB API normalizes
+  // (power of two, cap 8), clamps to the per-node fragment count, and
+  // ignores it for non-aggregate queries, ordered/pruned scans and
+  // scanCte-containing queries (see frags_per_worker_plan.md).
+  if (m_context.ast_root.frags_per_worker > 0)
   {
-    build_where_filter(code, scope, where_ce,
-                       "Failed to build the WHERE filter of the root scan.");
-    set_where_filter(rootOpts, code,
-                     "Failed to set interpreted code on root scan.");
+    rootOpts.setFragsPerWorker((Uint32)m_context.ast_root.frags_per_worker);
   }
-  opDefs[0] = qb->scanTable(root_table, &rootOpts);
-  require_qb(qb, opDefs[0] != NULL, "Failed to create root scan.");
+
+  NdbDictionary::Table* cte_vt = NULL;
+  if (plan.ops[0].type == JoinOp::CTE_SCAN && cteVirtualTables != NULL)
+    cte_vt = cteVirtualTables[0];
+  const NdbDictionary::Table* root_table = plan.ops[0].table;
+  // A PK_LOOKUP's filter, built by decide_root_access.
+  NdbInterpretedCode lookup_residual_code(root_table);
+  RootAccess ra;
+  decide_root_access(scope, singleAgg != NULL || scope.agg != NULL, cte_vt,
+                     &lookup_residual_code, ra);
+
+  // The aggregator goes on the root when the root is the aggregation
+  // leaf.  scope.agg is the per-scope aggregator (main scope OR per-CTE
+  // body scope), so this gate fires correctly whether emit_root_op is
+  // called for the main query (Phase E.1) or for a chained CTE body
+  // (Phase E.2).
+  const bool agg_on_root =
+      (singleAgg != NULL && plan.agg_leaf_idx == 0 &&
+       plan.num_agg_leaves == 0 && scope.agg != NULL);
+  Uint32 numResultCols = 0;
+  if (plan.ops[0].type == JoinOp::CTE_SCAN)
+  {
+    for (const Outputs* o = plan.ops[0].cte_def->stmt->outputs;
+         o != NULL; o = o->next) numResultCols++;
+  }
+
+  switch (ra.kind)
+  {
+  case RootAccess::Kind::REFUSED:
+    ndbrequire(m_conf.err_stream != NULL);  // X-14: kept, see configure()
+    *m_conf.err_stream
+        << "An outer join below a scalar CTE root with a WHERE clause"
+           " is not supported in an aggregate query: the root is a"
+           " single-row CTE lookup, which cannot NULL-extend the"
+           " outer join's misses.\n";
+    throw RonSQLPermanentError(ra.refusal);
+
+  case RootAccess::Kind::CTE_SCAN:
+  {
+    // Reuses the CTE_LOOKUP filter helper (same opcode family —
+    // verified by testCteNdbApiFilter::testCteScanFilterRoot).
+    NdbInterpretedCode code(cte_vt);
+    if (ra.passes_no_row)
+    {
+      NdbScanFilter filter(&code);
+      apply_reject_all_filter(&filter);
+      require_run(rootOpts.setInterpretedCode(code) == 0,
+                  "Failed to set interpreted code on CTE_SCAN root.");
+    }
+    else if (ra.filter != NULL)
+    {
+      // emit_cte_lookup_filter finalises the program.
+      emit_cte_lookup_filter(code, scope, /*op_idx=*/0, cte_vt, ra.filter);
+      require_run(rootOpts.setInterpretedCode(code) == 0,
+                  "Failed to set interpreted code on CTE_SCAN root.");
+    }
+    if (agg_on_root)
+    {
+      require_run(rootOpts.setAggregation(*singleAgg) == 0,
+                  "Failed to set aggregation on CTE_SCAN root.");
+    }
+    opDefs[0] = qb->scanCte(plan.ops[0].cte_def_idx, numResultCols,
+                            cte_vt, &rootOpts);
+    require_qb(qb, opDefs[0] != NULL, "Failed to create scanCte root.");
+    return;
+  }
+
+  case RootAccess::Kind::CTE_SCALAR_LOOKUP:
+  {
+    NdbInterpretedCode code(cte_vt);
+    if (ra.passes_no_row)
+    {
+      NdbScanFilter filter(&code);
+      apply_reject_all_filter(&filter);
+    }
+    else
+    {
+      emit_cte_lookup_filter(code, scope, /*op_idx=*/0, cte_vt, ra.filter);
+    }
+    require_run(rootOpts.setInterpretedCode(code) == 0,
+                "Failed to set interpreted code on scalar CTE root.");
+    if (agg_on_root)
+    {
+      require_run(rootOpts.setAggregation(*singleAgg) == 0,
+                  "Failed to set aggregation on scalar CTE root.");
+    }
+    const NdbQueryOperand* scalar_keys[2];
+    scalar_keys[0] = scalar_cte_dummy_key(qb, cte_vt);
+    scalar_keys[1] = nullptr;
+    opDefs[0] = qb->lookupCte(plan.ops[0].cte_def_idx, numResultCols,
+                              cte_vt, scalar_keys, &rootOpts);
+    require_qb(qb, opDefs[0] != NULL,
+               "Failed to create scalar lookupCte root.");
+    return;
+  }
+
+  case RootAccess::Kind::CTE_LOOKUP:
+  case RootAccess::Kind::CTE_GROUP_PROBE:
+  {
+    const NdbQueryOperand* lookup_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+    for (int k = 0; k < ra.nkeys; k++)
+    {
+      const char* pk_name = cte_vt->getPrimaryKey(k);
+      const NdbDictionary::Column* pk_col = cte_vt->getColumn(pk_name);
+      ronsql_require_bug(pk_col != NULL,
+                         "A key column of a CTE virtual table is missing.");
+      const ConditionalExpression* ce_const = ra.key_const[k];
+      switch (pk_col->getType()) {
+      case NdbDictionary::Column::Tinyint:
+      case NdbDictionary::Column::Smallint:
+      case NdbDictionary::Column::Mediumint:
+      case NdbDictionary::Column::Int:
+      case NdbDictionary::Column::Bigint:
+      case NdbDictionary::Column::Tinyunsigned:
+      case NdbDictionary::Column::Smallunsigned:
+      case NdbDictionary::Column::Mediumunsigned:
+      case NdbDictionary::Column::Unsigned:
+      case NdbDictionary::Column::Bigunsigned:
+        require_prm(ce_const->op == T_INT,
+                    "Expected integer constant for CTE root lookup key.");
+        // Encoded as on the real-table root, which refuses a literal
+        // outside the column type's domain with a permanent error
+        // (build_cte_virtual_tables sizes the virtual column as the
+        // dictionary would, so the byte-buffer operand binds).  The
+        // typed constValue overloads took the literal cast to Int32,
+        // Uint32 or Uint64, which wrapped it into another key (J-3:
+        // INT 4294967297 probed key 1), and sent a MEDIUMINT key as 4
+        // bytes where the materialized group key has 3.
+        {
+          raw_value rv = encode_constant(
+              const_cast<ConditionalExpression*>(ce_const), pk_col);
+          lookup_keys[k] = query_const_value(qb, rv, pk_col);
+        }
+        break;
+      case NdbDictionary::Column::Float:
+      case NdbDictionary::Column::Double:
+        if (ce_const->op == T_FLOAT) {
+          lookup_keys[k] = qb->constValue(ce_const->constant_float.dbl);
+        } else if (ce_const->op == T_INT) {
+          lookup_keys[k] =
+              qb->constValue((double) ce_const->constant_integer);
+        } else {
+          throw RonSQLPermanentError(
+              "Expected numeric constant for CTE root lookup key.");
+        }
+        break;
+      default:
+        // CHAR / VARCHAR / DECIMAL etc.: fall through to the
+        // byte-buffer variant.  May still fail validation on
+        // synthetic virt-table columns; users hitting this can
+        // fall back to scanCte by removing the equality from
+        // WHERE or expressing the constant as a different type.
+        {
+          raw_value rv = encode_constant(
+              const_cast<ConditionalExpression*>(ce_const), pk_col);
+          lookup_keys[k] = query_const_value(qb, rv, pk_col);
+        }
+        break;
+      }
+      require_qb(qb, lookup_keys[k] != NULL,
+                 "Failed to create const value for CTE root lookup.");
+    }
+    lookup_keys[ra.nkeys] = nullptr;
+    if (ra.filter != NULL)
+    {
+      // Phase 0a: residual conjuncts ride the same CTE_LOOKUP
+      // jump-table filter the scalar and scanCte branches already
+      // use; emit_cte_lookup_filter finalises the program and throws
+      // a clean error on unsupported atoms (which were silently
+      // dropped before).
+      NdbInterpretedCode residual_code(cte_vt);
+      emit_cte_lookup_filter(residual_code, scope, /*op_idx=*/0, cte_vt,
+                             ra.filter);
+      require_run(rootOpts.setInterpretedCode(residual_code) == 0,
+                  "Failed to set interpreted code on CTE_LOOKUP root.");
+    }
+    if (agg_on_root)
+    {
+      require_run(rootOpts.setAggregation(*singleAgg) == 0,
+                  "Failed to set aggregation on CTE_LOOKUP root.");
+    }
+    opDefs[0] = qb->lookupCte(plan.ops[0].cte_def_idx, numResultCols,
+                              cte_vt, lookup_keys, &rootOpts);
+    require_qb(qb, opDefs[0] != NULL, "Failed to create lookupCte root.");
+    return;
+  }
+
+  case RootAccess::Kind::INDEX_SCAN:
+    opDefs[0] = emit_index_scan_root(qb, scope, root_table, ra.index,
+                                     rootOpts);
+    return;
+
+  case RootAccess::Kind::PK_LOOKUP:
+  {
+    const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+    for (int k = 0; k < ra.nkeys; k++)
+    {
+      const char* pk_name = root_table->getPrimaryKey(k);
+      const NdbDictionary::Column* pk_col = root_table->getColumn(pk_name);
+      ronsql_require_bug(pk_col != NULL,
+                         "A primary key column of the table is missing.");
+      raw_value rv = encode_constant(ra.key_const[k], pk_col);
+      pk_keys[k] = query_const_value(qb, rv, pk_col);
+      require_qb(qb, pk_keys[k] != NULL,
+                 "Failed to create const value for PK lookup.");
+    }
+    pk_keys[ra.nkeys] = nullptr;
+    if (ra.filter != NULL)
+    {
+      require_run(rootOpts.setInterpretedCode(lookup_residual_code) == 0,
+                  "Failed to set interpreted code on root PK lookup.");
+    }
+    opDefs[0] = qb->readTuple(root_table, pk_keys, &rootOpts);
+    require_qb(qb, opDefs[0] != NULL, "Failed to create root PK lookup.");
+    return;
+  }
+
+  case RootAccess::Kind::PK_INDEX_SCAN:
+    opDefs[0] = emit_pk_equality_index_scan_root(
+        qb, scope, root_table, ra.index, ra.key_const, ra.nkeys, ra.filter,
+        rootOpts);
+    return;
+
+  case RootAccess::Kind::TABLE_SCAN:
+  {
+    NdbInterpretedCode code(root_table);
+    if (ra.passes_no_row)
+    {
+      NdbScanFilter filter(&code);
+      apply_reject_all_filter(&filter);
+      require_run(rootOpts.setInterpretedCode(code) == 0,
+                  "Failed to set interpreted code on root scan.");
+    }
+    else if (ra.filter != NULL)
+    {
+      build_where_filter(code, scope, ra.filter,
+                         "Failed to build the WHERE filter of the root scan.");
+      set_where_filter(rootOpts, code,
+                       "Failed to set interpreted code on root scan.");
+    }
+    opDefs[0] = qb->scanTable(root_table, &rootOpts);
+    require_qb(qb, opDefs[0] != NULL, "Failed to create root scan.");
+    return;
+  }
+
+  case RootAccess::Kind::NOT_DECIDED:
+    break;
+  }
+  ronsql_bug("The root access of a join plan was not decided.");
 }
 
 // Recursively resolve the (Type, length, charset) tuple for a column
@@ -15030,9 +15944,9 @@ RonSQLPreparer::resolve_chained_column_type(
         out_type = NdbDictionary::Column::Double;
         out_length = 1; out_cs = NULL;
         out_scale = (arg_scale + 4 > 30) ? 30 : arg_scale + 4;
-        // Display-gate rule mirrors build_cte_virtual_tables: format
-        // fixed-scale iff the SOURCE precision fits the DOUBLE-exact
-        // range (the average's magnitude is bounded by the source's).
+        // Mirrors build_cte_virtual_tables.  The printer formats at the
+        // scale whenever the precision is above 0 (O-7 dropped its
+        // precision <= 15 gate).
         out_precision =
             (arg_precision <= 15)
                 ? 15
@@ -15131,9 +16045,9 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
       const void* derived_cs = NULL;
       // D15: display scale + precision carried onto the virt column so the
       // result printer formats DECIMAL-derived MIN/MAX (widened to DOUBLE) with
-      // the source scale, matching MySQL (e.g. 20055.00) — but only when the
-      // DECIMAL is within DOUBLE's exact range (precision <= 15); the printer
-      // gates on precision.  0 for non-scaled outputs.
+      // the source scale, matching MySQL (e.g. 20055.00), whatever the
+      // DECIMAL's precision (O-7); the printer needs a precision above 0.
+      // 0 for non-scaled outputs.
       Int32 derived_scale = 0;
       Int32 derived_precision = 0;
       bool have_derived = false;
@@ -15221,8 +16135,8 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
               // wire format the kernel emits.  scale>0 SUM is therefore a
               // DOUBLE sum (best-effort, like DECIMAL MIN/MAX — no exact
               // DECIMAL accumulation in the kernel); the source scale +
-              // precision are carried for fixed-scale display (D15), gated on
-              // precision <= 15 in the result printer.
+              // precision are carried for fixed-scale display (D15), at any
+              // precision (O-7).
               require_prm(
                   decimal_minmax_fits_64bit(st, src_precision, src_scale),
                   "SUM over scale-zero DECIMAL wider than the 64-bit integer "
@@ -15312,7 +16226,7 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
                 derived_type = NdbDictionary::Column::Double;
                 // D15: keep the source scale + precision for display so the
                 // DOUBLE result prints with fixed scale (e.g. 20055.00) like
-                // MySQL — gated on precision <= 15 in the printer.
+                // MySQL, at any precision (O-7).
                 derived_scale = src_scale;
                 derived_precision = src_precision;
               }
@@ -15443,11 +16357,10 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
           derived_type = NdbDictionary::Column::Double;
           // MySQL result-type rule: scale + 4 (capped at 30).  The
           // precision here is DISPLAY metadata: the printer formats
-          // fixed-scale only within the DOUBLE-exact range
-          // (precision <= 15), and an average's magnitude is bounded by
-          // the source's — so gate on the SOURCE precision.  Using
-          // p+4 spuriously tripped the gate (first record:
-          // AVG(DECIMAL(12,2)) printed compact instead of scale-6).
+          // fixed-scale when it is above 0.  It was 15 up to source
+          // precision 15 to pass the printer's precision <= 15 gate,
+          // which O-7 removed (p+4 had tripped it: AVG(DECIMAL(12,2))
+          // printed compact instead of scale-6).
           derived_scale = (src_scale + 4 > 30) ? 30 : src_scale + 4;
           derived_precision =
               (src_precision <= 15)
@@ -15488,7 +16401,7 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
       }
       // D15: carry the display scale + precision (DECIMAL source) onto the virt
       // column so column metadata / the result printer can format with fixed
-      // scale, gated on precision <= 15.  Only set when meaningful.
+      // scale (at any precision, O-7).  Only set when meaningful.
       if (derived_scale > 0) {
         vcol.setScale(derived_scale);
       }
@@ -15872,6 +16785,88 @@ RonSQLPreparer::check_cte_temporal_where(const QueryScope& scope,
   const ConditionChildren children = condition_children(*ce);
   check_cte_temporal_where(scope, children.first);
   check_cte_temporal_where(scope, children.second);
+}
+
+void
+RonSQLPreparer::check_string_arithmetic()
+{
+  check_string_arithmetic(m_main_scope);
+  for (Uint32 c = 0; c < m_cte_scopes.size(); c++) {
+    if (m_cte_scopes[c] != NULL)
+      check_string_arithmetic(*m_cte_scopes[c]);
+  }
+}
+
+/*
+ * RONDB-1124: a register loaded from a CHAR, VARCHAR or LONGVARCHAR column
+ * holds no number.  The data node refuses a program whose arithmetic may
+ * read one (PushdownInterpreter::checkAggSlotKinds), and NdbAggregator
+ * refuses to write that arithmetic (kErrStringArithmetic).  MAX(s + 1),
+ * COUNT(-s) and SUM(1 + s) reached the data node, which failed the scan;
+ * SUM(s + 1) failed as a SUM of a string.  MySQL converts the string to a
+ * number; RonSQL refuses the construct while the statement is planned, as
+ * it refuses SUM and AVG of a string (F16).  The parser builds the
+ * expressions of a scope's compiler only for the arguments of its
+ * aggregates, HAVING ones included.  A string reaches arithmetic as a
+ * column, as a CTE output that passes one on or is a MIN / MAX of one,
+ * or through GREATEST / LEAST (whose stored column operands
+ * validate_greatest_least_pair_loads later limits to integers); a CASE
+ * is no operand of arithmetic (Context::non_case_operand).
+ */
+void
+RonSQLPreparer::check_string_arithmetic(const QueryScope& scope) const
+{
+  if (scope.agg == NULL || scope.resolved_columns == NULL) return;
+  scope.agg->for_each_expr([&](const AggregationAPICompiler::Expr* e) {
+    if (e->isArithmetic() &&
+        (expr_may_be_string(scope, e->getLeft(), 0) ||
+         expr_may_be_string(scope, e->getRight(), 0)))
+      throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
+                                 STRING_ARITHMETIC_UNSUPPORTED);
+  });
+}
+
+bool
+RonSQLPreparer::column_may_be_string(const QueryScope& scope, Uint32 col_idx,
+                                     Uint32 depth) const
+{
+  if (scope.resolved_columns == NULL || col_idx >= m_columns.size() ||
+      depth > m_cte_scopes.size())
+    return false;
+  const QueryScope::ResolvedColumnRef& ref = scope.resolved_columns[col_idx];
+  if (ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn) {
+    if (ref.dict_column == NULL) return false;
+    const NdbDictionary::Column::Type type = ref.dict_column->getType();
+    return type == NdbDictionary::Column::Char ||
+           type == NdbDictionary::Column::Varchar ||
+           type == NdbDictionary::Column::Longvarchar;
+  }
+  const Outputs* o = ref.cte_output;
+  if (ref.kind != QueryScope::ResolvedColumnRef::Kind::CteResultColumn ||
+      o == NULL || ref.cte_def_idx >= m_cte_scopes.size())
+    return false;
+  const QueryScope* cs = m_cte_scopes[ref.cte_def_idx];
+  if (cs == NULL) return false;
+  if (o->type == Outputs::Type::COLUMN)
+    return column_may_be_string(*cs, o->column.col_idx, depth + 1);
+  if (o->type == Outputs::Type::AGGREGATE &&
+      (o->aggregate.fun == T_MIN || o->aggregate.fun == T_MAX))
+    return expr_may_be_string(*cs, o->aggregate.arg, depth + 1);
+  return false;  // COUNT, SUM, AVG: numbers
+}
+
+bool
+RonSQLPreparer::expr_may_be_string(const QueryScope& scope,
+                                   const AggregationAPICompiler::Expr* e,
+                                   Uint32 depth) const
+{
+  if (e == NULL) return false;
+  if (e->isLoad())
+    return column_may_be_string(scope, e->getLoadIdx(), depth);
+  if (e->isGreatest2() || e->isLeast2() || e->isCase())
+    return expr_may_be_string(scope, e->getLeft(), depth) ||
+           expr_may_be_string(scope, e->getRight(), depth);
+  return false;  // A constant, or arithmetic: a number
 }
 
 static const char* const CTE_TEMPORAL_CONSTANT_UNSUPPORTED =
@@ -17182,10 +18177,6 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
     JoinOp& op = plan.ops[i];
     NdbQueryOptions opts;
     switch (op.match_type) {
-    case JoinOp::SEMI_JOIN:
-      opts.setMatchType(NdbQueryOptions::MatchNonNull);
-      opts.setMatchType(NdbQueryOptions::MatchFirst);
-      break;
     case JoinOp::ANTI_JOIN:
       opts.setMatchType(NdbQueryOptions::MatchNullOnly);
       break;
@@ -17497,24 +18488,10 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
       break;
     }
     case JoinOp::CTE_SCAN:
-    {
-      // scanCte takes (cteId, numCols, virtTab, options) — no keys[].
-      // If the planner picked CTE_SCAN as a non-root child WITH linked
-      // keys, that's a shape scanCte doesn't support — reject cleanly
-      // rather than emit incorrect code.  The parent->child join must
-      // express its dependency via aggregator linked-loads instead.
-      require_run(op.num_key_cols == 0,
-                  "CTE_SCAN as join child with linked keys is not "
-                  "supported (use CTE_LOOKUP for keyed access).");
-      require_run(cteVirtualTables != NULL && cteVirtualTables[i] != NULL,
-                  "CTE_SCAN as join child requires a virtual table.");
-      Uint32 numResultCols = 0;
-      for (const Outputs* o = op.cte_def->stmt->outputs; o; o = o->next)
-        numResultCols++;
-      opDefs[i] = qb->scanCte(op.cte_def_idx, numResultCols,
-                               cteVirtualTables[i], &opts);
-      break;
-    }
+      // T-20: QueryPlanner::plan makes a CTE a CTE_SCAN only as the root
+      // of a plan; below the root it is a CTE_LOOKUP.  The emit of a
+      // CTE_SCAN child (scanCte with no keys) was never reached.
+      ronsql_bug("A CTE scan below the root of a join plan.");
     default:
       ronsql_bug("A join operation has an unknown type.");
     }
@@ -17537,9 +18514,12 @@ std::ostream& operator<<(std::ostream& os, const NdbError& err) {
   if (err.message != NULL) {
     os << ": " << err.message;
   }
-  if (err.details != NULL) {
-    os << " (" << err.details << ")";
-  }
+  // X-37: err.details is not printed.  It is not a string: the NDB API
+  // stores a signal's extra error data there as an integer
+  // (NdbOperation::receiveTCKEYREF, NdbQueryOperation, the dictionary's
+  // foreign key ids), readable only through Ndb::getNdbErrorDetail.
+  // Printing it as a char* read that integer as an address: RDRS died
+  // with SIGSEGV on a key read refused with 1218 and error data.
   return os;
 }
 
@@ -17556,8 +18536,8 @@ std::ostream& operator<<(std::ostream& os, const NdbError& err) {
  * only retried needlessly; it cannot produce a wrong HTTP code, because the
  * caller maps the code carried by the exception through that same mapping.
  */
-static inline bool
-is_rate_limit_error(int ndb_error_code)
+bool
+ronsql_preparer_internal::is_rate_limit_error(int ndb_error_code)
 {
   switch (ndb_error_code) {
   case 243:   // TcKeyRef::WriteRateOverflowError
@@ -17586,8 +18566,8 @@ is_rate_limit_error(int ndb_error_code)
  * RonSQL only reads, so running the statement again is safe, and it
  * succeeds once the cluster serves this node again.
  */
-static inline bool
-is_cluster_unavailable_error(const NdbError& err)
+bool
+ronsql_preparer_internal::is_cluster_unavailable_error(const NdbError& err)
 {
   switch (err.code) {
   case 281:   // Operation not allowed due to cluster shutdown in progress
@@ -17612,8 +18592,8 @@ is_cluster_unavailable_error(const NdbError& err)
  * does) or an unavailable cluster (X-8).  Rate limit and schema errors are
  * decided before this.
  */
-static inline bool
-is_retryable_ndb_error(const NdbError& err)
+bool
+ronsql_preparer_internal::is_retryable_ndb_error(const NdbError& err)
 {
   return err.status == NdbError::TemporaryError ||
          err.mysql_code == HA_ERR_LOCK_WAIT_TIMEOUT ||
@@ -17633,12 +18613,111 @@ is_retryable_ndb_error(const NdbError& err)
  * When the retries of a retryable error run out, ronsql_op reports
  * RESOURCE too.
  */
-static inline bool
-is_resource_ndb_error(const NdbError& err)
+bool
+ronsql_preparer_internal::is_resource_ndb_error(const NdbError& err)
 {
   return is_retryable_ndb_error(err) ||
          err.classification == NdbError::UnknownResultError;
 }
+
+bool
+ronsql_preparer_internal::ndb_error_reloads_schema(
+    const NdbError& err, bool has_rate_limit_identity)
+{
+  if (has_rate_limit_identity && is_rate_limit_error(err.code))
+    return false;
+  return err.classification == NdbError::Classification::SchemaError;
+}
+
+/*
+ * T-16: the verdict of handle_ronsql_exception on the NDB error of the
+ * open transaction, which touches nothing (ErrorClassUnitTest).
+ */
+ronsql_preparer_internal::NdbErrorVerdict
+ronsql_preparer_internal::ndb_error_verdict(const NdbError& err,
+                                            bool has_rate_limit_identity,
+                                            bool schema_changed,
+                                            bool output_started)
+{
+  NdbErrorVerdict verdict;
+  verdict.action = NdbErrorVerdict::Action::FAIL;
+  verdict.error_class = RonSQLErrorClass::INTERNAL;
+  verdict.retryable_error = false;
+  verdict.output_started = false;
+  /*
+   * RONDB-978: a rate limit rejection is the caller's quota being enforced,
+   * not a failure of this query. Report it as such and never retry: the
+   * client-side backoff window outlives our retry budget, so retrying can
+   * only add load to a bucket that is already overflowing.
+   *
+   * Only when this query was tagged with a rate limit identity, which is
+   * what gives it a bucket to overflow in the first place. That keeps
+   * RonSQLRateLimitError reachable only for callers that opted into
+   * tagging, so embedders which did not (ronsql_cli) keep seeing exactly
+   * the two exception types they handle.
+   */
+  if (has_rate_limit_identity && is_rate_limit_error(err.code)) {
+    verdict.action = NdbErrorVerdict::Action::RATE_LIMIT;
+    return verdict;
+  }
+  bool temporary = false;
+  // Decide whether the error is temporary
+  if (err.classification == NdbError::Classification::SchemaError) {
+    // A schema error is temporary when the reload found a change.
+    temporary = schema_changed;
+  } else if (is_retryable_ndb_error(err)) {
+    // Treat error as temporary, no unloading of schema.  X-8: this
+    // includes an unavailable cluster.
+    verdict.retryable_error = true;
+    temporary = true;
+  }
+  if (temporary && output_started) {
+    // Rows already reached out_stream (pass-through drains stream as
+    // they go), which the caller keeps; a retry would repeat them
+    // (RONDB-1120 finding F-6).  X-6: an inner subquery's output is
+    // discarded, so its errors stay retryable.
+    verdict.output_started = true;
+    temporary = false;
+  }
+  if (temporary) {
+    verdict.action = NdbErrorVerdict::Action::RETRY;
+    return verdict;
+  }
+  // RONDB-1124: an NDB error caused by the statement or its data is the
+  // client's (e.g. 1860 arithmetic overflow); anything else is ours.
+  RonSQLErrorClass cls = RonSQLErrorClass::INTERNAL;
+  switch (err.classification) {
+  case NdbError::ApplicationError:
+  case NdbError::NoDataFound:
+  case NdbError::ConstraintViolation:
+  case NdbError::SchemaError:
+  case NdbError::UserDefinedError:
+    cls = RonSQLErrorClass::SEMANTIC;
+    break;
+  case NdbError::InsufficientSpace:
+    cls = RonSQLErrorClass::RESOURCE;
+    break;
+  case NdbError::FunctionNotImplemented:
+    cls = RonSQLErrorClass::UNSUPPORTED;
+    break;
+  default:
+    break;
+  }
+  if (is_resource_ndb_error(err)) {
+    cls = RonSQLErrorClass::RESOURCE;  // X-8
+  }
+  verdict.error_class = cls;
+  return verdict;
+}
+
+// T-16: defined above in ronsql_preparer_internal
+// (RonSQLPreparerInternal.hpp), which ErrorClassUnitTest calls.
+using ronsql_preparer_internal::is_rate_limit_error;
+using ronsql_preparer_internal::is_resource_ndb_error;
+using ronsql_preparer_internal::is_retryable_ndb_error;
+using ronsql_preparer_internal::ndb_error_reloads_schema;
+using ronsql_preparer_internal::ndb_error_verdict;
+using ronsql_preparer_internal::NdbErrorVerdict;
 
 /*
  * WP-F: raise one key read's own error.  In a batch of key reads the
@@ -17837,6 +18916,24 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     DEB_TRACE(); err << "->RPE\n";
     throw RonSQLPermanentError(e.what());
   }
+  catch (const RonSQLDictionaryError& e) {
+    // This exception type inherits from std::runtime_error, but we don't want
+    // it caught below.  X-9: a dictionary call failed, and its own error,
+    // read right after the call, decides.  An error that says NDB could not
+    // answer now goes as a transaction's does (throw_classified_ndb_error):
+    // a temporary error or an unavailable cluster is retried, an unknown
+    // result is a resource error.  Any other (723, no such table) fails the
+    // statement with the class its message gives, as before, and the code.
+    DEB_TRACE();
+    cleanup_trans();
+    const NdbError& dict_err = e.ndb_error();
+    if (is_resource_ndb_error(dict_err)) {
+      throw_classified_ndb_error(dict_err, e.what(), "dictionary");
+    }
+    err << "Error handling: dictionary->RPE\n" << dict_err << '\n';
+    throw RonSQLPermanentError(ronsql_classify_message(e.what()), e.what(),
+                               dict_err.code);
+  }
   catch (const std::bad_alloc&)
   {
     // Out of memory while processing the query (ArenaMalloc::alloc_exc /
@@ -17866,8 +18963,20 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
       ndbrequire(ndb != NULL);
       ndb_err = m_trans->getNdbError();
     } else if (ndb != NULL) {
-      DEB_TRACE(); err << ",oe";
-      ndb_err = DBG(ndb->getNdbError());
+      /*
+       * X-9: no transaction, so no NDB error of this statement to
+       * investigate.  The Ndb object's error is not one: it persists until
+       * the next startTransaction(), and RDRS hands pooled Ndb objects from
+       * request to request, so it can be an earlier statement's (1860 from
+       * Ndb::getNdbError(code) after a failed merge, or a failed
+       * startTransaction()'s).  A failed startTransaction() raises its own
+       * error (start_transaction) and a failed dictionary call
+       * RonSQLDictionaryError, so this is a broken invariant: an internal
+       * error without an NDB code.
+       */
+      DEB_TRACE(); err << ",nt->RPE\n";
+      cleanup_trans();
+      throw RonSQLPermanentError(RonSQLErrorClass::INTERNAL, e.what());
     } else {
       DEB_TRACE(); err << ",nn\n";
       cleanup_trans();
@@ -17884,78 +18993,37 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     std::ostringstream ndb_err_text;
     ndb_err_text << ndb_err;
     cleanup_trans();
-    /*
-     * RONDB-978: a rate limit rejection is the caller's quota being enforced,
-     * not a failure of this query. Report it as such and never retry: the
-     * client-side backoff window outlives our retry budget, so retrying can
-     * only add load to a bucket that is already overflowing.
-     *
-     * Only when this query was tagged with a rate limit identity, which is
-     * what gives it a bucket to overflow in the first place. That keeps
-     * RonSQLRateLimitError reachable only for callers that opted into
-     * tagging, so embedders which did not (ronsql_cli) keep seeing exactly
-     * the two exception types they handle.
-     */
-    if (m_conf.rate_limit_identity != NULL &&
-        is_rate_limit_error(ndb_err.code)) {
+    // T-16: the verdict is ndb_error_verdict(), a function of the error,
+    // the rate limit identity, a schema change and the output that went
+    // out.
+    const bool has_rate_limit_identity = m_conf.rate_limit_identity != NULL;
+    bool schema_changed = false;
+    if (ndb_error_reloads_schema(ndb_err, has_rate_limit_identity)) {
+      DEB_TRACE(); err << ",rl";
+      // Try to reload the schema. If changes were detected then we treat the
+      // error as temporary.
+      schema_changed = unload_schema();
+    }
+    const NdbErrorVerdict verdict =
+        ndb_error_verdict(ndb_err, has_rate_limit_identity, schema_changed,
+                          retry_would_repeat_output());
+    if (verdict.action == NdbErrorVerdict::Action::RATE_LIMIT) {
       DEB_TRACE();
       err << "->RLE\n" << ndb_err_text.str() << '\n';
       throw RonSQLRateLimitError(e.what(), ndb_err.code);
     }
-    bool temporary = false;
-    // Decide whether to unload and whether the error is temporary
-    if (ndb_err.classification == NdbError::Classification::SchemaError) {
-      DEB_TRACE(); err << ",rl";
-      // Try to reload the schema. If changes were detected then we treat the
-      // error as temporary.
-      temporary = unload_schema();
-    } else if (is_retryable_ndb_error(ndb_err)) {
-      DEB_TRACE(); err << ",nu";
-      // Treat error as temporary, no unloading of schema.  X-8: this
-      // includes an unavailable cluster.
-      temporary = true;
-    }
-    if (temporary && retry_would_repeat_output()) {
-      // Rows already reached out_stream (pass-through drains stream as
-      // they go), which the caller keeps; a retry would repeat them
-      // (RONDB-1120 finding F-6).  X-6: an inner subquery's output is
-      // discarded, so its errors stay retryable.
-      DEB_TRACE(); err << ",od";
-      temporary = false;
-    }
+    if (verdict.retryable_error) { DEB_TRACE(); err << ",nu"; }
+    if (verdict.output_started) { DEB_TRACE(); err << ",od"; }
     // Now that the ndb error is described on err stream, we'll rethrow the
     // exception with a new error type.
-    if (temporary) {
+    if (verdict.action == NdbErrorVerdict::Action::RETRY) {
       DEB_TRACE();
       err << "->RRE\n" << ndb_err_text.str() << '\n';
       throw RonSQLRetryableError(e.what(), ndb_err.code);
     }
     DEB_TRACE();
     err << "->RPE\n" << ndb_err_text.str() << '\n';
-    // RONDB-1124: an NDB error caused by the statement or its data is the
-    // client's (e.g. 1860 arithmetic overflow); anything else is ours.
-    RonSQLErrorClass cls = RonSQLErrorClass::INTERNAL;
-    switch (ndb_err.classification) {
-    case NdbError::ApplicationError:
-    case NdbError::NoDataFound:
-    case NdbError::ConstraintViolation:
-    case NdbError::SchemaError:
-    case NdbError::UserDefinedError:
-      cls = RonSQLErrorClass::SEMANTIC;
-      break;
-    case NdbError::InsufficientSpace:
-      cls = RonSQLErrorClass::RESOURCE;
-      break;
-    case NdbError::FunctionNotImplemented:
-      cls = RonSQLErrorClass::UNSUPPORTED;
-      break;
-    default:
-      break;
-    }
-    if (is_resource_ndb_error(ndb_err)) {
-      cls = RonSQLErrorClass::RESOURCE;  // X-8
-    }
-    throw RonSQLPermanentError(cls, e.what(), ndb_err.code);
+    throw RonSQLPermanentError(verdict.error_class, e.what(), ndb_err.code);
   }
   catch (...) {
     // All exceptions thrown should be instances of runtime_error.  X-14:
@@ -18171,6 +19239,16 @@ RonSQLPreparer::unload_schema() {
   if (m_main_scope.table == NULL) {
     DEB_TRACE();
     RETURN_UNLOAD_SCHEMA(false);
+  }
+  // X-10: load_single_table found an index of the table's index list that
+  // the dictionary no longer has, so the list was older than the schema.
+  // m_indexes lacks that index, as does a fresh listIndexes(), so the
+  // comparison below would find no change and make the error permanent.
+  // The table's schema cache entry is invalidated on the way out, so the
+  // next attempt lists the indexes afresh.
+  if (m_load_found_dropped_index) {
+    DEB_TRACE();
+    RETURN_UNLOAD_SCHEMA(true);
   }
   // Save table object ID and version
   typedef std::pair<int, int> Idver;
@@ -18395,6 +19473,8 @@ RonSQLPreparer::apply_filter(NdbScanFilter* filter, QueryScope& scope,
     require_sch(DBG(filter->end()) >= 0, filter_fail);
     break;
   case T_NOT:
+  case T_EXCLAMATION:
+    // F-14: simplify_ce makes ! a NOT; a ! is NOT here too.
     require_run(DBG(filter->begin(NdbScanFilter::NAND)) >= 0, filter_fail);
     apply_filter(filter, scope, ce->args.left);
     require_sch(DBG(filter->end()) >= 0, filter_fail);
@@ -18463,9 +19543,30 @@ RonSQLPreparer::apply_filter_cmp(NdbScanFilter* filter,
         right_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
         "WHERE filter column-vs-column comparison requires stored-table "
         "columns.");
-    require_sch(DBG(filter->cmp(DBG(cond),
-                                DBG(left_ref.attr_id),
-                                DBG(right_ref.attr_id))) >= 0,
+    require_prm(left_ref.dict_column != NULL && right_ref.dict_column != NULL,
+                "WHERE filter comparison has no source column descriptor.");
+    // F-13: two columns of the same type compare in the kernel's column
+    // compare; two numeric columns of other types in typed registers, as
+    // a CASE condition compares them.  Any other pair failed here with
+    // "Failed to apply filter." (4557), which as a stale schema was
+    // retried until the retries ran out; it is refused now.
+    if (left_ref.dict_column->isBindable(*right_ref.dict_column) == 0)
+    {
+      require_sch(DBG(filter->cmp(DBG(cond),
+                                  DBG(left_ref.attr_id),
+                                  DBG(right_ref.attr_id))) >= 0,
+                  filter_fail);
+      return;
+    }
+    if (!filter_can_compare_columns(left_ref.dict_column,
+                                    right_ref.dict_column))
+    {
+      throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
+                                 FILTER_COLUMN_PAIR_UNSUPPORTED);
+    }
+    require_sch(DBG(filter->cmp_typed(DBG(cond),
+                                      DBG(left_ref.attr_id),
+                                      DBG(right_ref.attr_id))) >= 0,
                 filter_fail);
     return;
   }
@@ -18541,17 +19642,17 @@ rondb_str_to_mysql_time(MYSQL_TIME *mt, LexString str) {
   MYSQL_TIME_STATUS status;
   bool err = str_to_datetime(str.str, str.len, mt, flags, &status);
   if (unlikely(err)) {
-    throw RonSQLMaybeStaleSchema("Failed to interpret string literal as a date"
-                                 " or timestamp");
+    throw RonSQLPermanentError("Failed to interpret string literal as a date"
+                               " or timestamp");
   }
   if (status.warnings) {
-    throw RonSQLMaybeStaleSchema("String literal interpreted as date or"
-                                 " timestamp with warnings");
+    throw RonSQLPermanentError("String literal interpreted as date or"
+                               " timestamp with warnings");
   }
   if (status.m_deprecation.m_kind !=
       MYSQL_TIME_STATUS::DEPRECATION::DEPR_KIND::DP_NONE) {
-    throw RonSQLMaybeStaleSchema("String literal interpreted as date or"
-                                 " timestamp with weird delimiters or spaces");
+    throw RonSQLPermanentError("String literal interpreted as date or"
+                               " timestamp with weird delimiters or spaces");
   }
   // todo test nanosecond rounding, see status->nanoseconds
 }
@@ -18935,6 +20036,16 @@ RonSQLPreparer::scalar_cte_dummy_key(NdbQueryBuilder* qb,
   return key;
 }
 
+/*
+ * T-18: every refusal here is a RonSQLPermanentError.  A column of a type
+ * RonSQL does not compare, or a literal its type cannot take, is the query
+ * text against the declared schema.  As RonSQLMaybeStaleSchema each such
+ * query went through unload_schema, which invalidates every table and
+ * index the statement holds, in the NDB dictionary cache and in RDRS's
+ * schema cache, for every other statement too, and reloads them, only to
+ * find nothing changed (RMS->RPE).  A table that ALTER TABLE changed is
+ * marked invalid by ALTER_TABLE_REP and loaded anew by the next statement.
+ */
 raw_value
 RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
                                 const NdbDictionary::Column* col) {
@@ -19000,10 +20111,10 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
   case NdbDictionary::Column::Type::Timestamp2:
     tk = TIME; binlen = 7; timetype = MYSQL_TIMESTAMP_DATETIME; break;
   default:
-    throw RonSQLMaybeStaleSchema("Unsupported column type in comparison"
-                                 " condition. Supported types are integer"
-                                 " types, FLOAT, DOUBLE, DECIMAL, CHAR,"
-                                 " VARCHAR, DATE, DATETIME and TIMESTAMP.");
+    throw RonSQLPermanentError("Unsupported column type in comparison"
+                               " condition. Supported types are integer"
+                               " types, FLOAT, DOUBLE, DECIMAL, CHAR,"
+                               " VARCHAR, DATE, DATETIME and TIMESTAMP.");
   }
   if (op == T_INT && tk == INT) {
     if (ce->constant_integer < min || ce->constant_integer > max) {
@@ -19013,7 +20124,9 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       // retryable burned 10 doomed attempts per query (and the join-path
       // unload_schema comparison misreports "schema changed" whenever
       // the root table has an ordered index, so the RMS disambiguation
-      // never converged — see non_aggregate_phase_0.md).
+      // never converged — see non_aggregate_phase_0.md).  T-18: so is
+      // every other refusal here, a type RonSQL does not compare or a
+      // literal the type cannot take.
       throw RonSQLPermanentError("Integer type column compared to an integer"
                                  " literal out of range.");
     }
@@ -19052,9 +20165,9 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     return raw_value{ val, static_cast<Uint32>(bytes) };
   }
   if (tk == INT) {
-    throw RonSQLMaybeStaleSchema("Integer type column compared to an"
-                                 " incompatible value. Only integer literals"
-                                 " are supported.");
+    throw RonSQLPermanentError("Integer type column compared to an"
+                               " incompatible value. Only integer literals"
+                               " are supported.");
   }
   if (tk == FLOAT) {
     if (op == T_INT && bytes == 4) {
@@ -19074,9 +20187,9 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       *val = ce->constant_float.dbl;
       return raw_value{ val, static_cast<Uint32>(bytes) };
     } else {
-      throw RonSQLMaybeStaleSchema("Floating point type column compared to an"
-                                   " incompatible value. Only integer and float"
-                                   " literals are supported.");
+      throw RonSQLPermanentError("Floating point type column compared to an"
+                                 " incompatible value. Only integer and float"
+                                 " literals are supported.");
     }
   }
   if (tk == DECIMAL) {
@@ -19130,9 +20243,9 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       }
       err = decimal_str2bin(ls.str, ls.len, prec, scale, bin, bin_len);
     } else {
-      throw RonSQLMaybeStaleSchema("Floating point type column compared to an"
-                                   " incompatible value. Only integer and float"
-                                   " literals are supported.");
+      throw RonSQLPermanentError("Floating point type column compared to an"
+                                 " incompatible value. Only integer and float"
+                                 " literals are supported.");
     }
     if (unlikely(err != E_DEC_OK)) {
       switch (err) {
@@ -19143,7 +20256,11 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
         throw RonSQLPermanentError("Failed converting float literal to DECIMAL");
       case E_DEC_OVERFLOW: [[fallthrough]];
       case E_DEC_TRUNCATED:
-        throw RonSQLMaybeStaleSchema("Failed converting float literal to DECIMAL");
+        // T-9: an integer literal lands here too; the message named only
+        // a float literal.
+        throw RonSQLPermanentError("Decimal type column compared to a"
+                                   " literal that does not fit the"
+                                   " column.");
       default:
         ronsql_bug("Converting a float literal to DECIMAL gave an unknown "
                    "error.");
@@ -19152,9 +20269,9 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     return raw_value{ bin, bin_len };
   }
   if (op == T_INT) {
-    throw RonSQLMaybeStaleSchema("Integer literal compared to an incompatible"
-                                 " column. Only integer and float type columns"
-                                 " are supported.");
+    throw RonSQLPermanentError("Integer literal compared to an incompatible"
+                               " column. Only integer and float type columns"
+                               " are supported.");
   }
   if (op == T_STRING && tk == STR) {
     // The bytes of the literal in the column's character set.
@@ -19163,8 +20280,8 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       // CHAR: fixed-length, right-padded with spaces, no length prefix
       Uint32 col_len = col->getLength();
       if (lit.len > static_cast<size_t>(col_len)) {
-        throw RonSQLMaybeStaleSchema("CHAR column compared to a string literal"
-                                     " that is too long.");
+        throw RonSQLPermanentError("CHAR column compared to a string literal"
+                                   " that is too long.");
       }
       Uint8* val = m_amalloc->alloc_exc<Uint8>(col_len);
       memcpy(val, lit.str, lit.len);
@@ -19180,11 +20297,11 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       return raw_value{ val, col_len };
     }
     if (lit.len > static_cast<size_t>(maxlen)) {
-      throw RonSQLMaybeStaleSchema("VARCHAR column compared to a string literal"
-                                   " that is too long. Note that if the column"
-                                   " length is less than 256, then the length"
-                                   " of the string literal must also be less"
-                                   " than 256.");
+      throw RonSQLPermanentError("VARCHAR column compared to a string literal"
+                                 " that is too long. Note that if the column"
+                                 " length is less than 256, then the length"
+                                 " of the string literal must also be less"
+                                 " than 256.");
     }
     Uint8* val = m_amalloc->alloc_exc<Uint8>(lenbytes + lit.len);
     memcpy(val, &lit.len, lenbytes);
@@ -19192,9 +20309,9 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     return raw_value{ val, static_cast<Uint32>(lenbytes + lit.len) };
   }
   if (tk == STR) {
-    throw RonSQLMaybeStaleSchema("CHAR/VARCHAR column compared to an"
-                                 " incompatible value. Only string literals"
-                                 " are supported.");
+    throw RonSQLPermanentError("CHAR/VARCHAR column compared to an"
+                               " incompatible value. Only string literals"
+                               " are supported.");
   }
   if (tk == TIME) {
     MYSQL_TIME mt;
@@ -19203,10 +20320,10 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     } else if (op == I_MYSQL_TIME) {
       mt = ce->mysql_time;
     } else {
-      throw RonSQLMaybeStaleSchema("DATE/DATETIME/TIMESTAMP column compared to"
-                                   " an incompatible value. Only string"
-                                   " literals and calls to DATE_ADD and"
-                                   " DATE_SUB are supported.");
+      throw RonSQLPermanentError("DATE/DATETIME/TIMESTAMP column compared to"
+                                 " an incompatible value. Only string"
+                                 " literals and calls to DATE_ADD and"
+                                 " DATE_SUB are supported.");
     }
     // The buffer has the widest size (DATETIME(6) / TIMESTAMP(6)) and is
     // zeroed: NdbInterpretedCode::branch_col reads the column's own size
@@ -19230,10 +20347,10 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     require_run(retlen <= binlen, "Temporal precision out of range.");
     int warnings = 0;
     if (unlikely(mt.time_type != timetype)) {
-      throw RonSQLMaybeStaleSchema("DATE/DATETIME/TIMESTAMP column compared to"
-                                   " a valid date/time constant of the wrong"
-                                   " type. Note that presence/absence of the"
-                                   " time part must match.");
+      throw RonSQLPermanentError("DATE/DATETIME/TIMESTAMP column compared to"
+                                 " a valid date/time constant of the wrong"
+                                 " type. Note that presence/absence of the"
+                                 " time part must match.");
     }
     switch (type) {
     case NdbDictionary::Column::Type::Date: {
@@ -19244,8 +20361,8 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       my_datetime_adjust_frac(&mt, precision, &warnings, true);
       if (unlikely(warnings != 0)) {
         // Actually won't ever happen when truncate argument is set
-        throw RonSQLMaybeStaleSchema("Perhaps an invalid DATETIME constant."
-                                     " Please report a bug.");
+        throw RonSQLPermanentError("Perhaps an invalid DATETIME constant."
+                                   " Please report a bug.");
       }
       longlong numericDateTime = TIME_to_longlong_datetime_packed(mt);
       my_datetime_packed_to_binary(numericDateTime, bindate, precision);
@@ -19267,16 +20384,16 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       time_info.tm_isdst = -1; // Daylight saving t
       epoch = timegm(&time_info);
       if (unlikely(epoch <= 0 || epoch > 2147483647)) {
-        throw RonSQLMaybeStaleSchema("TIMESTAMP column compared to a constant"
-                                     " out of range (valid range is '1970-01-01"
-                                     " 00:00:01' UTC to '2038-01-19 03:14:07'"
-                                     " UTC)");
+        throw RonSQLPermanentError("TIMESTAMP column compared to a constant"
+                                   " out of range (valid range is '1970-01-01"
+                                   " 00:00:01' UTC to '2038-01-19 03:14:07'"
+                                   " UTC)");
       }
       my_datetime_adjust_frac(&mt, precision, &warnings, true);
       if (unlikely(warnings != 0)) {
         // Actually won't ever happen when truncate argument is set
-        throw RonSQLMaybeStaleSchema("Perhaps an invalid TIMESTAMP constant."
-                                     " Please report a bug.");
+        throw RonSQLPermanentError("Perhaps an invalid TIMESTAMP constant."
+                                   " Please report a bug.");
       }
       // On Mac timeval.tv_usec is Int32 and on linux it is Int64.
       // Inorder to be compatible we cast l_time.second_part to Int32
@@ -19317,6 +20434,7 @@ has_minmax_comparison(const ConditionalExpression* ce)
   case T_GE:
     return is_minmax_node(ce->args.left) || is_minmax_node(ce->args.right);
   case T_NOT:
+  case T_EXCLAMATION:  // F-14: ! is NOT
     return has_minmax_comparison(ce->args.left);
   case T_AND:
   case T_OR:
@@ -19357,6 +20475,7 @@ RonSQLPreparer::negate_minmax_condition(struct ConditionalExpression* ce)
   case T_GE:
     return new_condition_node(m_amalloc, T_LT, ce->args.left, ce->args.right);
   case T_NOT:
+  case T_EXCLAMATION:  // F-14: ! is NOT
     return ce->args.left;
   case T_AND:
   case T_OR:
@@ -19568,6 +20687,17 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
       r[0].op = T_AND;
       r[0].args.right = &r[2];
       return &r[0];
+    }
+  case T_EXCLAMATION:
+    {
+      // F-14: !x is NOT x; MySQL builds the same negation for both.  The
+      // grammar gives ! its higher precedence (!a = b is (!a) = b), so
+      // only its operand differs from NOT's.  Make it a NOT here, so the
+      // filters, keys and bounds built from the simplified tree, which
+      // take NOT, take ! too (they refused it as a non-boolean term).
+      return simplify_ce(new_condition_node(m_amalloc, T_NOT,
+                                            ce->args.left, NULL),
+                         maxdepth);
     }
   case T_NOT:
     {
@@ -19851,8 +20981,12 @@ RonSQLPreparer::rewrite_minmax_comparison(TokenKind cmp_op,
   return root;
 }
 
+// F-15: `aggregator` names the NdbAggregator that CALL writes to, in every
+// function that uses this macro; a write that does not fit in its program
+// buffer is a limit error (program_write_or_fail).
 #define programAggregator_do_or_fail(CALL) \
-  require_prm(CALL, "Failed writing aggregation program. Please report a bug.")
+  program_write_or_fail(aggregator, (CALL), \
+      "Failed writing aggregation program. Please report a bug.")
 
 // F16: NdbAggregator refuses Sum, and Avg, over a string or temporal
 // register (kErrUnsupportedStringOperation /
@@ -19865,13 +20999,15 @@ RonSQLPreparer::rewrite_minmax_comparison(TokenKind cmp_op,
 // through NdbAggregator::RepeatAgg, which makes the same checks for SUM
 // and AVG, and refuses MIN / MAX arms that mix strings with other values
 // or strings of different types or collations (kErrMixedStringCaseArms;
-// the data node keeps a string MIN / MAX as a pointer).  Any other
+// the data node keeps a string MIN / MAX as a pointer).  A write that does
+// not fit in the program buffer is a limit error (F-15).  Any other
 // failure keeps the generic bug message.
 void
 RonSQLPreparer::throw_sum_avg_emit_error(NdbAggregator* aggregator,
                                          const SelectStatement& stmt,
                                          Uint32 agg_id, bool is_avg)
 {
+  throw_if_program_too_big(aggregator);
   const Uint32 errnum = aggregator->GetError().errno_;
   if (errnum == kErrMixedStringCaseArms)
     throw RonSQLPermanentError(
@@ -19942,14 +21078,17 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
       NdbAttrId col_id = src_ref.attr_id;
       if (!aggregator->LoadColumn(col_id, dest))
       {
+        throw_if_program_too_big(aggregator);  // F-15
         err << "Failed writing aggregation program "
                "when attempting to load column "
             << quoted_identifier(m_columns[src]) << endl;
         // F16: a type the aggregation interpreter cannot load (BINARY,
         // BLOB, BIT, the old temporal formats) is unsupported, not a bug.
-        // Still MaybeStaleSchema: a reload may find the type changed.
+        // T-18: and permanent, as encode_constant's type refusals: as a
+        // MaybeStaleSchema each such query reloaded the schema of every
+        // table it held, for nothing.
         if (aggregator->GetError().errno_ == kErrUnSupportedColumn)
-          throw RonSQLMaybeStaleSchema(
+          throw RonSQLPermanentError(
               "Aggregation over a column of this type is not supported.");
         throw RonSQLMaybeStaleSchema("Failed writing aggregation program");
       }
@@ -20154,7 +21293,7 @@ RonSQLPreparer::embedded_filter_expr_word_count(QueryScope& scope,
 }
 
 void
-RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
+RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* aggregator,
                                           QueryScope& scope,
                                           ConditionalExpression* ce,
                                           Uint32 leaf_idx,
@@ -20179,7 +21318,7 @@ RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
     if (ref.join_op_idx == leaf_idx) {
       // READ_ATTR_INTO_REG: native-typed load, sets the register's
       // NULL_INDICATOR for NULL values.
-      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
           Interpreter::Read((Uint32)ref.attr_id, reg)));
       cur_pos++;
     } else {
@@ -20209,7 +21348,7 @@ RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
                     "Unsupported linked column type in cross-table "
                     "WHERE filter (integer columns only).");
       }
-      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
           Interpreter::ReadLinkedColumnIntoReg(reg, lp,
                                                (Uint32)col->getType())));
       cur_pos++;
@@ -20221,7 +21360,7 @@ RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
       // ZREGISTER_INIT_ERROR on a NULL register otherwise, failing
       // the whole query instead of filtering the row.
       Uint32 guard_offset = null_fail_target - cur_pos;
-      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
           Interpreter::Branch(Interpreter::BRANCH_REG_EQ_NULL,
                               /*Reg1=*/0, /*Reg2=*/reg) |
           (guard_offset << 16)));
@@ -20237,9 +21376,9 @@ RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
     memcpy(&lo, &v, 4);
     memcpy(&hi, ((char*)&v) + 4, 4);
     programAggregator_do_or_fail(
-        agg->EmitEmbeddedWord(Interpreter::LoadConst64(reg)));
-    programAggregator_do_or_fail(agg->EmitEmbeddedWord(lo));
-    programAggregator_do_or_fail(agg->EmitEmbeddedWord(hi));
+        aggregator->EmitEmbeddedWord(Interpreter::LoadConst64(reg)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(lo));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(hi));
     cur_pos += 3;
     break;
   }
@@ -20270,17 +21409,17 @@ RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
     if (right_depth > left_depth) {
       left_reg = tmp_reg;
       right_reg = reg;
-      emit_embedded_filter_expr(agg, scope, ce->args.right, leaf_idx,
+      emit_embedded_filter_expr(aggregator, scope, ce->args.right, leaf_idx,
                                 right_reg, left_reg, cur_pos,
                                 null_fail_target);
-      emit_embedded_filter_expr(agg, scope, ce->args.left, leaf_idx,
+      emit_embedded_filter_expr(aggregator, scope, ce->args.left, leaf_idx,
                                 left_reg, right_reg, cur_pos,
                                 null_fail_target);
     } else {
-      emit_embedded_filter_expr(agg, scope, ce->args.left, leaf_idx,
+      emit_embedded_filter_expr(aggregator, scope, ce->args.left, leaf_idx,
                                 left_reg, right_reg, cur_pos,
                                 null_fail_target);
-      emit_embedded_filter_expr(agg, scope, ce->args.right, leaf_idx,
+      emit_embedded_filter_expr(aggregator, scope, ce->args.right, leaf_idx,
                                 right_reg, left_reg, cur_pos,
                                 null_fail_target);
     }
@@ -20289,15 +21428,15 @@ RonSQLPreparer::emit_embedded_filter_expr(NdbAggregator* agg,
     // commuting.
     switch (ce->op) {
     case T_PLUS:
-      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
           Interpreter::Add(reg, left_reg, right_reg)));
       break;
     case T_MINUS:
-      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
           Interpreter::Sub(reg, left_reg, right_reg)));
       break;
     case T_MULTIPLY:
-      programAggregator_do_or_fail(agg->EmitEmbeddedWord(
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
           Interpreter::Mul(reg, left_reg, right_reg)));
       break;
     default:
@@ -20579,12 +21718,13 @@ RonSQLPreparer::emit_cte_orderby_limit(QueryScope& scope,
           "CTE body ORDER BY over a subquery output.");
     }
 
-    require_prm(cteAgg->OrderBy(idx, is_agg, !ob->ascending),
-                "Failed to program CTE body ORDER BY.");
+    program_write_or_fail(cteAgg,
+                          cteAgg->OrderBy(idx, is_agg, !ob->ascending),
+                          "Failed to program CTE body ORDER BY.");
   }
 
-  require_prm(cteAgg->Limit((Uint32)stmt->limit),
-              "Failed to program CTE body LIMIT.");
+  program_write_or_fail(cteAgg, cteAgg->Limit((Uint32)stmt->limit),
+                        "Failed to program CTE body LIMIT.");
   return true;
 }
 
@@ -20927,12 +22067,13 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
         NdbAttrId col_id = src_ref.attr_id;
         if (!aggregator->LoadColumn(col_id, dest))
         {
+          throw_if_program_too_big(aggregator);  // F-15
           err << "Failed writing aggregation program "
                  "when attempting to load column "
               << quoted_identifier(m_columns[src]) << endl;
-          // F16: see programAggregator's Load arm.
+          // F16, T-18: see programAggregator's Load arm.
           if (aggregator->GetError().errno_ == kErrUnSupportedColumn)
-            throw RonSQLMaybeStaleSchema(
+            throw RonSQLPermanentError(
                 "Aggregation over a column of this type is not supported.");
           throw RonSQLMaybeStaleSchema(
               "Failed writing aggregation program");
@@ -21713,34 +22854,14 @@ RonSQLPreparer::generate_embedded_condition(
       // Register-based path supports every NDB integer width.  Leaf
       // operands use READ_ATTR_INTO_REG (DBTUP's type-aware loader);
       // linked operands use READ_LINKED_COLUMN_TO_REG (Phase I.5 v5)
-      // which decodes by NDB type with correct sign extension.
-      auto can_load_typed_reg =
-          [](const NdbDictionary::Column* c)
-      {
-        switch (c->getType()) {
-        case NdbDictionary::Column::Tinyint:
-        case NdbDictionary::Column::Tinyunsigned:
-        case NdbDictionary::Column::Smallint:
-        case NdbDictionary::Column::Smallunsigned:
-        case NdbDictionary::Column::Mediumint:
-        case NdbDictionary::Column::Mediumunsigned:
-        case NdbDictionary::Column::Int:
-        case NdbDictionary::Column::Unsigned:
-        case NdbDictionary::Column::Bigint:
-        case NdbDictionary::Column::Bigunsigned:
-        case NdbDictionary::Column::Float:
-        case NdbDictionary::Column::Double:
-          return true;
-        default:
-          return false;
-        }
-      };
+      // which decodes by NDB type with correct sign extension.  The
+      // type set is the WHERE filter's (numeric_register_column, F-13).
       require_prm(info.lhs.kind != SideKind::InlineLinked &&
                   info.rhs.kind != SideKind::InlineLinked,
                   "CASE condition with two CTE-leaf columns is not yet "
                   "supported.");
-      require_unsupported(can_load_typed_reg(info.lhs.col) &&
-                  can_load_typed_reg(info.rhs.col),
+      require_unsupported(numeric_register_column(info.lhs.col) &&
+                  numeric_register_column(info.rhs.col),
                   "Column-vs-column CASE / GREATEST / LEAST currently "
                   "supports integer and FLOAT / DOUBLE operands only; "
                   "VARCHAR and DECIMAL operands are not supported.");
@@ -22130,7 +23251,6 @@ RonSQLPreparer::print_join_plan_ops(QueryScope& scope, const char* line_prefix)
       switch (op.match_type) {
       case JoinOp::INNER:      out << "[INNER] ";      break;
       case JoinOp::LEFT_OUTER: out << "[LEFT JOIN] ";   break;
-      case JoinOp::SEMI_JOIN:  out << "[SEMI] ";        break;
       case JoinOp::ANTI_JOIN:  out << "[ANTI] ";        break;
       }
     }
@@ -22149,11 +23269,12 @@ RonSQLPreparer::print_join_plan_ops(QueryScope& scope, const char* line_prefix)
     }
     if (op.alias.len > 0) out << " AS " << op.alias.c_str();
     // Phase 3 (W2): show the topology — a star and a chain used to
-    // print identically.  No recorded baseline contains this print
-    // (it goes to ronsql_explain.inc's $EXPLAIN_FILE), so the
-    // annotation is baseline-safe.
+    // print identically.  J-9: the parent in the SPJ tree, which
+    // emit_child_ops sets with setParent; for chained sibling
+    // CTE_LOOKUPs it is the previous CTE_LOOKUP, not the key source,
+    // which the Key line shows.
     if (!op.is_root) {
-      out << "  <- " << jp.ops[op.parent_op_idx].alias.c_str();
+      out << "  <- " << jp.ops[op.tree_parent_op_idx].alias.c_str();
     }
     out << '\n';
     char indent[64];
@@ -22177,6 +23298,9 @@ RonSQLPreparer::print_join_plan_ops(QueryScope& scope, const char* line_prefix)
         out << op.index->getColumn(c)->getName();
       }
       out << ")\n";
+    }
+    if (op.is_root) {
+      print_root_access(scope, indent);
     }
     // Root scan-config conditions (join_root_index_scan_plan.md):
     // show bound-vs-filter routing for a scan-config-selected
@@ -22299,7 +23423,11 @@ RonSQLPreparer::print_join_plan_ops(QueryScope& scope, const char* line_prefix)
         scope.join_where_ce[i] != NULL) {
       out << indent << "  Residual filter: yes\n";
     }
-    if (jp.num_agg_leaves > 0) {
+    // J-9: only where the scope aggregates; the planner sets
+    // agg_leaf_idx for a pass-through join too.
+    if (!scope_aggregates(scope)) {
+      // no aggregation leaf
+    } else if (jp.num_agg_leaves > 0) {
       for (Uint32 a = 0; a < jp.num_agg_leaves; a++) {
         if (jp.agg_leaf_indices[a] == i) {
           out << indent << "  ** Aggregation leaf **\n";
@@ -22310,6 +23438,91 @@ RonSQLPreparer::print_join_plan_ops(QueryScope& scope, const char* line_prefix)
       out << indent << "  ** Aggregation leaf **\n";
     }
   }
+}
+
+/**
+ * J-9: the root access that decide_root_access chooses, the one
+ * emit_root_op builds: the NDB API operation, its filter, and why a
+ * lookup was not taken where the WHERE binds the whole key.  A CTE root
+ * needs its virtual table, built here as execute_join builds it.
+ * EXPLAIN runs no subquery, so a root WHERE that holds one is decided
+ * at execution.
+ */
+void
+RonSQLPreparer::print_root_access(QueryScope& scope, const char* indent)
+{
+  if (m_conf.ndb == NULL) return;
+  std::basic_ostream<char>& out = *m_conf.out_stream;
+  const JoinPlan& plan = scope.join_plan;
+  if (ce_has_subquery(scope.join_where_ce[0])) {
+    out << indent
+        << "  Root access: decided at execution, after the subqueries run\n";
+    return;
+  }
+  NdbDictionary::Table* vts[MAX_SPJ_TREE_NODES] = {};
+  NdbAggregator* no_aggs[MAX_SPJ_TREE_NODES] = {};
+  JoinQueryObjects objs(vts, no_aggs);
+  if (plan.ops[0].type == JoinOp::CTE_SCAN) {
+    build_cte_virtual_tables(plan, vts);
+  }
+  // Decided before anything is printed: an error leaves no half line.
+  RootAccess ra;
+  decide_root_access(scope, scope_aggregates(scope), vts[0], NULL, ra);
+  out << indent << "  Root access: ";
+  bool filter_is_rest = false;
+  switch (ra.kind) {
+  case RootAccess::Kind::NOT_DECIDED:
+    out << "not decided";
+    break;
+  case RootAccess::Kind::REFUSED:
+    out << "refused: " << ra.refusal;
+    break;
+  case RootAccess::Kind::TABLE_SCAN:
+    out << "scanTable";
+    break;
+  case RootAccess::Kind::INDEX_SCAN:
+    out << "scanIndex on " << ra.index->getName();
+    break;
+  case RootAccess::Kind::PK_LOOKUP:
+    out << "readTuple on the primary key";
+    filter_is_rest = true;
+    break;
+  case RootAccess::Kind::PK_INDEX_SCAN:
+    out << "scanIndex on " << ra.index->getName()
+        << ", equal on the primary key";
+    filter_is_rest = true;
+    break;
+  case RootAccess::Kind::CTE_SCAN:
+    out << "scanCte";
+    break;
+  case RootAccess::Kind::CTE_LOOKUP:
+    out << "lookupCte on the CTE key";
+    filter_is_rest = true;
+    break;
+  case RootAccess::Kind::CTE_GROUP_PROBE:
+    out << "lookupCte on the CTE key its body binds (single group)";
+    break;
+  case RootAccess::Kind::CTE_SCALAR_LOOKUP:
+    out << "lookupCte of a scalar CTE";
+    break;
+  }
+  if (ra.passes_no_row) {
+    out << "; filter: passes no row";
+  } else if (ra.filter != NULL) {
+    out << "; filter: " << (filter_is_rest ? "rest of WHERE" : "WHERE");
+  }
+  if (ra.reason != NULL || ra.no_pk_index) {
+    out << " (no lookup: ";
+    if (ra.reason != NULL) {
+      out << ra.reason;
+      if (ra.no_pk_index) out << "; ";
+    }
+    if (ra.no_pk_index) {
+      out << "no ordered index on the primary key";
+    }
+    out << ")";
+  }
+  out << '\n';
 }
 
 void
@@ -22462,10 +23675,15 @@ RonSQLPreparer::print()
     out << '\n';
   }
 
-  // Print join plan at the top for multi-table queries
-  if (m_conf.ndb != NULL && m_scan_config == NULL && m_main_scope.join_plan.num_ops > 1) {
+  // Print join plan at the top for multi-table queries, and (J-9) for
+  // a query on one CTE, to show its root access.
+  if (m_conf.ndb != NULL && m_scan_config == NULL &&
+      (m_main_scope.join_plan.num_ops > 1 ||
+       (m_main_scope.join_plan.num_ops == 1 && is_join_query()))) {
     out << "Join plan (" << m_main_scope.join_plan.num_ops
-        << " operations):\n";
+        << (m_main_scope.join_plan.num_ops == 1 ? " operation"
+                                                : " operations")
+        << "):\n";
     print_join_plan_ops(m_main_scope, "");
     out << '\n';
   }

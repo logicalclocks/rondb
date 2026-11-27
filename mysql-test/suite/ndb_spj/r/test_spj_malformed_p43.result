@@ -1,0 +1,8 @@
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# P-43: join aggregation GROUP BY CHAR column with collation 0
+Running command
+Result of command: 0
+Test program success!

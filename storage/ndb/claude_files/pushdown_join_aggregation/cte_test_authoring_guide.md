@@ -128,7 +128,6 @@ Create `suite/ronsql_cte/include/body_<FAMILY>.inc`, self-contained:
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 --source suite/ronsql_cte/include/cte_schema.inc
 --source suite/ronsql_cte/include/cte_data.inc
@@ -238,7 +237,7 @@ shape, write a PROBE in ONE of two forms:
 
 (1) **CLEAN PERMANENT REJECTION** (matrix says RonSQL refuses, e.g. partial-key):
 keep ENABLED as a rejection-assert via ronsql_cli (rejection happens at
-prepare time, so the join dictionary-cache caveat does not apply):
+prepare time, before any NDB execution):
 ```
 --echo === <id> (rejection): <description> ===
 --error 1

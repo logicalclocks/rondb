@@ -29,6 +29,7 @@
 #include <portlib/ndb_prefetch.h>
 #include <AttributeDescriptor.hpp>
 #include <AttributeHeader.hpp>
+#include <CteLinkedAttr.hpp>
 #include <KeyDescriptor.hpp>
 #include <Checksum.hpp>
 #include <Interpreter.hpp>
@@ -995,11 +996,79 @@ bool Dbtup::pushdownInitErrorInserted() const {
 #endif
 }
 
+/*
+ * Error insert 4047: nextAttrInfoParam reads the parameter area of an
+ * interpreted range scan that DBSPJ did not send as one parameter block
+ * per range, as it reads a DBSPJ scan's.  Only DBSPJ writes the blocks,
+ * so this lets a raw scan from the API reach the block checks with
+ * blocks of its own (testSpjMalformed P46).  Checked through the LDM
+ * instance, as 4046.
+ */
+bool Dbtup::scanParamBlocksErrorInserted() const {
+#ifdef ERROR_INSERT
+  const Dbtup* ldm = (m_ldm_instance_used != nullptr)
+                         ? m_ldm_instance_used
+                         : this;
+  return ldm->jit_error_inserted(4047);
+#else
+  return false;
+#endif
+}
+
+/*
+ * The interpreted program of a scan starts with the header
+ *   [initReadLen][interpretLen][finalUpdateLen][finalReadLen][paramLen]
+ * and the five regions follow it in that order.  The last one, the
+ * parameter area, is the subroutine region of an NDB API program, or,
+ * for a DBSPJ scan with parameters (scanFrag_send), one parameter block
+ * per range, each [blockLen][blockLen - 1 words].  Only for a scan from
+ * DBSPJ does each range after the first move on to a block of its own
+ * (nextAttrInfoParam).  All five lengths are the sender's.
+ *
+ * Returns the word offset of the parameter area in the section of
+ * totalLen words at attrInfo, or 0 when the header is incomplete or the
+ * regions do not end within the section.  The lengths are summed in 64
+ * bits, so they cannot wrap to a short sum (RONDB-1124).
+ */
+static Uint32 scanParamAreaStart(const Uint32 *attrInfo, Uint32 totalLen) {
+  if (unlikely(totalLen < 5)) {
+    return 0;
+  }
+  const Uint64 areaStart = Uint64(5) + Uint64(attrInfo[0]) +
+                           Uint64(attrInfo[1]) + Uint64(attrInfo[2]) +
+                           Uint64(attrInfo[3]);
+  if (unlikely(areaStart + Uint64(attrInfo[4]) > Uint64(totalLen))) {
+    return 0;
+  }
+  return Uint32(areaStart);
+}
+
+/*
+ * The length of the parameter block at word offset 'offset' of the
+ * parameter area of paramAreaLen words at paramArea, or 0 when no whole
+ * block starts there: the offset is at or past the end of the area, or
+ * the block's length runs past it or is 0.  A block's length counts its
+ * length word, so a block is never empty, and each range moves on to a
+ * block of its own.
+ */
+static Uint32 scanParamBlockLen(const Uint32 *paramArea,
+                                Uint32 paramAreaLen,
+                                Uint32 offset) {
+  if (unlikely(offset >= paramAreaLen)) {
+    return 0;
+  }
+  const Uint32 blockLen = paramArea[offset];
+  if (unlikely(blockLen == 0 || blockLen > paramAreaLen - offset)) {
+    return 0;
+  }
+  return blockLen;
+}
+
 Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
                                bool interpretedFlag,
                                bool first_call,
                                void* scan_rec,
-                               Uint32* pushdownError)
+                               Uint32* scanError)
 {
   /* Get stored procedure */
   StoredProcPtr storedPtr;
@@ -1032,6 +1101,16 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
     SectionReader reader(storedPtr.p->storedProcIVal,
                          getSectionSegmentPool());
     totalLen = reader.getSize();
+    /* scanProcedure refuses a section of ZATTR_BUFFER_SIZE words or more
+     * (STORED_PROCREF), and DBLQH deletes that stored procedure before
+     * it comes here.  Should one come here, it is not copied. */
+    if (unlikely(totalLen >= ZATTR_BUFFER_SIZE)) {
+      jam();
+      if (scanError != nullptr) {
+        *scanError = ZSTORED_TOO_MUCH_ATTRINFO_ERROR;
+      }
+      return totalLen;
+    }
     reader.getWords(&cinBuffer[0], totalLen);
     /* Cache the full linearized section on first call (scan procedures only) */
     jamDebug();
@@ -1040,9 +1119,9 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
       jam();
       return 0;
     }
-    const Uint32 readLen = cinBuffer[0] + cinBuffer[1] +
-      cinBuffer[2] + cinBuffer[3];
-    paramAreaStart = 5 + readLen;
+    /* 0 when the header is refused, which fails an interpreted scan
+     * below, on this and every later call. */
+    paramAreaStart = scanParamAreaStart(&cinBuffer[0], totalLen);
     storedPtr.p->storedParamAreaStart = paramAreaStart;
   }
   ndbrequire(storedPtr.p->storedCode == ZSCAN_PROCEDURE);
@@ -1054,31 +1133,51 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
   if (interpretedFlag) {
     jam();
     jamDataDebug(paramAreaStart);
+    if (unlikely(paramAreaStart == 0)) {
+      /* The five region lengths of the header run past the section, or
+       * it has no header: as interpreterStartLab would refuse each row,
+       * the scan fails with ZTOTAL_LEN_ERROR before it reads one. */
+      jam();
+      if (scanError != nullptr) {
+        *scanError = ZTOTAL_LEN_ERROR;
+      }
+      return totalLen;
+    }
+    /* The parameter area as the sender wrote it, within the section
+     * (scanParamAreaStart).  cinBuffer[4] may by now hold the length of
+     * the block of an earlier range. */
+    const Uint32* const section = storedPtr.p->cachedLinearAttrInfo;
+    const Uint32 paramAreaLen = section[4];
     Uint32 paramLen = 0;
-    if (cinBuffer[4] == 0) {
+    if (paramAreaLen == 0) {
       jamDebug();
       // No parameters supplied in this attrInfo
     } else if (storedPtr.p->storedParamOffset == 0) {
       jamDebug();
       // First parameter — already in position
-      paramLen = cinBuffer[4];
-      ndbassert(paramAreaStart + paramLen <= totalLen);
+      paramLen = paramAreaLen;
     } else {
       jamDebug();
-      // Jump directly to current parameter using cached offset
-      const Uint32 paramOffset =
-        paramAreaStart + storedPtr.p->storedParamOffset;
-      ndbassert(paramOffset < totalLen);
-      Uint32* paramBase = &cinBuffer[paramOffset];
-      paramLen = *paramBase;
-      ndbassert(paramOffset + paramLen <= totalLen);
-      if (paramAreaStart + paramLen <= paramOffset) {
-        memcpy(&cinBuffer[paramAreaStart], paramBase,
-                paramLen * sizeof(Uint32));
-      } else {
-        memmove(&cinBuffer[paramAreaStart], paramBase,
-                paramLen * sizeof(Uint32));
+      /* Jump directly to the block of this range, at the offset that
+       * nextAttrInfoParam reached (only a scan from DBSPJ moves on from
+       * the first block).  The block is read from the cached
+       * section, as nextAttrInfoParam reads it, and must lie within the
+       * parameter area: the sender wrote the block lengths, and a range
+       * that has no block left fails the scan. */
+      const Uint32 paramOffset = storedPtr.p->storedParamOffset;
+      paramLen = scanParamBlockLen(&section[paramAreaStart], paramAreaLen,
+                                   paramOffset);
+      if (unlikely(paramLen == 0)) {
+        jam();
+        jamDataDebug(paramOffset);
+        if (scanError != nullptr) {
+          *scanError = ZTOTAL_LEN_ERROR;
+        }
+        return totalLen;
       }
+      memcpy(&cinBuffer[paramAreaStart],
+             &section[paramAreaStart + paramOffset],
+             paramLen * sizeof(Uint32));
       cinBuffer[4] = paramLen;
     }
 
@@ -1093,7 +1192,7 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
         /* The program follows the parameters.  As for an aggregation on a
          * key read (handleAggReadRow), a malformed or rejected program, or
          * an interpreter that cannot be allocated, fails the scan instead
-         * of the node: DBLQH closes the scan with *pushdownError before it
+         * of the node: DBLQH closes the scan with *scanError before it
          * reads a row. */
         const Uint32 proc_start = paramAreaStart + paramLen;
         Uint32 proc_len = 0;
@@ -1103,8 +1202,8 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
         }
         if (unlikely(proc_len < 8 || proc_len > totalLen - proc_start)) {
           jam();
-          if (pushdownError != nullptr) {
-            *pushdownError = ZAGG_WRONG_OPERATION;
+          if (scanError != nullptr) {
+            *scanError = ZAGG_WRONG_OPERATION;
           }
           return totalLen;
         }
@@ -1121,9 +1220,9 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
           jam();
           /* 1870 is temporary (out of query memory); a rejected program
            * is the statement's own error. */
-          if (pushdownError != nullptr) {
-            *pushdownError = out_of_memory ? ZAGG_ALLOC_MEM_FAILED
-                                           : ZAGG_WRONG_OPERATION;
+          if (scanError != nullptr) {
+            *scanError = out_of_memory ? ZAGG_ALLOC_MEM_FAILED
+                                       : ZAGG_WRONG_OPERATION;
           }
           return totalLen;
         }
@@ -1292,71 +1391,28 @@ void Dbtup::readLinkedToMemBuffer(const Uint32 *linked,
                                     Uint32 position,
                                     Uint32 *dest,
                                     Uint32 dest_words) {
-  /* Helper: write a NULL AttributeHeader at dest[0] if there's
-   * room, and return. Caller is expected to provide dest_words ≥ 1
-   * so this branch is always safe in the well-behaved case;
-   * defensively skip the write if not. */
-  auto write_null_ah = [&]() {
-    if (likely(dest_words >= 1)) {
-      AttributeHeader null_ah(0, 0);
-      dest[0] = null_ah.m_value;
-    }
-  };
-
-  if (unlikely(linked == nullptr)) {
-    write_null_ah();
-    return;
-  }
-
-  const Uint32 *p = linked;
-  const Uint32 *p_end = linked + linked_len;
-  Uint32 pos_count = 0;
-  /* Skip-loop walks past entries 0..position-1. Each entry is
-   * { tableId, schemaVersion, AttrHeader, data... } — minimum 3
-   * words. Validate p+2 is in-range BEFORE dereferencing *(p+2)
-   * for the AttrHeader-derived size. */
-  while (pos_count < position) {
-    if (unlikely(p + 2 >= p_end)) {
-      /* Truncated entry — no AttrHeader word to read. */
-      write_null_ah();
+  /* The entry is checked against the end of the buffer by
+   * linkedEntryAH, and its copy against dest_words here. */
+  const Uint32 *ah = CteLinkedAttr::linkedEntryAH(linked, linked_len,
+                                                  position);
+  if (likely(ah != nullptr)) {
+    const Uint32 words = 1 + AttributeHeader::getDataSize(*ah);
+    if (likely(words <= dest_words)) {
+      memcpy(dest, ah, words * sizeof(Uint32));
       return;
     }
-    Uint32 entry_words = 2 + 1 + AttributeHeader::getDataSize(p[2]);
-    if (unlikely(entry_words < 3) ||
-        unlikely(p + entry_words > p_end)) {
-      /* Underflowed (impossible with the +3 base, but defensive
-       * against signed-arith assumptions) or entry payload runs
-       * past the buffer. */
-      write_null_ah();
-      return;
-    }
-    p += entry_words;
-    pos_count++;
   }
-
-  /* p now points at the requested entry's tableId. Validate the
-   * AttrHeader is in-range. */
-  if (unlikely(p + 2 >= p_end)) {
-    write_null_ah();
-    return;
+  /* No buffer, no such entry, a malformed buffer or no room in dest:
+   * fail closed with a NULL AttributeHeader.  The caller provides
+   * dest_words >= 1; defensively skip the write if not. */
+  if (likely(dest_words >= 1)) {
+    AttributeHeader null_ah(0, 0);
+    dest[0] = null_ah.m_value;
   }
-
-  /* Skip tableId + schemaVersion. The remaining bytes are
-   * { AttrHeader, data... }. */
-  p += 2;
-  Uint32 words = 1 + AttributeHeader::getDataSize(*p);
-  if (unlikely(words < 1) ||
-      unlikely(p + words > p_end) ||
-      unlikely(words > dest_words)) {
-    /* Source overrun OR destination overflow. Either is a
-     * caller / data bug — fail closed with NULL AH. */
-    write_null_ah();
-    return;
-  }
-  memcpy(dest, p, words * sizeof(Uint32));
 }
 
-void Dbtup::nextAttrInfoParam(Uint32 storedProcId) {
+Uint32 Dbtup::nextAttrInfoParam(Uint32 storedProcId,
+                                bool paramBlockPerRange) {
   jam();
 
   /* Get stored procedure */
@@ -1371,18 +1427,46 @@ void Dbtup::nextAttrInfoParam(Uint32 storedProcId) {
    * since cinBuffer may have been overwritten by a real-time break.
    * Only advance when parameters exist (buf[4] > 0). For scans
    * without parameters, nextAttrInfoParam is still called (opExec
-   * is set) but there is nothing to skip. */
-  Uint32* buf = storedPtr.p->cachedLinearAttrInfo;
-  ndbassert(buf != nullptr);
-  if (buf[4] > 0) {
+   * is set) but there is nothing to skip.
+   *
+   * The first call of scanCopyAttrinfo cached the section and checked
+   * its header, leaving storedParamAreaStart 0 if it refused it.  The
+   * block lengths are the sender's: a block that does not lie within
+   * the parameter area fails the scan instead of moving the offset past
+   * the area, where scanCopyAttrinfo would read and copy the next block
+   * (RONDB-1124). */
+  const Uint32* const buf = storedPtr.p->cachedLinearAttrInfo;
+  const Uint32 paramAreaStart = storedPtr.p->storedParamAreaStart;
+  if (unlikely(buf == nullptr || paramAreaStart == 0)) {
+    jam();
+    return ZTOTAL_LEN_ERROR;
+  }
+  if (!paramBlockPerRange && likely(!scanParamBlocksErrorInserted())) {
+    /* Not a scan from DBSPJ, whose scanFrag_send alone writes one
+     * parameter block per range.  The parameter area is the subroutine
+     * region of the program, as NdbScanOperation sends it: every range
+     * runs the same program with all of its subroutines, so
+     * storedParamOffset stays 0 and scanCopyAttrinfo takes the whole
+     * area, as for the first range.  Reading the subroutine code as
+     * block lengths failed such a scan at its second range
+     * (RONDB-1124). */
     jamDebug();
-    const Uint32 paramAreaStart = storedPtr.p->storedParamAreaStart;
-    ndbassert(paramAreaStart + storedPtr.p->storedParamOffset <
-              storedPtr.p->cachedLinearLen);
+    return 0;
+  }
+  const Uint32 paramAreaLen = buf[4];
+  if (paramAreaLen > 0) {
+    jamDebug();
     const Uint32 paramBlockLen =
-      buf[paramAreaStart + storedPtr.p->storedParamOffset];
+        scanParamBlockLen(&buf[paramAreaStart], paramAreaLen,
+                          storedPtr.p->storedParamOffset);
+    if (unlikely(paramBlockLen == 0)) {
+      jam();
+      jamDataDebug(storedPtr.p->storedParamOffset);
+      return ZTOTAL_LEN_ERROR;
+    }
     storedPtr.p->storedParamOffset += paramBlockLen;
   }
+  return 0;
 }
 
 bool Dbtup::cacheFromCinBuffer(storedProc* sp, Uint32 len) {
@@ -5735,6 +5819,8 @@ int Dbtup::prepareAndHandleJoinAggRow(KeyReqStruct *req_struct,
   const Uint32 *linked_data = nullptr;
   Uint32 linked_len = 0;
   if (RsubLen > 0) {
+    /* interpreterStartLab checked the five regions in 64 bits against
+     * attrinfo_len, so this sum does not wrap. */
     const Uint32 *sub_start =
         &cinBuffer[5 + cinBuffer[0] + cinBuffer[1] +
                     cinBuffer[2] + cinBuffer[3]];
@@ -5865,8 +5951,7 @@ retry:
   if (ERROR_INSERTED(4041) &&
       (++m_join_agg_evict_row_count % 7) == 0 &&
       !state->m_cte_mode &&
-      interp->gb_map_mutable() != nullptr &&
-      interp->gb_map_mutable()->size() > 2 &&
+      interp->numGroupsLocked() > 2 &&
       c_lqh->sendEvictedAggGroup(req_struct->signal, interp, state)) {
     evict_count++;
   }
@@ -5882,7 +5967,8 @@ retry:
  * 2nd column of the same row) — called from the JIT cold-call helper
  * ndb_jit_h_branch_attr_op_arg. `inst` points at word 0 of the
  * instruction in the program buffer; `param_buf` is the subroutine/param
- * region (only used for OP_PARAM; may be nullptr otherwise). This mirrors
+ * region of `param_len` words (only used for OP_PARAM; may be nullptr
+ * otherwise). This mirrors
  * InterpreterContext::handleBranchAttrOp (DbtupExecQuery.cpp ~8826) — same
  * descriptor walk, same NdbSqlUtil compare, same NULL-semantics and
  * condition mapping — so the JIT and interpreter agree bit-for-bit. The byte
@@ -5893,7 +5979,8 @@ retry:
  * into TUPKEY_abort(-rc); the JIT helper routes it the same way. */
 int Dbtup::evalBranchColForJit(KeyReqStruct *req_struct,
                                const Uint32 *inst,
-                               const Uint32 *param_buf) {
+                               const Uint32 *param_buf,
+                               Uint32 param_len) {
   const Uint32 w0 = inst[0];                 // opcode | nulls | cond | offset
   const Uint32 w1 = inst[1];                 // (attrId << 16) | argLen|paramNo
   const Uint32 attrId = Interpreter::getBranchCol_AttrId(w1);
@@ -5945,12 +6032,15 @@ int Dbtup::evalBranchColForJit(KeyReqStruct *req_struct,
   } else if (opCode == Interpreter::BRANCH_ATTR_OP_PARAM) {
     /* w1 low 16 = paramNo; value lives in the subroutine/param region. */
     const Uint32 paramNo = Interpreter::getBranchCol_ParamNo(w1);
+    /* A missing or malformed parameter section is a malformed program,
+     * as in handleBranchAttrOp. */
     if (unlikely(param_buf == nullptr)) {
-      return -99;
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
     }
-    const Uint32 *paramPtr = lookupInterpreterParameter(paramNo, param_buf);
+    const Uint32 *paramPtr =
+        lookupInterpreterParameter(paramNo, param_buf, param_len);
     if (unlikely(paramPtr == nullptr)) {
-      return -99;  // matches handleBranchAttrOp's missing-param path
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;  // as handleBranchAttrOp
     }
     argLen = AttributeHeader::getByteSize(*paramPtr);
     s2 = (const char *)(paramPtr + 1);
@@ -6006,7 +6096,14 @@ int Dbtup::evalBranchColForJit(KeyReqStruct *req_struct,
       if (unlikely(sqlType.m_cmp == nullptr)) {
         return -40;  // type has no comparator (matches interpreter)
       }
-      res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+      /* As handleBranchAttrOp: only values the compare function takes,
+       * CHAR values of different lengths padded. */
+      if (unlikely(!NdbSqlUtil::check_compare_values(typeId, s1, attrLen,
+                                                     s2, argLen))) {
+        return -40;
+      }
+      res1 = (*NdbSqlUtil::getStringResultCmp(typeId))(cs, s1, attrLen, s2,
+                                                       argLen);
     }
   } else if (cond == Interpreter::LIKE || cond == Interpreter::NOT_LIKE) {
     /* ronsql_jit item 12: LIKE / NOT LIKE — handleBranchAttrOp's arm
@@ -6105,11 +6202,11 @@ int Dbtup::evalBranchMemForJit(const Uint32 *inst) {
     const Uint32 meta = inst[2];
     attrLen = (meta >> 16) & 0xFFFF;
     const Uint32 csNumber = meta & 0xFFFF;
-    if (csNumber != 0) {
-      cs = NdbSqlUtil::get_collation(csNumber);
-      if (unlikely(cs == nullptr)) {
-        return -40;
-      }
+    /* As handleBranchMemOpArgInlineType: a string type needs a known
+     * collation, the other types none. */
+    if (unlikely(!NdbSqlUtil::get_compare_collation(typeId, csNumber,
+                                                    &cs))) {
+      return -40;
     }
     s2 = (const char *)&inst[3];
   }
@@ -6136,7 +6233,15 @@ int Dbtup::evalBranchMemForJit(const Uint32 *inst) {
     if (unlikely(sqlType.m_cmp == nullptr)) {
       return -40;
     }
-    res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+    /* As handleBranchMemOpArgInlineType: no more than was staged, and
+     * only values the compare function takes. */
+    if (attrLen > ah.getByteSize()) attrLen = ah.getByteSize();
+    if (unlikely(!NdbSqlUtil::check_compare_values(typeId, s1, attrLen, s2,
+                                                   argLen))) {
+      return -40;
+    }
+    res1 = (*NdbSqlUtil::getStringResultCmp(typeId))(cs, s1, attrLen, s2,
+                                                     argLen);
   }
 
   switch ((Interpreter::BinaryCondition)cond) {
@@ -6182,7 +6287,7 @@ Uint64 Dbtup::readCheapMemForJit(Uint32 byte_off, Uint32 width) {
 int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
   Operationrec *const regOperPtr = req_struct->operPtrP;
   int TnoDataRW;
-  Uint32 RtotalLen, dstLen;
+  Uint32 dstLen;
   Uint32 *dst;
 
   Uint32 RinitReadLen = cinBuffer[0];
@@ -6198,11 +6303,15 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
   dst = &signal->theData[25];
   dstLen = (MAX_READ / 4) - 25;
 
-  RtotalLen= RinitReadLen;
-  RtotalLen += RexecRegionLen;
-  RtotalLen += RfinalUpdateLen;
-  RtotalLen += RfinalRLen;
-  RtotalLen += RsubLen;
+  /* The five lengths are the sender's: summed in 32 bits they could wrap
+   * to a total that passes the checks below while one region alone runs
+   * gigabytes past cinBuffer (RONDB-1124).  Summed in 64 bits, a section
+   * that passes holds every region within its first RattrinbufLen words,
+   * so no partial sum of the five wraps either; prepareAndHandleJoinAggRow
+   * and handleAggReadRow rely on that. */
+  const Uint64 RtotalLen = Uint64(RinitReadLen) + Uint64(RexecRegionLen) +
+                           Uint64(RfinalUpdateLen) + Uint64(RfinalRLen) +
+                           Uint64(RsubLen);
 
   Uint32 RattroutCounter = 0;
   Uint32 RinstructionCounter = 5;
@@ -6353,7 +6462,8 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         /* prog_buf = the exec region (the filter program); the helper reads
          * its instruction + inline literal by the bridge-recorded offset.
          * param_buf = the subroutine/param region, where BRANCH_ATTR_OP_PARAM
-         * parameters live (lookupInterpreterParameter reads its [0] length).
+         * parameters live (lookupInterpreterParameter reads its [0] length,
+         * which must lie within the RsubLen words of the region).
          * It sits after the read/exec/final-update/final-read regions —
          * RfinalUpdateLen is 0 for an admitted filter, but include it so the
          * offset matches interpreterNextLab's RsubPC exactly. */
@@ -6362,7 +6472,7 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         int jit_error = 0;
         bool accepted = dbtup_jit_invoke_scan_filter(
             this, req_struct, reinterpret_cast<JitEntry>(jit_filter),
-            &cinBuffer[RinstructionCounter], &cinBuffer[RsubPC],
+            &cinBuffer[RinstructionCounter], &cinBuffer[RsubPC], RsubLen,
             &jit_error);
         if (unlikely(jit_error != 0)) {
           jam();
@@ -6861,15 +6971,24 @@ inline Uint32 Dbtup::brancher(Uint32 TheInstruction, Uint32 TprogramCounter) {
 }
 
 const Uint32 *Dbtup::lookupInterpreterParameter(Uint32 paramNo,
-                                                const Uint32 *subptr) const {
+                                                const Uint32 *subptr,
+                                                Uint32 sectionLen) const {
   /**
    * The parameters are stored in the subroutine section.
    * Each entry has format: [tableId] [tableVersion] [AH] [data...]
    * where tableId and tableVersion identify the source table of the
    * linked attribute (for schema version validation).
+   *
+   * The section starts with its length in words, which DBSPJ writes;
+   * sectionLen is the length the AttrInfo header gives the section.  The
+   * length word is the sender's: one longer than the section, or the
+   * word read in place of an empty section, took the words after the
+   * AttrInfo in cinBuffer as parameters, and a length of 0 failed an
+   * ndbassert (RONDB-1124).
    */
+  if (unlikely(sectionLen == 0 || subptr == nullptr)) return nullptr;
   const Uint32 sublen = *subptr;
-  ndbassert(sublen > 0);
+  if (unlikely(sublen == 0 || sublen > sectionLen)) return nullptr;
 
   Uint32 pos = 1;
   while (paramNo) {
@@ -7003,6 +7122,20 @@ struct Dbtup::InterpreterContext {
   // other registers hold an undefined value or one of an earlier row.
   Uint32 aggRegistersLoaded;
 
+  /* True when the n operand words after the instruction word run past
+   * the end of the current program (RONDB-1124).  The handlers read
+   * them from TcurrentProgram: an instruction cut off at the end of its
+   * program took the words after it, those of a later region of
+   * cinBuffer or stale ones, as its operands.  Such an instruction now
+   * fails with ZOUTSIDE_OF_PROGRAM_ERROR, as running past the end does.
+   * The dispatch loops step past the instruction word only when
+   * TprogramCounter < TcurrentSize, so here TprogramCounter <=
+   * TcurrentSize and the subtraction does not wrap. */
+  static inline bool operandsPastEnd(const InterpreterContext& ctx,
+                                     Uint32 n) {
+    return n > ctx.TcurrentSize - ctx.TprogramCounter;
+  }
+
   /* ============================================================
    * Phase A handlers — extracted case bodies
    *
@@ -7036,6 +7169,9 @@ struct Dbtup::InterpreterContext {
 
   /* LOAD_CONST32 — load 32-bit constant from next program word */
   static inline int handleLoadConst32(InterpreterContext& ctx) {
+    if (unlikely(operandsPastEnd(ctx, 1))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
     *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2) =
       *(ctx.TcurrentProgram + ctx.TprogramCounter);
@@ -7045,6 +7181,9 @@ struct Dbtup::InterpreterContext {
 
   /* LOAD_CONST64 — load 64-bit constant from next two program words */
   static inline int handleLoadConst64(InterpreterContext& ctx) {
+    if (unlikely(operandsPastEnd(ctx, 2))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     ctx.TregMemBuffer[ctx.theRegister] = NOT_NULL_INDICATOR;
     ctx.TregMemBuffer[ctx.theRegister + 2] =
       *(ctx.TcurrentProgram + ctx.TprogramCounter++);
@@ -7061,6 +7200,9 @@ struct Dbtup::InterpreterContext {
    * memcpy the double's 8-byte bit pattern into a Uint32[2] when
    * emitting the program. */
   static inline int handleLoadDoubleConst(InterpreterContext& ctx) {
+    if (unlikely(operandsPastEnd(ctx, 2))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_DOUBLE;
     ctx.TregMemBuffer[ctx.theRegister + 2] =
       *(ctx.TcurrentProgram + ctx.TprogramCounter++);
@@ -7532,6 +7674,10 @@ struct Dbtup::InterpreterContext {
     Uint32 registerOffsetType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 Tsize = ctx.theInstruction >> 16;
     Uint32 words = (Tsize + 3) / 4;
+    /* The constant follows the instruction word, up to 16384 words. */
+    if (unlikely(operandsPastEnd(ctx, words))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     Int64 Toffset = *(Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
     if (unlikely(registerOffsetType == NULL_INDICATOR)) {
       return -ZREGISTER_INIT_ERROR;
@@ -8100,6 +8246,9 @@ struct Dbtup::InterpreterContext {
 
   /* BRANCH_ATTR_EQ_NULL — branch if tuple attribute is NULL */
   static inline int handleBranchAttrEqNull(InterpreterContext& ctx) {
+    if (unlikely(operandsPastEnd(ctx, 1))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     Uint32 ins2 = ctx.TcurrentProgram[ctx.TprogramCounter];
     Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;
 
@@ -8150,6 +8299,9 @@ struct Dbtup::InterpreterContext {
 
   /* BRANCH_ATTR_NE_NULL — branch if tuple attribute is NOT NULL */
   static inline int handleBranchAttrNeNull(InterpreterContext& ctx) {
+    if (unlikely(operandsPastEnd(ctx, 1))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     Uint32 ins2 = ctx.TcurrentProgram[ctx.TprogramCounter];
     Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;
 
@@ -8601,35 +8753,24 @@ struct Dbtup::InterpreterContext {
     Uint32 position = (ctx.theInstruction >> 16) & 0xFF;
     Uint32 type     = (ctx.theInstruction >> 24) & 0xFF;
 
-    /* Walk the linked-attr buffer to the requested position.  Same
-     * loop shape as handleReadLinkedToMem (per-entry layout is
-     * tableId, schemaVersion, AttrHeader, data). */
-    const Uint32* linked = ctx.req_struct->m_linked_attr_data;
-    Uint32 linked_len = ctx.req_struct->m_linked_attr_len;
-    if (unlikely(linked == nullptr)) {
-      ctx.TregMemBuffer[ctx.theRegister] = NULL_INDICATOR;
-      return INTERP_CONTINUE;
-    }
-    const Uint32* p = linked;
-    const Uint32* p_end = linked + linked_len;
-    Uint32 pos_count = 0;
-    while (p < p_end) {
-      if (pos_count == position) break;
-      p += 2;  /* skip tableId, schemaVersion */
-      p += 1 + AttributeHeader::getDataSize(*p);
-      pos_count++;
-    }
-    if (unlikely(p >= p_end)) {
+    /* The entry at the requested position (per-entry layout is
+     * tableId, schemaVersion, AttrHeader, data), as for
+     * handleReadLinkedToMem.  No buffer, no such entry or a
+     * malformed buffer reads as NULL. */
+    const Uint32* p = CteLinkedAttr::linkedEntryAH(
+        ctx.req_struct->m_linked_attr_data,
+        ctx.req_struct->m_linked_attr_len, position);
+    if (unlikely(p == nullptr)) {
       ctx.TregMemBuffer[ctx.theRegister] = NULL_INDICATOR;
       return INTERP_CONTINUE;
     }
 
-    /* Skip tableId and schemaVersion. */
-    p += 2;
-
-    /* Inspect the AttributeHeader. */
+    /* Inspect the AttributeHeader.  An entry with fewer bytes than the
+     * type decodes reads as NULL as well: the decode below would read
+     * past its data words, and past the buffer for the last entry. */
     AttributeHeader ah(*p);
-    if (ah.isNULL()) {
+    if (ah.isNULL() ||
+        unlikely(ah.getByteSize() < CteLinkedAttr::linkedColumnBytes(type))) {
       ctx.TregMemBuffer[ctx.theRegister] = NULL_INDICATOR;
       return INTERP_CONTINUE;
     }
@@ -8942,9 +9083,16 @@ struct Dbtup::InterpreterContext {
    * literal constants via this instruction. */
   static inline int handleBranchMemOpArg(InterpreterContext& ctx) {
     thrjamDebug(ctx.tup->jamBuffer());
+    if (unlikely(operandsPastEnd(ctx, 3))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     const Uint32 ins2 = ctx.TcurrentProgram[ctx.TprogramCounter];
     Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2);
     Uint32 argLen = Interpreter::getBranchCol_Len(ins2);
+    /* argLen < 2^16, so the sum does not wrap. */
+    if (unlikely(operandsPastEnd(ctx, 3 + ((argLen + 3) >> 2)))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     Uint32 tableId = ctx.TcurrentProgram[ctx.TprogramCounter + 1];
     Uint32 schemaVersion = ctx.TcurrentProgram[ctx.TprogramCounter + 2];
 
@@ -9048,7 +9196,19 @@ struct Dbtup::InterpreterContext {
       if (unlikely(sqlType.m_cmp == 0)) {
         return -40;
       }
-      res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+      /* The staged entry is the linked column at a position the program
+       * chose, which need not be the column attrId describes: compare
+       * no more than was staged, and only values the compare function
+       * takes (a VARCHAR length byte past its value failed cmpVarchar's
+       * require). */
+      if (attrLen > ah.getByteSize()) attrLen = ah.getByteSize();
+      if (unlikely(!NdbSqlUtil::check_compare_values(typeId, s1, attrLen,
+                                                     s2, argLen))) {
+        thrjam(ctx.tup->jamBuffer());
+        return -40;
+      }
+      res1 = (*NdbSqlUtil::getStringResultCmp(typeId))(cs, s1, attrLen, s2,
+                                                       argLen);
     }
 
     bool res = false;
@@ -9086,11 +9246,18 @@ struct Dbtup::InterpreterContext {
    */
   static inline int handleBranchMemOpArgInlineType(InterpreterContext& ctx) {
     thrjamDebug(ctx.tup->jamBuffer());
+    if (unlikely(operandsPastEnd(ctx, 2))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     const Uint32 ins2 = ctx.TcurrentProgram[ctx.TprogramCounter];
     const Uint32 typeId = Interpreter::getBranchCol_AttrId(ins2);
     const Uint32 argLen = Interpreter::getBranchCol_Len(ins2);
+    /* argLen < 2^16, so the sum does not wrap. */
+    if (unlikely(operandsPastEnd(ctx, 2 + ((argLen + 3) >> 2)))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     const Uint32 meta   = ctx.TcurrentProgram[ctx.TprogramCounter + 1];
-    const Uint32 attrLen  = (meta >> 16) & 0xFFFF;
+    Uint32 attrLen = (meta >> 16) & 0xFFFF;
     const Uint32 csNumber = meta & 0xFFFF;
 
     const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(typeId);
@@ -9099,13 +9266,15 @@ struct Dbtup::InterpreterContext {
       return -40;
     }
 
+    /* The charset word comes from the program: a CHAR, VARCHAR or
+     * LONGVARCHAR with csNumber 0 would reach cmpChar / cmpVarchar with
+     * a null collation, and a BINARY with one would fail the assert of
+     * cmpBinary. */
     const CHARSET_INFO* cs = nullptr;
-    if (csNumber != 0) {
-      cs = NdbSqlUtil::get_collation(csNumber);
-      if (unlikely(cs == nullptr)) {
-        thrjam(ctx.tup->jamBuffer());
-        return -40;
-      }
+    if (unlikely(!NdbSqlUtil::get_compare_collation(typeId, csNumber,
+                                                    &cs))) {
+      thrjam(ctx.tup->jamBuffer());
+      return -40;
     }
 
     // Read column data from heap (written by READ_LINKED_TO_MEM)
@@ -9140,7 +9309,20 @@ struct Dbtup::InterpreterContext {
     if (r1_null || r2_null) {
       res1 = r1_null && r2_null ? 0 : r1_null ? -1 : 1;
     } else {
-      res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+      /* The column size comes from the program: compare no more than
+       * was staged, and only values the compare function takes.  A CHAR
+       * column size or constant of another length than the staged value
+       * failed cmpChar's assert, and a VARCHAR length byte past its
+       * value cmpVarchar's require; CHAR values of different lengths
+       * now compare padded (cmpCharAnyLength). */
+      if (attrLen > ah.getByteSize()) attrLen = ah.getByteSize();
+      if (unlikely(!NdbSqlUtil::check_compare_values(typeId, s1, attrLen,
+                                                     s2, argLen))) {
+        thrjam(ctx.tup->jamBuffer());
+        return -40;
+      }
+      res1 = (*NdbSqlUtil::getStringResultCmp(typeId))(cs, s1, attrLen, s2,
+                                                       argLen);
     }
 
     bool res = false;
@@ -9165,35 +9347,15 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
-  /* Walk the linked-attr buffer to the entry at `position` and return
-   * a pointer to its AttributeHeader word, or nullptr when the buffer
-   * is absent or the position lies beyond it.  Same walk as
-   * handleReadLinkedColumnToReg (per-entry layout: tableId,
-   * schemaVersion, AttrHeader, data). */
-  static inline const Uint32* lookupLinkedEntry(InterpreterContext& ctx,
-                                                Uint32 position) {
-    const Uint32* linked = ctx.req_struct->m_linked_attr_data;
-    const Uint32 linked_len = ctx.req_struct->m_linked_attr_len;
-    if (unlikely(linked == nullptr)) return nullptr;
-    const Uint32* p = linked;
-    const Uint32* p_end = linked + linked_len;
-    Uint32 pos_count = 0;
-    while (p < p_end) {
-      if (pos_count == position) break;
-      p += 2; /* skip tableId, schemaVersion */
-      p += 1 + AttributeHeader::getDataSize(*p);
-      pos_count++;
-    }
-    if (unlikely(p >= p_end)) return nullptr;
-    return p + 2; /* skip tableId, schemaVersion -> AttrHeader word */
-  }
-
   /* BRANCH_LINKED_OP_LINKED — compare two linked-buffer entries by
    * position with inline type metadata (string col-vs-col in CTE
    * filter mode).  Compare core mirrors handleBranchMemOpArgInlineType;
    * operand sourcing mirrors handleReadLinkedColumnToReg. */
   static inline int handleBranchLinkedOpLinked(InterpreterContext& ctx) {
     thrjamDebug(ctx.tup->jamBuffer());
+    if (unlikely(operandsPastEnd(ctx, 3))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     const Uint32 posWord  = ctx.TcurrentProgram[ctx.TprogramCounter];
     const Uint32 typeWord = ctx.TcurrentProgram[ctx.TprogramCounter + 1];
     const Uint32 sizeWord = ctx.TcurrentProgram[ctx.TprogramCounter + 2];
@@ -9212,17 +9374,22 @@ struct Dbtup::InterpreterContext {
       return -40;
     }
 
+    /* As handleBranchMemOpArgInlineType: a string type needs a known
+     * collation, the other types none. */
     const CHARSET_INFO* cs = nullptr;
-    if (csNumber != 0) {
-      cs = NdbSqlUtil::get_collation(csNumber);
-      if (unlikely(cs == nullptr)) {
-        thrjam(ctx.tup->jamBuffer());
-        return -40;
-      }
+    if (unlikely(!NdbSqlUtil::get_compare_collation(typeId, csNumber,
+                                                    &cs))) {
+      thrjam(ctx.tup->jamBuffer());
+      return -40;
     }
 
-    const Uint32* ahWordL = lookupLinkedEntry(ctx, posL);
-    const Uint32* ahWordR = lookupLinkedEntry(ctx, posR);
+    /* nullptr (no buffer, no such entry, a malformed buffer) is NULL. */
+    const Uint32* linked = ctx.req_struct->m_linked_attr_data;
+    const Uint32 linkedLen = ctx.req_struct->m_linked_attr_len;
+    const Uint32* ahWordL =
+        CteLinkedAttr::linkedEntryAH(linked, linkedLen, posL);
+    const Uint32* ahWordR =
+        CteLinkedAttr::linkedEntryAH(linked, linkedLen, posR);
     const bool l_null =
         (ahWordL == nullptr) || AttributeHeader(*ahWordL).isNULL();
     const bool r_null =
@@ -9255,7 +9422,17 @@ struct Dbtup::InterpreterContext {
        * words cannot read past the linked buffer. */
       if (sizeL > ahL.getByteSize()) sizeL = ahL.getByteSize();
       if (sizeR > ahR.getByteSize()) sizeR = ahR.getByteSize();
-      res1 = (*sqlType.m_cmp)(cs, s1, sizeL, s2, sizeR);
+      /* The two entries can be CHAR columns of different sizes (RonSQL
+       * compares CHAR(8) with CHAR(12)), which failed cmpChar's assert:
+       * they compare padded (cmpCharAnyLength).  Values the compare
+       * function cannot take fail the program. */
+      if (unlikely(!NdbSqlUtil::check_compare_values(typeId, s1, sizeL,
+                                                     s2, sizeR))) {
+        thrjam(ctx.tup->jamBuffer());
+        return -40;
+      }
+      res1 = (*NdbSqlUtil::getStringResultCmp(typeId))(cs, s1, sizeL, s2,
+                                                       sizeR);
     }
 
     bool res = false;
@@ -9651,6 +9828,9 @@ struct Dbtup::InterpreterContext {
    * attribute-vs-value/parameter/attribute comparison. Shared body for six
    * case labels that differ only in how the second operand is obtained. */
   static inline int handleBranchAttrOp(InterpreterContext& ctx) {
+    if (unlikely(operandsPastEnd(ctx, 1))) {
+      return -ZOUTSIDE_OF_PROGRAM_ERROR;
+    }
     const Uint32 ins2 = ctx.TcurrentProgram[ctx.TprogramCounter];
     Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;
     const Uint32 opCode =
@@ -9713,6 +9893,10 @@ struct Dbtup::InterpreterContext {
     if (likely(opCode == Interpreter::BRANCH_ATTR_OP_ARG)) {
       thrjamDebug(ctx.tup->jamBuffer());
       argLen = Interpreter::getBranchCol_Len(ins2);
+      /* argLen < 2^16, so the sum does not wrap. */
+      if (unlikely(operandsPastEnd(ctx, 1 + ((argLen + 3) >> 2)))) {
+        return -ZOUTSIDE_OF_PROGRAM_ERROR;
+      }
       step = argLen;
       s2 = (char*)&ctx.TcurrentProgram[ctx.TprogramCounter + 1];
     } else if (opCode == Interpreter::BRANCH_ATTR_OP_PARAM) {
@@ -9721,11 +9905,16 @@ struct Dbtup::InterpreterContext {
       assert(ctx.req_struct->operPtrP != nullptr);
       const Uint32 paramNo = Interpreter::getBranchCol_ParamNo(ins2);
       const Uint32* paramPos = ctx.subroutineProg;
-      const Uint32* paramptr =
-          ctx.tup->lookupInterpreterParameter(paramNo, paramPos);
+      const Uint32* paramptr = ctx.tup->lookupInterpreterParameter(
+          paramNo, paramPos, ctx.TsubroutineLen);
       if (unlikely(paramptr == nullptr)) {
+        /* No parameter paramNo inside the section the AttrInfo gives:
+         * a missing section, a length word past it, or a parameter
+         * past its length word.  Malformed as an instruction cut off
+         * at the end of its program (RONDB-1124; was -99, an error
+         * code ndberror does not know). */
         thrjam(ctx.tup->jamBuffer());
-        return -99;  // TODO — unclear error code
+        return -ZOUTSIDE_OF_PROGRAM_ERROR;
       }
       argLen = AttributeHeader::getByteSize(*paramptr);
       step = 0;
@@ -9801,7 +9990,23 @@ struct Dbtup::InterpreterContext {
         if (unlikely(sqlType.m_cmp == 0)) {
           return -40;
         }
-        res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+        /* The second value is a constant of the program, a parameter or
+         * another column the program names, typed as the first column.
+         * The compare functions only require or assert what they need:
+         * a VARCHAR length byte past its value (cmpVarchar) and a NaN
+         * FLOAT or DOUBLE (cmpFloat, cmpDouble, which the NDB API's
+         * branch_col_* send as given) failed a require, which stopped
+         * any data node; a constant of another size than a fixed-size
+         * type failed an assert.  Refuse what the compare function
+         * cannot take, as the compares of a linked value do; CHAR
+         * values of different lengths compare padded. */
+        if (unlikely(!NdbSqlUtil::check_compare_values(typeId, s1, attrLen,
+                                                       s2, argLen))) {
+          thrjam(ctx.tup->jamBuffer());
+          return -40;
+        }
+        res1 = (*NdbSqlUtil::getStringResultCmp(typeId))(cs, s1, attrLen,
+                                                         s2, argLen);
       }
     } else {
       if ((cond == Interpreter::LIKE) ||
@@ -11197,16 +11402,6 @@ int Dbtup::interpreterNextLab(Signal* signal,
     /* EXECUTE THE NEXT INTERPRETER INSTRUCTION.                        */
     /* ---------------------------------------------------------------- */
     RnoOfInstructions++;
-    theInstruction = TcurrentProgram[TprogramCounter];
-    theRegister = Interpreter::getReg1(theInstruction) << 2;
-#ifdef TRACE_INTERPRETER
-    g_eventLogger->info(
-        "(%u)Interpreter : Instruction: 0x%x"
-        " RnoOfInstructions : %u.  TprogramCounter : %u.  Opcode : %u",
-        instance(), theInstruction, RnoOfInstructions, TprogramCounter,
-        Interpreter::getOpCode(theInstruction));
-#endif
-
 #ifdef TRACE_INTERPRETER_REGISTERS
     g_eventLogger->info(
       "REG0: %lld NULL: %u\n"
@@ -11235,6 +11430,20 @@ int Dbtup::interpreterNextLab(Signal* signal,
       TregMemBuffer[28]);
 #endif
     if (TprogramCounter < TcurrentSize) {
+      /* Read the instruction only now (RONDB-1124): brancher does not
+       * check its target, so a branch, or an operand word that a branch
+       * into an instruction runs as a branch, may have set the counter
+       * up to 32767 words past the end of the program, or, going back
+       * past its start, to nearly 2^32, which read 16 GB past it. */
+      theInstruction = TcurrentProgram[TprogramCounter];
+      theRegister = Interpreter::getReg1(theInstruction) << 2;
+#ifdef TRACE_INTERPRETER
+      g_eventLogger->info(
+          "(%u)Interpreter : Instruction: 0x%x"
+          " RnoOfInstructions : %u.  TprogramCounter : %u.  Opcode : %u",
+          instance(), theInstruction, RnoOfInstructions, TprogramCounter,
+          Interpreter::getOpCode(theInstruction));
+#endif
       TprogramCounter++;
       Uint32 opCode = Interpreter::getOpCode(theInstruction);
       jamDebug();
@@ -11704,7 +11913,10 @@ int Dbtup::interpreterJumpTable(Signal* signal,
       jamDataDebug(opCode);
       const int _rc = h(ctx);
       if (likely(_rc == INTERP_CONTINUE)) {
-        if (noBackJumps && unlikely(TprogramCounter < prevPC)) {
+        /* Every instruction but a branch moves on past its words; a
+         * branch of offset 0 lands on itself (brancher) and would run
+         * again forever, there being no instruction limit here. */
+        if (noBackJumps && unlikely(TprogramCounter <= prevPC)) {
           jam();
           terrorCode = ZBACKWARD_JUMP_NOT_ALLOWED;
           return -1;

@@ -1278,10 +1278,8 @@ Warning	1292	Incorrect datetime value: '0000-00-00 00:00:00.000000' for column '
 Warnings:
 
 === pt-P1 (rejection): BIT projection in a pass-through result ===
-b_bits	n
-Unsupported column type (22) in pass-through result.
 Error handling: RPE
-ronsql_cli caught exception: Unsupported column type in pass-through result.
+ronsql_cli caught exception: The SELECT output `b_bits` has type BIT, which RonSQL cannot return.
 
 === pt-P2 (accepted since RONDB-1124 M1.4): VARBINARY projection in a pass-through result ===
 == Query ==

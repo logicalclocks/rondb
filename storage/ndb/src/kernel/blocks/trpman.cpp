@@ -84,8 +84,31 @@ Trpman::Trpman(Block_context &ctx, Uint32 instanceno)
   addRecSignal(GSN_TIME_SIGNAL, &Trpman::execTIME_SIGNAL);
   m_distribution_handler_inited = false;
   m_init_continueb = false;
-  m_trp_activity = nullptr;
-  m_num_trp_ids = 0;
+  m_dbHbSender = 0;
+  m_dbHbSenderTrp = 0;
+  m_dbHbInterval = 0;
+
+  /**
+   * Size the per-transporter activity array from the runtime
+   * configuration (same bound as the trp-id indexed send buffer
+   * arrays in mt.cpp). All accesses use transporter ids handed out
+   * by the TransporterRegistry, which is sized from the same
+   * configuration, so the bound holds for every access.
+   *
+   * This must happen here and not in execREAD_CONFIG_REQ(). A node
+   * started with --nostart sits waiting for the second START_ORD with
+   * its transporters to the management server already up, and
+   * READ_CONFIG_REQ only arrives after that START_ORD. In the meantime
+   * DUMP 900 (disconnect an API node) reaches QMGR and sends
+   * CLOSE_COMREQ here, which uses both the heartbeat sender state and
+   * the activity array. The number of transporter ids is set by
+   * ThreadConfig::init(), which runs before the blocks are loaded.
+   */
+  m_num_trp_ids = mt_get_num_trp_ids();
+  ndbrequire(m_num_trp_ids > 0);
+  ndbrequire(m_num_trp_ids <= MAX_NTRANSPORTERS);
+  m_trp_activity = new TrpActivity[m_num_trp_ids];
+  memset(m_trp_activity, 0, sizeof(TrpActivity) * m_num_trp_ids);
 }
 
 Trpman::~Trpman() { delete[] m_trp_activity; }
@@ -1012,19 +1035,8 @@ void Trpman::execREAD_CONFIG_REQ(Signal *signal) {
   m_dbHbSenderTrp = 0;
   m_dbHbInterval = 0;
 
-  /**
-   * Size the per-transporter activity array from the runtime
-   * configuration (same bound as the trp-id indexed send buffer
-   * arrays in mt.cpp). All accesses use transporter ids handed out
-   * by the TransporterRegistry, which is sized from the same
-   * configuration, so the bound holds for every access.
-   */
-  if (m_trp_activity == nullptr) {
-    m_num_trp_ids = mt_get_num_trp_ids();
-    ndbrequire(m_num_trp_ids > 0);
-    ndbrequire(m_num_trp_ids <= MAX_NTRANSPORTERS);
-    m_trp_activity = new TrpActivity[m_num_trp_ids];
-  }
+  /* The activity array is allocated in the constructor, start it clean. */
+  ndbrequire(m_trp_activity != nullptr);
   memset(m_trp_activity, 0, sizeof(TrpActivity) * m_num_trp_ids);
 
   ReadConfigConf *conf = (ReadConfigConf *)signal->getDataPtrSend();

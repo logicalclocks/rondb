@@ -12,7 +12,6 @@ call mtr.add_suppression("Participant timeout");
 # in programAggregator.  Bigint-only / integer-only on each side;
 # nullable column operands rejected post-resolution.
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --echo

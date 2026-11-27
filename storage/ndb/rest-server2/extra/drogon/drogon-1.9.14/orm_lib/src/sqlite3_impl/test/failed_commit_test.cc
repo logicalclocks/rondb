@@ -319,8 +319,21 @@ int main(int argc, char **argv)
     const auto entry = reinterpret_cast<void (*)()>(installFaults);
     if (sqlite3_auto_extension(entry) != SQLITE_OK)
     {
+#ifdef __APPLE__
+        // Apple's system SQLite does not support process-global auto
+        // extensions (sqlite3.h deprecates sqlite3_auto_extension on Apple
+        // platforms), so the faults cannot be installed. Report a skip
+        // (SKIP_RETURN_CODE in CMakeLists.txt) instead of a failure. With
+        // another SQLite, such as Homebrew's, the call succeeds and the
+        // test runs.
+        std::cout << "skipping: sqlite3_auto_extension() is not supported "
+                     "by this SQLite (Apple's system SQLite)"
+                  << std::endl;
+        return 77;
+#else
         std::cerr << "Could not install SQLite fault injection\n";
         return 1;
+#endif
     }
     const int result = drogon::test::run(argc, argv);
     sqlite3_cancel_auto_extension(entry);

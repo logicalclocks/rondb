@@ -390,12 +390,6 @@ SELECT MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, SUM(`dec_val`) 
 Number of output lines, including header: 2
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,2 +1,2 @@
- dec_min	dec_max	dec_sum
---3.25	10.50	7.25
-+-3.25	10.5	7.25
 ==========
 
 
@@ -460,12 +454,6 @@ SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`
 Number of output lines, including header: 2
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,2 +1,2 @@
- cnt_all	cnt_i1	cnt_s	i1_sum	i2_min	i3_max	dec_min	dec_max	s_max	g_max	l_min
--4	2	2	15	15	30	-3.25	10.50	Beta	25	5
-+4	2	2	15	15	30	-3.25	10.5	Beta	25	5
 ==========
 
 
@@ -578,12 +566,7 @@ SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) 
 Number of output lines, including header: 2
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,2 +1,2 @@
- big_sum	big_min	big_max	dec_sum	dec_max
--0	-9223372036854775807	9223372036854775807	0.00	999999999999999.99
-+0	-9223372036854775807	9223372036854775807	0	1000000000000000
+KNOWN-DIFF F5_fs_smoke_edge_big_b.diff
 ==========
 
 

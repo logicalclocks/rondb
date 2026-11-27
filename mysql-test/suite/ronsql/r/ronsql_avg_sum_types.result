@@ -23,7 +23,7 @@ ronsql_cli caught exception: AVG over string columns is not supported.
 
 === f16-6: AVG over a VARBINARY column ===
 Failed writing aggregation program when attempting to load column `bin`
-Error handling: RMS->RPE
+Error handling: RPE
 ronsql_cli caught exception: Aggregation over a column of this type is not supported.
 
 === f16-7: control: COUNT and MAX over the VARCHAR column ===

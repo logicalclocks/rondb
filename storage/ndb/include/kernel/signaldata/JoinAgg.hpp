@@ -157,8 +157,8 @@ struct JoinAggCompleteConf {
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 requestId;
-  Uint32 numResultRows;
-  Uint32 resultBytes;
+  Uint32 numResultRows;   // every group the state sent
+  Uint32 resultBytes;     // bytes of the last batch
 };
 
 struct JoinAggCompleteRef {
@@ -211,7 +211,7 @@ struct JoinAggSendReq {
   Uint32 requestId;
   Uint32 aggStateKey;
   Uint32 numRowsSent;     // cumulative rows sent so far
-  Uint32 resultBytes;     // cumulative bytes sent so far
+  Uint32 resultBytes;     // bytes of the batch this SEND_REQ ends
 };
 
 // DBSPJ → DBLQH: "API is ready, continue sending group rows."

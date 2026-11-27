@@ -1,0 +1,23 @@
+--source include/have_ndb.inc
+
+# P-58: a branch into the middle of an instruction (RONDB-1124).
+# validateEmbeddedProgram checked that a branch of a join aggregation's
+# embedded program goes forward and lands inside the program, not that
+# it lands on an instruction: a branch onto the constant of a
+# LOAD_CONST32 or LOAD_CONST64 made the interpreter run the constant as
+# an instruction that no check had seen. JOIN_AGG_SETUP_REQ now refuses
+# such a program: SCAN_TABREF, with every data node started. The
+# controls, the same programs with the branch to the instruction after
+# the load, must get SCAN_TABCONF.
+# An interpreted read has no such check, the word a branch lands on runs
+# as the instruction it reads as. Its program branches onto a constant
+# that reads as a branch back past the start of the program, which
+# interpreterNextLab followed with a read 16 GB past the program; the
+# read must now fail with ZOUTSIDE_OF_PROGRAM_ERROR (876). Its control,
+# the branch to the EXIT_REFUSE after the load, must get TCKEYREF 899.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P58
+--let $spj_case_title = P-58: a branch into the middle of an instruction
+--source suite/ndb_spj/include/spj_malformed_case.inc

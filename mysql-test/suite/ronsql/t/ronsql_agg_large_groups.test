@@ -1,0 +1,188 @@
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# RONDB-1124: aggregation groups between 16 KB and 64 KB.
+#
+# The NDB API received each aggregation result record into a fixed 16 KB
+# buffer (16 KB, allocated and zeroed, for every aggregating read), so
+# NdbAggregator::Finalize refused a program whose group could need more
+# than 16 KB at the declared column sizes.  The receive buffers now start
+# at a typical size, with strings assumed short, and grow when a record
+# does not fit: on a scan, the receiver's buffer
+# (NdbReceiver::storeAggRecord) and the result RecAttr; on a primary-key
+# read, the RecAttr, allocated at the record's size when it arrives
+# (NdbRecAttr::receive_agg_record).  Finalize now refuses only a group
+# whose GROUP BY key or values can need more than 65535 bytes at the
+# declared sizes, the 16-bit lengths of a result record.
+#
+# The data node packs groups into records of up to 16 KB and sends a
+# larger group alone in a record of its own.  Here the stored strings are
+# as long as declared, so every record below that holds a long group is
+# larger than its buffer's start size.  Every result is compared strictly
+# with the MySQL server.
+#
+# Data: lg_long has 8 groups of 3 rows whose two VARCHAR(15000) values
+# are 15000 bytes each; lg_mixed has 2000 groups of 2 rows with short
+# values and one group (g = 2000) of 3 rows with 15000-byte values.
+# lg_wide_key holds a 30000-byte VARCHAR and three CHAR(255) utf8mb4
+# (1020 bytes each), a GROUP BY key of 33080 bytes.
+#
+#   lg-1  scan, GROUP BY: MIN / MAX of both columns, a 60 KB record per
+#         group
+#   lg-2  scan, no GROUP BY: one 60 KB record per fragment, into a
+#         buffer that starts at about 400 bytes
+#   lg-3  scan, GROUP BY both 15000-byte columns: a 30 KB GROUP BY key
+#   lg-4  scan, GROUP BY: 2000 short groups packed into 16 KB records and
+#         one group of 60 KB, so a receiver's buffer grows among records
+#         of short groups
+#   lg-5  scan, no GROUP BY, over lg_mixed: the fragments with the long
+#         rows send a 30 KB record, the others a short one
+#   lg-6  primary-key reads, no GROUP BY: three reads return a 60 KB
+#         record, two a short one
+#   lg-7  primary-key reads, GROUP BY the key
+#   lg-8  five string slots of 15000 bytes can need 75 KB: a limit error
+#   lg-9  a GROUP BY key of 33080 bytes: within the API's limit at the
+#         declared sizes, but the data node keeps a group's key and
+#         slots in one 32 KB query memory chunk
+#         (AggInterpreterBase::allocGroupData).  The query fails at once
+#         with error 1873, a permanent error: one attempt in ronsql_cli
+#         and in RDRS.  It failed as 1870, out of query memory, which is
+#         temporary, so it was retried, 10 times in RDRS.  The key cannot
+#         be two VARCHAR(20000) columns: a table's VARCHAR columns may
+#         declare at most 32632 bytes (MAX_VAR_SIZE_IN_WORDS).
+#
+# Run:    ./mtr --suite=ronsql ronsql_agg_large_groups
+# Record: ./mtr --suite=ronsql --record ronsql_agg_large_groups
+
+--let $strict_diff=yes
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/agg_large_groups_explain.out
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE lg_long (
+  pk INT NOT NULL,
+  g INT NOT NULL,
+  s VARCHAR(15000) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL,
+  t VARCHAR(15000) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO lg_long
+  WITH RECURSIVE seq(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM seq WHERE n < 23)
+  SELECT n, n % 8, CONCAT(LPAD(n, 4, '0'), REPEAT(CHAR(97 + n % 26), 14996)),
+         CONCAT(REPEAT(CHAR(122 - n % 26), 14996), LPAD(n, 4, '0'))
+  FROM seq;
+CREATE TABLE lg_mixed (
+  pk INT NOT NULL,
+  g INT NOT NULL,
+  s VARCHAR(15000) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL,
+  t VARCHAR(15000) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+SET SESSION cte_max_recursion_depth = 10000;
+INSERT INTO lg_mixed
+  WITH RECURSIVE seq(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM seq WHERE n < 3999)
+  SELECT n, n % 2000, CONCAT('s', LPAD(n, 5, '0')),
+         CONCAT('t', LPAD(3999 - n, 5, '0'))
+  FROM seq;
+INSERT INTO lg_mixed VALUES
+  (4000, 2000, CONCAT(REPEAT('x', 14990), 'r4000-s-01'),
+               CONCAT(REPEAT('y', 14990), 'r4000-t-03')),
+  (4001, 2000, CONCAT(REPEAT('x', 14990), 'r4001-s-02'),
+               CONCAT(REPEAT('y', 14990), 'r4001-t-02')),
+  (4002, 2000, CONCAT(REPEAT('x', 14990), 'r4002-s-03'),
+               CONCAT(REPEAT('y', 14990), 'r4002-t-01'));
+CREATE TABLE lg_wide_key (
+  pk INT NOT NULL,
+  v VARCHAR(30000) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL,
+  c1 CHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  c2 CHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  c3 CHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO lg_wide_key VALUES
+  (1, REPEAT('v', 30000), REPEAT('a', 255), REPEAT('b', 255), REPEAT('c', 255)),
+  (2, REPEAT('w', 30000), REPEAT('a', 255), REPEAT('b', 255), REPEAT('c', 255));
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === lg-1: scan, GROUP BY, a 60 KB record per group ===
+--let $QUERY = SELECT g, MIN(s), MAX(s), MIN(t), MAX(t) FROM lg_long GROUP BY g;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === lg-2: scan, no GROUP BY, a 60 KB record per fragment ===
+--let $QUERY = SELECT COUNT(*), MIN(s), MAX(s), MIN(t), MAX(t) FROM lg_long;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === lg-3: scan, GROUP BY two 15000-byte columns, a 30 KB key ===
+--let $QUERY = SELECT s, t, COUNT(*) FROM lg_long GROUP BY s, t;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === lg-4: scan, GROUP BY, 2000 short groups and one of 60 KB ===
+--let $QUERY = SELECT g, COUNT(*), MIN(s), MAX(s), MIN(t), MAX(t) FROM lg_mixed GROUP BY g;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === lg-5: scan, no GROUP BY, short and long records ===
+--let $QUERY = SELECT COUNT(*), MIN(s), MAX(s), MIN(t), MAX(t) FROM lg_mixed;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === lg-6: primary-key reads, no GROUP BY, 60 KB and short records ===
+--let $QUERY = SELECT COUNT(*), MIN(s), MAX(s), MIN(t), MAX(t) FROM lg_mixed WHERE pk IN (4000, 1, 4001, 2, 4002);
+--source suite/ronsql/include/ronsql_compare.inc
+--let $QUERY = SELECT COUNT(*), MIN(s), MAX(s), MIN(t), MAX(t) FROM lg_mixed WHERE pk IN (4000, 1, 4001, 2, 4002);
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 5 aggregating primary key lookups (IN list on `pk`: 5 values, 5 distinct).' $EXPLAIN_FILE
+
+--echo
+--echo === lg-7: primary-key reads, GROUP BY the key ===
+--let $QUERY = SELECT pk, MIN(s), MAX(s), MIN(t), MAX(t) FROM lg_mixed WHERE pk IN (4002, 3, 4000, 7) GROUP BY pk;
+--source suite/ronsql/include/ronsql_compare.inc
+--let $QUERY = SELECT pk, MIN(s), MAX(s), MIN(t), MAX(t) FROM lg_mixed WHERE pk IN (4002, 3, 4000, 7) GROUP BY pk;
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 4 aggregating primary key lookups (IN list on `pk`: 4 values, 4 distinct).' $EXPLAIN_FILE
+
+--echo
+--echo === lg-8: five string slots of 15000 bytes can need 75 KB: a limit error ===
+--exec printf '{"query":"SELECT g, MIN(s), MAX(s), MIN(t), MAX(t), MAX(CASE WHEN pk > 0 THEN s ELSE t END) FROM lg_long GROUP BY g;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--exec grep -oF '[limit] Caught exception: The aggregate results of one group can need more than 65535 bytes, counted at the declared column sizes.' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected a limit error for the values of a group over 65535 bytes"
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out
+
+--echo
+--echo === lg-9: a GROUP BY key of 33080 bytes does not fit a 32 KB query memory chunk: error 1873 at once ===
+--let $lg_query = SELECT v, c1, c2, c3, COUNT(*) FROM lg_wide_key GROUP BY v, c1, c2, c3;
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e '$lg_query' > $MYSQL_TMP_DIR/ronsql-lg-cli.out 2>&1
+--echo == ronsql_cli: attempts, a permanent error, its code ==
+--exec grep -c 'Error handling: ' $MYSQL_TMP_DIR/ronsql-lg-cli.out
+--exec grep -qE '^Error handling: [A-Za-z,]*->RPE$' $MYSQL_TMP_DIR/ronsql-lg-cli.out
+--exec grep -oF 'NDB Permanent error 1873, Application error: Aggregation group too large: its GROUP BY key and aggregate slots exceed one query memory chunk' $MYSQL_TMP_DIR/ronsql-lg-cli.out
+--exec printf '{"query":"%s","database":"test","outputFormat":"TEXT"}' '$lg_query' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -s -D $MYSQL_TMP_DIR/ronsql-rdrs.hdr -o $MYSQL_TMP_DIR/ronsql-rdrs.out -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body
+--echo == RDRS: attempts (each writes one error handling line), the NDB error ==
+--exec grep -c 'Error handling: ' $MYSQL_TMP_DIR/ronsql-rdrs.out
+--exec grep -i '^x-ronsql-ndb-error:' $MYSQL_TMP_DIR/ronsql-rdrs.hdr | tr -d '\r' | sed 's/^[^:]*: *//'
+--remove_file $MYSQL_TMP_DIR/ronsql-lg-cli.out
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs.hdr
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out
+
+--echo
+--echo === RDRS still answers ===
+--let $QUERY = SELECT g, COUNT(*) FROM lg_long GROUP BY g;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--remove_file $EXPLAIN_FILE
+--disable_query_log
+DROP TABLE lg_long, lg_mixed, lg_wide_key;
+--enable_query_log

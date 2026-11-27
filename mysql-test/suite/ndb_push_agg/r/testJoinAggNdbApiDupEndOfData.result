@@ -1,0 +1,4 @@
+Running testJoinAggNdbApi --only 26
+Test 26: second EndOfData after the final one (ERROR_INSERT 8320) ... OK (5 queries read right, 5 closed at once, next query correct)
+All tests PASSED
+DROP DATABASE IF EXISTS test_db;

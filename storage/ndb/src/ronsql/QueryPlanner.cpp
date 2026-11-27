@@ -33,6 +33,11 @@
  * Returns the cached index vector (a shared_ptr that stays valid across
  * concurrent cache refreshes), or populates fallback_list via
  * dict->listIndexes() and returns nullptr (caller must use fallback_list).
+ *
+ * X-9: the cache returns nullptr when its listIndexes() failed; the list
+ * is then made here, as load_single_table does.  A failed listIndexes()
+ * raises the dictionary's error (a temporary one is retried) instead of
+ * planning as if the table had no index.
  */
 static RdrsSchemaCache::IndexListPtr
 getIndexList(const NdbDictionary::Dictionary *dict,
@@ -41,10 +46,13 @@ getIndexList(const NdbDictionary::Dictionary *dict,
              const char *database,
              NdbDictionary::Dictionary::List &fallback_list) {
   if (cache != nullptr && database != nullptr) {
-    return cache->getIndexes(dict, table, database, table->getName());
+    RdrsSchemaCache::IndexListPtr cached =
+        cache->getIndexes(dict, table, database, table->getName());
+    if (cached != nullptr) return cached;
   }
   if (dict->listIndexes(fallback_list, *table) != 0) {
-    return nullptr;  // error
+    throw RonSQLDictionaryError("Failed to list indexes.",
+                                dict->getNdbError());
   }
   return nullptr;  // signal: use fallback_list
 }
@@ -119,7 +127,9 @@ QueryPlanner::plan(
     if (root_ndb_table == NULL)
     {
       err << "Table '" << root_name << "' not found." << std::endl;
-      throw RonSQLPermanentError("Table not found.");
+      // X-9: classified by the dictionary's error (a temporary one is
+      // retried).
+      throw RonSQLDictionaryError("Table not found.", dict->getNdbError());
     }
     rootOp.type = JoinOp::TABLE_SCAN;
     rootOp.table = root_ndb_table;
@@ -191,7 +201,8 @@ QueryPlanner::plan(
       if (child_ndb_table == NULL)
       {
         err << "Table '" << child_table_name << "' not found." << std::endl;
-        throw RonSQLPermanentError("Table not found.");
+        // X-9: classified by the dictionary's error.
+        throw RonSQLDictionaryError("Table not found.", dict->getNdbError());
       }
       childOp.table = child_ndb_table;
     }

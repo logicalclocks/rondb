@@ -226,8 +226,9 @@ class NdbQueryImpl {
   /** Process TCKEYCONF message. Return true if query is complete. */
   bool execTCKEYCONF();
 
-  /** Process SCAN_TABCONF w/ EndOfData which is a 'Close Scan Reply'. */
-  void execCLOSE_SCAN_REP(int errorCode, bool needClose);
+  /** Process SCAN_TABCONF w/ EndOfData which is a 'Close Scan Reply'.
+   *  Return false if it was a stale EndOfData and was dropped. */
+  bool execCLOSE_SCAN_REP(int errorCode, bool needClose);
 
   /** Determines if query has completed and may be garbage collected
    *  A query is not considered complete until the client has
@@ -689,6 +690,11 @@ class NdbQueryImpl {
   bool hasReceivedError();  // Need mutex lock
 
   void setFetchTerminated(int aErrorCode, bool needClose);  // Need mutex lock
+
+  /** A wait for the TC node ended in a receive timeout or a node failure:
+   *  setFetchTerminated() while some worker is not final, else only
+   *  record the error. */
+  void setWaitFailed(int aErrorCode, bool needClose);  // Need mutex lock
 
   /** Stop receiving a failed scan before asynchronous kernel cleanup.
    *  Requires the receive mutex and SCAN_TABREF with closeNeeded. */

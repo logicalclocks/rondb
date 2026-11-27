@@ -1,0 +1,12 @@
+--source include/have_ndb.inc
+
+# RONDB-1124, Q-5: SCAN_TABREQ with the rate queue flag from the API.
+# A well-formed SCAN_TABREQ with the passQueue flag. Before, DBTC
+# ignored the flag from a sender that is not a DBTC block, so this did
+# not stop a data node; it is reported like the others.
+# See suite/ndb_spj/include/tc_queue_flag_case.inc.
+
+--let $spj_case = Q5
+--let $spj_case_title = Q-5: SCAN_TABREQ with the rate queue flag from the API
+--let $tc_queue_flag_reported = 1
+--source suite/ndb_spj/include/tc_queue_flag_case.inc

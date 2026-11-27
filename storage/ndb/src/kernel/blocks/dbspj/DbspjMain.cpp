@@ -7040,13 +7040,23 @@ void Dbspj::cte_lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
  * per-probe and sends synchronously with CONF-equivalent m_rows
  * accounting. */
 
-Uint64 Dbspj::cte_lookup_hash_key(const JoinAggInterpreter *interp,
-                                  const char *key,
-                                  Uint32 keyLen,
-                                  Uint32 nGbCols) {
+/* The key comes from the parent row by the key pattern of the API (its
+ * P_DATA constants, or parent columns typed as the CTE's GROUP BY
+ * columns).  get_var_length's result was ignored: a VARCHAR length byte
+ * past its value, or a LONGVARCHAR value of one byte (the length then
+ * unset), had strnxfrm_hash read up to 65535 bytes from past the key's
+ * stack copy, and an entry that ran past the key was hashed past it.
+ * Such a key is refused; DBLQH refuses it too, for the probes that it
+ * hashes itself (JoinGBHashTable::checkKey). */
+bool Dbspj::cte_lookup_hash_key(const JoinAggInterpreter *interp,
+                                const char *key,
+                                Uint32 keyLen,
+                                Uint32 nGbCols,
+                                Uint64 *hashOut) {
   const GBColTypeInfo *colTypes = interp->gb_types();
   if (colTypes == nullptr) {
-    return rondb_xxhash_std(key, keyLen);
+    *hashOut = rondb_xxhash_std(key, keyLen);
+    return true;
   }
 
   bool hasCharset = false;
@@ -7057,7 +7067,8 @@ Uint64 Dbspj::cte_lookup_hash_key(const JoinAggInterpreter *interp,
     }
   }
   if (!hasCharset) {
-    return rondb_xxhash_std(key, keyLen);
+    *hashOut = rondb_xxhash_std(key, keyLen);
+    return true;
   }
 
   uchar *xfrmBuf = reinterpret_cast<uchar *>(m_buffer0);
@@ -7068,12 +7079,20 @@ Uint64 Dbspj::cte_lookup_hash_key(const JoinAggInterpreter *interp,
   for (Uint32 i = 0; i < nGbCols && p < end; i++) {
     AttributeHeader ah(*p);
     const Uint32 dataSize = ah.getDataSize();
+    if (unlikely(1 + dataSize > Uint32(end - p))) {
+      jam();
+      return false;
+    }
     if (colTypes[i].cs != nullptr && dataSize > 0) {
       const uchar *src = reinterpret_cast<const uchar *>(p + 1);
       const Uint32 byteSize = ah.getByteSize();
-      Uint32 lb, srcLen;
-      NdbSqlUtil::get_var_length(colTypes[i].typeId, src, byteSize,
-                                 lb, srcLen);
+      Uint32 lb = 0;
+      Uint32 srcLen = 0;
+      if (unlikely(!NdbSqlUtil::get_var_length(colTypes[i].typeId, src,
+                                               byteSize, lb, srcLen))) {
+        jam();
+        return false;
+      }
       const Uint32 maxBytes = colTypes[i].maxBytes;
       ndbrequire(maxBytes >= lb);
       const Uint32 defLen = maxBytes - lb;
@@ -7099,7 +7118,8 @@ Uint64 Dbspj::cte_lookup_hash_key(const JoinAggInterpreter *interp,
     }
     p += 1 + dataSize;
   }
-  return hash;
+  *hashOut = hash;
+  return true;
 }
 
 /**
@@ -7343,9 +7363,14 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
            * probe. */
           targetNodeId = refToNode(requestPtr.p->m_senderRef);
         } else {
-          const Uint64 h = cte_lookup_hash_key(
-              localCteInterp, reinterpret_cast<const char *>(keyBuf),
-              keyLenBytes, nGbCols);
+          Uint64 h = 0;
+          if (unlikely(!cte_lookup_hash_key(
+                  localCteInterp, reinterpret_cast<const char *>(keyBuf),
+                  keyLenBytes, nGbCols, &h))) {
+            jam();
+            err = DbspjErr::InvalidRequest;
+            break;
+          }
           const Uint32 ownerIdx = static_cast<Uint32>(h) % numOwners;
           targetNodeId = cteOwnerNode(requestPtr.p, cteIdx, ownerIdx);
         }
@@ -16897,7 +16922,6 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
                       const Uint32 paramBits) {
   Uint32 err;
   Uint32 attrInfoPtrI = RNIL;
-  Uint32 attrParamPtrI = RNIL;
 
   do {
     /**
@@ -17167,6 +17191,12 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
        *
        * IF NI_ATTR_LINKED
        *   DATA0[LO/HI] = Length / #
+       *
+       * The subroutine section of the AttrInfo (word 4 of its header) is
+       * left to the parameters that a T_ATTRINFO_CONSTRUCTED node expands
+       * from its NI_ATTR_LINKED pattern at each send.  A subroutine part
+       * in PI_ATTR_INTERPRET, and a pattern without NI_ATTR_LINKED, which
+       * would have gone there, are refused: no API sends them.
        */
       Uint32 *sectionptrs = nullptr;
 
@@ -17293,22 +17323,19 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
              * This node constructs a new attr-info for each send
              */
             treeNodePtr.p->m_bits |= TreeNode::T_ATTRINFO_CONSTRUCTED;
-          } else if (len_pattern > 0) {
-            jam();
-            // This code branch has never been tested, unused as well.
-            ndbassert(false);  // Need validation before being used.
-
+          } else if (unlikely(len_pattern > 0)) {
             /**
-             * Expand pattern directly into attr-info param
-             *   This means a "fixed" attr-info param from here on
+             * A pattern of an NI_ATTR_INTERPRET node without NI_ATTR_LINKED
+             * was expanded once, here, into the subroutine section of the
+             * AttrInfo, DBTUP's parameter area, and a debug data node
+             * stopped on an ndbassert (P-50).  The NDB API sets
+             * NI_ATTR_LINKED for every pattern, and this path was never
+             * tested: refuse it.
              */
-            bool hasNull;
-            err =
-                expand(attrParamPtrI, tree, len_pattern, no_param, 0, hasNull);
-            if (unlikely(err)) {
-              jam();
-              break;
-            }
+            jam();
+            err = flagMaliciousTreeNode(ctx, VT_SPJ_MALFORMED_REQUEST,
+                                        DbspjErr::InvalidTreeNodeSpecification);
+            break;
           }  // NI_ATTR_LINKED
         }    // NI_ATTR_INTERPRET | NI_ATTR_LINKED
 
@@ -17365,26 +17392,21 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           sectionptrs[1] = program_len;
           param.ptr += program_len;
 
-          if (subroutine_len > 0) {
+          if (unlikely(subroutine_len > 0)) {
+            /**
+             * The subroutine part went to the subroutine section of the
+             * AttrInfo, DBTUP's parameter area, where an NI_ATTR_LINKED
+             * node puts the parameters it constructs at each send: for
+             * such a node an ndbrequire stopped the data node, and for any
+             * node a debug data node stopped on an ndbassert here (P-50).
+             * The NDB API sends no subroutines in a pushed program
+             * (NdbQueryOperationImpl::prepareInterpretedCode), and this
+             * path was never tested: refuse it.
+             */
             jam();
-            // This code branch has never been tested, unused as well.
-            ndbassert(false);  // Need validation before being used.
-
-            // Declared subroutine length must not exceed the param section.
-            if (unlikely(subroutine_len > (Uint32)(param.end - param.ptr))) {
-              jam();
-              err = flagMaliciousTreeNode(ctx, VT_SPJ_SECTION_LENGTH_MISMATCH,
-                                          DbspjErr::InvalidTreeParametersSpecification);
-              break;
-            }
-            err = DbspjErr::OutOfSectionMemory;
-            if (unlikely(!appendToSection(attrParamPtrI, param.ptr,
-                                          subroutine_len))) {
-              jam();
-              break;
-            }
-            sectionptrs[4] = subroutine_len;
-            param.ptr += subroutine_len;
+            err = flagMaliciousTreeNode(ctx, VT_SPJ_MALFORMED_REQUEST,
+                                        DbspjErr::InvalidTreeParametersSpecification);
+            break;
           }
           treeNodePtr.p->m_bits |= TreeNode::T_ATTR_INTERPRETED;
         } else  // not PI_ATTR_INTERPRET
@@ -17601,26 +17623,10 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
          *   i.e in "final read"-section
          */
         sectionptrs[3] = sum_read;
-
-        if (attrParamPtrI != RNIL) {
-          jam();
-          ndbrequire(
-              !(treeNodePtr.p->m_bits & TreeNode::T_ATTRINFO_CONSTRUCTED));
-
-          SegmentedSectionPtr ptr;
-          getSection(ptr, attrParamPtrI);
-          {
-            SectionReader r0(ptr, getSectionSegmentPool());
-            err = appendReaderToSection(attrInfoPtrI, r0, ptr.sz);
-            if (unlikely(err != 0)) {
-              jam();
-              break;
-            }
-            sectionptrs[4] = ptr.sz;
-          }
-          releaseSection(attrParamPtrI);
-          attrParamPtrI = RNIL;
-        }
+        /**
+         * sectionptrs[4], the subroutine section, stays 0 here; a
+         * T_ATTRINFO_CONSTRUCTED node sets it at each send.
+         */
       }
 
       treeNodePtr.p->m_send.m_attrInfoPtrI = attrInfoPtrI;
@@ -17655,11 +17661,6 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
   if (attrInfoPtrI != RNIL) {
     jam();
     releaseSection(attrInfoPtrI);
-  }
-
-  if (attrParamPtrI != RNIL) {
-    jam();
-    releaseSection(attrParamPtrI);
   }
 
   return err;

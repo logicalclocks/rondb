@@ -5,7 +5,12 @@ call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
 
-# Compare MySQL against RonSQL using RDRS only
+# For speed, RonSQL runs through RDRS only here: ronsql_hopsworks.pl makes
+# 402 comparisons with mysqld (every type in every role), as many again in
+# the ronsql_jit mirror, and the CLI arm of ronsql_compare.inc would start
+# a ronsql_cli process with its own cluster connection for each.
+# ronsql_cli and RDRS run the same executor and printer; the CLI arm
+# compares them in the other tests of the suite.
 --let $suppress_ronsql_cli=yes
 
 --disable_query_log
@@ -17,7 +22,9 @@ SET time_zone = "+00:00";
 --enable_query_log
 --let $EXPLAIN_FILE=$MYSQL_TMP_DIR/ronsql-explain.out
 
-# todo: After data node can send DECIMAL type, remove diffs from result file.
+# The DECIMAL aggregates the data nodes compute as doubles (Q-6) are
+# asserted against their known diffs (suite/ronsql/known_diffs, see
+# ronsql_hopsworks.pl); remove them when the data nodes send DECIMALs.
 --source $TEST_INC_FILE
 
 --disable_query_log

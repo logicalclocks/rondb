@@ -334,7 +334,7 @@
 <ul>
   <li>A per-operation scan filter is interpreted code in the parameter section (<code>PI_ATTR_INTERPRET</code>); it runs in DBTUP before the projection and sends nothing for rejected rows (lookups: soft error 899).</li>
   <li>Conditions that compare against an ancestor's column are pushed as a filter whose parameters come from the parent row (<code>NI_ATTR_LINKED</code> + pattern of <code>P_ATTRINFO</code> entries expanded per parent row into the interpreter's subroutine/parameter area). <span class="src">lookup_parent_row ~10150 (layout comment), scanFrag_parent_row</span></li>
-  <li><code>NI_ATTR_INTERPRET</code> (a program in the tree part) is supported by the parser but, per the code comment, "seems to never have been used, nor tested"; attribute parameter patterns without <code>NI_ATTR_LINKED</code> and subroutines in <code>PI_ATTR_INTERPRET</code> are guarded by <code>ndbassert(false)</code> "never been tested". <span class="src">parseDA ~16408, ~16478, ~16545</span></li>
+  <li><code>NI_ATTR_INTERPRET</code> (a program in the tree part) is supported by the parser but, per the code comment, "seems to never have been used, nor tested"; attribute parameter patterns without <code>NI_ATTR_LINKED</code> and subroutines in <code>PI_ATTR_INTERPRET</code>, which went to the subroutine area (header word 4), were guarded by <code>ndbassert(false)</code> "never been tested" and are now refused (20004 / 20005 + Tier B, P-50). <span class="src">parseDA</span></li>
 </ul>
 
 <h3>3.11 Where results flow</h3>

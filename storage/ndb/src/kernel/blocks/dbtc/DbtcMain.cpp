@@ -3870,7 +3870,15 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   const UintR TtabMaxIndex = ctabrecFilesize;
   Uint32 Treqinfo = tcKeyReq->requestInfo;
 
-  Uint32 passQueueingFlag = TcKeyReq::getPassQueueingFlag(Treqinfo);
+  /* Bit 24 of a short TCKEYREQ is part of its key length. */
+  Uint32 passQueueingFlag =
+      TcKeyReq::getPassQueueingFlag(Treqinfo) && handle.m_cnt > 0;
+  if (unlikely(passQueueingFlag &&
+               signal->getSendersBlockRef() != reference())) {
+    jam();
+    report_queue_flag_not_internal(signal, handle);
+    return;
+  }
   ttransid_ptr = 6;
   ApiConnectRecordPtr apiConnectptr;
   apiConnectptr.i = TapiIndex;
@@ -3945,10 +3953,45 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
       tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_INDEX_OP_RETURN);
   bool is_immediate = Tspecial_op_flags != 0 || isIndexOpReturn;
   DatabaseRecordPtr databaseRecordPtr;
-  Uint32 user_id_flag = TcKeyReq::getUserIdFlag(Treqinfo);
-  if (user_id_flag && handle.m_cnt != 0) {
-    Uint32 user_id = tcKeyReq->userId;
-    Uint32 user_id_version = tcKeyReq->userIdVersion;
+  Uint32 user_id = RNIL;
+  Uint32 user_id_version = 0;
+  if (TcKeyReq::getUserIdFlag(Treqinfo) && handle.m_cnt != 0) {
+    user_id = tcKeyReq->userId;
+    user_id_version = tcKeyReq->userIdVersion;
+  }
+  if (!is_immediate) {
+    /**
+     * The request is accounted to the transaction's rate limit user, also
+     * when it names none.  Before, a request without the user id was
+     * accounted to its table's database: an operation re-sent from the
+     * rate queue after a completed dirty read had released the
+     * transaction's database (release_api_ref) had no database record,
+     * and the passQueue handling below dereferenced a null pointer.
+     * Requests that DBTC sends itself (is_immediate) name no user and are
+     * not queued.  A request that the queue handler re-sends (passQueue)
+     * was checked when it arrived and was queued, so it takes the
+     * transaction's user as it is.
+     */
+    if (likely(!(passQueueingFlag && handle.m_cnt != 0)) &&
+        unlikely(!set_trans_user(regApiPtr,
+                                 is_transaction_to_start(regApiPtr,
+                                                         TstartFlag),
+                                 user_id,
+                                 user_id_version))) {
+      jam();
+      releaseSections(handle);
+      db_abort_handling(signal,
+                        apiConnectptr,
+                        TstartFlag,
+                        TcKeyReq::getExecuteFlag(Treqinfo) ?
+                          ApiConnectRecord::TF_EXEC_FLAG : 0,
+                        ZRATE_LIMIT_USER_MISMATCH);
+      return;
+    }
+    user_id = regApiPtr->m_user_id;
+    user_id_version = regApiPtr->m_user_id_version;
+  }
+  if (user_id != RNIL) {
     DatabaseRecord key(*this, user_id);
     if (unlikely(!m_databaseRecordHash.find(databaseRecordPtr, key))) {
       databaseRecordPtr.i = localTabptr.p->databaseRecord;
@@ -6469,7 +6512,7 @@ void Dbtc::releaseDirtyRead(Signal *signal,
       release_count_parallel_transactions(apiConnectptr.p);
     }
     jam();
-    release_api_ref(signal, apiConnectptr, __LINE__);
+    release_api_ref_if_unqueued(signal, apiConnectptr, __LINE__);
     return;
   }
 
@@ -7667,7 +7710,7 @@ void Dbtc::diverify010Lab(Signal *signal,
     sendtckeyconf(signal, 1, apiConnectptr);
     regApiPtr->apiConnectstate = CS_CONNECTED;
     regApiPtr->m_transaction_nodes.clear();
-    release_api_ref(signal, apiConnectptr, __LINE__);
+    release_api_ref_if_unqueued(signal, apiConnectptr, __LINE__);
     setApiConTimer(apiConnectptr, 0, __LINE__);
     if (apiConnectptr.p->m_count_parallel_transactions) {
       jam();
@@ -7724,7 +7767,9 @@ Dbtc::ApiConnectRecord::ApiConnectRecord()
   m_queuedDatabasePtrI(RNIL64),
   m_parallel_transactions_db(RNIL64),
   m_first_queued_req(nullptr),
-  m_last_queued_req(nullptr)
+  m_last_queued_req(nullptr),
+  m_user_id(RNIL),
+  m_user_id_version(0)
 {
   NdbTick_Invalidate(&m_start_ticks);
   tcConnect.init();
@@ -9610,7 +9655,7 @@ void Dbtc::releaseDirtyWrite(Signal *signal,
       regApiPtr->apiConnectstate = CS_CONNECTED;
       setApiConTimer(apiConnectptr, 0, __LINE__);
       sendtckeyconf(signal, 1, apiConnectptr);
-      release_api_ref(signal, apiConnectptr, __LINE__);
+      release_api_ref_if_unqueued(signal, apiConnectptr, __LINE__);
       if (apiConnectptr.p->m_count_parallel_transactions) {
         jam();
         release_count_parallel_transactions(apiConnectptr.p);
@@ -17049,6 +17094,11 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     reportMaliciousSignal(signal, senderNodeId, VT_SCANTABREQ_MISSING_SECTION);
     return;
   }
+  if (unlikely(passQueueingFlag && sendersBlockRef != reference())) {
+    jam();
+    report_queue_flag_not_internal(signal, handle);
+    return;
+  }
 
   /**
    * Scan parallelism is determined by the number of receiver ids sent
@@ -17273,10 +17323,32 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
 
   {
     DatabaseRecordPtr databaseRecordPtr;
-    Uint32 user_id_flag = ScanTabReq::getUserIdFlag(ri);
-    if (user_id_flag) {
-      Uint32 user_id = scanTabReq->userId;
-      Uint32 user_id_version = scanTabReq->userIdVersion;
+    Uint32 user_id = RNIL;
+    Uint32 user_id_version = 0;
+    if (ScanTabReq::getUserIdFlag(ri)) {
+      user_id = scanTabReq->userId;
+      user_id_version = scanTabReq->userIdVersion;
+    }
+    if (transOwnerPtr.p != apiConnectptr.p) {
+      /**
+       * A scan in a transaction that has key operations is accounted to
+       * the transaction's rate limit user, as they are (set_trans_user).
+       * A scan that names another user is refused.  A scan re-sent from
+       * the rate queue was checked when it arrived.
+       */
+      if (likely(!passQueueingFlag) &&
+          unlikely(!set_trans_user(transOwnerPtr.p,
+                                   false,
+                                   user_id,
+                                   user_id_version))) {
+        jam();
+        errCode = ZRATE_LIMIT_USER_MISMATCH;
+        goto SCAN_TAB_error;
+      }
+      user_id = transOwnerPtr.p->m_user_id;
+      user_id_version = transOwnerPtr.p->m_user_id_version;
+    }
+    if (user_id != RNIL) {
       DatabaseRecord key(*this, user_id);
       if (unlikely(!m_databaseRecordHash.find(databaseRecordPtr, key))) {
         databaseRecordPtr.i = tabptr.p->databaseRecord;
@@ -19717,7 +19789,9 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
    * "Wrong transid" replies go to the sender).  The restore does not
    * depend on 8316 still being set.
    */
-  if (req->stopScan & 4) {
+  if ((req->stopScan & 4) && signal->getSendersBlockRef() == reference()) {
+    /* Only our own held close: the restore takes the sender from the
+     * signal. */
     jam();
     const Uint32 len = signal->getLength() - 1;
     signal->header.theSendersBlockRef = signal->theData[len];
@@ -19736,6 +19810,12 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
 #endif
 
   SectionHandle handle(this, signal);
+  if (unlikely(sent_from_queue &&
+               signal->getSendersBlockRef() != reference())) {
+    jam();
+    report_queue_flag_not_internal(signal, handle);
+    return;
+  }
   ApiConnectRecordPtr apiConnectptr;
   apiConnectptr.i = req->apiConnectPtr;
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
@@ -20413,6 +20493,17 @@ void Dbtc::close_scan_req_send_conf(Signal *signal, ScanRecordPtr scanPtr,
     DEB_SCAN_MANY(("(%u) TC scanPtrI: %u, Send SCAN_TABCONF, endOfData",
       instance(), scanPtr.i));
     sendSignal(ref, GSN_SCAN_TABCONF, signal, ScanTabConf::SignalLength, JBB);
+#ifdef ERROR_INSERT
+    if (ERROR_INSERTED(8320) && scanPtr.p->m_joinAgg) {
+      jam();
+      /* Send the pure EndOfData of a join aggregation twice, as when an
+       * API close crosses it: execSCAN_NEXTREQ answers that close with
+       * a second one ("Confirming scan close") once the scan is
+       * released (testJoinAggNdbApi --only 26). */
+      sendSignal(ref, GSN_SCAN_TABCONF, signal, ScanTabConf::SignalLength,
+                 JBB);
+    }
+#endif
     time_track_complete_scan(scanPtr.p, refToNode(ref));
   }
 
@@ -24484,9 +24575,21 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
   Uint32 tcIndxRequestInfo = tcIndxReq->requestInfo;
   Uint32 startFlag = tcIndxReq->getStartFlag(tcIndxRequestInfo);
   ApiConnectRecordPtr transPtr;
-  Uint32 passQueueingFlag = TcKeyReq::getPassQueueingFlag(tcIndxRequestInfo);
   bool isLongTcIndxReq = (signal->getNoOfSections() != 0);
   SectionHandle handle(this, signal);
+  /**
+   * Bit 24 of a short TCINDXREQ is part of its key length. Before, the
+   * ndbrequire(!passQueueingFlag) below stopped the data node for a short
+   * TCINDXREQ with such a key length on a released or invalid connection.
+   */
+  Uint32 passQueueingFlag =
+      TcKeyReq::getPassQueueingFlag(tcIndxRequestInfo) && isLongTcIndxReq;
+  if (unlikely(passQueueingFlag &&
+               signal->getSendersBlockRef() != reference())) {
+    jam();
+    report_queue_flag_not_internal(signal, handle);
+    return;
+  }
 
   transPtr.i = TapiIndex;
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(transPtr))) {
@@ -24530,10 +24633,35 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
     }
     return;
   }
-  Uint32 user_id_flag = TcKeyReq::getUserIdFlag(tcIndxRequestInfo);
-  if (user_id_flag && isLongTcIndxReq) {
-    Uint32 user_id = tcIndxReq->userId;
-    Uint32 user_id_version = tcIndxReq->userIdVersion;
+  Uint32 user_id = RNIL;
+  Uint32 user_id_version = 0;
+  if (TcKeyReq::getUserIdFlag(tcIndxRequestInfo) && isLongTcIndxReq) {
+    user_id = tcIndxReq->userId;
+    user_id_version = tcIndxReq->userIdVersion;
+  }
+  /**
+   * As in execTCKEYREQ: the request is accounted to the transaction's rate
+   * limit user, and one that names another user aborts the transaction.
+   * A request re-sent from the rate queue was checked when it arrived.
+   */
+  if (likely(!(passQueueingFlag && isLongTcIndxReq)) &&
+      unlikely(!set_trans_user(regApiPtr,
+                               is_transaction_to_start(regApiPtr, startFlag),
+                               user_id,
+                               user_id_version))) {
+    jam();
+    releaseSections(handle);
+    db_abort_handling(signal,
+                      transPtr,
+                      startFlag,
+                      TcKeyReq::getExecuteFlag(tcIndxRequestInfo) ?
+                        ApiConnectRecord::TF_EXEC_FLAG : 0,
+                      ZRATE_LIMIT_USER_MISMATCH);
+    return;
+  }
+  user_id = regApiPtr->m_user_id;
+  user_id_version = regApiPtr->m_user_id_version;
+  if (user_id != RNIL) {
     DatabaseRecord key(*this, user_id);
     if (unlikely(!m_databaseRecordHash.find(databaseRecordPtr, key))) {
       databaseRecordPtr.i = localTabptr.p->databaseRecord;
@@ -29052,12 +29180,16 @@ Dbtc::send_queued_query(Signal *signal, QueueRecord *queue_record) {
                 ((Uint32*)first_section_area)[5] : 0xFFFF ));
 
 #ifdef ERROR_INSERT
-    if (unlikely(ERROR_INSERTED(8160))) {
-      /* RONDB-1152 test: keep the re-sent operation in flight for 5 s. */
+    if (unlikely(ERROR_INSERTED(8160) || ERROR_INSERTED(8319))) {
+      /**
+       * RONDB-1152 test (8160): keep the re-sent operation in flight for
+       * 5 s. RONDB-1124 test (8319): for 1 s.
+       */
       jam();
       SectionHandle handle(this);
       ndbrequire(import(&handle, ptr, num_sections));
-      sendSignalWithDelay(reference(), queue_record->m_gsn, signal, 5000,
+      sendSignalWithDelay(reference(), queue_record->m_gsn, signal,
+                          ERROR_INSERTED(8160) ? 5000 : 1000,
                           signal_length, &handle);
       return;
     }
@@ -30201,6 +30333,52 @@ bool Dbtc::is_transaction_to_start(ApiConnectRecord *transPtrP,
   return false;
 }
 
+/**
+ * The rate limit user of a request of the transaction regApiPtr.
+ * user_id and user_id_version are what the request names, user_id RNIL
+ * when it names no user.
+ *
+ * Every request of a transaction is accounted to one user, or none: the
+ * one that the request starting the transaction names (to_start).  It is
+ * kept in the transaction record, since the database record the rate
+ * queue uses (m_queuedDatabasePtrI) can be released between operations of
+ * the transaction.  A later request that names no user is accounted to
+ * the transaction's; one that names another user, also in a transaction
+ * started without one, is refused: the caller aborts the transaction.
+ *
+ * This is called when a request arrives, before it can be queued, so the
+ * request that starts a transaction sets the user before any other
+ * request of it is looked at.  The callers do not call it again for a
+ * request that the queue handler re-sends (passQueue): that request was
+ * checked when it arrived and takes the transaction's user as it is.
+ *
+ * Returns false when the request names another user than the
+ * transaction's.  The caller then accounts the request to
+ * regApiPtr->m_user_id.
+ */
+bool Dbtc::set_trans_user(ApiConnectRecord *regApiPtr,
+                          bool to_start,
+                          Uint32 user_id,
+                          Uint32 user_id_version) {
+  if (to_start) {
+    jamDebug();
+    regApiPtr->m_user_id = user_id;
+    regApiPtr->m_user_id_version = (user_id == RNIL) ? 0 : user_id_version;
+    return true;
+  }
+  if (likely(user_id == RNIL)) {
+    jamDebug();
+    return true;
+  }
+  if (likely(user_id == regApiPtr->m_user_id &&
+             user_id_version == regApiPtr->m_user_id_version)) {
+    jamDebug();
+    return true;
+  }
+  jam();
+  return false;
+}
+
 void Dbtc::release_queue_record(QueueRecord *queue_record) {
   //Free memory attached to QueueRecord
   DEB_RATE_LIST(("(%u) Release queue_record(0x%p)",
@@ -30750,7 +30928,12 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
   Uint32 TstartFlag = TcKeyReq::getStartFlag(Treqinfo);
   Uint32 TexecFlag =
       TcKeyReq::getExecuteFlag(Treqinfo) ? ApiConnectRecord::TF_EXEC_FLAG : 0;
-  Uint32 passQueueingFlag = TcKeyReq::getPassQueueingFlag(Treqinfo);
+  /**
+   * Bit 24 of a short TCKEYREQ or TCINDXREQ is part of its key length.
+   * Read as the flag, it let such a request skip the checks below.
+   */
+  Uint32 passQueueingFlag =
+      TcKeyReq::getPassQueueingFlag(Treqinfo) && handle.m_cnt > 0;
   if (!passQueueingFlag) {
 #ifdef ERROR_INSERT
     if (unlikely(ERROR_INSERTED(8160)) && TstartFlag == 0) {
@@ -30769,6 +30952,23 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
                           TcKeyRef::ReadRateOverflowError);
         return false;
       }
+      ndbrequire(queue_tckeyreq(signal, &handle, databaseRecordPtr,
+                                apiConnectptr));
+      releaseSections(handle);
+      return false;
+    }
+    if (unlikely(ERROR_INSERTED(8319)) && handle.m_cnt > 0) {
+      /**
+       * RONDB-1124 test (testNdbApi RateQueueDirtyReadOtherDatabase): every
+       * operation is queued, the one that starts the transaction and the
+       * one with the execute flag too, and send_queued_query holds each
+       * re-send for 1 s. The re-sends come back in queue order. A dirty
+       * read is released as soon as its LQHKEYREQ is sent
+       * (packLqhkeyreq040Lab), so a re-sent first dirty read completes the
+       * transaction's LQH operations while the next operation is still
+       * on its way back from the queue.
+       */
+      jam();
       ndbrequire(queue_tckeyreq(signal, &handle, databaseRecordPtr,
                                 apiConnectptr));
       releaseSections(handle);
@@ -30955,6 +31155,66 @@ void Dbtc::release_api_ref(Signal *signal,
   if (api_ref_count == 0) {
     check_drop_db_conf(signal, dbPtr);
   }
+}
+
+/**
+ * release_api_ref for an operation that completes the transaction's
+ * outstanding LQH operations: a dirty read (releaseDirtyRead), a dirty
+ * write or a commit without LQH operations. lqhkeyreqrec does not count a
+ * request that waits in the rate queue or that the queue handler has
+ * re-sent (m_num_queued_outstanding), so such a request can still be
+ * pending. It was queued under m_queuedDatabasePtrI, and the queue handler
+ * counted its re-send in that database's m_outstanding_queries. The
+ * re-sent request finds that database again only through
+ * m_queuedDatabasePtrI (check_tckey_queueing), and an abort releases the
+ * queued requests through it (release_queue_record_tc). So the reference
+ * is kept while such a request is pending. Before, a re-sent request of a
+ * transaction whose dirty read had released it was taken to its own
+ * table's database: a null database record when that database has no
+ * rate limit (a data node crash in execTCKEYREQ), and another database's
+ * m_outstanding_queries when it has one. The reference is released later
+ * by the operation that completes the transaction's work then, by the
+ * commit or the abort, or with the record.
+ */
+void Dbtc::release_api_ref_if_unqueued(Signal *signal,
+                                       ApiConnectRecordPtr apiPtr,
+                                       Uint32 line) {
+  if (unlikely(apiPtr.p->m_first_queued_req != nullptr ||
+               apiPtr.p->m_num_queued_outstanding > 0)) {
+    jam();
+    DEB_RATE_QUEUE_DROP(("(%u) Keep api_ref, queued: %p, outstanding: %u"
+                         ", LINE: %u, ApiPtr: %u",
+                         instance(),
+                         apiPtr.p->m_first_queued_req,
+                         apiPtr.p->m_num_queued_outstanding,
+                         line,
+                         apiPtr.i));
+    return;
+  }
+  release_api_ref(signal, apiPtr, line);
+}
+
+/**
+ * The rate queue handler (send_queued_query) re-sends a queued request to
+ * this DBTC instance with a mark that it was queued: the passQueue flag of
+ * TCKEYREQ, TCINDXREQ and SCAN_TABREQ, and bit 2 of SCAN_NEXTREQ's
+ * stopScan. The mark makes the request skip the rate queue checks and
+ * takes it off the counts that the re-send raised (m_num_queued_outstanding
+ * of the transaction, m_outstanding_queries of the database). No other
+ * sender sets it: from an API it would bypass the rate limit, and a
+ * request that was never queued holds none of those counts, so the
+ * ndbrequire on them failed, or the database record was null, and the data
+ * node stopped. The NDB API never sets the mark, so this is Tier A. Bit 24
+ * of a short TCKEYREQ or TCINDXREQ is part of its key length, so there the
+ * flag exists in a long signal only. Another block of this node never sets
+ * the mark either: that would be a bug here.
+ */
+void Dbtc::report_queue_flag_not_internal(Signal *signal,
+                                          SectionHandle &handle) {
+  const NodeId senderNodeId = refToNode(signal->getSendersBlockRef());
+  ndbrequire(senderNodeId != getOwnNodeId());
+  releaseSections(handle);
+  reportMaliciousSignal(signal, senderNodeId, VT_TC_QUEUE_FLAG_NOT_INTERNAL);
 }
 
 void Dbtc::debug_db_no_queue(DatabaseRecordPtr databaseRecordPtr,

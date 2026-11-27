@@ -42,7 +42,10 @@ struct JoinOp
 {
   enum Type { TABLE_SCAN, INDEX_SCAN, PK_LOOKUP, UNIQUE_LOOKUP, CTE_LOOKUP,
               CTE_SCAN };
-  enum MatchType { INNER, LEFT_OUTER, SEMI_JOIN, ANTI_JOIN };
+  // T-20: no SEMI_JOIN, which nothing made: QueryPlanner::plan makes a child
+  // INNER or LEFT_OUTER, and promote_left_to_inner_for_where turns a
+  // LEFT_OUTER into INNER, or into ANTI_JOIN for LEFT JOIN ... WHERE IS NULL.
+  enum MatchType { INNER, LEFT_OUTER, ANTI_JOIN };
   Type type;
   MatchType match_type;
   const NdbDictionary::Table *table;  // NULL for CTE_LOOKUP

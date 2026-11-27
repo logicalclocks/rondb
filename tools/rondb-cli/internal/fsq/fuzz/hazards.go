@@ -66,8 +66,9 @@ var FormerHazards = []FormerHazard{
 			"SELECT `ord`.`k` AS `k`, `ord`.`n` AS `n`, `ord`.`mn` AS `mn` FROM `customers_1` AS `c` JOIN `ord` ON `ord`.`k` = `c`.`customer_id`;", ""},
 	// The hang was a stale-binary artifact; column-vs-column in a CTE body
 	// runs for columns of identical type since RONDB-1107 (fee and
-	// merchant_id are both INT; the translation's original fee < amount
-	// mixes INT and BIGINT and is the colcol-mixed-type probe).
+	// merchant_id are both INT), and for two numeric columns of any types
+	// since RONDB-1124 F-13 (the translation's original fee < amount mixes
+	// INT and BIGINT; the colcol-mixed-type probe now compares a DECIMAL).
 	{"D4", "CTE-body col-vs-col WHERE (non-indexed left) feeding a parent-GROUP-BY main aggregate",
 		"WITH `liq` AS (SELECT `merchant_id` AS `k`, COUNT(*) AS `n`, SUM(`amount`) AS `q` FROM `transactions_1` WHERE `fee` < `merchant_id` GROUP BY `merchant_id`) " +
 			"SELECT `m`.`mcc` AS `mcc`, SUM(`liq`.`n`) AS `n`, SUM(`liq`.`q`) AS `q` FROM `merchants_1` AS `m` JOIN `liq` ON `liq`.`k` = `m`.`merchant_id` GROUP BY `m`.`mcc`;", ""},

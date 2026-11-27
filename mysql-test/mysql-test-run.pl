@@ -3487,7 +3487,7 @@ sub environment_setup {
     ndb_parse_config_info();
 
     # We need to extend PATH to ensure we find libcrypto/libssl at runtime
-    # (ndbclient.dll depends on them)
+    # (rondbclient.dll depends on them)
     # These .dlls are stored in runtime_output_directory/<config>/
     # or in bin/ after MySQL package installation.
     if (IS_WINDOWS) {

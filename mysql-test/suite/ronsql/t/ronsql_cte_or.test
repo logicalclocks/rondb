@@ -13,7 +13,6 @@ call mtr.add_suppression("Participant timeout");
 # Same fixture as ronsql_cte_basic so the `sums` / `maxes` virt-table
 # shapes are reusable.
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --echo

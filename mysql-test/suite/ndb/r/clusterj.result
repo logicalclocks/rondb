@@ -3,7 +3,7 @@ Looking for a suitable Java...
 Found Java
 Found clusterj.jar
 Found clusterj_test jar
-Found ndbclient library
+Found rondbclient library
 DROP TABLE a;
 DROP TABLE allprimitives;
 DROP TABLE autopkint;

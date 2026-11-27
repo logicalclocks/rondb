@@ -88,8 +88,17 @@ Number of output lines, including header: 5
 
 
 
-=== MIN and MAX payloads could need 20 KB: a limit error ===
-[limit] Caught exception: The GROUP BY columns and aggregate results of one group can need more than 16 KB, counted at the declared column sizes.
+=== MIN and MAX payloads of 10 KB each: each record above 16 KB ===
+== Query ==
+SELECT g, MIN(s), MAX(s) FROM t_s10 GROUP BY g;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
 
 === 127 GROUP BY columns are accepted ===
 == Query ==
@@ -124,8 +133,8 @@ Number of output lines, including header: 2
 === an aggregation program of 1024 words or more is a limit error ===
 [limit] Caught exception: The aggregate expressions are too large: the aggregation program must be shorter than 1024 words.
 
-=== a program beyond the 8192-word buffer fails cleanly ===
-Caught exception: Failed writing aggregation program
+=== a program beyond the 8192-word buffer is the same limit error ===
+[limit] Caught exception: The aggregate expressions are too large: the aggregation program must be shorter than 1024 words.
 
 === RDRS still answers ===
 == Query ==

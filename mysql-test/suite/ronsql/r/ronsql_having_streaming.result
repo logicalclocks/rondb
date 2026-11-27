@@ -1,0 +1,169 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== hs-1: HAVING, no ORDER BY: each group tested and printed at once ===
+== Query ==
+SELECT g, COUNT(*) AS n, SUM(v) AS s FROM hs GROUP BY g HAVING COUNT(*) >= 7;
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, COUNT(*) AS n, SUM(v) AS s FROM hs GROUP BY g HAVING COUNT(*) >= 7;
+g	n	s
+1	7	547
+10	7	570
+2	7	534
+3	7	521
+4	7	508
+5	7	495
+6	7	482
+8	7	596
+9	7	583
+
+=== hs-2: HAVING and LIMIT 3, no ORDER BY ===
+lines, including the header:
+4
+the least n:
+7
+
+=== hs-3: HAVING drops every group ===
+== Query ==
+SELECT g, COUNT(*) AS n FROM hs GROUP BY g HAVING COUNT(*) > 1000;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, COUNT(*) AS n FROM hs GROUP BY g HAVING COUNT(*) > 1000;
+g	n
+
+=== hs-4: ORDER BY an aggregate with LIMIT: only the first 5 of 20 groups ordered ===
+== Query ==
+SELECT g, SUM(v) AS s FROM hs GROUP BY g ORDER BY s DESC LIMIT 5;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, SUM(v) AS s FROM hs GROUP BY g ORDER BY s DESC LIMIT 5;
+g	s
+8	596
+9	583
+10	570
+1	547
+2	534
+
+=== hs-5: HAVING, ORDER BY and LIMIT ===
+== Query ==
+SELECT g, SUM(v) AS s FROM hs GROUP BY g HAVING SUM(v) > 520 ORDER BY g LIMIT 4;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, SUM(v) AS s FROM hs GROUP BY g HAVING SUM(v) > 520 ORDER BY g LIMIT 4;
+g	s
+1	547
+2	534
+3	521
+8	596
+
+=== hs-6: ORDER BY with a LIMIT above the group count: every group ordered ===
+== Query ==
+SELECT g, SUM(v) AS s FROM hs GROUP BY g ORDER BY s, g LIMIT 50;
+
+Number of output lines, including header: 21
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, SUM(v) AS s FROM hs GROUP BY g ORDER BY s, g LIMIT 50;
+g	s
+13	378
+12	392
+11	406
+0	420
+19	434
+18	448
+7	462
+17	462
+16	476
+6	482
+15	490
+5	495
+14	504
+4	508
+3	521
+2	534
+1	547
+10	570
+9	583
+8	596
+
+=== hs-7: a cross-table filter without ORDER BY: groups with no row through it dropped ===
+== Query ==
+SELECT a.g, COUNT(*) AS n, SUM(a.v) AS s FROM hs AS a JOIN hs2 AS b ON b.id = a.id WHERE a.id < 40 AND a.v > b.w GROUP BY a.g;
+
+Number of output lines, including header: 8
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.g, COUNT(*) AS n, SUM(a.v) AS s FROM hs AS a JOIN hs2 AS b ON b.id = a.id WHERE a.id < 40 AND a.v > b.w GROUP BY a.g;
+g	n	s
+10	1	30
+11	1	11
+13	1	33
+16	1	36
+18	1	38
+19	1	19
+2	1	22
+
+=== hs-8: a cross-table filter and a HAVING ===
+== Query ==
+SELECT a.g, COUNT(*) AS n, SUM(a.v) AS s FROM hs AS a JOIN hs2 AS b ON b.id = a.id WHERE a.id < 40 AND a.v > b.w GROUP BY a.g HAVING SUM(a.v) > 20;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT a.g, COUNT(*) AS n, SUM(a.v) AS s FROM hs AS a JOIN hs2 AS b ON b.id = a.id WHERE a.id < 40 AND a.v > b.w GROUP BY a.g HAVING SUM(a.v) > 20;
+g	n	s
+10	1	30
+13	1	33
+16	1	36
+18	1	38
+2	1	22
+
+=== hs-9: a cross-table filter and LIMIT 2, no ORDER BY ===
+lines, including the header:
+3
+groups without a row through the filter:
+0

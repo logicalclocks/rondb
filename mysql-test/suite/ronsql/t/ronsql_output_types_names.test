@@ -1,0 +1,345 @@
+# Output column types and output names that the result printers could
+# not write, found only while writing.
+#
+# README finding O-13: a GROUP BY key of type YEAR, TIME, BINARY,
+# VARBINARY or BIT, and a pass-through BIT, BLOB or TEXT column, were
+# refused when the printer met the first value: after the scan, and after
+# the header and the rows before it were written (ronsql_cli cannot take
+# them back).  The GROUP BY printers now print YEAR, TIME, BINARY and
+# VARBINARY keys as the pass-through printer prints those columns, and
+# RonSQLPreparer::check_printed_output_types() refuses every other printed
+# type (BIT, BLOB, TEXT) at prepare time, before any scan.  A BLOB or TEXT
+# GROUP BY key keeps the error GroupBy() gives it.  An aggregate over a
+# type the aggregation interpreter cannot load is refused when the
+# program is built, before the scan (F16, unchanged).  A TIME, DATETIME
+# or TIMESTAMP GROUP BY key two CTEs up, which has no dictionary column,
+# now takes its fractional precision from the CTE chain (a DATETIME(3)
+# key printed without its fraction).
+#
+# README finding O-11: under JSON and JSON_ASCII each row is an object
+# keyed by the output names, so two outputs of one name gave a duplicate
+# key, of which a JSON reader keeps one value.  Such a statement is
+# refused under JSON and JSON_ASCII at prepare time; TEXT, like mysqld,
+# allows it.  A subquery, whose JSON output RonSQL reads by position, may
+# still have two outputs of one name.
+#
+#   ot-1..ot-5  GROUP BY YEAR, TIME(3), BINARY(4), VARBINARY(16) and
+#               VARBINARY(300) keys (the streaming printer), compared
+#               with mysqld; binary values shown as HEX in the expected
+#               blocks
+#   ot-6        all five keys with ORDER BY (the buffered printer)
+#   ot-7        YEAR and TIME(3) keys one CTE up
+#   ot-8        TIME(3) and DATETIME(3) keys two CTEs up (no dictionary
+#               column: the precision comes from the CTE chain)
+#   ot-9        GROUP BY YEAR, TIME, BINARY and VARBINARY under JSON:
+#               quoted text and base64 strings, on ronsql_cli and RDRS
+#   ot-c1       control: a BIT GROUP BY key that is not printed
+#   ot-c2       control: MIN and MAX of YEAR and TIME
+#   ot-e1..e5   refused before the scan, nothing printed: a BIT GROUP BY
+#               key, pass-through BIT, BLOB and TEXT columns, and a BIT
+#               key passed through a CTE
+#   ot-e6       a TEXT GROUP BY key keeps GroupBy()'s error
+#   ot-e7       ot-e2 through RDRS: HTTP 400, class unsupported
+#   ot-a1..a4   aggregates over BIT, VARBINARY and BLOB: refused when the
+#               program is built, before the scan, nothing printed
+#   on-1, on-2  duplicate output names under TEXT (a join pass-through
+#               and an aggregate), compared with mysqld
+#   on-3        the COUNT(*) shortcut with duplicate names under TEXT
+#   on-4..on-6  the same three under JSON and JSON_ASCII on ronsql_cli:
+#               refused before the scan
+#   on-7, on-8  on-1 and on-2 through RDRS, JSON (the default) and
+#               JSON_ASCII: HTTP 400, class unsupported
+#   on-9        control: names that differ in case are different keys
+#   on-10       control: a correlated subquery whose inner statement has
+#               two outputs of one name (its key and its aggregate)
+#
+# No ronsql_jit mirror: the change is in the preparer and the printers,
+# not in the programs that run on the data nodes.
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE otn (
+  id  INT NOT NULL,
+  grp INT NOT NULL,
+  w   INT NOT NULL,
+  y   YEAR NULL,
+  t3  TIME(3) NULL,
+  b4  BINARY(4) NULL,
+  vb  VARBINARY(16) NULL,
+  lvb VARBINARY(300) NULL,
+  bt  BIT(8) NULL,
+  bl  BLOB NULL,
+  tx  TEXT NULL,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+INSERT INTO otn VALUES
+  (1, 1, 1, 2023, '14:30:00.125',  'AB',       0x4142,     0x4142,           b'01000001', 'x', 'x'),
+  (2, 1, 2, 1901, '-01:02:03.500', 0x00090A5C, 0x00090A5C, REPEAT('z', 300), b'00000010', 'y', 'y'),
+  (3, 2, 3, 2023, '14:30:00.125',  'AB',       0x4142,     0x4142,           b'01000001', 'x', 'x'),
+  (4, 2, 4, NULL, NULL,            NULL,       NULL,       NULL,             NULL,        NULL, NULL),
+  (5, 3, 5, 0,    '838:59:59.000', X'',        X'',        X'',              b'00000000', '',  ''),
+  (6, 3, 6, 2155, '00:00:00.000',  'AB',       0x41,       0x4142,           b'11111111', 'x', 'x');
+CREATE TABLE otc (
+  id  INT NOT NULL,
+  y   YEAR NOT NULL,
+  t3  TIME(3) NOT NULL,
+  dt3 DATETIME(3) NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+INSERT INTO otc VALUES
+  (1, 2023, '14:30:00.125',  '2023-06-15 14:30:00.125'),
+  (2, 2023, '-01:02:03.500', '2024-02-29 23:59:59.999'),
+  (3, 1999, '14:30:00.125',  '2023-06-15 14:30:00.125'),
+  (4, 1999, '14:30:00.125',  '2023-06-15 14:30:00.125');
+CREATE TABLE otq (
+  id INT NOT NULL,
+  g  INT NOT NULL,
+  v  INT NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+INSERT INTO otq VALUES (1, 1, 1), (2, 1, 5), (3, 2, 3);
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === ot-1: GROUP BY a YEAR key ===
+--let $QUERY=SELECT y, COUNT(*) AS n FROM otn GROUP BY y;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT y, COUNT(*) AS n FROM otn GROUP BY y;
+
+--echo
+--echo === ot-2: GROUP BY a TIME(3) key ===
+--let $QUERY=SELECT t3, COUNT(*) AS n FROM otn GROUP BY t3;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT t3, COUNT(*) AS n FROM otn GROUP BY t3;
+
+--echo
+--echo === ot-3: GROUP BY a BINARY(4) key ===
+--let $QUERY=SELECT b4, COUNT(*) AS n FROM otn GROUP BY b4;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result (hex) ==
+--sorted_result
+SELECT HEX(b4) AS b4_hex, COUNT(*) AS n FROM otn GROUP BY b4;
+
+--echo
+--echo === ot-4: GROUP BY a VARBINARY(16) key ===
+--let $QUERY=SELECT vb, COUNT(*) AS n FROM otn GROUP BY vb;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result (hex) ==
+--sorted_result
+SELECT HEX(vb) AS vb_hex, COUNT(*) AS n FROM otn GROUP BY vb;
+
+--echo
+--echo === ot-5: GROUP BY a VARBINARY(300) key (two-byte length prefix) ===
+--let $QUERY=SELECT lvb, COUNT(*) AS n FROM otn GROUP BY lvb;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result (lengths) ==
+--sorted_result
+SELECT LENGTH(lvb) AS lvb_len, HEX(LEFT(lvb, 4)) AS lvb_head, COUNT(*) AS n FROM otn GROUP BY lvb;
+
+--echo
+--echo === ot-6: the five keys with ORDER BY (buffered printer) ===
+--let $skip_sort=yes
+--let $QUERY=SELECT y, t3, b4, vb, lvb, COUNT(*) AS n FROM otn GROUP BY y, t3, b4, vb, lvb ORDER BY y, t3, b4, vb, lvb;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result (hex, lengths) ==
+SELECT y, t3, HEX(b4) AS b4_hex, HEX(vb) AS vb_hex, LENGTH(lvb) AS lvb_len, COUNT(*) AS n FROM otn GROUP BY y, t3, b4, vb, lvb ORDER BY y, t3, b4, vb, lvb;
+
+--echo
+--echo === ot-7: YEAR and TIME(3) keys one CTE up ===
+--let $QUERY=WITH c AS (SELECT y, t3, COUNT(*) AS n FROM otc GROUP BY y, t3) SELECT y, t3, SUM(n) AS s FROM c GROUP BY y, t3;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT y, t3, COUNT(*) AS n FROM otc GROUP BY y, t3) SELECT y, t3, SUM(n) AS s FROM c GROUP BY y, t3;
+
+--echo
+--echo === ot-8: TIME(3) and DATETIME(3) keys two CTEs up ===
+--let $QUERY=WITH a AS (SELECT t3, dt3, COUNT(*) AS n FROM otc GROUP BY t3, dt3), b AS (SELECT t3, dt3, SUM(n) AS n2 FROM a GROUP BY t3, dt3) SELECT t3, dt3, SUM(n2) AS s FROM b GROUP BY t3, dt3;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH a AS (SELECT t3, dt3, COUNT(*) AS n FROM otc GROUP BY t3, dt3), b AS (SELECT t3, dt3, SUM(n) AS n2 FROM a GROUP BY t3, dt3) SELECT t3, dt3, SUM(n2) AS s FROM b GROUP BY t3, dt3;
+
+--let $JSON_CANON=perl -MJSON::PP -e 'print JSON::PP->new->canonical->encode(JSON::PP->new->decode(join q(), <STDIN>)), qq(\n)'
+let $RDRS_RONSQL = curl --no-progress-meter --fail-with-body -X POST
+  -H "Content-Type: application/json"
+  http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql -d;
+
+--echo
+--echo === ot-9: YEAR, TIME, BINARY and VARBINARY keys under JSON ===
+--echo (00 09 0A 5C = AAkKXA==, AB\0\0 = QUIAAA==, AB = QUI=)
+--let $QUERY=SELECT y, t3, b4, vb, COUNT(*) AS n FROM otn WHERE grp = 1 GROUP BY y, t3, b4, vb ORDER BY y;
+--source suite/ronsql/include/ronsql_json_check.inc
+
+--echo === ot-c1: control: a BIT GROUP BY key that is not printed ===
+--let $QUERY=SELECT COUNT(*) AS n FROM otn GROUP BY bt;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n FROM otn GROUP BY bt;
+
+--echo
+--echo === ot-c2: control: MIN and MAX of YEAR and TIME ===
+# mysqld prints a YEAR MIN / MAX of 0000 by plan: without a temporary
+# table Item::send sends it as the number 0 (store_short without the
+# padding of Field_year::send_to_protocol); through a temporary table it
+# is a copy of the column's Field_year, 0000.  RonSQL prints a YEAR as
+# the column prints, 0000.  So the query with YEAR 0000 (id 5) runs
+# through ronsql_cli alone, and the query without it is compared with
+# mysqld.
+--echo == RonSQL alone, YEAR 0000 ==
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT MIN(y) AS ylo, MAX(y) AS yhi, MIN(t3) AS tlo, MAX(t3) AS thi FROM otn;'
+--let $QUERY=SELECT MIN(y) AS ylo, MAX(y) AS yhi, MIN(t3) AS tlo, MAX(t3) AS thi FROM otn WHERE id <> 5;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT MIN(y) AS ylo, MAX(y) AS yhi, MIN(t3) AS tlo, MAX(t3) AS thi FROM otn WHERE id <> 5;
+
+--echo
+--echo === ot-e1: a BIT GROUP BY key ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT bt, COUNT(*) AS n FROM otn GROUP BY bt;' 2>&1
+
+--echo
+--echo === ot-e2: a pass-through BIT column ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id, bt FROM otn;' 2>&1
+
+--echo
+--echo === ot-e3: a pass-through BLOB column ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id, bl FROM otn;' 2>&1
+
+--echo
+--echo === ot-e4: a pass-through TEXT column ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id, tx FROM otn;' 2>&1
+
+--echo
+--echo === ot-e5: a BIT key passed through a CTE ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c AS (SELECT bt, COUNT(*) AS n FROM otn GROUP BY bt) SELECT bt, n FROM c;' 2>&1
+
+--echo
+--echo === ot-e6: a TEXT GROUP BY key keeps the error of GroupBy() ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT tx, COUNT(*) AS n FROM otn GROUP BY tx;' 2>&1
+
+--echo
+--echo === ot-e7: ot-e2 through RDRS ===
+--exec printf '{"query":"SELECT id, bt FROM otn;","database":"test"}' > $MYSQL_TMP_DIR/otn-body
+--exec curl -s -o $MYSQL_TMP_DIR/otn-rdrs.out -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/otn-hdrs -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/otn-body
+--exec grep -i '^x-ronsql-error-class:' $MYSQL_TMP_DIR/otn-hdrs | tr -d '\r' | tr '[:upper:]' '[:lower:]'
+--exec cat $MYSQL_TMP_DIR/otn-rdrs.out
+
+--echo
+--echo === ot-a1: MIN over a BIT column ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT MIN(bt) AS m FROM otn;' 2>&1
+
+--echo
+--echo === ot-a2: COUNT over a BIT column ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(bt) AS c FROM otn;' 2>&1
+
+--echo
+--echo === ot-a3: MAX over a VARBINARY column ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT MAX(vb) AS m FROM otn;' 2>&1
+
+--echo
+--echo === ot-a4: COUNT over a BLOB column ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(bl) AS c FROM otn;' 2>&1
+
+--echo
+--echo === on-1: duplicate names under TEXT, join pass-through ===
+--let $QUERY=SELECT a.id, b.id FROM otn AS a JOIN otn AS b ON b.id = a.id WHERE a.grp = 1;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT a.id, b.id FROM otn AS a JOIN otn AS b ON b.id = a.id WHERE a.grp = 1;
+
+--echo
+--echo === on-2: duplicate aliases under TEXT, aggregate ===
+--let $QUERY=SELECT grp, COUNT(*) AS n, MAX(id) AS n FROM otn GROUP BY grp;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT grp, COUNT(*) AS n, MAX(id) AS n FROM otn GROUP BY grp;
+
+--echo
+--echo === on-3: duplicate names under TEXT, the COUNT(*) shortcut ===
+--let $QUERY=SELECT COUNT(*), COUNT(*) FROM otn;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT COUNT(*), COUNT(*) FROM otn;
+
+--echo
+--echo === on-4: on-1 under JSON ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --output-format JSON -e 'SELECT a.id, b.id FROM otn AS a JOIN otn AS b ON b.id = a.id WHERE a.grp = 1;' 2>&1
+
+--echo
+--echo === on-5: on-2 under JSON ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --output-format JSON -e 'SELECT grp, COUNT(*) AS n, MAX(id) AS n FROM otn GROUP BY grp;' 2>&1
+
+--echo
+--echo === on-6: on-3 under JSON_ASCII ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --output-format JSON_ASCII -e 'SELECT COUNT(*), COUNT(*) FROM otn;' 2>&1
+
+--echo
+--echo === on-7: on-1 through RDRS, default output format (JSON) ===
+--exec printf '{"query":"SELECT a.id, b.id FROM otn AS a JOIN otn AS b ON b.id = a.id WHERE a.grp = 1;","database":"test"}' > $MYSQL_TMP_DIR/otn-body
+--exec curl -s -o $MYSQL_TMP_DIR/otn-rdrs.out -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/otn-hdrs -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/otn-body
+--exec grep -i '^x-ronsql-error-class:' $MYSQL_TMP_DIR/otn-hdrs | tr -d '\r' | tr '[:upper:]' '[:lower:]'
+--exec cat $MYSQL_TMP_DIR/otn-rdrs.out
+
+--echo
+--echo === on-8: on-2 through RDRS, JSON_ASCII ===
+--exec printf '{"query":"SELECT grp, COUNT(*) AS n, MAX(id) AS n FROM otn GROUP BY grp;","database":"test","outputFormat":"JSON_ASCII"}' > $MYSQL_TMP_DIR/otn-body
+--exec curl -s -o $MYSQL_TMP_DIR/otn-rdrs.out -w 'HTTP %{http_code}\n' -D $MYSQL_TMP_DIR/otn-hdrs -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/otn-body
+--exec grep -i '^x-ronsql-error-class:' $MYSQL_TMP_DIR/otn-hdrs | tr -d '\r' | tr '[:upper:]' '[:lower:]'
+--exec cat $MYSQL_TMP_DIR/otn-rdrs.out
+--remove_file $MYSQL_TMP_DIR/otn-body
+--remove_file $MYSQL_TMP_DIR/otn-hdrs
+--remove_file $MYSQL_TMP_DIR/otn-rdrs.out
+
+--echo
+--echo === on-9: control: names that differ in case are different JSON keys ===
+--let $QUERY=SELECT id, grp AS ID FROM otn WHERE id = 1;
+--source suite/ronsql/include/ronsql_json_check.inc
+
+--echo === on-10: control: a correlated subquery whose inner statement has two outputs named g ===
+--let $QUERY=SELECT grp, COUNT(*) AS n FROM otn WHERE w > (SELECT MIN(v) AS g FROM otq WHERE g = grp) GROUP BY grp;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT grp, COUNT(*) AS n FROM otn WHERE w > (SELECT MIN(v) AS g FROM otq WHERE g = grp) GROUP BY grp;
+
+--let $QUERY=
+
+--echo
+--echo === Cleanup ===
+--disable_query_log
+DROP TABLE otn;
+DROP TABLE otc;
+DROP TABLE otq;
+--enable_query_log

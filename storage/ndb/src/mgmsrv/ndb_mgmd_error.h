@@ -51,5 +51,8 @@
 #define FAILED_SET_DOMAIN_ID_REQUEST 5069
 #define FAILED_SET_CONFIG_PARAM_REQUEST 5070
 #define NODEID_ALLOC_NOT_READY 5071
+/* Internal to node id allocation (MgmtSrvr::try_alloc_from_list): the data
+ * nodes have not completed the failure handling of this API node id yet. */
+#define NODEID_FAILURE_HANDLING_NOT_COMPLETED 5072
 
 #endif

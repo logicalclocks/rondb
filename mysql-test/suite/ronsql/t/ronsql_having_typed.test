@@ -1,0 +1,552 @@
+# HAVING compares typed values, and ORDER BY sorts a DECIMAL sum by its
+# value at the column's scale, as mysqld does.
+#
+# README findings O-8 and O-9 (storage/ndb/claude_files/ronsql_executor/
+# review_output.md).
+# O-8: HAVING was evaluated entirely in DOUBLE:
+#   - BIGINT and BIGINT UNSIGNED values above 2^53 compared equal to their
+#     neighbours (MAX(b) > 1234567890123456788 was FALSE for
+#     1234567890123456789, SUM(b) = 2^53 was TRUE for 2^53 + 1);
+#   - a SUM over a DECIMAL accumulates as a double on the data nodes, so
+#     0.10 + 0.20 was not = 0.3 (0.30000000000000004);
+#   - a temporal MIN / MAX was compared as its packed integer
+#     (MAX(d) > 19960101 was FALSE for 2024-03-05);
+#   - a string MIN / MAX failed with "Unexpected data type in results
+#     underlying AVG. Please report a bug.", and a string literal in
+#     HAVING was refused.
+# HAVING now compares and computes as MySQL: integers and DECIMALs
+# exactly, a DOUBLE as a double, a DATE, DATETIME or TIMESTAMP MIN / MAX
+# with a number as a number (YYYYMMDD...) and with a string or another
+# date as a datetime, a string MIN / MAX in its collation.  A string
+# literal or a string a subquery returned is taken beside a MIN or MAX.
+# O-9: ORDER BY a SUM over a DECIMAL compared the doubles, so groups whose
+# sums print alike (0.30) were sorted by their invisible digits instead of
+# by the next ORDER BY key.
+#
+# hv_n: per g, SUM(b) is 2^53 + 1, 2^63 - 1, -7988804146731319018 and
+# NULL; MAX(u) is 18446744073709551615, 18446744073709551614, 2^63 and
+# NULL; SUM(d) is 0.30 for g 1, 2 and 3 (doubles 0.30000000000000004,
+# 0.29999999999999999 and 0.29999999999999993), NULL for g 4.
+# hv_t: the temporal values of ronsql_cte_temporal_minmax; g 4 is NULL.
+# hv_s: MAX(nm) is 'Banana', 'cherry', NULL and 'café'.
+# hv_o: SUM(d) is 0.30 for g 1, 2 and 3 (as in hv_n), 0.31 for g 4 and
+# 0.29 for g 5.
+#
+#   ht-1..ht-4    BIGINT around 2^53 and 2^63, positive and negative
+#   ht-5, ht-6    BIGINT UNSIGNED above 2^63: arithmetic, and a subquery
+#                 result
+#   ht-7..ht-9    DECIMAL SUM = and </> a literal, AVG over a DECIMAL
+#   ht-10         control: SUM over a DOUBLE stays a double, as in MySQL
+#   ht-11         COUNT(*) / 3 is a DECIMAL with nine fractional digits
+#   ht-12         NULL under NOT, and IS NULL
+#   tt-1..tt-11   DATE, DATETIME(3), TIME(2), YEAR and TIMESTAMP MIN / MAX
+#                 against numbers, strings and each other, and in
+#                 arithmetic
+#   hs-1..hs-5    string MIN / MAX against literals (case and accent
+#                 insensitive, a latin1 column) and a subquery string
+#   ob-1..ob-4    ORDER BY a DECIMAL SUM with ties at the printed scale,
+#                 ASC and DESC, with LIMIT
+#   ob-5          HAVING and ORDER BY together
+#   ob-6, ob-7    ORDER BY a DECIMAL-derived CTE output
+#   he-1..he-4    refused: a string MIN beside a number, a TIME beside a
+#                 string, a string literal beside a SUM, a subquery
+#                 string beside a SUM
+#
+# Expected results come from mysqld (strict_diff).  HAVING runs in mysqld
+# and in the RonSQL printer, so no condition is pushed.
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $strict_diff=yes
+
+# RonSQL works in UTC; store the TIMESTAMP values as written, and compare
+# the expected results in UTC as ronsql_compare.inc does.
+--disable_query_log
+--disable_warnings
+SET time_zone = '+00:00';
+CREATE TABLE hv_n (
+  id INT NOT NULL,
+  g  INT NOT NULL,
+  b  BIGINT,
+  u  BIGINT UNSIGNED,
+  d  DECIMAL(10,2),
+  f  DOUBLE,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+INSERT INTO hv_n VALUES
+  (1, 1, 9007199254740992, 18446744073709551615, 0.10, 0.1),
+  (2, 1, 1, 1, 0.20, 0.2),
+  (3, 2, 9223372036854775807, 18446744073709551614, 0.30, 0.3),
+  (4, 3, 1234567890123456789, 9223372036854775808, 0.70, 0.7),
+  (5, 3, -9223372036854775807, 0, -0.40, -0.4),
+  (6, 4, NULL, NULL, NULL, NULL);
+CREATE TABLE hv_t (
+  id INT NOT NULL,
+  g  INT NOT NULL,
+  d  DATE,
+  dt DATETIME(3),
+  t  TIME(2),
+  y  YEAR,
+  ts TIMESTAMP NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+INSERT INTO hv_t VALUES
+  (1, 1, '1995-01-01', '1995-01-01 10:00:00.500', '-01:30:00.25', 1995,
+   '1995-01-01 10:00:00'),
+  (2, 1, '1994-12-31', '1994-12-31 23:59:59.999', '10:00:00.00', 1994,
+   '1994-12-31 23:59:59'),
+  (3, 2, '1996-06-15', '1996-06-15 12:00:00.000', '12:34:56.78', 2001,
+   '1996-06-15 12:00:00'),
+  (4, 2, '1995-01-01', '1996-06-15 12:00:00.001', '12:34:56.79', 2000,
+   '1996-06-15 12:00:01'),
+  (5, 3, '2024-03-05', '2024-03-05 00:00:00.000', '00:00:00.00', 2024,
+   '2024-03-05 00:00:00'),
+  (6, 3, '1996-06-15', '1993-07-04 08:15:00.000', '23:00:00.00', 1993,
+   '1993-07-04 08:15:00'),
+  (7, 4, NULL, NULL, NULL, NULL, NULL);
+CREATE TABLE hv_s (
+  id  INT NOT NULL,
+  g   INT NOT NULL,
+  nm  VARCHAR(20),
+  lnm VARCHAR(20) CHARACTER SET latin1,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+INSERT INTO hv_s VALUES
+  (1, 1, 'apple', 'apple'),
+  (2, 1, 'Banana', 'Banana'),
+  (3, 2, 'cherry', 'cherry'),
+  (4, 2, NULL, NULL),
+  (5, 3, NULL, NULL),
+  (6, 4, 'café', 'café');
+CREATE TABLE hv_o (
+  id INT NOT NULL,
+  g  INT NOT NULL,
+  d  DECIMAL(10,2) NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+INSERT INTO hv_o VALUES
+  (1, 1, 0.10), (2, 1, 0.20), (3, 2, 0.30), (4, 3, 0.70), (5, 3, -0.40),
+  (6, 4, 0.31), (7, 5, 0.29);
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === ht-1: MAX(BIGINT) > a neighbour above 2^53 ===
+let $QUERY=
+SELECT g, MAX(b) AS mx FROM hv_n GROUP BY g
+HAVING MAX(b) > 1234567890123456788;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MAX(b) AS mx FROM hv_n GROUP BY g
+HAVING MAX(b) > 1234567890123456788|
+
+--echo
+--echo === ht-2: SUM(BIGINT) = 2^53 is FALSE for 2^53 + 1 ===
+let $QUERY=
+SELECT g, SUM(b) AS s FROM hv_n GROUP BY g
+HAVING SUM(b) = 9007199254740992;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, SUM(b) AS s FROM hv_n GROUP BY g
+HAVING SUM(b) = 9007199254740992|
+
+--echo
+--echo === ht-3: SUM(BIGINT) = 2^53 + 1, MAX(BIGINT) > 2^63 - 2 ===
+let $QUERY=
+SELECT g, SUM(b) AS s FROM hv_n GROUP BY g
+HAVING SUM(b) = 9007199254740993 OR MAX(b) > 9223372036854775806;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, SUM(b) AS s FROM hv_n GROUP BY g
+HAVING SUM(b) = 9007199254740993 OR MAX(b) > 9223372036854775806|
+
+--echo
+--echo === ht-4: MIN(BIGINT) < -(2^63 - 2) ===
+let $QUERY=
+SELECT g, MIN(b) AS mn FROM hv_n GROUP BY g
+HAVING MIN(b) < -9223372036854775806;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MIN(b) AS mn FROM hv_n GROUP BY g
+HAVING MIN(b) < -9223372036854775806|
+
+--echo
+--echo === ht-5: MAX(BIGINT UNSIGNED) - (2^63 - 1) > 2^63 - 1 ===
+let $QUERY=
+SELECT g, MAX(u) AS mx FROM hv_n GROUP BY g
+HAVING MAX(u) - 9223372036854775807 > 9223372036854775807;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MAX(u) AS mx FROM hv_n GROUP BY g
+HAVING MAX(u) - 9223372036854775807 > 9223372036854775807|
+
+--echo
+--echo === ht-6: MAX(BIGINT UNSIGNED) > a subquery's BIGINT UNSIGNED ===
+let $QUERY=
+SELECT g, MAX(u) AS mx FROM hv_n GROUP BY g
+HAVING MAX(u) > (SELECT MAX(u) FROM hv_n WHERE g = 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MAX(u) AS mx FROM hv_n GROUP BY g
+HAVING MAX(u) > (SELECT MAX(u) FROM hv_n WHERE g = 2)|
+
+--echo
+--echo === ht-7: SUM(DECIMAL) = 0.3 for every sum that prints 0.30 ===
+let $QUERY=
+SELECT g, SUM(d) AS s FROM hv_n GROUP BY g
+HAVING SUM(d) = 0.3;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, SUM(d) AS s FROM hv_n GROUP BY g
+HAVING SUM(d) = 0.3|
+
+--echo
+--echo === ht-8: SUM(DECIMAL) neither above nor below 0.30 ===
+let $QUERY=
+SELECT g, SUM(d) AS s FROM hv_n GROUP BY g
+HAVING SUM(d) > 0.30 OR SUM(d) < 0.30;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, SUM(d) AS s FROM hv_n GROUP BY g
+HAVING SUM(d) > 0.30 OR SUM(d) < 0.30|
+
+--echo
+--echo === ht-9: AVG(DECIMAL) = 0.15 ===
+let $QUERY=
+SELECT g, AVG(d) AS a FROM hv_n GROUP BY g
+HAVING AVG(d) = 0.15;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, AVG(d) AS a FROM hv_n GROUP BY g
+HAVING AVG(d) = 0.15|
+
+--echo
+--echo === ht-10: control, SUM(DOUBLE) = 0.3 compares doubles ===
+let $QUERY=
+SELECT g FROM hv_n GROUP BY g
+HAVING SUM(f) = 0.3;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g FROM hv_n GROUP BY g
+HAVING SUM(f) = 0.3|
+
+--echo
+--echo === ht-11: COUNT(*) / 3 is a DECIMAL with nine fractional digits ===
+let $QUERY=
+SELECT g, COUNT(*) AS n FROM hv_n GROUP BY g
+HAVING COUNT(*) / 3 = 0.333333333;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, COUNT(*) AS n FROM hv_n GROUP BY g
+HAVING COUNT(*) / 3 = 0.333333333|
+
+--echo
+--echo === ht-12: NULL under NOT, and IS NULL ===
+let $QUERY=
+SELECT g, COUNT(*) AS n FROM hv_n GROUP BY g
+HAVING NOT (MAX(b) > 0) OR SUM(d) IS NULL;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, COUNT(*) AS n FROM hv_n GROUP BY g
+HAVING NOT (MAX(b) > 0) OR SUM(d) IS NULL|
+
+--echo
+--echo === tt-1: MAX(DATE) > YYYYMMDD ===
+let $QUERY=
+SELECT g, MAX(d) AS mx FROM hv_t GROUP BY g
+HAVING MAX(d) > 19960101;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MAX(d) AS mx FROM hv_t GROUP BY g
+HAVING MAX(d) > 19960101|
+
+--echo
+--echo === tt-2: MIN(DATE) = and MAX(DATE) > date strings ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_tt2.sql
+--write_file $QUERY_FILE
+SELECT g, MIN(d) AS mn, MAX(d) AS mx FROM hv_t GROUP BY g HAVING MIN(d) = '1995-01-01' OR MAX(d) > '2000-01-01';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MIN(d) AS mn, MAX(d) AS mx FROM hv_t GROUP BY g HAVING MIN(d) = '1995-01-01' OR MAX(d) > '2000-01-01'|
+
+--echo
+--echo === tt-3: MAX(DATE) < a datetime string one second after midnight ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_tt3.sql
+--write_file $QUERY_FILE
+SELECT g, MAX(d) AS mx FROM hv_t GROUP BY g HAVING MAX(d) < '1995-01-01 00:00:01';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MAX(d) AS mx FROM hv_t GROUP BY g HAVING MAX(d) < '1995-01-01 00:00:01'|
+
+--echo
+--echo === tt-4: MAX(DATETIME(3)) between strings with a fraction ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_tt4.sql
+--write_file $QUERY_FILE
+SELECT g, MAX(dt) AS mx FROM hv_t GROUP BY g HAVING MAX(dt) > '1996-06-15 12:00:00.0005' AND MAX(dt) < '2000-01-01';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MAX(dt) AS mx FROM hv_t GROUP BY g HAVING MAX(dt) > '1996-06-15 12:00:00.0005' AND MAX(dt) < '2000-01-01'|
+
+--echo
+--echo === tt-5: MIN(DATETIME(3)) < YYYYMMDDhhmmss ===
+let $QUERY=
+SELECT g, MIN(dt) AS mn FROM hv_t GROUP BY g
+HAVING MIN(dt) < 19950101000000;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MIN(dt) AS mn FROM hv_t GROUP BY g
+HAVING MIN(dt) < 19950101000000|
+
+--echo
+--echo === tt-6: MIN(TIME(2)) < a negative hhmmss ===
+let $QUERY=
+SELECT g, MIN(t) AS mn FROM hv_t GROUP BY g
+HAVING MIN(t) < -13000;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MIN(t) AS mn FROM hv_t GROUP BY g
+HAVING MIN(t) < -13000|
+
+--echo
+--echo === tt-7: MAX(TIME(2)) between hhmmss.ff numbers ===
+let $QUERY=
+SELECT g, MAX(t) AS mx FROM hv_t GROUP BY g
+HAVING MAX(t) > 123456.785 AND MAX(t) < 200000;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MAX(t) AS mx FROM hv_t GROUP BY g
+HAVING MAX(t) > 123456.785 AND MAX(t) < 200000|
+
+--echo
+--echo === tt-8: MAX(YEAR) and MIN(YEAR) against years ===
+let $QUERY=
+SELECT g, MIN(y) AS mn, MAX(y) AS mx FROM hv_t GROUP BY g
+HAVING MAX(y) = 2001 OR MIN(y) < 1994;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MIN(y) AS mn, MAX(y) AS mx FROM hv_t GROUP BY g
+HAVING MAX(y) = 2001 OR MIN(y) < 1994|
+
+--echo
+--echo === tt-9: MAX(TIMESTAMP) between datetime strings ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_tt9.sql
+--write_file $QUERY_FILE
+SELECT g, MAX(ts) AS mx FROM hv_t GROUP BY g HAVING MAX(ts) >= '1996-06-15 12:00:01' AND MAX(ts) < '2000-01-01';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+# mysqld warns (1292, '0000-00-00 00:00:00' for max(hv_t.ts) and mx) for
+# the group whose MAX(ts) is NULL; the rows are right.
+--disable_warnings
+--sorted_result
+SELECT g, MAX(ts) AS mx FROM hv_t GROUP BY g HAVING MAX(ts) >= '1996-06-15 12:00:01' AND MAX(ts) < '2000-01-01'|
+--enable_warnings
+
+--echo
+--echo === tt-10: MAX(DATE) > MIN(DATETIME(3)) ===
+let $QUERY=
+SELECT g, MAX(d) AS mx, MIN(dt) AS mn FROM hv_t GROUP BY g
+HAVING MAX(d) > MIN(dt);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MAX(d) AS mx, MIN(dt) AS mn FROM hv_t GROUP BY g
+HAVING MAX(d) > MIN(dt)|
+
+--echo
+--echo === tt-11: MAX(DATE) + 0 and MAX(YEAR) - 1, NULL in IS NULL ===
+let $QUERY=
+SELECT g, COUNT(*) AS n FROM hv_t GROUP BY g
+HAVING (MAX(d) + 0 > 19960101 AND MAX(y) - 1 = 2000) OR MAX(d) IS NULL;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, COUNT(*) AS n FROM hv_t GROUP BY g
+HAVING (MAX(d) + 0 > 19960101 AND MAX(y) - 1 = 2000) OR MAX(d) IS NULL|
+
+--echo
+--echo === hs-1: MAX(VARCHAR) = a literal in another letter case ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_hs1.sql
+--write_file $QUERY_FILE
+SELECT g, MAX(nm) AS mx FROM hv_s GROUP BY g HAVING MAX(nm) = 'banana';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MAX(nm) AS mx FROM hv_s GROUP BY g HAVING MAX(nm) = 'banana'|
+
+--echo
+--echo === hs-2: MIN(VARCHAR) < and MAX(VARCHAR) >= literals ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_hs2.sql
+--write_file $QUERY_FILE
+SELECT g, MIN(nm) AS mn, MAX(nm) AS mx FROM hv_s GROUP BY g HAVING MIN(nm) < 'b' OR MAX(nm) >= 'CHERRY';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MIN(nm) AS mn, MAX(nm) AS mx FROM hv_s GROUP BY g HAVING MIN(nm) < 'b' OR MAX(nm) >= 'CHERRY'|
+
+--echo
+--echo === hs-3: MAX(VARCHAR) = a literal without its accent ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_hs3.sql
+--write_file $QUERY_FILE
+SELECT g, MAX(nm) AS mx FROM hv_s GROUP BY g HAVING MAX(nm) = 'cafe';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, MAX(nm) AS mx FROM hv_s GROUP BY g HAVING MAX(nm) = 'cafe'|
+
+--echo
+--echo === hs-4: MAX of a latin1 VARCHAR = a non-ASCII literal ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_hs4.sql
+--write_file $QUERY_FILE
+SELECT g FROM hv_s GROUP BY g HAVING MAX(lnm) = 'café';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g FROM hv_s GROUP BY g HAVING MAX(lnm) = 'café'|
+
+--echo
+--echo === hs-5: MAX(VARCHAR) = a string a subquery returned ===
+let $QUERY=
+SELECT g FROM hv_s GROUP BY g
+HAVING MAX(nm) = (SELECT MIN(nm) FROM hv_s WHERE g = 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g FROM hv_s GROUP BY g
+HAVING MAX(nm) = (SELECT MIN(nm) FROM hv_s WHERE g = 2)|
+
+--echo
+--echo === ob-1: ORDER BY a DECIMAL SUM, ties at the printed scale ===
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g ORDER BY s, g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g ORDER BY s, g|
+
+--echo
+--echo === ob-2: ORDER BY a DECIMAL SUM DESC, then g DESC ===
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g ORDER BY s DESC, g DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g ORDER BY s DESC, g DESC|
+
+--echo
+--echo === ob-3: ORDER BY a DECIMAL SUM with LIMIT 2 ===
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g ORDER BY s, g LIMIT 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g ORDER BY s, g LIMIT 2|
+
+--echo
+--echo === ob-4: ORDER BY a DECIMAL SUM DESC with LIMIT 2 ===
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g ORDER BY s DESC, g DESC LIMIT 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g ORDER BY s DESC, g DESC LIMIT 2|
+
+--echo
+--echo === ob-5: HAVING SUM(DECIMAL) = 0.3 ORDER BY it DESC, then g ===
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g
+HAVING SUM(d) = 0.3 ORDER BY s DESC, g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g
+HAVING SUM(d) = 0.3 ORDER BY s DESC, g|
+
+--echo
+--echo === ob-6: ORDER BY a DECIMAL SUM output of a CTE ===
+--let $skip_sort=yes
+let $QUERY=
+WITH c AS (SELECT g, SUM(d) AS s FROM hv_o GROUP BY g)
+SELECT g, s FROM c ORDER BY s, g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH c AS (SELECT g, SUM(d) AS s FROM hv_o GROUP BY g)
+SELECT g, s FROM c ORDER BY s, g|
+
+--echo
+--echo === ob-7: ORDER BY a DECIMAL SUM output of a CTE DESC with LIMIT 3 ===
+--let $skip_sort=yes
+let $QUERY=
+WITH c AS (SELECT g, SUM(d) AS s FROM hv_o GROUP BY g)
+SELECT g, s FROM c ORDER BY s DESC, g DESC LIMIT 3;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH c AS (SELECT g, SUM(d) AS s FROM hv_o GROUP BY g)
+SELECT g, s FROM c ORDER BY s DESC, g DESC LIMIT 3|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--echo
+--echo === he-1: a string MIN beside a number is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT g FROM hv_s GROUP BY g HAVING MAX(nm) > 5;' 2>&1
+
+--echo
+--echo === he-2: a TIME MAX beside a string is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT g FROM hv_t GROUP BY g HAVING MAX(t) = '10:00:00';" 2>&1
+
+--echo
+--echo === he-3: a string literal beside a SUM is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT g FROM hv_n GROUP BY g HAVING SUM(b) = 'x';" 2>&1
+
+--echo
+--echo === he-4: a string a subquery returned beside a SUM is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT g FROM hv_n GROUP BY g HAVING SUM(b) > (SELECT MAX(nm) FROM hv_s);' 2>&1
+
+--disable_query_log
+--disable_warnings
+DROP TABLE hv_o;
+DROP TABLE hv_s;
+DROP TABLE hv_t;
+DROP TABLE hv_n;
+--enable_warnings
+--enable_query_log

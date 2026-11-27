@@ -6,11 +6,13 @@
 --echo #
 --echo # A standalone pushed GROUP BY keeps each fragment's groups resident
 --echo # until the scan ends or QueryMemory runs short, then drains them in
---echo # result records of at most 16 KB, one record per scan batch. The API
---echo # receives each record in a 16 KB buffer and refuses to push a program
---echo # whose single group could exceed 16 KB, counting string MIN/MAX
---echo # values. push_agg_compare.inc runs every query with pushdown OFF and
---echo # ON and fails unless both return the same rows.
+--echo # result records of at most 16 KB, one record per scan batch; a larger
+--echo # group goes alone in a record of its own. The API's receive buffers
+--echo # grow to such a record. A program is refused only when the GROUP BY
+--echo # key or the values of one group, counting string MIN/MAX values at
+--echo # their declared sizes, could exceed 65535 bytes, the 16-bit lengths
+--echo # of a result record. push_agg_compare.inc runs every query with
+--echo # pushdown OFF and ON and fails unless both return the same rows.
 --echo #
 
 --disable_query_log
@@ -108,14 +110,14 @@ INSERT INTO t_k17
 --source suite/ndb_push_agg/include/push_agg_compare.inc
 
 --echo ############################################################
---echo # C: groups near the 16 KB limit
+--echo # C: groups near and over the 16 KB batch target
 --echo ############################################################
 --echo # One 10 KB MAX payload per group: pushed, each record above 8 KB.
 --let $pac_label = C1 MAX over VARCHAR(10000)
 --let $pac_query = SELECT g, MAX(s) FROM t_s10 GROUP BY g
 --source suite/ndb_push_agg/include/push_agg_compare.inc
 
---echo # MIN and MAX payloads could need 20 KB: not pushed, server computes.
+--echo # MIN and MAX payloads of 20 KB: pushed, a record over 16 KB per group.
 --let $pac_label = C2 MIN and MAX over VARCHAR(10000)
 --let $pac_query = SELECT g, MIN(s), MAX(s) FROM t_s10 GROUP BY g
 --source suite/ndb_push_agg/include/push_agg_compare.inc
@@ -130,7 +132,7 @@ INSERT INTO t_k17
 --let $pac_query = SELECT k, COUNT(*) FROM t_k15 GROUP BY k
 --source suite/ndb_push_agg/include/push_agg_compare.inc
 
---echo # A 17000-byte key cannot fit one record: not pushed.
+--echo # A 17000-byte key goes alone in a record over 16 KB: pushed.
 --let $pac_label = C5 VARCHAR(17000) GROUP BY key
 --let $pac_query = SELECT k, COUNT(*) FROM t_k17 GROUP BY k
 --source suite/ndb_push_agg/include/push_agg_compare.inc

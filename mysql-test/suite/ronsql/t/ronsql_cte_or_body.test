@@ -32,7 +32,6 @@ call mtr.add_suppression("Participant timeout");
 #   4. OR of ranges: v < 20 OR v > 80.
 #   5. Three-way OR.
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --disable_query_log

@@ -29,6 +29,9 @@
  * surfaces (linked-attr string format, CTE delivery substitution)
  * tracked by follow-up coverage.
  *
+ * The last test sends a raw program that puts MIN(vname) and a BIGINT
+ * MIN in one slot: the data node must refuse it with 1868 and stay up.
+ *
  * Schema (created by this test):
  *   vctest_t (
  *     id INT NOT NULL PRIMARY KEY,
@@ -49,6 +52,8 @@
 #include <ndb_opts.h>
 #include <NdbApi.hpp>
 #include <NdbAggregator.hpp>
+#include <NdbRestarter.hpp>
+#include <NdbSleep.h>
 #include <ndbapi/NdbAggregationCommon.hpp>
 #include "NdbQueryBuilder.hpp"
 #include "NdbQueryOperation.hpp"
@@ -848,6 +853,106 @@ static int runBuilderRejectTest(Ndb *ndb) {
   return 0;
 }
 
+/*
+ * A string MIN and a numeric MIN in one aggregate slot, which only a raw
+ * program can send: NdbAggregator::RepeatAgg refuses CASE arms that mix
+ * them (kErrMixedStringCaseArms), but EmitEmbeddedWord appends any word.
+ *   reg0 = vname (VARCHAR), agg[0] = MIN(vname)
+ *   reg1 = id (INT), then kOpMinBigint of reg1 into agg[0], raw
+ * A string MIN keeps in its slot a pointer to the data node's copy of the
+ * value.  kOpMinBigint took the pointer for a number and put an id there,
+ * and the next MIN(vname) of the group, or the encoding of the result,
+ * used the id as a pointer: the data node crashed.  The data node now
+ * refuses the program before any row (AggInterpreterBase::checkProgram,
+ * PushdownInterpreter::checkAggSlotKinds): the scan fails with 1868 and
+ * every data node stays started.
+ */
+static int runMixedSlotRejectTest(Ndb *ndb, const char *connectString) {
+  V("\n=== Test: string MIN and BIGINT MIN in one slot are refused ===\n");
+  static const int kAggWrongOperation = 1868;  // ZAGG_WRONG_OPERATION
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable("vctest_t");
+  const NdbDictionary::Table *tab = dict->getTable("vctest_t");
+  if (tab == nullptr) {
+    fprintf(stderr, "Cannot find vctest_t: %s\n", dict->getNdbError().message);
+    return -1;
+  }
+  const NdbDictionary::Column *vnameCol = tab->getColumn("vname");
+  const NdbDictionary::Column *idCol = tab->getColumn("id");
+  if (vnameCol == nullptr || idCol == nullptr) {
+    fprintf(stderr, "Column lookup failed\n");
+    return -1;
+  }
+
+  NdbAggregator agg(tab);
+  const Uint32 minBigintOfReg1IntoAgg0 =
+      (Uint32(kOpMinBigint) << 26) | (1u << 16) | 0u;
+  if (!agg.LoadColumn(vnameCol->getAttrId(), 0) ||
+      !agg.Min(0, 0) ||
+      !agg.LoadColumn(idCol->getAttrId(), 1) ||
+      !agg.EmitEmbeddedWord(minBigintOfReg1IntoAgg0) ||
+      !agg.Finalize()) {
+    fprintf(stderr, "Aggregation program build failed: %s\n",
+            agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    fprintf(stderr, "startTransaction failed: %s\n",
+            ndb->getNdbError().message);
+    return -1;
+  }
+  NdbScanOperation *scan = trans->getNdbScanOperation(tab);
+  if (scan == nullptr ||
+      scan->readTuples(NdbOperation::LM_CommittedRead) != 0 ||
+      scan->setAggregationCode(&agg) != 0) {
+    fprintf(stderr, "Scan setup failed: %s\n", trans->getNdbError().message);
+    trans->close();
+    return -1;
+  }
+
+  int failures = 0;
+  if (scan->DoAggregation() == 0) {
+    fprintf(stderr, "FAIL mixed slot: the program was not refused\n");
+    failures++;
+  } else {
+    NdbError err = scan->getNdbError();
+    if (err.code == 0) {
+      err = trans->getNdbError();
+    }
+    if (err.code != kAggWrongOperation) {
+      fprintf(stderr, "FAIL mixed slot: expected error %d, got %d: %s\n",
+              kAggWrongOperation, err.code, err.message);
+      failures++;
+    } else {
+      V("  OK  refused with %d\n", err.code);
+    }
+  }
+  trans->close();
+
+  /* Give a crash time to surface, then require every data node to be
+   * started. */
+  NdbSleep_MilliSleep(3000);
+  NdbRestarter restarter(connectString);
+  const int numNodes = restarter.getNumDbNodes();
+  if (numNodes <= 0) {
+    fprintf(stderr, "FAIL mixed slot: no data node status\n");
+    failures++;
+  }
+  for (int i = 0; i < numNodes; i++) {
+    const int nodeId = restarter.getDbNodeId(i);
+    const int status = restarter.getNodeStatus(nodeId);
+    if (status != NDB_MGM_NODE_STATUS_STARTED) {
+      fprintf(stderr, "FAIL mixed slot: data node %d is not started "
+              "(status %d)\n", nodeId, status);
+      failures++;
+    }
+  }
+  return failures == 0 ? 0 : -1;
+}
+
 static void usage(const char *prog) {
   fprintf(stderr,
           "Usage: %s [options]\n"
@@ -932,6 +1037,7 @@ int main(int argc, char **argv) {
       if (runCteScanStringDeliveryTest(&ndb) != 0) result = 1;
       if (runCteLookupStringAggFeedTest(&ndb) != 0) result = 1;
       if (runBuilderRejectTest(&ndb) != 0) result = 1;
+      if (runMixedSlotRejectTest(&ndb, connectString) != 0) result = 1;
     }
 
     dropSchema(mysqlConn);

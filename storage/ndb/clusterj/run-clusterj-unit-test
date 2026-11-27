@@ -103,8 +103,8 @@ ALL_JARS="$ALL_JARS:$CLUSTERJ_BUILD_DIR/clusterj-api/clusterj-api-$VERSION.jar"
 ALL_JARS="$ALL_JARS:$CLUSTERJ_BUILD_DIR/clusterj-tie/clusterj-tie-$VERSION.jar"
 ALL_JARS="$ALL_JARS:$CLUSTERJ_BUILD_DIR/clusterj-core/clusterj-core-$VERSION.jar" 
 
-if [ -f "$ALL_JARS:$CLUSTERJ_BUILD_DIR/../../../lib/libndbclient.dylib" ]; then
-  ALL_JARS="$ALL_JARS:$CLUSTERJ_BUILD_DIR/../../../lib/libndbclient.dylib" 
+if [ -f "$ALL_JARS:$CLUSTERJ_BUILD_DIR/../../../lib/librondbclient.dylib" ]; then
+  ALL_JARS="$ALL_JARS:$CLUSTERJ_BUILD_DIR/../../../lib/librondbclient.dylib" 
 fi
 
 echo "ALL_JARS = $ALL_JARS"

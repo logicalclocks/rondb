@@ -1,0 +1,223 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== f19-1: ordered-PK root LEFT JOIN cte, miss ===
+== Explain Query ==
+Root access: scanIndex on PRIMARY, equal on the primary key (no lookup: an outer-joined child of an aggregation needs a scan root (F19))
+Aggregation leaf
+== Query ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, SUM(t.n) AS n
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 5 GROUP BY o.cat;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, SUM(t.n) AS n
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 5 GROUP BY o.cat|
+cat	n
+9	NULL
+
+=== f19-2: ordered-PK root LEFT JOIN cte, hit ===
+== Query ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, SUM(t.n) AS n
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 2 GROUP BY o.cat;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, SUM(t.n) AS n
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 2 GROUP BY o.cat|
+cat	n
+1	2
+
+=== f19-3: hash-PK root LEFT JOIN cte, miss ===
+== Explain Query ==
+Root access: scanTable; filter: WHERE (no lookup: an outer-joined child of an aggregation needs a scan root (F19); no ordered index on the primary key)
+Aggregation leaf
+== Query ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT h.cat, SUM(t.n) AS n
+FROM f19_hash AS h LEFT JOIN t ON t.k = h.id
+WHERE h.id = 4 GROUP BY h.cat;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT h.cat, SUM(t.n) AS n
+FROM f19_hash AS h LEFT JOIN t ON t.k = h.id
+WHERE h.id = 4 GROUP BY h.cat|
+cat	n
+2	NULL
+
+=== f19-4: scalar aggregate, ordered-PK root LEFT JOIN cte, miss ===
+== Query ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT COUNT(*) AS c, SUM(t.s) AS s
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 5;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT COUNT(*) AS c, SUM(t.s) AS s
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 5|
+c	s
+1	NULL
+
+=== f19-5: anti-join form (WHERE t.k IS NULL), ordered-PK root, miss ===
+== Explain Query ==
+Root access: scanIndex on PRIMARY, equal on the primary key (no lookup: an outer-joined child of an aggregation needs a scan root (F19))
+[ANTI] CTE_LOOKUP CTE:t AS t  <- o
+Aggregation leaf
+== Query ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, COUNT(*) AS c
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 5 AND t.k IS NULL GROUP BY o.cat;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, COUNT(*) AS c
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 5 AND t.k IS NULL GROUP BY o.cat|
+cat	c
+9	1
+
+=== f19-6: key-bound CTE root (I.7) LEFT JOIN cte, miss ===
+== Explain Query ==
+Root access: scanCte; filter: WHERE (no lookup: an outer-joined child of an aggregation needs a scan root (F19))
+Aggregation leaf
+== Query ==
+WITH a AS (SELECT grp AS k, COUNT(*) AS n FROM f19_src GROUP BY grp),
+b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat)
+SELECT a.k, SUM(b.m) AS m
+FROM a LEFT JOIN b ON b.k = a.k
+WHERE a.k = 3 GROUP BY a.k;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT grp AS k, COUNT(*) AS n FROM f19_src GROUP BY grp),
+b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat)
+SELECT a.k, SUM(b.m) AS m
+FROM a LEFT JOIN b ON b.k = a.k
+WHERE a.k = 3 GROUP BY a.k|
+k	m
+3	NULL
+
+=== f19-7: single-group CTE root (G4) LEFT JOIN cte, miss ===
+== Explain Query ==
+Root access: scanCte (no lookup: an outer-joined child of an aggregation needs a scan root (F19))
+Aggregation leaf
+== Query ==
+WITH a AS (SELECT grp AS k, COUNT(*) AS n FROM f19_src
+WHERE grp = 3 GROUP BY grp),
+b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat)
+SELECT COUNT(*) AS c, SUM(b.m) AS m
+FROM a LEFT JOIN b ON b.k = a.k;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT grp AS k, COUNT(*) AS n FROM f19_src
+WHERE grp = 3 GROUP BY grp),
+b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat)
+SELECT COUNT(*) AS c, SUM(b.m) AS m
+FROM a LEFT JOIN b ON b.k = a.k|
+c	m
+1	NULL
+
+=== f19-8: filtered scalar CTE root LEFT JOIN cte — permanent rejection ===
+An outer join below a scalar CTE root with a WHERE clause is not supported in an aggregate query: the root is a single-row CTE lookup, which cannot NULL-extend the outer join's misses.
+Error handling: RPE
+ronsql_cli caught exception: Outer join below a filtered scalar CTE root not supported.
+
+=== f19-8e: EXPLAIN of f19-8 shows the refusal ===
+== Explain Query ==
+Root access: refused: Outer join below a filtered scalar CTE root not supported.
+Aggregation leaf
+
+=== f19-c1: f19-1 with an inner join: readTuple root ===
+== Explain Query ==
+Root access: readTuple on the primary key
+Aggregation leaf
+
+=== f19-c2: f19-6 with an inner join: lookupCte root ===
+== Explain Query ==
+Root access: lookupCte on the CTE key
+Aggregation leaf
+
+=== f19-c3: f19-7 with an inner join: single-group lookupCte root (G4) ===
+== Explain Query ==
+Root access: lookupCte on the CTE key its body binds (single group)
+Aggregation leaf
+
+=== f19-c4: f19-8 with an inner join: scalar lookupCte root ===
+== Explain Query ==
+Root access: lookupCte of a scalar CTE; filter: WHERE
+Aggregation leaf
+
+=== Cleanup ===
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS cte_lookup_root_outer_jit_fallback_delta;
+cte_lookup_root_outer_jit_fallback_delta
+0

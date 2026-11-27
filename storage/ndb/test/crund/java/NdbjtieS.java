@@ -203,7 +203,7 @@ class NdbjtieS extends CrundSLoad {
         assert mgmd == null;
 
         // load native library (better diagnostics doing it explicitely)
-        Driver.loadSystemLibrary("ndbclient");
+        Driver.loadSystemLibrary("rondbclient");
 
         // instantiate NDB cluster singleton
         out.print("creating cluster connection ...");

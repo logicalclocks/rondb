@@ -40,6 +40,79 @@
  * must reject at JOIN_AGG_SETUP_REQ (AggInterpreterBase::checkProgram).
  * P-32 sends one whose rows read a register they did not load, which
  * fails each row (K-1, AggInterpreterBase m_loaded_regs).
+ * P-33 sends a SCAN_FRAGREQ straight to DBLQH, which only a debug data
+ * node takes from an API node: an aggregation scan without an
+ * interpreted program, which DBLQH must refuse with SCAN_FRAGREF.
+ * P-35 gives a join aggregation leaf a linked attribute buffer whose
+ * entry runs past its end, which fails each row (RONDB-1124 bug 12).
+ * P-36 and P-37 send embedded programs whose inline-type compare has a
+ * charset that does not fit the type (validateEmbeddedProgram).
+ * P-40 reads a linked attribute entry as a type wider than the entry,
+ * which reads as NULL (RONDB-1124).
+ * P-41 is a plain interpreted read, not through DBSPJ, whose AttrInfo
+ * header lengths wrap in 32 bits, which DBTUP refuses (RONDB-1124).
+ * P-43 and P-44 send GROUP BY column metadata whose collation does not
+ * fit its type, which JOIN_AGG_SETUP_REQ must refuse
+ * (AggInterpreterBase::initGBColType).  P-45 compares a staged linked
+ * value with a constant of another length (BRANCH_MEM_OP_ARG_INLINE_TYPE):
+ * CHAR values must compare padded, a VARCHAR length byte past its value
+ * must fail the row (NdbSqlUtil::check_compare_values).
+ * P-46 is a plain interpreted range scan, not through DBSPJ, with two
+ * ranges whose parameter blocks run past the parameter area of the
+ * program, or whose header lengths wrap in 32 bits, which DBTUP refuses
+ * (RONDB-1124).  DBTUP reads parameter blocks only for a scan from DBSPJ,
+ * so the block cases run under error insert 4047, which has it read them
+ * for this scan as well (data nodes built with ERROR_INSERT only).
+ * P-49 is an NDB API range scan with two ranges whose program calls a
+ * subroutine, which must return the rows of both ranges: DBTUP read the
+ * subroutine as parameter blocks from the second range on (RONDB-1124).
+ * P-48 reads a linked attribute entry shorter than its type, as P-40
+ * does, on the JIT (test_spj_malformed_p48_jit), which decoded it as a
+ * value, and for the NULL-extended row of an outer join, which failed
+ * the row; it reads as NULL there too (RONDB-1124).
+ * P-50 sends interpreted programs whose subroutine part, or whose
+ * pattern without NI_ATTR_LINKED, went to the subroutine section of the
+ * AttrInfo, which DBSPJ must refuse (RONDB-1124).
+ * P-38 and P-39 send CASE programs that put a string MIN / MAX and a
+ * number in one aggregate slot (checkAggSlotKinds).
+ * P-52 groups by a linked VARCHAR / LONGVARCHAR whose length prefix
+ * runs past its value, which fails the row (RONDB-1124,
+ * JoinAggInterpreter::checkGroupKey).
+ * P-53 is a plain interpreted read, not through DBSPJ, that compares a
+ * column with a constant its compare function cannot take (a VARCHAR
+ * length byte past it, a NaN FLOAT, the wrong size), which DBTUP
+ * refuses with error 40 (RONDB-1124, handleBranchAttrOp).
+ * P-54 sends programs whose SUM or arithmetic reads a string register,
+ * or whose slot two aggregates update, which JOIN_AGG_SETUP_REQ must
+ * refuse (checkAggSlotKinds), and one that groups by a column past the
+ * table, which fails the row.  P-55 runs string MIN / MAX of two string
+ * types in one slot and loads of linked values shorter than their type,
+ * which fail the row, and a MAX of a kOpMov copy of a string register,
+ * which must work.  P-56 sums after a SUM of a register set NULL, which
+ * stopped a debug data node (RONDB-1124).  P-57 sends an embedded
+ * program with a branch to itself, which ran forever in the LDM thread
+ * and which JOIN_AGG_SETUP_REQ must refuse (validateEmbeddedProgram).
+ * P-58 sends embedded programs with a branch onto the constant of a
+ * load, which ran it as an instruction and which JOIN_AGG_SETUP_REQ must
+ * refuse, and an interpreted read whose branch lands on a constant that
+ * reads as a branch back past the start of the program, which DBTUP
+ * must fail with ZOUTSIDE_OF_PROGRAM_ERROR (RONDB-1124).
+ * P-59 groups by a linked value typed TEXT, BLOB, undefined or unknown,
+ * types without a compare function, which fails the row (RONDB-1124,
+ * AggInterpreterBase::publishGBTypes).
+ * P-60 sends interpreted reads whose program ends inside an instruction
+ * (a load, a BRANCH_ATTR_*, a BRANCH_MEM_OP_ARG*, a
+ * BRANCH_LINKED_OP_LINKED), whose operand words DBTUP read past the
+ * program, which DBTUP must fail with ZOUTSIDE_OF_PROGRAM_ERROR, and
+ * BRANCH_ATTR_OP_PARAM reads whose parameter section is missing or
+ * shorter than its length word, which must fail the same way
+ * (RONDB-1124).
+ * Q-1 .. Q-5 send DBTC requests that carry the mark of a rate queue
+ * re-send (passQueue), which only DBTC itself may set (RONDB-1124).
+ * S-1 and S-2 send join aggregation signals that only data nodes send
+ * (SignalScopes.hpp), which a data node must drop and report: S-1
+ * JOIN_AGG_SEND_REQ to DBTC, S-2 a JOIN_AGG_FINAL_REP that stopped a
+ * data node, on release data nodes only (RONDB-1124).
  * Each malformed request is built by taking a known-good, word-for-word
  * SPJ encoding (the POSITIVE CONTROL below, encoded exactly as
  * NdbQueryBuilder would) and perturbing it as little as possible, so a
@@ -67,13 +140,23 @@
 #include <NdbRestarter.hpp>
 #include <HugoTransactions.hpp>
 #include <AttributeHeader.hpp>
+#include <CteLinkedAttr.hpp>
+/* ndb_opts.h, included through NDBT.hpp, defines NONE as an empty
+ * macro; Interpreter.hpp has an enumerator of that name. */
+#ifdef NONE
+#undef NONE
+#endif
+#include <Interpreter.hpp>
 #include <NdbSleep.h>
 #include <mgmapi.h>
+#include <signaldata/ScanFrag.hpp>
 #include <signaldata/ScanTab.hpp>
 #include <signaldata/TcKeyReq.hpp>
 #include <signaldata/QueryTree.hpp>
 #include <signaldata/DbspjErr.hpp>
+#include <signaldata/JoinAgg.hpp>
 #include <ndbapi/NdbAggregationCommon.hpp>
+#include <algorithm>
 #include <cstring>
 #include <vector>
 #include "../../src/ndbapi/SignalSender.hpp"
@@ -153,6 +236,53 @@ struct SpjMalformedSignals {
     req->transId2 = transId2;
     return TcKeyReq::StaticLength;
   }
+
+  /* The mark that DBTC's rate queue handler puts on a request it re-sends
+   * to itself (the Q cases send it from the API). */
+  static void setTcKeyReqPassQueue(Uint32 *data) {
+    TcKeyReq *req = (TcKeyReq *)data;
+    Uint32 ri = req->requestInfo;
+    TcKeyReq::setPassQueueingFlag(ri, 1);
+    req->requestInfo = ri;
+  }
+
+  static void setScanTabReqPassQueue(Uint32 *data) {
+    ScanTabReq *req = (ScanTabReq *)data;
+    Uint32 ri = req->requestInfo;
+    ScanTabReq::setPassQueueingFlag(ri, 1);
+    req->requestInfo = ri;
+  }
+
+  /* A plain interpreted read (P-41): not ViaSPJ, and the AttrInfo
+   * section is an interpreted program with its 5-word header. */
+  static void setTcKeyReqInterpretedRead(Uint32 *data) {
+    TcKeyReq *req = (TcKeyReq *)data;
+    Uint32 ri = req->requestInfo;
+    TcKeyReq::setViaSPJFlag(ri, 0);
+    TcKeyReq::setInterpretedFlag(ri, 1);
+    req->requestInfo = ri;
+  }
+
+  /* A plain range scan of an ordered index (P-46): not ViaSPJ, not a
+   * TUP scan, and the AttrInfo section is an interpreted program with
+   * its 5-word header (DBTC never sets the not-interpreted flag). */
+  static void setScanTabReqPlainRangeScan(Uint32 *data) {
+    ScanTabReq *req = (ScanTabReq *)data;
+    Uint32 ri = req->requestInfo;
+    ScanTabReq::setViaSPJFlag(ri, 0);
+    ScanTabReq::setTupScanFlag(ri, 0);
+    ScanTabReq::setRangeScanFlag(ri, 1);
+    req->requestInfo = ri;
+  }
+
+  /* The key length of a short TCKEYREQ / TCINDXREQ, in requestInfo bits
+   * 20-31. */
+  static void setTcKeyReqKeyLength(Uint32 *data, Uint32 keyLen) {
+    TcKeyReq *req = (TcKeyReq *)data;
+    Uint32 ri = req->requestInfo;
+    TcKeyReq::setKeyLength(ri, keyLen);
+    req->requestInfo = ri;
+  }
 };
 
 namespace {
@@ -172,6 +302,7 @@ struct SpjReq {
   bool joinAgg{false};
   bool withAttrInfo{true};      /* TCKEYREQ: attach the AttrInfo section */
   bool toTcProxy{false};        /* send to DBTC instance 0, not the seized one */
+  bool passQueue{false};        /* set DBTC's rate queue re-send flag */
   /* Skip the SCAN_TABCONF of each completed fragment, wait for the
    * SCAN_TABREF or the EndOfData SCAN_TABCONF. */
   bool waitForEnd{false};
@@ -185,6 +316,16 @@ class SpjMalformedChecker {
       : m_ss(ss), m_restarter(restarter), m_tableId(tab->getObjectId()),
         m_schemaVersion(tab->getObjectVersion()),
         m_fragmentCount(tab->getFragmentCount()) {}
+
+  /* The answer to one request: its GSN and error code, or a disconnect.
+   * Declared first: a member function's return type is looked up where
+   * the function is declared, and P-41's sendInterpretedRead, among
+   * others, comes before the send helpers below. */
+  struct Reply {
+    Uint32 gsn{0};
+    Uint32 errorCode{0};
+    bool disconnected{false};
+  };
 
   /* ---- the AttrInfo of a well-formed single-node leaf scan ------------ *
    * Root QN_SCAN_FRAG, no parent, no key, user projection {col0,
@@ -350,6 +491,123 @@ class SpjMalformedChecker {
     return aggProgram(1, countBody(0, 0));
   }
 
+  /* A leaf whose rows first run an embedded program, laid out as RonSQL
+   * emits a compare of a linked column with a constant, then COUNT(1):
+   *   0 READ_LINKED_TO_MEM of position 0
+   *   1 BRANCH_MEM_OP_ARG_INLINE_TYPE EQ to word 5, NULL continues
+   *   2 (typeId << 16) | 4         the constant has 4 bytes
+   *   3 (4 << 16) | csNumber       the column has 4 bytes
+   *   4 the constant "abcd"
+   *   5 LOAD_CONST16 0 into register 0
+   *   6 WRITE_INTERPRETER_OUTPUT 0 of register 0: go on after it
+   *   7 EXIT_OK
+   * The scanned table has no linked columns, so the staged value is
+   * NULL and the compare does not run here; the program is otherwise
+   * well formed, so only the check of the type word refuses it. */
+  static std::vector<Uint32> inlineTypeLeaf(Uint32 typeId, Uint32 csNumber) {
+    const Uint32 nulls = Interpreter::IF_NULL_CONTINUE;
+    const std::vector<Uint32> emb = {
+        Interpreter::READ_LINKED_TO_MEM | (0u << 16),
+        Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE | (nulls << 6) |
+            (Uint32(Interpreter::EQ) << 12) | (4u << 16),
+        Interpreter::BranchMem_2(typeId, 4),
+        (4u << 16) | csNumber,
+        0x64636261u,
+        Interpreter::LoadConst16(0, 0),
+        Interpreter::WriteInterpreterOutput(0, 0),
+        Interpreter::ExitOK()};
+    return embeddedCountLeaf(emb);
+  }
+
+  /* A leaf whose rows run the embedded program emb, then COUNT(1). */
+  static std::vector<Uint32> embeddedCountLeaf(
+      const std::vector<Uint32> &emb) {
+    std::vector<Uint32> body;
+    body.push_back(aggOp(kOpEmbeddedInterp) | Uint32(emb.size()));
+    body.insert(body.end(), emb.begin(), emb.end());
+    const std::vector<Uint32> count = countBody(0, 0);
+    body.insert(body.end(), count.begin(), count.end());
+    return aggProgram(1, body);
+  }
+
+  /* kOpLoadCol of column col, of type typeId (below 32, so without the
+   * 6th type bit), into reg. */
+  static Uint32 loadCol(Uint32 reg, Uint32 typeId, Uint32 col) {
+    return aggOp(kOpLoadCol) | (typeId << 21) | (reg << 16) | col;
+  }
+
+  /* kOpLoadConst of a BIGINT or DOUBLE into reg, the 64-bit constant in
+   * two words, low word first. */
+  static std::vector<Uint32> loadConst(Uint32 reg, Uint32 typeId,
+                                       Uint32 low, Uint32 high) {
+    return {aggOp(kOpLoadConst) | (typeId << 21) | (reg << 16), low, high};
+  }
+
+  /* An aggregate op of reg into slot. */
+  static Uint32 aggUpdate(Uint32 op, Uint32 reg, Uint32 slot) {
+    return aggOp(op) | (reg << 16) | slot;
+  }
+
+  /* A leaf with one slot whose rows run a CASE, laid out as RonSQL emits
+   * it, then the words of after:
+   *   kOpEmbeddedInterp of 8 words:
+   *     0 READ_ATTR_INTO_REG column 0 into register 1
+   *     1 BRANCH_REG_EQ_NULL of register 1 to word 5
+   *     2 LOAD_CONST16 0 into register 2         not NULL: the THEN arm
+   *     3 WRITE_INTERPRETER_OUTPUT 0 of register 2
+   *     4 EXIT_OK
+   *     5 LOAD_CONST16 (THEN arm + 1) into register 2   NULL: the ELSE arm
+   *     6 WRITE_INTERPRETER_OUTPUT 0 of register 2
+   *     7 EXIT_OK
+   *   the THEN arm, then kOpSkip over the ELSE arm
+   *   the ELSE arm
+   * Both skips are LOAD_CONST16 values, so the data node knows which
+   * words the rows of each arm run.  Used as leaf 1, which no row runs:
+   * the column numbers are not looked up. */
+  static std::vector<Uint32> caseLeaf(const std::vector<Uint32> &thenArm,
+                                      const std::vector<Uint32> &elseArm,
+                                      const std::vector<Uint32> &after) {
+    const Uint32 elseSkip = Uint32(thenArm.size()) + 1;
+    const std::vector<Uint32> emb = {
+        Interpreter::Read(0, 1),
+        Interpreter::Branch(Interpreter::BRANCH_REG_EQ_NULL, 0, 1) |
+            (4u << 16),
+        Interpreter::LoadConst16(2, 0),
+        Interpreter::WriteInterpreterOutput(2, 0),
+        Interpreter::ExitOK(),
+        Interpreter::LoadConst16(2, elseSkip),
+        Interpreter::WriteInterpreterOutput(2, 0),
+        Interpreter::ExitOK()};
+    std::vector<Uint32> body;
+    body.push_back(aggOp(kOpEmbeddedInterp) | Uint32(emb.size()));
+    body.insert(body.end(), emb.begin(), emb.end());
+    body.insert(body.end(), thenArm.begin(), thenArm.end());
+    body.push_back(aggOp(kOpSkip) | Uint32(elseArm.size()));
+    body.insert(body.end(), elseArm.begin(), elseArm.end());
+    body.insert(body.end(), after.begin(), after.end());
+    return aggProgram(1, body);
+  }
+
+  /* Arms of caseLeaf: a column of typeId loaded into reg, and then, when
+   * op is not kOpUnknown, op of reg into slot 0. */
+  static std::vector<Uint32> colArm(Uint32 reg, Uint32 typeId, Uint32 col,
+                                    Uint32 op) {
+    std::vector<Uint32> arm = {loadCol(reg, typeId, col)};
+    if (op != kOpUnknown) {
+      arm.push_back(aggUpdate(op, reg, 0));
+    }
+    return arm;
+  }
+
+  static std::vector<Uint32> constArm(Uint32 reg, Uint32 typeId,
+                                      Uint32 low, Uint32 high, Uint32 op) {
+    std::vector<Uint32> arm = loadConst(reg, typeId, low, high);
+    if (op != kOpUnknown) {
+      arm.push_back(aggUpdate(op, reg, 0));
+    }
+    return arm;
+  }
+
   void makeJoinAggScan(SpjReq &r,
                        const std::vector<std::vector<Uint32>> &leaves) {
     makeWellFormedScan(r);
@@ -370,6 +628,262 @@ class SpjMalformedChecker {
       r.keyInfo.push_back(Uint32(leaf.size()));
       r.keyInfo.insert(r.keyInfo.end(), leaf.begin(), leaf.end());
     }
+  }
+
+  /* ---- the linked attribute buffer of an aggregation leaf (P-35) ------ *
+   * The scan+lookup request as a join aggregation: the root scan
+   * projects col0, the primary key, as its linked attribute, so every
+   * child lookup finds its row, and the child lookup is the aggregation
+   * leaf.  The leaf's NI_ATTR_LINKED pattern (optional part 3) is one
+   * P_DATA token.  DBSPJ copies its words verbatim into the subroutine
+   * section of every LQHKEYREQ of the leaf, and DBTUP takes them as the
+   * row's linked attribute buffer ([word 0][word 1][AttributeHeader]
+   * [data] per entry, CteLinkedAttr.hpp).  So the API chooses that
+   * buffer word for word. */
+  void makeJoinAggScanLookup(SpjReq &r, const std::vector<Uint32> &linked,
+                             const std::vector<Uint32> &leaf) {
+    makeWellFormedScanLookup(r);
+    ((QueryNode *)&r.tree[1])->requestInfo =
+        DABits::NI_LINKED_ATTR | DABits::NI_AGGREGATE;
+    /* Root linked attribute list: {cnt=1, item0=attr 0}. */
+    r.tree[1 + QN_ScanFragNode::NodeSize] = 1u | (0u << 16);
+    ((QueryNode *)&r.tree[m_childNodeTreeOffset])->requestInfo |=
+        DABits::NI_ATTR_LINKED | DABits::NI_AGGREGATE |
+        DABits::NI_AGGREGATE_LEAF;
+    /* Optional part 3 of the child, its last part: the header
+     * [pattern length << 16 | program length 0], then the pattern. */
+    const Uint32 patternLen = 1 + Uint32(linked.size());
+    r.tree.push_back(patternLen << 16);
+    r.tree.push_back(QueryPattern::data(Uint32(linked.size())));
+    r.tree.insert(r.tree.end(), linked.begin(), linked.end());
+    fixupTreeHeaderAndChildLen(r, 1 + patternLen);
+
+    r.joinAgg = true;
+    r.scanParallelism = m_fragmentCount;
+    r.rcvIds.clear();
+    for (Uint32 i = 0; i < m_fragmentCount; i++) {
+      r.rcvIds.push_back(kReceiverId + i);
+    }
+    r.keyInfo.clear();
+    r.keyInfo.push_back(0);  /* boundsLen */
+    r.keyInfo.push_back(kAggReceiverId);
+    r.keyInfo.push_back((0x0722u << 16) | 1u);  /* one leaf */
+    r.keyInfo.push_back(Uint32(leaf.size()));
+    r.keyInfo.insert(r.keyInfo.end(), leaf.begin(), leaf.end());
+  }
+
+  /* A leaf that groups by nGbCols linked columns, each of them linked
+   * position 0 as a BIGINT, and counts the rows. */
+  static std::vector<Uint32> linkedGroupByLeaf(Uint32 nGbCols) {
+    std::vector<Uint32> body;
+    for (Uint32 i = 0; i < nGbCols; i++) {
+      body.push_back((Uint32(AGG_LINKED_COL_FLAG | 0u) << 16) |
+                     (Uint32(NDB_TYPE_BIGINT) & AGG_GB_COL_TYPE_MASK));
+    }
+    const std::vector<Uint32> count = countBody(0, 0);
+    body.insert(body.end(), count.begin(), count.end());
+    std::vector<Uint32> p = aggProgram(1, body);
+    p[1] = (nGbCols << 16) | 1u;  /* (n_gb_cols << 16) | n_agg_results */
+    return p;
+  }
+
+  /* A leaf (P-40) whose rows load linked position 0 as a BIGINT and go
+   * on to COUNT(1) only when the value is NULL:
+   *   0 READ_LINKED_COLUMN_TO_REG of position 0, BIGINT, into register 1
+   *   1 BRANCH_REG_EQ_NULL of register 1 to word 3
+   *   2 EXIT_OK without output 0: the row fails (1872)
+   *   3 LOAD_CONST16 0 into register 0
+   *   4 WRITE_INTERPRETER_OUTPUT 0 of register 0: go on after it
+   *   5 EXIT_OK
+   * So the scan gets SCAN_TABCONF when every row reads NULL and
+   * SCAN_TABREF when they read a value. */
+  static std::vector<Uint32> linkedNullLeaf() {
+    const std::vector<Uint32> emb = {
+        Interpreter::ReadLinkedColumnIntoReg(1, 0, NDB_TYPE_BIGINT),
+        Interpreter::BRANCH_REG_EQ_NULL | (1u << 6) | (2u << 16),
+        Interpreter::ExitOK(),
+        Interpreter::LoadConst16(0, 0),
+        Interpreter::WriteInterpreterOutput(0, 0),
+        Interpreter::ExitOK()};
+    return embeddedCountLeaf(emb);
+  }
+
+  /* A leaf (P-48) whose rows load linked position 0 as a BIGINT and
+   * compare it with 7, then COUNT(1):
+   *   0 READ_LINKED_COLUMN_TO_REG of position 0, BIGINT, into register 1
+   *   1 LOAD_CONST16 7 into register 2
+   *   2 BRANCH_EQ_REG_REG of registers 1 and 2 to word 3
+   *   3 LOAD_CONST16 0 into register 0
+   *   4 WRITE_INTERPRETER_OUTPUT 0 of register 0: go on after it
+   *   5 EXIT_OK
+   * Both outcomes of the compare go on, so a row that reads a value is
+   * counted, while DBTUP fails a row that reads NULL: a compare with a
+   * NULL register is ZREGISTER_INIT_ERROR, and the row 1872.  So the
+   * scan gets SCAN_TABCONF when every row reads a value and SCAN_TABREF
+   * when they read NULL.  The JIT compiles the program
+   * (ndb_jit_bridge.c: OP_LOAD_LINKED_COL, a constant and an integer
+   * compare, without a NULL guard); its registers hold no NULL, and a
+   * row whose load would give NULL takes the per-row fallback, which
+   * runs it on DBTUP's interpreter. */
+  static std::vector<Uint32> linkedCompareLeaf() {
+    const std::vector<Uint32> emb = {
+        Interpreter::ReadLinkedColumnIntoReg(1, 0, NDB_TYPE_BIGINT),
+        Interpreter::LoadConst16(2, 7),
+        Interpreter::Branch(Interpreter::BRANCH_EQ_REG_REG, 2, 1) |
+            (1u << 16),
+        Interpreter::LoadConst16(0, 0),
+        Interpreter::WriteInterpreterOutput(0, 0),
+        Interpreter::ExitOK()};
+    return embeddedCountLeaf(emb);
+  }
+
+  /* A leaf (P-51) whose rows load linked position 0 as a BIGINT, and
+   * load register 3 only for a value other than 7:
+   *   0 READ_LINKED_COLUMN_TO_REG of position 0, BIGINT, into register 1
+   *   1 LOAD_CONST16 7 into register 2
+   *   2 BRANCH_EQ_REG_REG of registers 1 and 2 to word 4
+   *   3 LOAD_CONST16 1 into register 3
+   *   4 BRANCH_REG_EQ_NULL of register 3 to word 8
+   *   5 LOAD_CONST16 0 into register 0
+   *   6 WRITE_INTERPRETER_OUTPUT 0 of register 0: go on after it
+   *   7 EXIT_OK
+   *   8 BRANCH_EQ_REG_REG of registers 3 and 2 to word 9
+   *   9 LOAD_CONST16 0 into register 0
+   *  10 WRITE_INTERPRETER_OUTPUT 0 of register 0
+   *  11 EXIT_OK
+   * then COUNT(1).  The embedded program starts with its registers
+   * NULL, so for a value of 7 register 3 is NULL at word 4, the guard
+   * is taken, and the compare at word 8 fails the row
+   * (ZREGISTER_INIT_ERROR, 1872): SCAN_TABREF.  For another value the
+   * rows are counted: SCAN_TABCONF.  The JIT folds the guard to "not
+   * taken" (ndb_jit_bridge.c; its registers hold no NULL), so the
+   * compiled program counted the rows of a 7. */
+  static std::vector<Uint32> linkedSkipLoadLeaf() {
+    const std::vector<Uint32> emb = {
+        Interpreter::ReadLinkedColumnIntoReg(1, 0, NDB_TYPE_BIGINT),
+        Interpreter::LoadConst16(2, 7),
+        Interpreter::Branch(Interpreter::BRANCH_EQ_REG_REG, 2, 1) |
+            (2u << 16),
+        Interpreter::LoadConst16(3, 1),
+        Interpreter::Branch(Interpreter::BRANCH_REG_EQ_NULL, 0, 3) |
+            (4u << 16),
+        Interpreter::LoadConst16(0, 0),
+        Interpreter::WriteInterpreterOutput(0, 0),
+        Interpreter::ExitOK(),
+        Interpreter::Branch(Interpreter::BRANCH_EQ_REG_REG, 2, 3) |
+            (1u << 16),
+        Interpreter::LoadConst16(0, 0),
+        Interpreter::WriteInterpreterOutput(0, 0),
+        Interpreter::ExitOK()};
+    return embeddedCountLeaf(emb);
+  }
+
+  /* The join aggregation of makeJoinAggScanLookup with its leaf
+   * outer-joined (P-48), and keyed on the root's KOL2 instead of its
+   * primary key.  Hugo loads KOL2 with values above 10^8, none of them
+   * the key of a loaded row, so every lookup of the leaf misses, and
+   * DBLQH runs the leaf program for a NULL-extended row
+   * (Dblqh::feedOuterJoinAggNullRow,
+   * JoinAggInterpreter::evalEmbeddedForNullRow) with the linked buffer
+   * of the P_DATA token, as DBTUP runs it for a row that was found. */
+  void makeOuterJoinAggScanLookup(SpjReq &r,
+                                  const std::vector<Uint32> &linked,
+                                  const std::vector<Uint32> &leaf) {
+    makeJoinAggScanLookup(r, linked, leaf);
+    /* Root linked attribute list: {cnt=1, item0=attr 1}. */
+    r.tree[1 + QN_ScanFragNode::NodeSize] = 1u | (1u << 16);
+    ((QueryNode *)&r.tree[m_childNodeTreeOffset])->requestInfo &=
+        ~Uint32(DABits::NI_INNER_JOIN);
+  }
+
+  /* ---- GROUP BY column metadata (P-43, P-44) --------------------------- *
+   * A leaf that groups by column 0 of the table, its primary key (T1's
+   * KOL1, an Unsigned), and counts the rows.  P-54 groups by column col
+   * instead. */
+  static std::vector<Uint32> localGroupByLeaf(Uint32 col = 0) {
+    std::vector<Uint32> body;
+    body.push_back((col << 16) |
+                   (Uint32(NDB_TYPE_UNSIGNED) & AGG_GB_COL_TYPE_MASK));
+    const std::vector<Uint32> count = countBody(0, 0);
+    body.insert(body.end(), count.begin(), count.end());
+    std::vector<Uint32> p = aggProgram(1, body);
+    p[1] = (1u << 16) | 1u;  /* one GROUP BY column, one result */
+    return p;
+  }
+
+  /* Appends the column metadata of the main program to a join
+   * aggregation's KeyInfo, after its leaves, as NdbQueryImpl lays it out
+   * (NdbQueryOperation.cpp, appendJoinAggColumnMetaEntry): a container
+   * [marker][version][1 block], the block's [kind MAIN][no CTE][length],
+   * and the block [marker][version][1 entry][entry].  The entry describes
+   * the GROUP BY column of localGroupByLeaf with typeId, maxBytes and
+   * csNumber.  DBTC sends the block with JOIN_AGG_SETUP_REQ, and
+   * DblqhProxy gives it to AggInterpreterBase::initGBTypesFromMetadata. */
+  void appendGroupByMeta(SpjReq &r, Uint32 typeId, Uint32 maxBytes,
+                         Uint32 csNumber) {
+    const std::vector<Uint32> entry = {
+        JOIN_AGG_META_SOURCE_LOCAL_COLUMN,
+        0,  /* source: column 0 */
+        8,  /* program offset of the GROUP BY column word */
+        0,  /* GROUP BY slot 0 */
+        m_tableId,
+        m_schemaVersion,
+        0,  /* column id */
+        typeId,
+        maxBytes,
+        csNumber,
+        0,  /* precision << 16 | scale */
+        JOIN_AGG_META_FLAG_GROUP_BY};
+    r.keyInfo.push_back(JOIN_AGG_META_MARKER);
+    r.keyInfo.push_back(JOIN_AGG_META_VERSION);
+    r.keyInfo.push_back(1);  /* one block */
+    r.keyInfo.push_back(JOIN_AGG_META_KIND_MAIN);
+    r.keyInfo.push_back(kNoCteIndex);
+    r.keyInfo.push_back(3 + Uint32(entry.size()));
+    r.keyInfo.push_back(JOIN_AGG_META_MARKER);
+    r.keyInfo.push_back(JOIN_AGG_META_VERSION);
+    r.keyInfo.push_back(1);  /* one entry */
+    r.keyInfo.insert(r.keyInfo.end(), entry.begin(), entry.end());
+  }
+
+  /* ---- inline-type compare of a staged value (P-45) -------------------- *
+   * A leaf whose rows compare linked position 0 with a constant and are
+   * counted when the two are equal.  A row that finds them unequal ends
+   * its embedded program without writing the output, which fails the
+   * row (ZAGG_EMBEDDED_INTERP_ERROR), as does a compare that DBTUP
+   * refuses (error 40):
+   *   0     READ_LINKED_TO_MEM of position 0
+   *   1     BRANCH_MEM_OP_ARG_INLINE_TYPE NE to the last word
+   *   2     (typeId << 16) | the constant's length
+   *   3     (columnSize << 16) | csNumber
+   *   4..   the constant
+   *   n-4   LOAD_CONST16 0 into register 0
+   *   n-3   WRITE_INTERPRETER_OUTPUT 0 of register 0: go on after it
+   *   n-2   EXIT_OK
+   *   n-1   EXIT_OK without an output */
+  static std::vector<Uint32> inlineCompareLeaf(
+      Uint32 typeId, Uint32 columnSize, Uint32 csNumber,
+      const std::vector<Uint32> &constant, Uint32 constantLen) {
+    const Uint32 nulls = Interpreter::IF_NULL_CONTINUE;
+    std::vector<Uint32> emb;
+    emb.push_back(Interpreter::READ_LINKED_TO_MEM | (0u << 16));
+    emb.push_back(0);  /* the branch, once its target is known */
+    emb.push_back(Interpreter::BranchMem_2(typeId, constantLen));
+    emb.push_back((columnSize << 16) | csNumber);
+    emb.insert(emb.end(), constant.begin(), constant.end());
+    emb.push_back(Interpreter::LoadConst16(0, 0));
+    emb.push_back(Interpreter::WriteInterpreterOutput(0, 0));
+    emb.push_back(Interpreter::ExitOK());
+    emb.push_back(Interpreter::ExitOK());
+    const Uint32 offset = Uint32(emb.size()) - 2;  /* from word 1 */
+    emb[1] = Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE | (nulls << 6) |
+             (Uint32(Interpreter::NE) << 12) | (offset << 16);
+    std::vector<Uint32> body;
+    body.push_back(aggOp(kOpEmbeddedInterp) | Uint32(emb.size()));
+    body.insert(body.end(), emb.begin(), emb.end());
+    const std::vector<Uint32> count = countBody(0, 0);
+    body.insert(body.end(), count.begin(), count.end());
+    return aggProgram(1, body);
   }
 
   /* ---------------------- the cases ----------------------------------- */
@@ -622,6 +1136,2386 @@ class SpjMalformedChecker {
                              {aggProgram(1, body), countLeaf()});
   }
 
+  /* ---- P-33: a raw SCAN_FRAGREQ straight to DBLQH ---------------------- *
+   * An aggregation scan without an interpreted program: the aggregation
+   * flag together with the not-interpreted flag.  execSCAN_FRAGREQ
+   * stopped the node on ndbrequire(opExec).  DBTC and DBSPJ never set
+   * the not-interpreted flag (only BACKUP does, without aggregation), so
+   * only a raw SCAN_FRAGREQ gets there.  Only a debug data node takes a
+   * SCAN_FRAGREQ from an API node (NDB_SCOPE_REMOTE_EXCEPT_DEBUG in
+   * SignalScopes.hpp); a release node drops it and disconnects us, so
+   * the case needs a debug build.  DBLQH now answers SCAN_FRAGREF 1868,
+   * as LQHKEYREQ does for an aggregation read without a program.  The
+   * check comes before the fragment lookup, so any LDM instance will
+   * do: DBLQH instance 1, which has every table defined.
+   * kAggWrongOperation is ZAGG_READ_WRONG_OPERATION in Dblqh.hpp. */
+  static constexpr Uint32 kAggWrongOperation = 1868;
+
+  int runP33() {
+    const char *const findingId =
+        "P-33 aggregation SCAN_FRAGREQ without an interpreted program";
+    const Uint32 nodeId = pickDbNode();
+    const Uint32 senderData = ++m_userPointer;
+    SimpleSignal sig(false);
+    Uint32 *d = sig.getDataPtrSend();
+    std::memset(d, 0, sizeof(Uint32) * ScanFragReq::SignalLength);
+    ScanFragReq *req = (ScanFragReq *)d;
+    req->senderData = senderData;
+    req->resultRef = m_ss->getOwnRef();
+    req->savePointId = 0;
+    Uint32 ri = 0;
+    ScanFragReq::setReadCommittedFlag(ri, 1);
+    ScanFragReq::setAggregationFlag(ri, 1);
+    ScanFragReq::setNotInterpretedFlag(ri, 1);
+    req->requestInfo = ri;
+    req->tableId = m_tableId;
+    req->fragmentNoKeyLen = 0;
+    req->schemaVersion = m_schemaVersion;
+    req->transId1 = 0x5b330000u + nodeId;
+    req->transId2 = senderData;
+    req->resultData = senderData;
+    req->batch_size_rows = kBatchRows;
+    req->batch_size_bytes = kBatchBytes;
+    /* AttrInfo: a plain (not interpreted) read of column 0 */
+    Uint32 attrInfo[1] = {0u << 16};
+    sig.ptr[ScanFragReq::AttrInfoSectionNum].p = attrInfo;
+    sig.ptr[ScanFragReq::AttrInfoSectionNum].sz = 1;
+    sig.header.m_noOfSections = 1;
+
+    Uint32 reply[25] = {0};
+    m_ss->lock();
+    const SendStatus sent =
+        m_ss->sendSignal(nodeId, sig, numberToBlock(DBLQH, 1),
+                         GSN_SCAN_FRAGREQ, ScanFragReq::SignalLength);
+    const Uint32 gsn =
+        sent == SEND_OK
+            ? waitReplyLocked(GSN_SCAN_FRAGREF, GSN_SCAN_FRAGCONF, senderData,
+                              nodeId, ReplyMillis, reply)
+            : 0;
+    m_ss->unlock();
+    g_info << findingId << ": reply " << gsnName(gsn);
+    if (gsn == GSN_SCAN_FRAGREF) g_info << " errorCode " << reply[3];
+    g_info << endl;
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (gsn != GSN_SCAN_FRAGREF || reply[3] != kAggWrongOperation) {
+      g_err << findingId << ": FAIL -- expected SCAN_FRAGREF "
+            << kAggWrongOperation << ", got " << gsnName(gsn)
+            << ": the request did not reach the check (a release data "
+               "node drops a SCAN_FRAGREQ from an API node)" << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId << ": PASS (all data nodes started; SCAN_FRAGREF "
+           << reply[3] << ")" << endl;
+    return NDBT_OK;
+  }
+
+  int runP35() {  /* a linked entry that runs past the linked buffer */
+    /* The one entry of the buffer is a BIGINT CTE column (word 0 is the
+     * typed marker, so no column metadata is needed).  Its
+     * AttributeHeader says 0x7FFF bytes, 8192 data words, and the
+     * buffer ends after the header.  The GROUP BY walk copied 8193
+     * words per column from past the end of the linked buffer into the
+     * 18000-word DBTUP read buffer, so 16 columns overran the read
+     * buffer by 113 088 words; the other walks read past the linked
+     * buffer too.  The entry is now checked against the end of the
+     * buffer (CteLinkedAttr::linkedEntryAH), and each row fails with
+     * 1869.  The control is the same request with a well-formed entry,
+     * the value 7, which must get SCAN_TABCONF (without it a harness
+     * that never reaches the leaf rows would pass). */
+    constexpr Uint32 kGbCols = 16;
+    const std::vector<Uint32> leaf = linkedGroupByLeaf(kGbCols);
+    const Uint32 w0 = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
+    const Uint32 w1 = CteLinkedAttr::encodeWord1(0);
+
+    SpjReq good;
+    makeJoinAggScanLookup(good, {w0, w1, (0u << 16) | 8u, 7u, 0u}, leaf);
+    const Reply control = sendScanTabReq(good);
+    printReply("CONTROL (join aggregation, well-formed linked entry)",
+               control);
+    if (control.gsn != GSN_SCAN_TABCONF) {
+      g_err << "P-35 CONTROL did not get SCAN_TABCONF (got "
+            << gsnName(control.gsn) << ", err " << control.errorCode
+            << ").  The raw scan+lookup join aggregation encoding is "
+               "wrong; fix this before trusting the result of P-35."
+            << endl;
+      return clusterHealthy() ? NDBT_FAILED
+                              : failNodeDown("P-35 control");
+    }
+
+    SpjReq bad;
+    makeJoinAggScanLookup(bad, {w0, w1, (0u << 16) | 0x7FFFu}, leaf);
+    bad.waitForEnd = true;
+    const char *findingId = "P-35 linked entry past the linked buffer";
+    const Reply rep = sendScanTabReq(bad);
+    printReply(findingId, rep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (rep.gsn != GSN_SCAN_TABREF) {
+      g_err << findingId << ": FAIL -- expected SCAN_TABREF, got "
+            << gsnName(rep.gsn)
+            << ": the malformed linked buffer was not rejected" << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId << ": PASS (all data nodes started; SCAN_TABREF "
+           << rep.errorCode << ")" << endl;
+    return NDBT_OK;
+  }
+
+  int runP36() {  /* inline-type CHAR compare with charset 0 */
+    /* Charset 0 left the collation nullptr, and cmpChar dereferenced it
+     * for a row with a linked value: a debug data node failed its
+     * assert, a release one crashed.  The NDB API (branch_linked_inline_*,
+     * NdbAggregator::EmitEmbeddedWord) sends the word as given. */
+    return expectAggRejected(
+        "P-36 join aggregation inline-type CHAR compare with charset 0",
+        {inlineTypeLeaf(NDB_TYPE_CHAR, 0), countLeaf()});
+  }
+
+  int runP37() {  /* inline-type BINARY compare with a charset */
+    /* latin1 (8) on a BINARY: cmpBinary asserts that it has no
+     * collation, so a debug data node stopped. */
+    return expectAggRejected(
+        "P-37 join aggregation inline-type BINARY compare with a charset",
+        {inlineTypeLeaf(NDB_TYPE_BINARY, 8), countLeaf()});
+  }
+
+  int runP40() {  /* a linked entry shorter than the type it is read as */
+    /* READ_LINKED_COLUMN_TO_REG decoded up to 8 bytes from an entry
+     * without checking the entry's byte size: a BIGINT read of a 4-byte
+     * entry took 4 bytes from past its data, here past the end of the
+     * linked buffer (RONDB-1124).  Such an entry now reads as NULL, as a
+     * missing one does.  The leaf (linkedNullLeaf) goes on only for a
+     * NULL, so the request with the 4-byte entry must get SCAN_TABCONF.
+     * The controls: a NULL entry must get SCAN_TABCONF and an 8-byte one
+     * SCAN_TABREF (without them a harness whose rows never reach the
+     * program would pass).  The 8-byte one runs last, so that no request
+     * expected to succeed follows a failed scan.  With the JIT on
+     * (test_spj_malformed_p40_jit) the compiler refuses the leaf, whose
+     * value path ends without output 0, and the rows run on the
+     * interpreter; the compiled program counted the rows of the 8-byte
+     * entry, which fail on the interpreter. */
+    const std::vector<Uint32> leaf = linkedNullLeaf();
+    const Uint32 w0 = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
+    const Uint32 w1 = CteLinkedAttr::encodeWord1(0);
+    const char *findingId = "P-40 linked entry shorter than its type";
+
+    SpjReq nullEntry;
+    makeJoinAggScanLookup(nullEntry, {w0, w1, (0u << 16) | 0u}, leaf);
+    nullEntry.waitForEnd = true;
+    const Reply nullRep = sendScanTabReq(nullEntry);
+    printReply("CONTROL (NULL linked entry)", nullRep);
+
+    SpjReq shortEntry;
+    makeJoinAggScanLookup(shortEntry, {w0, w1, (0u << 16) | 4u, 7u}, leaf);
+    shortEntry.waitForEnd = true;
+    const Reply rep = sendScanTabReq(shortEntry);
+    printReply(findingId, rep);
+
+    SpjReq valueEntry;
+    makeJoinAggScanLookup(valueEntry, {w0, w1, (0u << 16) | 8u, 7u, 0u},
+                          leaf);
+    valueEntry.waitForEnd = true;
+    const Reply valueRep = sendScanTabReq(valueEntry);
+    printReply("CONTROL (8-byte linked entry)", valueRep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (nullRep.gsn != GSN_SCAN_TABCONF || valueRep.gsn != GSN_SCAN_TABREF) {
+      g_err << "P-40 CONTROLS: expected SCAN_TABCONF for the NULL entry and "
+               "SCAN_TABREF for the 8-byte one, got "
+            << gsnName(nullRep.gsn) << " and " << gsnName(valueRep.gsn)
+            << ".  The rows do not reach the leaf program; fix this before "
+               "trusting the result of P-40." << endl;
+      return NDBT_FAILED;
+    }
+    if (rep.gsn != GSN_SCAN_TABCONF) {
+      g_err << findingId << ": FAIL -- expected SCAN_TABCONF (the entry "
+            << "reads as NULL), got " << gsnName(rep.gsn) << " "
+            << rep.errorCode << ": the entry was decoded as a value"
+            << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId << ": PASS (all data nodes started; the entry "
+           << "read as NULL)" << endl;
+    return NDBT_OK;
+  }
+
+  /* ---- P-41: the interpreted AttrInfo header of a plain key read ------ *
+   * A TCKEYREQ, not ViaSPJ, for an interpreted dirty read of the row with
+   * primary key 1.  Its AttrInfo section is the 5-word header
+   * [initReadLen][interpretLen][finalUpdateLen][finalReadLen][subLen]
+   * followed by one program word, and reaches Dbtup::interpreterStartLab
+   * as the API sent it.  A dirty read is answered by the DBLQH that read
+   * the row, with TCKEYREF carrying the operation pointer in word 0. */
+  static constexpr Uint32 kRefuseCode = 899;     /* EXIT_REFUSE's code */
+  static constexpr Uint32 kTotalLenError = 882;  /* ZTOTAL_LEN_ERROR */
+  /* DBTUP reads the parameter area of a scan not from DBSPJ as one
+   * parameter block per range (P-46, ERROR_codes.txt). */
+  static constexpr int kParamBlocksInsert = 4047;
+
+  Reply sendInterpretedRead(const std::vector<Uint32> &attrInfo) {
+    return sendInterpretedRead(attrInfo, m_tableId, m_schemaVersion);
+  }
+
+  /* The same read of the row with primary key 1 of the table tableId
+   * (P-53). */
+  Reply sendInterpretedRead(const std::vector<Uint32> &attrInfo,
+                            Uint32 tableId, Uint32 schemaVersion) {
+    Reply rep;
+    const Uint32 nodeId = pickDbNode();
+    Uint32 apiConnectPtr = 0, tcRef = 0, seizeUp = 0;
+    if (!seize(nodeId, apiConnectPtr, tcRef, seizeUp)) {
+      rep.disconnected = true;
+      return rep;
+    }
+    const Uint32 userPointer = ++m_userPointer;
+    SimpleSignal sig(false);
+    Uint32 *d = sig.getDataPtrSend();
+    const Uint32 len = SpjMalformedSignals::fillTcKeyReq(
+        d, apiConnectPtr, userPointer, tableId, schemaVersion,
+        0x5b410000u + nodeId, userPointer);
+    SpjMalformedSignals::setTcKeyReqInterpretedRead(d);
+    Uint32 key[1] = {1};  /* KOL1, the primary key of a loaded row */
+    std::vector<Uint32> ai(attrInfo);
+    sig.ptr[TcKeyReq::KeyInfoSectionNum].p = key;
+    sig.ptr[TcKeyReq::KeyInfoSectionNum].sz = 1;
+    sig.ptr[TcKeyReq::AttrInfoSectionNum].p = ai.data();
+    sig.ptr[TcKeyReq::AttrInfoSectionNum].sz = (Uint32)ai.size();
+    sig.header.m_noOfSections = 2;
+
+    m_ss->lock();
+    const SendStatus sent =
+        m_ss->sendSignal(nodeId, sig, refToBlock(tcRef), GSN_TCKEYREQ, len);
+    Uint32 reply[25];
+    if (sent == SEND_OK) {
+      /* From whichever data node holds the row (node 0: any). */
+      rep.gsn = waitReplyLocked(GSN_TCKEYCONF, GSN_TCKEYREF, userPointer, 0,
+                                ReplyMillis, reply);
+      if (rep.gsn == GSN_TCKEYREF) rep.errorCode = reply[3];
+    } else {
+      rep.disconnected = true;
+    }
+    m_ss->unlock();
+    return rep;
+  }
+
+  int runP41() {  /* interpreted header lengths that wrap in 32 bits */
+    /* interpreterStartLab summed the five lengths in 32 bits:
+     * 0x80000000 + 0x80000001 is 1, so the section of 6 words passed
+     * its check with an exec region of 2^31 words and the subroutine
+     * region 8 GB past cinBuffer, where the CALL of the program jumped
+     * (RONDB-1124).  The sum is now 64 bits and the read fails with
+     * ZTOTAL_LEN_ERROR.  The control, the same read with a well-formed
+     * header and the program EXIT_REFUSE, must fail with the refuse
+     * code: without it a harness whose read never reaches the
+     * interpreter would pass. */
+    const char *findingId = "P-41 interpreted header lengths that wrap";
+    const std::vector<Uint32> good = {
+        0, 1, 0, 0, 0, Interpreter::EXIT_REFUSE | (kRefuseCode << 16)};
+    const Reply control = sendInterpretedRead(good);
+    printReply("CONTROL (interpreted read, EXIT_REFUSE)", control);
+    if (control.gsn != GSN_TCKEYREF || control.errorCode != kRefuseCode) {
+      g_err << "P-41 CONTROL did not get TCKEYREF " << kRefuseCode
+            << " (got " << gsnName(control.gsn) << ", err "
+            << control.errorCode << ").  The raw interpreted read is "
+               "wrong; fix this before trusting the result of P-41."
+            << endl;
+      return clusterHealthy() ? NDBT_FAILED : failNodeDown(findingId);
+    }
+
+    const std::vector<Uint32> bad = {
+        0, 0x80000000u, 0, 0, 0x80000001u,
+        Interpreter::CALL | (0u << 16)};
+    const Reply rep = sendInterpretedRead(bad);
+    printReply(findingId, rep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (rep.gsn != GSN_TCKEYREF || rep.errorCode != kTotalLenError) {
+      g_err << findingId << ": FAIL -- expected TCKEYREF " << kTotalLenError
+            << ", got " << gsnName(rep.gsn) << " " << rep.errorCode
+            << ": the wrapped header was not refused" << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId << ": PASS (all data nodes started; TCKEYREF "
+           << rep.errorCode << ")" << endl;
+    return NDBT_OK;
+  }
+
+  int runP43() {  /* GROUP BY metadata: a CHAR column with collation 0 */
+    /* initGBTypesFromMetadata left the collation nullptr for charset 0.
+     * The group hash table then compared the keys as bytes, but the
+     * ORDER BY top-N compare of a CTE (compareGroupsByOrderSpec) called
+     * cmpChar with it: a debug data node failed its assert, a release
+     * one crashed.  The NDB API sends 0 for a column without a
+     * collation. */
+    return expectGroupByMetaRejected(
+        "P-43 join aggregation GROUP BY CHAR column with collation 0",
+        NDB_TYPE_CHAR, 0);
+  }
+
+  int runP44() {  /* GROUP BY metadata: an Unsigned column with latin1 */
+    /* The group hash table compares the keys of a column with a
+     * collation with its compare function, and cmpUnsigned asserts that
+     * it has no collation: a debug data node stopped when two groups
+     * met in one bucket. */
+    return expectGroupByMetaRejected(
+        "P-44 join aggregation GROUP BY Unsigned column with a collation",
+        NDB_TYPE_UNSIGNED, 8);
+  }
+
+  int runP45() {  /* inline-type compare: lengths other than the staged */
+    /* (a) The staged value is a CHAR(8) 'abcd    ', the constant the 4
+     * bytes 'abcd', and the column size of the compare 12.  DBTUP
+     * passed 12 and 4 to cmpChar, which asserts one length (a debug
+     * data node stopped), and read 4 bytes past the staged value.  It
+     * now compares no more than was staged, and CHAR values of
+     * different lengths padded (cmpCharAnyLength): the two are equal,
+     * every row is counted, SCAN_TABCONF.  This also shows that the
+     * raw request reaches the compare. */
+    const Uint32 w0Char = CteLinkedAttr::encodeWord0(NDB_TYPE_CHAR, 8);
+    const Uint32 w1 = CteLinkedAttr::encodeWord1(kLatin1);
+    SpjReq good;
+    makeJoinAggScanLookup(
+        good, {w0Char, w1, (0u << 16) | 8u, kAbcd, kFourSpaces},
+        inlineCompareLeaf(NDB_TYPE_CHAR, 12, kLatin1, {kAbcd}, 4));
+    good.waitForEnd = true;
+    const char *goodId =
+        "P-45a join aggregation CHAR(8) compared as CHAR(12) with 'abcd'";
+    const Reply control = sendScanTabReq(good);
+    printReply(goodId, control);
+    NdbSleep_MilliSleep(SettleMillis);
+    if (!clusterHealthy()) {
+      return failNodeDown(goodId);
+    }
+    if (control.gsn != GSN_SCAN_TABCONF) {
+      g_err << goodId << ": FAIL -- expected SCAN_TABCONF, got "
+            << gsnName(control.gsn) << ", err " << control.errorCode
+            << ": the compare did not find the padded values equal, or "
+               "the raw request is wrong" << endl;
+      return NDBT_FAILED;
+    }
+    g_info << goodId << ": PASS (all data nodes started; SCAN_TABCONF)"
+           << endl;
+
+    /* (b) The staged value is a VARCHAR(10) 'abcd' (length byte 4, 5
+     * bytes), the column size of the compare 2.  cmpVarchar requires
+     * the length byte to fit the size it is given, so every data node
+     * stopped, debug or release.  The compare is now refused (error 40),
+     * which fails the row: SCAN_TABREF. */
+    const Uint32 w0Varchar = CteLinkedAttr::encodeWord0(NDB_TYPE_VARCHAR, 11);
+    /* [4]'abc' 'd' */
+    const std::vector<Uint32> varcharAbcd = {0x63626104u, 0x00000064u};
+    SpjReq bad;
+    makeJoinAggScanLookup(
+        bad, {w0Varchar, w1, (0u << 16) | 5u, varcharAbcd[0],
+              varcharAbcd[1]},
+        inlineCompareLeaf(NDB_TYPE_VARCHAR, 2, kLatin1, varcharAbcd, 5));
+    bad.waitForEnd = true;
+    const char *badId =
+        "P-45b join aggregation VARCHAR 'abcd' compared with size 2";
+    const Reply rep = sendScanTabReq(bad);
+    printReply(badId, rep);
+    NdbSleep_MilliSleep(SettleMillis);
+    if (!clusterHealthy()) {
+      return failNodeDown(badId);
+    }
+    if (rep.gsn != GSN_SCAN_TABREF) {
+      g_err << badId << ": FAIL -- expected SCAN_TABREF, got "
+            << gsnName(rep.gsn)
+            << ": the compare of a value longer than its size was not "
+               "refused" << endl;
+      return NDBT_FAILED;
+    }
+    g_info << badId << ": PASS (all data nodes started; SCAN_TABREF "
+           << rep.errorCode << ")" << endl;
+    return NDBT_OK;
+  }
+
+  /* ---- P-46: the parameter blocks of a multi-range scan --------------- *
+   * A SCAN_TABREQ, not ViaSPJ, for a read-committed range scan of an
+   * ordered index on column 0 (T1's KOL1) with two EQ ranges, KOL1 = 1
+   * and KOL1 = 2, and one receiver, so DBTC scans one fragment at a
+   * time.  Its AttrInfo section is an interpreted program, which DBTC
+   * and DBLQH pass on as the API sent it:
+   *   [0][1][0][1][paramLen] EXIT_OK, read KOL1, the parameter area
+   * Every fragment scans both ranges.  For the second one of a scan from
+   * DBSPJ, DBLQH has DBTUP move on to the next parameter block
+   * (nextAttrInfoParam) and copy it to the start of the parameter area
+   * (scanCopyAttrinfo).  DBSPJ writes one block per range,
+   * [blockLen][blockLen - 1 words].  This scan comes from DBTC, so its
+   * parameter area is the subroutine region of the program, used whole
+   * for every range (P-49), unless error insert 4047 has DBTUP read it as
+   * blocks, whose lengths the API then writes. */
+  static std::vector<Uint32> rangeScanProgram(
+      const std::vector<Uint32> &params) {
+    std::vector<Uint32> ai = {0, 1, 0, 1, Uint32(params.size()),
+                              Interpreter::ExitOK(),
+                              AttributeHeader(0, 0).m_value};
+    ai.insert(ai.end(), params.begin(), params.end());
+    return ai;
+  }
+
+  /* An EQ range on index column 0, as NdbIndexScanOperation writes it:
+   * [range length << 16 | range number << 4 | bound type], then the
+   * bound, 4 bytes. */
+  static void appendEqRange(std::vector<Uint32> &keyInfo, Uint32 rangeNo,
+                            Uint32 value) {
+    keyInfo.push_back((3u << 16) | (rangeNo << 4) |
+                      Uint32(NdbIndexScanOperation::BoundEQ));
+    keyInfo.push_back(AttributeHeader(0, 4).m_value);
+    keyInfo.push_back(value);
+  }
+
+  int runP46(Uint32 indexId, Uint32 indexVersion) {
+    /* For each range after the first, DBTUP read the length of its
+     * parameter block at the offset reached by adding up the lengths of
+     * the blocks before it, and copied that many words to the start of
+     * the area.  Only ndbassert checked the offset and the length, so a
+     * release data node read and wrote out of DBTUP's interpreter
+     * buffer (8 GB here) and a debug one failed the assert.  The header
+     * was summed in 32 bits, so the area itself could start 8 GB past
+     * the buffer (RONDB-1124).  The header must now fit the section and
+     * each block lie within the area, or the scan fails with
+     * ZTOTAL_LEN_ERROR before it reads a row of the range.  The
+     * control, two well-formed blocks of 2 and 3 words, must get
+     * SCAN_TABCONF: without it a harness whose scan never reaches the
+     * second range would pass.
+     *
+     * Only DBSPJ writes parameter blocks, and DBTUP now reads them only
+     * for a scan from DBSPJ: for this scan from DBTC the parameter area
+     * is the subroutine region of the program, whatever its words are
+     * (P-49).  So P-46a and P-46b run under error insert 4047, which has
+     * DBTUP read this scan's area as blocks, and the control runs once
+     * more under it.  The insert needs data nodes built with
+     * ERROR_INSERT; MTR runs this program from the same build as the
+     * data nodes, so it runs them when it was built with ERROR_INSERT
+     * itself.  P-46c, the header, is checked for every scan. */
+    const char *findingId = "P-46 parameter blocks of a multi-range scan";
+    const std::vector<Uint32> controlProgram =
+        rangeScanProgram({2, 0x11111111u, 3, 0x22222222u, 0x33333333u});
+    const Reply control =
+        sendInterpretedRangeScan(indexId, indexVersion, controlProgram);
+    printReply("CONTROL (two ranges, two well-formed parameter blocks)",
+               control);
+    if (control.gsn != GSN_SCAN_TABCONF) {
+      g_err << "P-46 CONTROL did not get SCAN_TABCONF (got "
+            << gsnName(control.gsn) << ", err " << control.errorCode
+            << ").  The raw range scan is wrong; fix this before trusting "
+               "the result of P-46." << endl;
+      return clusterHealthy() ? NDBT_FAILED : failNodeDown(findingId);
+    }
+
+    const char *const ids[3] = {
+        /* nextAttrInfoParam moved the offset 8 GB past the buffer. */
+        "P-46a the parameter block of the first range runs past the area",
+        /* scanCopyAttrinfo copied 8 GB into the buffer. */
+        "P-46b the parameter block of the second range runs past the area",
+        /* The area starts at word 0x80000005 and 0x80000005 +
+         * 0x80000001 is 6 in 32 bits, which passed the ndbassert of
+         * the 7-word section.  Each row fails in interpreterStartLab
+         * (P-41), but for a fragment without KOL1 = 1 nextAttrInfoParam
+         * read the first block 8 GB past the cached section. */
+        "P-46c header lengths that wrap in 32 bits"};
+    const std::vector<Uint32> programs[3] = {
+        rangeScanProgram({0x7FFFFFFFu}),
+        rangeScanProgram({2, 0x11111111u, 0x7FFFFFFFu}),
+        {0, 0x80000000u, 0, 0, 0x80000001u, Interpreter::ExitOK(),
+         AttributeHeader(0, 0).m_value}};
+    Reply reps[3];
+    bool ran[3] = {false, false, false};
+    /* P-46c without the insert: the header is checked for every scan. */
+    reps[2] = sendInterpretedRangeScan(indexId, indexVersion, programs[2]);
+    ran[2] = true;
+    printReply(ids[2], reps[2]);
+    int result = NDBT_OK;
+#ifdef ERROR_INSERT
+    Reply blocksControl;
+    if (m_restarter->insertErrorInAllNodes(kParamBlocksInsert) != 0) {
+      g_err << "P-46: inserting error " << kParamBlocksInsert
+            << " failed" << endl;
+      result = NDBT_FAILED;
+    } else {
+      blocksControl =
+          sendInterpretedRangeScan(indexId, indexVersion, controlProgram);
+      printReply("CONTROL under error insert 4047 (the two well-formed "
+                 "blocks read as blocks)",
+                 blocksControl);
+      for (int i = 0; i < 2; i++) {
+        reps[i] =
+            sendInterpretedRangeScan(indexId, indexVersion, programs[i]);
+        ran[i] = true;
+        printReply(ids[i], reps[i]);
+      }
+    }
+    if (m_restarter->insertErrorInAllNodes(0) != 0) {
+      g_err << "P-46: clearing error " << kParamBlocksInsert << " failed"
+            << endl;
+      result = NDBT_FAILED;
+    }
+#else
+    g_info << "P-46a, P-46b: not run, they need error insert "
+           << kParamBlocksInsert
+           << ", which only data nodes built with ERROR_INSERT have"
+           << endl;
+#endif
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+#ifdef ERROR_INSERT
+    if (ran[0] && blocksControl.gsn != GSN_SCAN_TABCONF) {
+      g_err << "P-46 CONTROL under error insert " << kParamBlocksInsert
+            << ": FAIL -- expected SCAN_TABCONF, got "
+            << gsnName(blocksControl.gsn) << " " << blocksControl.errorCode
+            << ": well-formed blocks were refused" << endl;
+      result = NDBT_FAILED;
+    }
+#endif
+    for (int i = 0; i < 3; i++) {
+      if (!ran[i]) {
+        continue;
+      }
+      if (reps[i].gsn != GSN_SCAN_TABREF ||
+          reps[i].errorCode != kTotalLenError) {
+        g_err << ids[i] << ": FAIL -- expected SCAN_TABREF "
+              << kTotalLenError << ", got " << gsnName(reps[i].gsn) << " "
+              << reps[i].errorCode << ": the program was not refused"
+              << endl;
+        result = NDBT_FAILED;
+      } else {
+        g_info << ids[i] << ": PASS (all data nodes started; SCAN_TABREF "
+               << reps[i].errorCode << ")" << endl;
+      }
+    }
+    return result;
+  }
+
+  /* ---- P-49: a multi-range scan whose program calls a subroutine ------ *
+   * Not raw signals: an NdbIndexScanOperation of the ordered index on
+   * column 0 (T1's KOL1) with two ranges, KOL1 in [1, 4] and KOL1 in
+   * [10, 13], and an NdbInterpretedCode program whose subroutine 0 reads
+   * KOL1 into register 1; the main program calls it and refuses the rows
+   * whose KOL1 is 3 or 12:
+   *   call_sub 0; R2 = 3; R1 == R2 -> refuse; R2 = 12; R1 == R2 -> refuse;
+   *   exit_ok; refuse: exit_nok; sub 0: R1 = KOL1; ret_sub
+   * NdbScanOperation sends the subroutine as the parameter area of the
+   * program (header word 4), and DBTC passes it on.  From the second
+   * range on DBTUP read that area as parameter blocks, which only DBSPJ
+   * writes: the subroutine's first word, a READ_ATTR_INTO_REG
+   * instruction, is no block length within the 2-word area, so every
+   * such scan failed with 882 (RONDB-1124).  Now every range of a scan
+   * that is not from DBSPJ runs the whole program, and the scan must
+   * return KOL1 1, 2 and 4 of the first range and 10, 11 and 13 of the
+   * second. */
+  int runP49(Ndb *pNdb, const NdbDictionary::Table *tab,
+             const NdbDictionary::Index *index) {
+    const char *const findingId =
+        "P-49 multi-range scan whose program calls a subroutine";
+    const Uint32 kol1AttrId = 0;
+    const char *const kol1Name = tab->getColumn(kol1AttrId)->getName();
+    const Uint32 regKol1 = 1;
+    const Uint32 regConst = 2;
+    const Uint32 refuseLabel = 0;
+    const Uint32 refusedInFirst = 3;
+    const Uint32 refusedInSecond = 12;
+    NdbInterpretedCode code(tab);
+    if (code.call_sub(0) != 0 ||
+        code.load_const_u32(regConst, refusedInFirst) != 0 ||
+        code.branch_eq(regKol1, regConst, refuseLabel) != 0 ||
+        code.load_const_u32(regConst, refusedInSecond) != 0 ||
+        code.branch_eq(regKol1, regConst, refuseLabel) != 0 ||
+        code.interpret_exit_ok() != 0 ||
+        code.def_label(int(refuseLabel)) != 0 ||
+        code.interpret_exit_nok() != 0 ||
+        code.def_sub(0) != 0 ||
+        code.read_attr(regKol1, kol1AttrId) != 0 ||
+        code.ret_sub() != 0 ||
+        code.finalise() != 0) {
+      g_err << findingId << ": building the program failed: "
+            << code.getNdbError() << endl;
+      return NDBT_FAILED;
+    }
+
+    /* [low, high] of each range, both inclusive */
+    const Uint32 bounds[2][2] = {{1, 4}, {10, 13}};
+    const std::vector<Uint32> expected = {1, 2, 4, 10, 11, 13};
+
+    NdbTransaction *trans = pNdb->startTransaction();
+    if (trans == nullptr) {
+      g_err << findingId << ": startTransaction failed: "
+            << pNdb->getNdbError() << endl;
+      return NDBT_FAILED;
+    }
+    NdbIndexScanOperation *op = trans->getNdbIndexScanOperation(index);
+    NdbRecAttr *kol1Value = nullptr;
+    bool defined =
+        op != nullptr &&
+        op->readTuples(NdbOperation::LM_CommittedRead,
+                       NdbScanOperation::SF_MultiRange) == 0;
+    for (Uint32 r = 0; defined && r < 2; r++) {
+      defined = op->setBound(kol1Name, NdbIndexScanOperation::BoundLE,
+                             &bounds[r][0]) == 0 &&
+                op->setBound(kol1Name, NdbIndexScanOperation::BoundGE,
+                             &bounds[r][1]) == 0 &&
+                op->end_of_bound(r) == 0;
+    }
+    if (defined) {
+      defined = op->setInterpretedCode(&code) == 0 &&
+                (kol1Value = op->getValue(kol1Name)) != nullptr;
+    }
+    if (!defined) {
+      g_err << findingId << ": defining the scan failed: "
+            << trans->getNdbError() << endl;
+      trans->close();
+      return NDBT_FAILED;
+    }
+
+    std::vector<Uint32> rows;
+    int errorCode = 0;
+    if (trans->execute(NdbTransaction::NoCommit) != 0) {
+      errorCode = trans->getNdbError().code;
+    } else {
+      int rc;
+      while ((rc = op->nextResult(true)) == 0) {
+        rows.push_back(kol1Value->u_32_value());
+      }
+      if (rc != 1) {
+        errorCode = op->getNdbError().code;
+        if (errorCode == 0) errorCode = trans->getNdbError().code;
+        if (errorCode == 0) errorCode = -1;
+      }
+    }
+    trans->close();
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (errorCode != 0) {
+      g_err << findingId << ": FAIL -- the scan failed with error "
+            << errorCode
+            << (errorCode == int(kTotalLenError)
+                    ? ": DBTUP read the subroutine of the program as "
+                      "parameter blocks at the second range"
+                    : "")
+            << endl;
+      return NDBT_FAILED;
+    }
+    std::sort(rows.begin(), rows.end());
+    if (rows != expected) {
+      g_err << findingId << ": FAIL -- expected KOL1";
+      for (Uint32 v : expected) g_err << " " << v;
+      g_err << ", got";
+      for (Uint32 v : rows) g_err << " " << v;
+      g_err << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId << ": PASS (all data nodes started; KOL1 1, 2, 4 "
+           << "of the first range, 10, 11, 13 of the second)" << endl;
+    return NDBT_OK;
+  }
+
+  int runP48() {  /* a short linked entry: the JIT, an outer join */
+    /* P-40 tests that DBTUP reads a linked entry shorter than its type
+     * as NULL, but on the interpreter only, and for a row that was
+     * found.  P-48 tests the two other readers of such an entry, each
+     * with a 4-byte entry read as a BIGINT, and with the controls of a
+     * NULL entry and an 8-byte one (without them a harness whose rows
+     * never reach the program would pass).
+     *
+     * The compare (linkedCompareLeaf), on rows that are found: with the
+     * JIT on (test_spj_malformed_p48_jit) the program runs compiled.
+     * ndb_jit_h_load_linked_col decoded 8 bytes from the entry, and the
+     * row was counted; it now takes the per-row fallback, where DBTUP
+     * reads NULL and fails the row, so the request must get
+     * SCAN_TABREF, as for a NULL entry, while the 8-byte entry gets
+     * SCAN_TABCONF.  With the JIT off the rows run on DBTUP's
+     * interpreter, with the same results.
+     *
+     * The outer join (linkedNullLeaf, the leaf of P-40, on parent rows
+     * that have no match, makeOuterJoinAggScanLookup): DBLQH runs the
+     * program for NULL-extended rows.  Its evaluator failed the row for
+     * the short entry (EMB_NULL_ROW_ERROR, 1872); it reads it as NULL
+     * now, so the request must get SCAN_TABCONF, as for a NULL entry,
+     * while the 8-byte entry gets SCAN_TABREF.  NULL-extended rows
+     * never run on the JIT.
+     *
+     * Requests expected to succeed run first, so that none of them
+     * follows a failed scan. */
+    const std::vector<Uint32> compareLeaf = linkedCompareLeaf();
+    const std::vector<Uint32> nullLeaf = linkedNullLeaf();
+    const Uint32 w0 = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
+    const Uint32 w1 = CteLinkedAttr::encodeWord1(0);
+    const std::vector<Uint32> nullEntry = {w0, w1, (0u << 16) | 0u};
+    const std::vector<Uint32> shortEntry = {w0, w1, (0u << 16) | 4u, 7u};
+    const std::vector<Uint32> valueEntry = {w0, w1, (0u << 16) | 8u, 7u,
+                                            0u};
+    const char *cmpId = "P-48 compare of a linked entry shorter than its type";
+    const char *ojId =
+        "P-48 outer join NULL row, linked entry shorter than its type";
+
+    SpjReq cmpValue;
+    makeJoinAggScanLookup(cmpValue, valueEntry, compareLeaf);
+    cmpValue.waitForEnd = true;
+    const Reply cmpValueRep = sendScanTabReq(cmpValue);
+    printReply("CONTROL (compare, 8-byte linked entry)", cmpValueRep);
+
+    SpjReq ojNull;
+    makeOuterJoinAggScanLookup(ojNull, nullEntry, nullLeaf);
+    ojNull.waitForEnd = true;
+    const Reply ojNullRep = sendScanTabReq(ojNull);
+    printReply("CONTROL (outer join NULL row, NULL linked entry)",
+               ojNullRep);
+
+    SpjReq ojShort;
+    makeOuterJoinAggScanLookup(ojShort, shortEntry, nullLeaf);
+    ojShort.waitForEnd = true;
+    const Reply ojRep = sendScanTabReq(ojShort);
+    printReply(ojId, ojRep);
+
+    SpjReq ojValue;
+    makeOuterJoinAggScanLookup(ojValue, valueEntry, nullLeaf);
+    ojValue.waitForEnd = true;
+    const Reply ojValueRep = sendScanTabReq(ojValue);
+    printReply("CONTROL (outer join NULL row, 8-byte linked entry)",
+               ojValueRep);
+
+    SpjReq cmpNull;
+    makeJoinAggScanLookup(cmpNull, nullEntry, compareLeaf);
+    cmpNull.waitForEnd = true;
+    const Reply cmpNullRep = sendScanTabReq(cmpNull);
+    printReply("CONTROL (compare, NULL linked entry)", cmpNullRep);
+
+    SpjReq cmpShort;
+    makeJoinAggScanLookup(cmpShort, shortEntry, compareLeaf);
+    cmpShort.waitForEnd = true;
+    const Reply cmpRep = sendScanTabReq(cmpShort);
+    printReply(cmpId, cmpRep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown("P-48");
+    }
+    if (cmpValueRep.gsn != GSN_SCAN_TABCONF ||
+        cmpNullRep.gsn != GSN_SCAN_TABREF) {
+      g_err << "P-48 CONTROLS (compare): expected SCAN_TABCONF for the "
+               "8-byte entry and SCAN_TABREF for the NULL one, got "
+            << gsnName(cmpValueRep.gsn) << " and " << gsnName(cmpNullRep.gsn)
+            << ".  The rows do not reach the leaf program; fix this before "
+               "trusting the result of P-48." << endl;
+      return NDBT_FAILED;
+    }
+    if (ojNullRep.gsn != GSN_SCAN_TABCONF ||
+        ojValueRep.gsn != GSN_SCAN_TABREF) {
+      g_err << "P-48 CONTROLS (outer join NULL row): expected SCAN_TABCONF "
+               "for the NULL entry and SCAN_TABREF for the 8-byte one, got "
+            << gsnName(ojNullRep.gsn) << " and " << gsnName(ojValueRep.gsn)
+            << ".  The NULL-extended rows do not reach the leaf program; "
+               "fix this before trusting the result of P-48." << endl;
+      return NDBT_FAILED;
+    }
+    if (cmpRep.gsn != GSN_SCAN_TABREF) {
+      g_err << cmpId << ": FAIL -- expected SCAN_TABREF (the entry reads "
+            << "as NULL), got " << gsnName(cmpRep.gsn)
+            << ": the entry was decoded as a value (with the JIT on, by "
+               "ndb_jit_h_load_linked_col)" << endl;
+      return NDBT_FAILED;
+    }
+    if (ojRep.gsn != GSN_SCAN_TABCONF) {
+      g_err << ojId << ": FAIL -- expected SCAN_TABCONF (the entry "
+            << "reads as NULL), got " << gsnName(ojRep.gsn) << " "
+            << ojRep.errorCode << ": the NULL-row evaluator failed the row"
+            << endl;
+      return NDBT_FAILED;
+    }
+    g_info << "P-48: PASS (all data nodes started; the entry read as NULL "
+           << "on found rows and on NULL-extended rows)" << endl;
+    return NDBT_OK;
+  }
+
+  /* ---- P-50: the subroutine section of an interpreted AttrInfo ------- *
+   * DBSPJ gives the AttrInfo of an interpreted node the 5-word header
+   * [initReadLen][interpretLen][finalUpdateLen][finalReadLen][subLen]
+   * (Dbspj::parseDA).  The subroutine section, word 4, is DBTUP's
+   * parameter area, where an NI_ATTR_LINKED node puts the parameters
+   * that DBSPJ expands from each parent row.  Two parts of a request
+   * went there too, through code that stopped a debug data node on
+   * ndbassert(false) ("Need validation before being used"):
+   *   the subroutine part of a PI_ATTR_INTERPRET program,
+   *     [(subroutine length << 16) | program length][program][subroutines]
+   *   the pattern of an NI_ATTR_INTERPRET node without NI_ATTR_LINKED,
+   *     [(pattern length << 16) | program length][program][pattern]
+   * The NDB API sends neither.  DBSPJ now refuses both. */
+
+  /* Gives the parameters of the node at params[at], whose fixed part has
+   * fixedSize words, the PI_ATTR_INTERPRET part interp, in front of its
+   * PI_ATTR_LIST, where parseDA reads it. */
+  static void addParamInterpret(SpjReq &r, Uint32 at, Uint32 fixedSize,
+                                Uint32 opType,
+                                const std::vector<Uint32> &interp) {
+    const Uint32 len = QueryNodeParameters::getLength(r.params[at]);
+    ((QueryNodeParameters *)&r.params[at])->requestInfo |=
+        DABits::PI_ATTR_INTERPRET;
+    r.params.insert(r.params.begin() + at + fixedSize, interp.begin(),
+                    interp.end());
+    /* The insert may have reallocated; re-fetch. */
+    QueryNodeParameters::setOpLen(((QueryNodeParameters *)&r.params[at])->len,
+                                  opType, len + Uint32(interp.size()));
+  }
+
+  /* The scan of the control with the program interp in its parameters,
+   * as the NDB API sends a pushed scan filter. */
+  void makeParamInterpretedScan(SpjReq &r,
+                                const std::vector<Uint32> &interp) {
+    makeWellFormedScan(r);
+    addParamInterpret(r, 0, QN_ScanFragParameters::NodeSize,
+                      QueryNodeParameters::QN_SCAN_FRAG, interp);
+  }
+
+  /* The scan of the control with the program in its tree node: the node
+   * has NI_ATTR_INTERPRET, and part is its optional part 3. */
+  void makeTreeInterpretedScan(SpjReq &r, const std::vector<Uint32> &part) {
+    makeWellFormedScan(r);
+    ((QueryNode *)&r.tree[1])->requestInfo = DABits::NI_ATTR_INTERPRET;
+    r.tree.insert(r.tree.end(), part.begin(), part.end());
+    QueryNode::setOpLen(((QueryNode *)&r.tree[1])->len,
+                        QueryNode::QN_SCAN_FRAG,
+                        QN_ScanFragNode::NodeSize + Uint32(part.size()));
+    QueryTree::setCntLen(r.tree[0], 1, (Uint32)r.tree.size());
+  }
+
+  /* The join aggregation of the P-35 control (its leaf an NI_ATTR_LINKED
+   * lookup, which DBSPJ gives a linked buffer of one well-formed BIGINT
+   * entry at each send), counting the rows, with the program interp in
+   * the parameters of the leaf, as the NDB API sends an aggregation leaf
+   * with linked columns (NdbQueryOperationImpl::prepareAttrInfo). */
+  void makeLinkedLeafInterpreted(SpjReq &r,
+                                 const std::vector<Uint32> &interp) {
+    const Uint32 w0 = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
+    const Uint32 w1 = CteLinkedAttr::encodeWord1(0);
+    makeJoinAggScanLookup(r, {w0, w1, (0u << 16) | 8u, 7u, 0u}, countLeaf());
+    addParamInterpret(r, QueryNodeParameters::getLength(r.params[0]),
+                      QN_LookupParameters::NodeSize,
+                      QueryNodeParameters::QN_LOOKUP, interp);
+  }
+
+  int runP50() {
+    /* Each request first without the part that went to word 4, which
+     * must get SCAN_TABCONF (without it a harness whose request never
+     * reaches the parse of the program would pass), then with it, which
+     * must get SCAN_TABREF with the error of the refusal:
+     *   a  a scan whose PI_ATTR_INTERPRET program has a subroutine part
+     *      of one word.  A release data node put it in the parameter
+     *      area; a debug one stopped.
+     *   b  the same subroutine part on an NI_ATTR_LINKED aggregation
+     *      leaf.  A release data node stopped as well, on the
+     *      ndbrequire that no parameter area was built for a node that
+     *      constructs its own at each send.
+     *   c  a scan whose NI_ATTR_INTERPRET program in the tree node is
+     *      followed by a pattern of a P_DATA of one word, without
+     *      NI_ATTR_LINKED.  A release data node put the word in the
+     *      parameter area; a debug one stopped.
+     * The malformed requests run after every control, b last. */
+    const Uint32 exitOk = Interpreter::ExitOK();
+    const std::vector<Uint32> program = {1u, exitOk};
+    const std::vector<Uint32> withSubroutine = {(1u << 16) | 1u, exitOk, 0u};
+    const std::vector<Uint32> withPattern = {
+        (2u << 16) | 1u, exitOk, QueryPattern::data(1), 0x11111111u};
+    const char *const controlIds[3] = {
+        "CONTROL (P-50a scan program without a subroutine part)",
+        ("CONTROL (P-50b aggregation leaf program without a subroutine "
+         "part)"),
+        "CONTROL (P-50c tree node program without a pattern)"};
+    const char *const ids[3] = {
+        "P-50a scan program with a subroutine part",
+        ("P-50b NI_ATTR_LINKED aggregation leaf program with a subroutine "
+         "part"),
+        "P-50c tree node program with a pattern but no NI_ATTR_LINKED"};
+    const Uint32 expected[3] = {
+        Uint32(DbspjErr::InvalidTreeParametersSpecification),
+        Uint32(DbspjErr::InvalidTreeParametersSpecification),
+        Uint32(DbspjErr::InvalidTreeNodeSpecification)};
+
+    SpjReq good[3];
+    makeParamInterpretedScan(good[0], program);
+    makeLinkedLeafInterpreted(good[1], program);
+    makeTreeInterpretedScan(good[2], program);
+    SpjReq bad[3];
+    makeParamInterpretedScan(bad[0], withSubroutine);
+    makeLinkedLeafInterpreted(bad[1], withSubroutine);
+    makeTreeInterpretedScan(bad[2], withPattern);
+    bad[1].waitForEnd = true;
+
+    for (int i = 0; i < 3; i++) {
+      const Reply control = sendScanTabReq(good[i]);
+      printReply(controlIds[i], control);
+      if (control.gsn != GSN_SCAN_TABCONF) {
+        g_err << controlIds[i] << " did not get SCAN_TABCONF (got "
+              << gsnName(control.gsn) << ", err " << control.errorCode
+              << ").  The raw interpreted request is wrong; fix this "
+                 "before trusting the result of P-50." << endl;
+        return clusterHealthy() ? NDBT_FAILED : failNodeDown(controlIds[i]);
+      }
+    }
+
+    const int order[3] = {0, 2, 1};
+    Reply reps[3];
+    for (int k = 0; k < 3; k++) {
+      const int i = order[k];
+      reps[i] = sendScanTabReq(bad[i]);
+      printReply(ids[i], reps[i]);
+    }
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown("P-50");
+    }
+    int result = NDBT_OK;
+    for (int i = 0; i < 3; i++) {
+      if (reps[i].gsn != GSN_SCAN_TABREF ||
+          reps[i].errorCode != expected[i]) {
+        g_err << ids[i] << ": FAIL -- expected SCAN_TABREF " << expected[i]
+              << ", got " << gsnName(reps[i].gsn) << " "
+              << reps[i].errorCode << ": the request was not refused"
+              << endl;
+        result = NDBT_FAILED;
+      } else {
+        g_info << ids[i] << ": PASS (all data nodes started; SCAN_TABREF "
+               << reps[i].errorCode << ")" << endl;
+      }
+    }
+    return result;
+  }
+
+  int runP51() {  /* a null test of a register a path did not write */
+    /* The leaf (linkedSkipLoadLeaf) skips the load of register 3 for a
+     * linked value of 7, so its BRANCH_REG_EQ_NULL of register 3 is
+     * taken and the row fails; for another value the row is counted.
+     * The JIT folds such a guard to "not taken", which is right for a
+     * register that every path wrote: on a row the JIT completes, it
+     * holds a value.  With the JIT on (test_spj_malformed_p51_jit) the
+     * compiled program counted the rows of a 7 (RONDB-1124); the
+     * compiler now refuses a program that reads a register a path did
+     * not write, and the rows run on the interpreter.  The request with
+     * an entry of 7 must get SCAN_TABREF, and the control, an entry of
+     * 8, SCAN_TABCONF (without it a harness whose rows never reach the
+     * program would pass).  The control runs first, so that no request
+     * expected to succeed follows a failed scan. */
+    const std::vector<Uint32> leaf = linkedSkipLoadLeaf();
+    const Uint32 w0 = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
+    const Uint32 w1 = CteLinkedAttr::encodeWord1(0);
+    const char *findingId =
+        "P-51 null test of a register a path did not write";
+
+    SpjReq eight;
+    makeJoinAggScanLookup(eight, {w0, w1, (0u << 16) | 8u, 8u, 0u}, leaf);
+    eight.waitForEnd = true;
+    const Reply eightRep = sendScanTabReq(eight);
+    printReply("CONTROL (linked value 8)", eightRep);
+
+    SpjReq seven;
+    makeJoinAggScanLookup(seven, {w0, w1, (0u << 16) | 8u, 7u, 0u}, leaf);
+    seven.waitForEnd = true;
+    const Reply rep = sendScanTabReq(seven);
+    printReply(findingId, rep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (eightRep.gsn != GSN_SCAN_TABCONF) {
+      g_err << "P-51 CONTROL: expected SCAN_TABCONF for the linked value 8, "
+               "got " << gsnName(eightRep.gsn) << " " << eightRep.errorCode
+            << ".  The rows do not reach the leaf program; fix this before "
+               "trusting the result of P-51." << endl;
+      return NDBT_FAILED;
+    }
+    if (rep.gsn != GSN_SCAN_TABREF) {
+      g_err << findingId << ": FAIL -- expected SCAN_TABREF (register 3 is "
+            << "NULL at the guard), got " << gsnName(rep.gsn)
+            << ": the guard was not taken (with the JIT on, the compiled "
+               "program folded it)" << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId << ": PASS (all data nodes started; the guard "
+           << "was taken)" << endl;
+    return NDBT_OK;
+  }
+
+  /* ---- P-38 / P-39: a string MIN / MAX and a number in one slot ------- *
+   * A string MIN / MAX keeps in its slot a pointer to the data node's
+   * copy of the value; every other aggregate keeps a number there.  A
+   * CASE whose arms mix them (bug 1c of the RonSQL analysis) let a
+   * numeric MIN overwrite the pointer, or minMaxString take a number
+   * for a pointer, and the data node crashed.  NdbAggregator::RepeatAgg
+   * refuses such arms, but EmitEmbeddedWord takes raw words.
+   * PushdownInterpreter::checkAggSlotKinds (in checkProgram) refuses the
+   * program at JOIN_AGG_SETUP_REQ.  The program is leaf 1, which no row
+   * runs: before the check DblqhProxy accepted it and the scan got
+   * SCAN_TABCONF.  Each case first sends the same CASE with arms of one
+   * kind, which must still be accepted. */
+  int runP38() {  /* THEN: string MIN, ELSE: kOpMinBigint, one slot */
+    const int control = expectAggAccepted(
+        "P-38 control: CASE with VARCHAR MIN in both arms",
+        {countLeaf(),
+         caseLeaf(colArm(0, NDB_TYPE_VARCHAR, 1, kOpMin),
+                  colArm(1, NDB_TYPE_VARCHAR, 2, kOpMin), {})});
+    if (control != NDBT_OK) {
+      return control;
+    }
+    return expectAggRejected(
+        "P-38 join aggregation CASE with a VARCHAR MIN and a BIGINT MIN "
+        "in one slot",
+        {countLeaf(),
+         caseLeaf(colArm(0, NDB_TYPE_VARCHAR, 1, kOpMin),
+                  constArm(1, NDB_TYPE_BIGINT, 1, 0, kOpMinBigint), {})});
+  }
+
+  int runP39() {  /* THEN: a BIGINT, ELSE: a CHAR, one MAX after */
+    /* One kOpMax after the CASE reads a register that the THEN arm loads
+     * with a number and the ELSE arm with a string.  The control's arms
+     * are a BIGINT and a DOUBLE (1.0), numbers of two types, which
+     * OptimizeProgramBuffer leaves to the generic Max (bug 1). */
+    const int control = expectAggAccepted(
+        "P-39 control: CASE with a BIGINT and a DOUBLE, then MAX",
+        {countLeaf(),
+         caseLeaf(constArm(0, NDB_TYPE_BIGINT, 1, 0, kOpUnknown),
+                  constArm(0, NDB_TYPE_DOUBLE, 0, 0x3FF00000u, kOpUnknown),
+                  {aggUpdate(kOpMax, 0, 0)})});
+    if (control != NDBT_OK) {
+      return control;
+    }
+    return expectAggRejected(
+        "P-39 join aggregation MAX of a register that is a BIGINT or a "
+        "CHAR",
+        {countLeaf(),
+         caseLeaf(constArm(0, NDB_TYPE_BIGINT, 1, 0, kOpUnknown),
+                  colArm(0, NDB_TYPE_CHAR, 1, kOpUnknown),
+                  {aggUpdate(kOpMax, 0, 0)})});
+  }
+
+  /* ---- P-52: a GROUP BY value whose length prefix runs past it -------- *
+   * The leaf groups by linked position 0 (linkedGroupByLeaf), and the
+   * CTE marker of the linked entry types the column, so the API chooses
+   * both the type and the bytes of the GROUP BY key.  The hash table
+   * took the length prefix of a VARCHAR or LONGVARCHAR key as it was:
+   * hashKeyFull had strnxfrm_hash read the length it gave from past the
+   * key (for a one-byte LONGVARCHAR an unset length), and the compare of
+   * two such keys in one bucket (findInBucket, cmpVarchar or
+   * cmpLongvarchar) failed its require, which stopped any data node,
+   * debug or release, on the second row of the group.  ProcessRec now
+   * refuses the key (JoinAggInterpreter::checkGroupKey), which fails the
+   * row with 1869.  The control is the same request with the VARCHAR
+   * 'abcd' (length byte 4), which must get SCAN_TABCONF: without it a
+   * harness whose rows never reach the group table would pass. */
+  int runP52() {
+    const std::vector<Uint32> leaf = linkedGroupByLeaf(1);
+    const Uint32 w1 = CteLinkedAttr::encodeWord1(kLatin1);
+    const Uint32 w0Varchar = CteLinkedAttr::encodeWord0(NDB_TYPE_VARCHAR, 11);
+    const Uint32 w0Longvarchar =
+        CteLinkedAttr::encodeWord0(NDB_TYPE_LONGVARCHAR, 12);
+    const char *findingId = "P-52 GROUP BY value whose length prefix runs "
+                            "past it";
+
+    SpjReq good;
+    /* [4]'abc' 'd' */
+    makeJoinAggScanLookup(
+        good, {w0Varchar, w1, (0u << 16) | 5u, 0x63626104u, 0x00000064u},
+        leaf);
+    good.waitForEnd = true;
+    const Reply control = sendScanTabReq(good);
+    printReply("CONTROL (GROUP BY VARCHAR 'abcd')", control);
+    if (control.gsn != GSN_SCAN_TABCONF) {
+      g_err << "P-52 CONTROL did not get SCAN_TABCONF (got "
+            << gsnName(control.gsn) << ", err " << control.errorCode
+            << ").  The rows do not reach the group table; fix this "
+               "before trusting the result of P-52." << endl;
+      return clusterHealthy() ? NDBT_FAILED : failNodeDown(findingId);
+    }
+
+    const char *const ids[2] = {
+        /* VARCHAR of 5 bytes whose length byte says 255 */
+        "P-52a GROUP BY VARCHAR value whose length byte runs past it",
+        /* LONGVARCHAR of 1 byte: no room for its 2-byte length */
+        "P-52b GROUP BY LONGVARCHAR value of one byte"};
+    const std::vector<Uint32> linked[2] = {
+        {w0Varchar, w1, (0u << 16) | 5u, 0x636261FFu, 0x00000064u},
+        {w0Longvarchar, w1, (0u << 16) | 1u, 0x00000041u}};
+    Reply reps[2];
+    for (int i = 0; i < 2; i++) {
+      SpjReq bad;
+      makeJoinAggScanLookup(bad, linked[i], leaf);
+      bad.waitForEnd = true;
+      reps[i] = sendScanTabReq(bad);
+      printReply(ids[i], reps[i]);
+    }
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    int result = NDBT_OK;
+    for (int i = 0; i < 2; i++) {
+      if (reps[i].gsn != GSN_SCAN_TABREF) {
+        g_err << ids[i] << ": FAIL -- expected SCAN_TABREF, got "
+              << gsnName(reps[i].gsn)
+              << ": the GROUP BY value was not refused" << endl;
+        result = NDBT_FAILED;
+      } else {
+        g_info << ids[i] << ": PASS (all data nodes started; SCAN_TABREF "
+               << reps[i].errorCode << ")" << endl;
+      }
+    }
+    return result;
+  }
+
+  /* ---- P-53: a column compared with a constant of the program -------- *
+   * An interpreted read (P-41's sendInterpretedRead) of the row with
+   * primary key 1 of the table test.p53_cmp, which the MTR test creates
+   * through MySQL: ID Unsigned (the key), VC VARCHAR(8) latin1 'abcd'
+   * and F FLOAT 1.5, attribute ids 0, 1 and 2.  Its program compares
+   * one column with a constant (BRANCH_ATTR_OP_ARG, DBTUP's
+   * handleBranchAttrOp) and refuses the read with kRefuseCode when the
+   * two are equal and kRefuseNotEqual when not:
+   *   0      BRANCH_ATTR_OP_ARG EQ to the last word
+   *   1      (attrId << 16) | the constant's length
+   *   2..    the constant
+   *   n-2    EXIT_REFUSE kRefuseNotEqual
+   *   n-1    EXIT_REFUSE kRefuseCode */
+  static constexpr Uint32 kRefuseNotEqual = 7001;
+  static constexpr Uint32 kCompareRefused = 40;  /* DBTUP's compare error */
+
+  static std::vector<Uint32> attrCompareRead(
+      Uint32 attrId, const std::vector<Uint32> &constant, Uint32 argLen) {
+    std::vector<Uint32> prog;
+    const Uint32 offset = 2 + Uint32(constant.size()) + 1;
+    prog.push_back(Interpreter::BranchCol(Interpreter::EQ,
+                                          Interpreter::NULL_CMP_EQUAL) |
+                   (offset << 16));
+    prog.push_back(Interpreter::BranchCol_2(attrId, argLen));
+    prog.insert(prog.end(), constant.begin(), constant.end());
+    prog.push_back(Interpreter::EXIT_REFUSE | (kRefuseNotEqual << 16));
+    prog.push_back(Interpreter::EXIT_REFUSE | (kRefuseCode << 16));
+    std::vector<Uint32> ai = {0, Uint32(prog.size()), 0, 0, 0};
+    ai.insert(ai.end(), prog.begin(), prog.end());
+    return ai;
+  }
+
+  int runP53(Uint32 tableId, Uint32 tableVersion) {
+    /* The compare functions only require or assert what they need of
+     * the two values, and handleBranchAttrOp gave them the constant as
+     * the program wrote it: a VARCHAR length byte past the constant
+     * (cmpVarchar) and a NaN FLOAT (cmpFloat, which NdbInterpretedCode's
+     * branch_col_eq sends as given) failed a require, which stopped any
+     * data node, and a constant of 8 bytes for an Unsigned column failed
+     * cmpUnsigned's assert in a debug data node.  DBTUP now refuses what
+     * the compare function cannot take (check_compare_values), which
+     * fails the read with error 40.  The controls, 'abcd' and 1.5, must
+     * find their columns equal (kRefuseCode): without them a harness
+     * whose read never reaches the compare would pass.  The controls
+     * run first, so that no read expected to succeed follows a refused
+     * one. */
+    const char *findingId = "P-53 column compared with a constant it "
+                            "cannot take";
+    const char *const controlIds[2] = {"CONTROL (VC = VARCHAR 'abcd')",
+                                       "CONTROL (F = FLOAT 1.5)"};
+    /* [4]'abc' 'd', and 1.5f */
+    const std::vector<Uint32> controls[2] = {
+        attrCompareRead(1, {0x63626104u, 0x00000064u}, 5),
+        attrCompareRead(2, {0x3FC00000u}, 4)};
+    for (int i = 0; i < 2; i++) {
+      const Reply control =
+          sendInterpretedRead(controls[i], tableId, tableVersion);
+      printReply(controlIds[i], control);
+      if (control.gsn != GSN_TCKEYREF || control.errorCode != kRefuseCode) {
+        g_err << "P-53 " << controlIds[i] << " did not get TCKEYREF "
+              << kRefuseCode << " (got " << gsnName(control.gsn) << ", err "
+              << control.errorCode << ").  The raw interpreted read does "
+                 "not reach the compare; fix this before trusting the "
+                 "result of P-53." << endl;
+        return clusterHealthy() ? NDBT_FAILED : failNodeDown(findingId);
+      }
+    }
+
+    const char *const ids[3] = {
+        /* [255]'abc': the length byte runs past the 4-byte constant */
+        ("P-53a VARCHAR column compared with a constant whose length byte "
+         "runs past it"),
+        /* A quiet NaN */
+        "P-53b FLOAT column compared with NaN",
+        /* 1 as 8 bytes for the 4-byte ID */
+        "P-53c Unsigned column compared with an 8-byte constant"};
+    const std::vector<Uint32> programs[3] = {
+        attrCompareRead(1, {0x636261FFu}, 4),
+        attrCompareRead(2, {0x7FC00000u}, 4),
+        attrCompareRead(0, {1u, 0u}, 8)};
+    Reply reps[3];
+    for (int i = 0; i < 3; i++) {
+      reps[i] = sendInterpretedRead(programs[i], tableId, tableVersion);
+      printReply(ids[i], reps[i]);
+    }
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    int result = NDBT_OK;
+    for (int i = 0; i < 3; i++) {
+      if (reps[i].gsn != GSN_TCKEYREF ||
+          reps[i].errorCode != kCompareRefused) {
+        g_err << ids[i] << ": FAIL -- expected TCKEYREF " << kCompareRefused
+              << ", got " << gsnName(reps[i].gsn) << " "
+              << reps[i].errorCode << ": the compare was not refused"
+              << endl;
+        result = NDBT_FAILED;
+      } else {
+        g_info << ids[i] << ": PASS (all data nodes started; TCKEYREF "
+               << reps[i].errorCode << ")" << endl;
+      }
+    }
+    return result;
+  }
+
+  /* ---- P-54: operations the type of their register does not allow ---- *
+   * A string register holds its type and 0; its value is the capture of
+   * the column (m_register_string_data), which only kOpMax and kOpMin
+   * read.  checkAggSlotKinds (in checkProgram) now refuses an
+   * arithmetic instruction or a numeric aggregate that may read a string
+   * register, and a slot that two different aggregates update, at
+   * JOIN_AGG_SETUP_REQ.  The program is leaf 1, which no row runs: before
+   * the check DblqhProxy accepted it and the scan got SCAN_TABCONF. */
+  int runP54() {
+    /* A string MAX and a SUM of a number, one slot each */
+    const int control = expectAggAccepted(
+        "P-54 control: MAX of a CHAR and SUM of a BIGINT, one slot each",
+        {countLeaf(),
+         aggProgram(2, {loadCol(0, NDB_TYPE_CHAR, 1), aggUpdate(kOpMax, 0, 0),
+                        aggOp(kOpLoadConst) | (NDB_TYPE_BIGINT << 21) |
+                            (1u << 16),
+                        1, 0, aggUpdate(kOpSum, 1, 1)})});
+    if (control != NDBT_OK) {
+      return control;
+    }
+    const char *const ids[3] = {
+        /* Sum stored the CHAR register in the slot and asserted on the
+         * next row that the slot is a BIGINT */
+        "P-54a join aggregation SUM of a CHAR register",
+        /* RegPlusReg asserted that a register that is not a DOUBLE is
+         * a BIGINT */
+        "P-54b join aggregation VARCHAR register plus a BIGINT",
+        /* Count asserted that its slot holds an unsigned BIGINT, which
+         * the SUM of the signed 1 is not */
+        "P-54c join aggregation SUM and COUNT of one slot"};
+    const std::vector<Uint32> leaves[3] = {
+        aggProgram(1, {loadCol(0, NDB_TYPE_CHAR, 1), aggUpdate(kOpSum, 0, 0)}),
+        aggProgram(1, {loadCol(0, NDB_TYPE_VARCHAR, 1),
+                       aggOp(kOpLoadConst) | (NDB_TYPE_BIGINT << 21) |
+                           (1u << 16),
+                       1, 0, aggOp(kOpPlus) | (0u << 12) | (1u << 8),
+                       aggUpdate(kOpCount, 0, 0)}),
+        aggProgram(1, {aggOp(kOpLoadConst) | (NDB_TYPE_BIGINT << 21) |
+                           (0u << 16),
+                       1, 0, aggUpdate(kOpSum, 0, 0),
+                       aggUpdate(kOpCount, 0, 0)})};
+    for (int i = 0; i < 3; i++) {
+      const int res = expectAggRejected(ids[i], {countLeaf(), leaves[i]});
+      if (res != NDBT_OK) {
+        return res;
+      }
+    }
+
+    /* (d) A GROUP BY column past the table (T1 has 5), with the GROUP BY
+     * metadata of column 0, which the setup accepts: each row read it
+     * with readSingleAttribute, whose ndbassert stopped a debug data
+     * node (a release one failed the row with 879, as it does now).
+     * The control is P-43's, column 0 with its metadata. */
+    const char *idD = "P-54d join aggregation GROUP BY a column past the table";
+    SpjReq good;
+    makeJoinAggScan(good, {localGroupByLeaf()});
+    appendGroupByMeta(good, NDB_TYPE_UNSIGNED, 4, 0);
+    const Reply controlD = sendScanTabReq(good);
+    printReply("CONTROL (GROUP BY column 0 with its metadata)", controlD);
+    if (controlD.gsn != GSN_SCAN_TABCONF) {
+      g_err << "P-54d CONTROL did not get SCAN_TABCONF (got "
+            << gsnName(controlD.gsn) << ", err " << controlD.errorCode
+            << ").  Fix this before trusting the result of P-54d." << endl;
+      return clusterHealthy() ? NDBT_FAILED : failNodeDown(idD);
+    }
+    SpjReq r;
+    makeJoinAggScan(r, {localGroupByLeaf(100)});
+    appendGroupByMeta(r, NDB_TYPE_UNSIGNED, 4, 0);
+    r.waitForEnd = true;
+    const Reply rep = sendScanTabReq(r);
+    printReply(idD, rep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(idD);
+    }
+    if (rep.gsn != GSN_SCAN_TABREF) {
+      g_err << idD << ": FAIL -- expected SCAN_TABREF, got "
+            << gsnName(rep.gsn) << ": the column was not refused" << endl;
+      return NDBT_FAILED;
+    }
+    g_info << idD << ": PASS (all data nodes started; SCAN_TABREF "
+           << rep.errorCode << ")" << endl;
+    return NDBT_OK;
+  }
+
+  /* ---- P-55: string loads and MIN / MAX of a row ---------------------- *
+   * The join aggregation of makeJoinAggScanLookup, whose leaf loads
+   * linked positions with kOpLoadCol (column AGG_LINKED_COL_FLAG |
+   * position) and has one slot, no GROUP BY.  The linked entries carry
+   * their CTE marker, so the API chooses their type and bytes. */
+  static constexpr Uint32 kLinkedPos0 = AGG_LINKED_COL_FLAG | 0u;
+  static constexpr Uint32 kLinkedPos1 = AGG_LINKED_COL_FLAG | 1u;
+
+  /* Send the join aggregation of the linked buffer and the leaf, and
+   * wait for its end. */
+  Reply sendLinkedAgg(const std::vector<Uint32> &linked,
+                      const std::vector<Uint32> &leaf) {
+    SpjReq r;
+    makeJoinAggScanLookup(r, linked, leaf);
+    r.waitForEnd = true;
+    return sendScanTabReq(r);
+  }
+
+  int runP55() {
+    /* The controls must get SCAN_TABCONF, and run first, so that none of
+     * them follows a failed scan:
+     *   MAX of the VARCHAR 'abcd' (shows that the rows reach the slot);
+     *   the same MAX of a kOpMov copy of the register.  kOpMov copied
+     *   the register but not its capture, so the MAX read the capture
+     *   of whatever was loaded into the copy before (here nothing: the
+     *   slot got no collation and the second row failed with 1869; a
+     *   capture of an earlier row could have a length prefix that no
+     *   longer fits, which failed cmpVarchar's require);
+     *   SUM of an 8-byte BIGINT. */
+    const Uint32 w1Latin1 = CteLinkedAttr::encodeWord1(kLatin1);
+    const Uint32 w1None = CteLinkedAttr::encodeWord1(0);
+    const Uint32 w0Varchar = CteLinkedAttr::encodeWord0(NDB_TYPE_VARCHAR, 11);
+    const Uint32 w0Char = CteLinkedAttr::encodeWord0(NDB_TYPE_CHAR, 8);
+    const Uint32 w0Bigint = CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8);
+    /* [4]'abc' 'd', and 'abcd    ' */
+    const std::vector<Uint32> varcharAbcd = {w0Varchar, w1Latin1,
+                                             (0u << 16) | 5u, 0x63626104u,
+                                             0x00000064u};
+    const std::vector<Uint32> charAbcd = {w0Char, w1Latin1, (1u << 16) | 8u,
+                                          kAbcd, kFourSpaces};
+    const std::vector<Uint32> maxLeaf = aggProgram(
+        1, {loadCol(0, NDB_TYPE_VARCHAR, kLinkedPos0), aggUpdate(kOpMax, 0, 0)});
+    const std::vector<Uint32> movLeaf = aggProgram(
+        1, {loadCol(0, NDB_TYPE_VARCHAR, kLinkedPos0),
+            aggOp(kOpMov) | (1u << 12) | (0u << 8), aggUpdate(kOpMax, 1, 0)});
+    const std::vector<Uint32> sumLeaf = aggProgram(
+        1, {loadCol(0, NDB_TYPE_BIGINT, kLinkedPos0),
+            aggUpdate(kOpSumBigint, 0, 0)});
+    const char *findingId = "P-55 string loads and MIN / MAX of a row";
+
+    const char *const controlIds[3] = {
+        "CONTROL (MAX of a linked VARCHAR)",
+        "P-55 control: MAX of a kOpMov copy of a VARCHAR register",
+        "CONTROL (SUM of an 8-byte linked BIGINT)"};
+    const Reply controls[3] = {
+        sendLinkedAgg(varcharAbcd, maxLeaf),
+        sendLinkedAgg(varcharAbcd, movLeaf),
+        sendLinkedAgg({w0Bigint, w1None, (0u << 16) | 8u, 7u, 0u}, sumLeaf)};
+    for (int i = 0; i < 3; i++) {
+      printReply(controlIds[i], controls[i]);
+    }
+
+    /* (a) A VARCHAR MAX and a CHAR MAX of one slot: the slot took the
+     * VARCHAR's length prefix, and cmpVarchar read the CHAR's first
+     * byte, 'a', as the length of the CHAR value: its require stopped
+     * any data node.  minMaxString now refuses a value of another
+     * string type than the slot's (1868).
+     * (b) A linked VARCHAR of 2 bytes whose length byte says 255: MAX
+     * copied 256 bytes of DBTUP's read buffer into the result.
+     * (c) A BIGINT of a 4-byte linked entry: the load read 4 bytes past
+     * it.  loadColumnTypedFromBuf now refuses both (1866). */
+    std::vector<Uint32> mixed(varcharAbcd);
+    mixed.insert(mixed.end(), charAbcd.begin(), charAbcd.end());
+    const std::vector<Uint32> mixedLeaf = aggProgram(
+        1, {loadCol(0, NDB_TYPE_VARCHAR, kLinkedPos0), aggUpdate(kOpMax, 0, 0),
+            loadCol(1, NDB_TYPE_CHAR, kLinkedPos1), aggUpdate(kOpMax, 1, 0)});
+    const char *const ids[3] = {
+        "P-55a join aggregation VARCHAR MAX and CHAR MAX of one slot",
+        ("P-55b join aggregation MAX of a linked VARCHAR whose length byte "
+         "runs past it"),
+        "P-55c join aggregation SUM of a 4-byte linked entry as a BIGINT"};
+    const Reply reps[3] = {
+        sendLinkedAgg(mixed, mixedLeaf),
+        /* [255]'a' */
+        sendLinkedAgg({w0Varchar, w1Latin1, (0u << 16) | 2u, 0x000061FFu},
+                      maxLeaf),
+        sendLinkedAgg({w0Bigint, w1None, (0u << 16) | 4u, 7u}, sumLeaf)};
+    for (int i = 0; i < 3; i++) {
+      printReply(ids[i], reps[i]);
+    }
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    int result = NDBT_OK;
+    for (int i = 0; i < 3; i++) {
+      if (controls[i].gsn != GSN_SCAN_TABCONF) {
+        g_err << controlIds[i] << ": FAIL -- expected SCAN_TABCONF, got "
+              << gsnName(controls[i].gsn) << ", err "
+              << controls[i].errorCode << endl;
+        result = NDBT_FAILED;
+      }
+    }
+    for (int i = 0; i < 3; i++) {
+      if (reps[i].gsn != GSN_SCAN_TABREF) {
+        g_err << ids[i] << ": FAIL -- expected SCAN_TABREF, got "
+              << gsnName(reps[i].gsn) << ": the row was not refused"
+              << endl;
+        result = NDBT_FAILED;
+      } else {
+        g_info << ids[i] << ": PASS (all data nodes started; SCAN_TABREF "
+               << reps[i].errorCode << ")" << endl;
+      }
+    }
+    return result;
+  }
+
+  /* ---- P-56: SUM of a register set NULL ------------------------------- *
+   * The words of caseLeaf's CASE without the header: the embedded
+   * program, the THEN arm, the kOpSkip over the ELSE arm, the ELSE arm.
+   * Here the CASE runs on the rows of T1, whose column 0 is never NULL,
+   * so every row takes the THEN arm. */
+  static std::vector<Uint32> caseBody(const std::vector<Uint32> &thenArm,
+                                      const std::vector<Uint32> &elseArm) {
+    const Uint32 elseSkip = Uint32(thenArm.size()) + 1;
+    const std::vector<Uint32> emb = {
+        Interpreter::Read(0, 1),
+        Interpreter::Branch(Interpreter::BRANCH_REG_EQ_NULL, 0, 1) |
+            (4u << 16),
+        Interpreter::LoadConst16(2, 0),
+        Interpreter::WriteInterpreterOutput(2, 0),
+        Interpreter::ExitOK(),
+        Interpreter::LoadConst16(2, elseSkip),
+        Interpreter::WriteInterpreterOutput(2, 0),
+        Interpreter::ExitOK()};
+    std::vector<Uint32> body;
+    body.push_back(aggOp(kOpEmbeddedInterp) | Uint32(emb.size()));
+    body.insert(body.end(), emb.begin(), emb.end());
+    body.insert(body.end(), thenArm.begin(), thenArm.end());
+    body.push_back(aggOp(kOpSkip) | Uint32(elseArm.size()));
+    body.insert(body.end(), elseArm.begin(), elseArm.end());
+    return body;
+  }
+
+  int runP56() {
+    /* kOpSetRegNull kept the value of the register.  The first SUM of a
+     * group (a scalar slot here) stored the NULL register in the slot,
+     * value and all, so the slot was NULL with the value 5; the next
+     * SUM of a value asserted that a NULL slot holds 0, which stopped a
+     * debug data node, and a release one added 5 to the sum.  RonSQL's
+     * GREATEST / LEAST sets a register NULL after loading it.  Each SUM
+     * follows a CASE whose ELSE arm loads a DOUBLE, so that the data
+     * node leaves it the generic Sum (OptimizeProgramBuffer, bug 1); the
+     * typed SumBigint overwrites a NULL slot.  Every row takes the THEN
+     * arms: 5 set NULL, SUM, then 7, SUM.  The request must get
+     * SCAN_TABCONF with every data node started. */
+    std::vector<Uint32> nullArm = loadConst(0, NDB_TYPE_BIGINT, 5, 0);
+    nullArm.push_back(aggOp(kOpSetRegNull) | (0u << 16));
+    const std::vector<Uint32> doubleArm =
+        loadConst(0, NDB_TYPE_DOUBLE, 0, 0x3FF00000u);  /* 1.0 */
+    const std::vector<Uint32> sevenArm = loadConst(0, NDB_TYPE_BIGINT, 7, 0);
+    std::vector<Uint32> body = caseBody(nullArm, doubleArm);
+    body.push_back(aggUpdate(kOpSum, 0, 0));
+    const std::vector<Uint32> second = caseBody(sevenArm, doubleArm);
+    body.insert(body.end(), second.begin(), second.end());
+    body.push_back(aggUpdate(kOpSum, 0, 0));
+
+    const char *findingId =
+        "P-56 join aggregation SUM after a SUM of a register set NULL";
+    SpjReq r;
+    makeJoinAggScan(r, {aggProgram(1, body)});
+    r.waitForEnd = true;
+    const Reply rep = sendScanTabReq(r);
+    printReply(findingId, rep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (rep.gsn != GSN_SCAN_TABCONF) {
+      g_err << findingId << ": FAIL -- expected SCAN_TABCONF, got "
+            << gsnName(rep.gsn) << ", err " << rep.errorCode << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId << ": PASS (all data nodes started; SCAN_TABCONF)"
+           << endl;
+    return NDBT_OK;
+  }
+
+  /* ---- P-57: an embedded branch to itself ----------------------------- *
+   * A leaf whose rows run one branch word, branch, with offset in its
+   * bits 16-30, then COUNT(1):
+   *   0 branch to word offset
+   *   1 LOAD_CONST16 0 into register 0
+   *   2 WRITE_INTERPRETER_OUTPUT 0 of register 0: go on after it
+   *   3 EXIT_OK
+   * The offset counts from the branch word (Dbtup::brancher): 1 goes on
+   * to word 1, 0 is a branch to itself. */
+  static std::vector<Uint32> oneBranchLeaf(Uint32 branch, Uint32 offset) {
+    const std::vector<Uint32> emb = {
+        branch | (offset << 16),
+        Interpreter::LoadConst16(0, 0),
+        Interpreter::WriteInterpreterOutput(0, 0),
+        Interpreter::ExitOK()};
+    return embeddedCountLeaf(emb);
+  }
+
+  int runP57() {
+    /* validateEmbeddedProgram took a branch of offset 0 (it checked the
+     * direction and that the target is inside the program), and
+     * interpreterAggEmbedded runs without the 16000-instruction limit,
+     * its back-jump check refusing only a lower program counter.  So a
+     * taken branch to itself ran forever in the LDM thread.  An
+     * unconditional BRANCH, and a BRANCH_REG_EQ_NULL of register 1,
+     * which is NULL when the embedded program starts.  The program is
+     * the only leaf, so the rows of T1 run it.  JOIN_AGG_SETUP_REQ now
+     * refuses it (DbspjErr::InvalidRequest), and the interpreter fails
+     * a row that branches to itself (ZBACKWARD_JUMP_NOT_ALLOWED): each
+     * request must get SCAN_TABREF with every data node started.  The
+     * controls, the same programs with offset 1, must get SCAN_TABCONF:
+     * without them a harness whose rows never reach the program would
+     * pass.  They run first, so that no request expected to succeed
+     * follows one that may stop a data node. */
+    const Uint32 branches[2] = {Interpreter::BRANCH,
+                                Interpreter::BRANCH_REG_EQ_NULL | (1u << 6)};
+    const char *const controlIds[2] = {
+        "P-57 control: BRANCH to the next word",
+        ("P-57 control: BRANCH_REG_EQ_NULL of a NULL register to the next "
+         "word")};
+    const char *const ids[2] = {
+        "P-57a join aggregation embedded BRANCH to itself",
+        ("P-57b join aggregation embedded BRANCH_REG_EQ_NULL of a NULL "
+         "register to itself")};
+
+    for (int i = 0; i < 2; i++) {
+      SpjReq good;
+      makeJoinAggScan(good, {oneBranchLeaf(branches[i], 1)});
+      good.waitForEnd = true;
+      const Reply control = sendScanTabReq(good);
+      printReply(controlIds[i], control);
+      if (control.gsn != GSN_SCAN_TABCONF) {
+        g_err << controlIds[i] << " did not get SCAN_TABCONF (got "
+              << gsnName(control.gsn) << ", err " << control.errorCode
+              << ").  The rows do not reach the leaf program; fix this "
+                 "before trusting the result of P-57." << endl;
+        return clusterHealthy() ? NDBT_FAILED : failNodeDown(controlIds[i]);
+      }
+    }
+
+    Reply reps[2];
+    for (int i = 0; i < 2; i++) {
+      SpjReq bad;
+      makeJoinAggScan(bad, {oneBranchLeaf(branches[i], 0)});
+      bad.waitForEnd = true;
+      reps[i] = sendScanTabReq(bad);
+      printReply(ids[i], reps[i]);
+    }
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown("P-57");
+    }
+    int result = NDBT_OK;
+    for (int i = 0; i < 2; i++) {
+      if (reps[i].gsn != GSN_SCAN_TABREF) {
+        g_err << ids[i] << ": FAIL -- expected SCAN_TABREF, got "
+              << gsnName(reps[i].gsn) << " " << reps[i].errorCode
+              << ": the branch to itself was not refused" << endl;
+        result = NDBT_FAILED;
+      } else {
+        g_info << ids[i] << ": PASS (all data nodes started; SCAN_TABREF "
+               << reps[i].errorCode << ", JOIN_AGG_SETUP_REF sends "
+               << Uint32(DbspjErr::InvalidRequest) << ")" << endl;
+      }
+    }
+    return result;
+  }
+
+  /* ---- P-58: a branch into the middle of an instruction --------------- *
+   * A leaf whose rows run, then COUNT(1):
+   *   0     LOAD_CONST16 0 into register 0
+   *   1     branch, with offset in its bits 16-30
+   *   2     LOAD_CONST32 (n = 1) or LOAD_CONST64 (n = 2) into register
+   *         1, its constant in the n words after it, each of them
+   *         LOAD_CONST16 0 into register 0 when run as an instruction
+   *   3+n   WRITE_INTERPRETER_OUTPUT 0 of register 0: go on after it
+   *   4+n   EXIT_OK
+   * The offset counts from the branch word: 2 + n lands on the WRITE,
+   * 2 .. 1 + n on a constant word. */
+  static std::vector<Uint32> branchOverConstLeaf(Uint32 branch,
+                                                 Uint32 offset, Uint32 n) {
+    std::vector<Uint32> emb = {
+        Interpreter::LoadConst16(0, 0), branch | (offset << 16),
+        (n == 1) ? Interpreter::LoadConst32(1) : Interpreter::LoadConst64(1)};
+    for (Uint32 i = 0; i < n; i++) {
+      emb.push_back(Interpreter::LoadConst16(0, 0));
+    }
+    emb.push_back(Interpreter::WriteInterpreterOutput(0, 0));
+    emb.push_back(Interpreter::ExitOK());
+    return embeddedCountLeaf(emb);
+  }
+
+  /* An interpreted read (P-41's sendInterpretedRead) whose program
+   * branches over a LOAD_CONST32 whose constant reads as a branch back
+   * past the start of the program:
+   *   0 BRANCH, with offset in its bits 16-30
+   *   1 LOAD_CONST32 into register 0
+   *   2   the constant: BRANCH back 3 words, to word -1
+   *   3 EXIT_REFUSE kRefuseCode
+   * Offset 3 lands on the EXIT_REFUSE, 2 on the constant.  DBTUP's
+   * ZOUTSIDE_OF_PROGRAM_ERROR: */
+  static constexpr Uint32 kOutsideOfProgram = 876;
+
+  static std::vector<Uint32> branchOverConstRead(Uint32 offset) {
+    const std::vector<Uint32> prog = {
+        Interpreter::BRANCH | (offset << 16), Interpreter::LoadConst32(0),
+        Interpreter::BRANCH | (3u << 16) | (1u << 31),
+        Interpreter::EXIT_REFUSE | (kRefuseCode << 16)};
+    std::vector<Uint32> ai = {0, Uint32(prog.size()), 0, 0, 0};
+    ai.insert(ai.end(), prog.begin(), prog.end());
+    return ai;
+  }
+
+  int runP58() {
+    /* validateEmbeddedProgram checked that a branch goes forward and
+     * lands inside the program, not that it lands on an instruction.
+     * One that lands on the operand words of an instruction made the
+     * interpreter run them as instructions, which the walk had not
+     * seen, so its checks did not cover them: a constant may hold any
+     * word.  Here the constant words run as LOAD_CONST16, so the rows
+     * went on and the scan got SCAN_TABCONF.  An unconditional BRANCH
+     * into the constant of a LOAD_CONST32, and a BRANCH_REG_EQ_NULL of
+     * register 1, which is NULL when the embedded program starts, into
+     * the second constant word of a LOAD_CONST64.  The program is the
+     * only leaf, so the rows of T1 run it.  JOIN_AGG_SETUP_REQ now
+     * refuses it (DbspjErr::InvalidRequest): each request must get
+     * SCAN_TABREF with every data node started.  The controls, the same
+     * programs with the branch to the WRITE_INTERPRETER_OUTPUT after
+     * the load, must get SCAN_TABCONF: without them a harness whose
+     * rows never reach the program would pass.
+     *
+     * A plain interpreted read has no such check: its program is the
+     * API's to write, and the word a branch lands on runs as the
+     * instruction it reads as.  interpreterNextLab read each instruction
+     * before it checked the program counter against the program, so a
+     * branch back past the start read a word 16 GB past the program.
+     * P-58c lands on a constant that reads as such a branch and must
+     * fail with ZOUTSIDE_OF_PROGRAM_ERROR.  Its control, the branch to
+     * the EXIT_REFUSE, must fail with the refuse code.
+     *
+     * The controls run first, so that no request expected to succeed
+     * follows one that may stop a data node. */
+    const Uint32 branches[2] = {Interpreter::BRANCH,
+                                Interpreter::BRANCH_REG_EQ_NULL | (1u << 6)};
+    const Uint32 constWords[2] = {1, 2};
+    const char *const controlIds[2] = {
+        "P-58 control: BRANCH over a LOAD_CONST32",
+        ("P-58 control: BRANCH_REG_EQ_NULL of a NULL register over a "
+         "LOAD_CONST64")};
+    const char *const ids[2] = {
+        ("P-58a join aggregation embedded BRANCH into the constant of a "
+         "LOAD_CONST32"),
+        ("P-58b join aggregation embedded BRANCH_REG_EQ_NULL of a NULL "
+         "register into the constant of a LOAD_CONST64")};
+    const char *readId =
+        "P-58c interpreted read: BRANCH into a constant that reads as a "
+        "branch back past the start";
+
+    for (int i = 0; i < 2; i++) {
+      SpjReq good;
+      makeJoinAggScan(good, {branchOverConstLeaf(branches[i],
+                                                 2 + constWords[i],
+                                                 constWords[i])});
+      good.waitForEnd = true;
+      const Reply control = sendScanTabReq(good);
+      printReply(controlIds[i], control);
+      if (control.gsn != GSN_SCAN_TABCONF) {
+        g_err << controlIds[i] << " did not get SCAN_TABCONF (got "
+              << gsnName(control.gsn) << ", err " << control.errorCode
+              << ").  The rows do not reach the leaf program; fix this "
+                 "before trusting the result of P-58." << endl;
+        return clusterHealthy() ? NDBT_FAILED : failNodeDown(controlIds[i]);
+      }
+    }
+    const Reply readControl = sendInterpretedRead(branchOverConstRead(3));
+    printReply("P-58 control: interpreted read, BRANCH over a LOAD_CONST32 "
+               "to EXIT_REFUSE", readControl);
+    if (readControl.gsn != GSN_TCKEYREF ||
+        readControl.errorCode != kRefuseCode) {
+      g_err << "P-58 read control did not get TCKEYREF " << kRefuseCode
+            << " (got " << gsnName(readControl.gsn) << ", err "
+            << readControl.errorCode << ").  The raw interpreted read does "
+               "not reach the program; fix this before trusting the result "
+               "of P-58c." << endl;
+      return clusterHealthy() ? NDBT_FAILED : failNodeDown(readId);
+    }
+
+    Reply reps[2];
+    for (int i = 0; i < 2; i++) {
+      SpjReq bad;
+      makeJoinAggScan(bad, {branchOverConstLeaf(branches[i],
+                                                1 + constWords[i],
+                                                constWords[i])});
+      bad.waitForEnd = true;
+      reps[i] = sendScanTabReq(bad);
+      printReply(ids[i], reps[i]);
+    }
+    const Reply readRep = sendInterpretedRead(branchOverConstRead(2));
+    printReply(readId, readRep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown("P-58");
+    }
+    int result = NDBT_OK;
+    for (int i = 0; i < 2; i++) {
+      if (reps[i].gsn != GSN_SCAN_TABREF) {
+        g_err << ids[i] << ": FAIL -- expected SCAN_TABREF, got "
+              << gsnName(reps[i].gsn) << " " << reps[i].errorCode
+              << ": the branch into the constant was not refused" << endl;
+        result = NDBT_FAILED;
+      } else {
+        g_info << ids[i] << ": PASS (all data nodes started; SCAN_TABREF "
+               << reps[i].errorCode << ", JOIN_AGG_SETUP_REF sends "
+               << Uint32(DbspjErr::InvalidRequest) << ")" << endl;
+      }
+    }
+    if (readRep.gsn != GSN_TCKEYREF ||
+        readRep.errorCode != kOutsideOfProgram) {
+      g_err << readId << ": FAIL -- expected TCKEYREF " << kOutsideOfProgram
+            << ", got " << gsnName(readRep.gsn) << " " << readRep.errorCode
+            << endl;
+      result = NDBT_FAILED;
+    } else {
+      g_info << readId << ": PASS (all data nodes started; TCKEYREF "
+             << readRep.errorCode << ")" << endl;
+    }
+    return result;
+  }
+
+  /* ---- P-59: a GROUP BY column whose type has no compare function ----- *
+   * The leaf groups by linked position 0 (linkedGroupByLeaf), and the
+   * CTE marker of the linked entry types the column, so the API chooses
+   * the type.  BLOB, TEXT, the undefined type and an unknown type id
+   * have no compare function (NdbSqlUtil::getStringResultCmp), which
+   * the group hash table and the ORDER BY of a CTE call; the API refuses
+   * a BLOB or TEXT group key (NdbAggregator::GroupBy).  The kernel took
+   * such a type without a collation and grouped by the bytes of the
+   * value.  publishGBTypes now refuses it when the GROUP BY types are
+   * set, before any group, which fails the row with 1869.  The control
+   * is the same entry typed BIGINT, which must get SCAN_TABCONF: without
+   * it a harness whose rows never reach the group table would pass. */
+  int runP59() {
+    const std::vector<Uint32> leaf = linkedGroupByLeaf(1);
+    const Uint32 w1 = CteLinkedAttr::encodeWord1(0);
+    const char *findingId = "P-59 GROUP BY type without a compare function";
+
+    SpjReq good;
+    makeJoinAggScanLookup(
+        good,
+        {CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8), w1,
+         (0u << 16) | 8u, 7u, 0u},
+        leaf);
+    good.waitForEnd = true;
+    const Reply control = sendScanTabReq(good);
+    printReply("CONTROL (GROUP BY BIGINT 7)", control);
+    if (control.gsn != GSN_SCAN_TABCONF) {
+      g_err << "P-59 CONTROL did not get SCAN_TABCONF (got "
+            << gsnName(control.gsn) << ", err " << control.errorCode
+            << ").  The rows do not reach the group table; fix this "
+               "before trusting the result of P-59." << endl;
+      return clusterHealthy() ? NDBT_FAILED : failNodeDown(findingId);
+    }
+
+    constexpr int kCases = 4;
+    /* An id the 7 bits of the marker hold, past the last NDB type */
+    constexpr Uint32 kUnknownType = 100;
+    const Uint32 types[kCases] = {NDB_TYPE_TEXT, NDB_TYPE_BLOB,
+                                  NDB_TYPE_UNDEFINED, kUnknownType};
+    const char *const ids[kCases] = {
+        "P-59a GROUP BY a linked value typed TEXT",
+        "P-59b GROUP BY a linked value typed BLOB",
+        "P-59c GROUP BY a linked value of the undefined type",
+        "P-59d GROUP BY a linked value of an unknown type"};
+    Reply reps[kCases];
+    for (int i = 0; i < kCases; i++) {
+      SpjReq bad;
+      makeJoinAggScanLookup(
+          bad,
+          {CteLinkedAttr::encodeWord0(types[i], 8), w1, (0u << 16) | 8u, 7u,
+           0u},
+          leaf);
+      bad.waitForEnd = true;
+      reps[i] = sendScanTabReq(bad);
+      printReply(ids[i], reps[i]);
+    }
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    int result = NDBT_OK;
+    for (int i = 0; i < kCases; i++) {
+      if (reps[i].gsn != GSN_SCAN_TABREF) {
+        g_err << ids[i] << ": FAIL -- expected SCAN_TABREF, got "
+              << gsnName(reps[i].gsn)
+              << ": the GROUP BY type was not refused" << endl;
+        result = NDBT_FAILED;
+      } else {
+        g_info << ids[i] << ": PASS (all data nodes started; SCAN_TABREF "
+               << reps[i].errorCode << ")" << endl;
+      }
+    }
+    return result;
+  }
+
+  /* ---- P-60: an instruction cut off at the end of its program --------- *
+   * Interpreted reads (P-41's sendInterpretedRead) of the row of T1 with
+   * KOL1 = 1 whose program ends inside an instruction.  The header gives
+   * each section its real length, so the operand words the instruction
+   * misses are not in the program section: DBTUP's handlers read them
+   * from the final read section after it, or, where the program is the
+   * last section, from the words of cinBuffer after the AttrInfo.
+   *
+   * The branches run in this frame and refuse the read with kRefuseCode
+   * when they are taken:
+   *   0      BRANCH to 2
+   *   1      EXIT_REFUSE kRefuseCode
+   *   2..    pre, the instructions before the branch
+   *   b      the branch, back to word 1
+   *   b+1..  its operand words
+   * and, for the whole instruction, EXIT_REFUSE kRefuseNotEqual after
+   * them. */
+
+  static std::vector<Uint32> branchBackProgram(
+      const std::vector<Uint32> &pre, Uint32 insn,
+      const std::vector<Uint32> &operands, bool whole) {
+    std::vector<Uint32> prog = {
+        Interpreter::BRANCH | (2u << 16),
+        Interpreter::EXIT_REFUSE | (kRefuseCode << 16)};
+    prog.insert(prog.end(), pre.begin(), pre.end());
+    const Uint32 back = Uint32(prog.size()) - 1;
+    prog.push_back(insn | (back << 16) | (1u << 31));
+    prog.insert(prog.end(), operands.begin(), operands.end());
+    if (whole) {
+      prog.push_back(Interpreter::EXIT_REFUSE | (kRefuseNotEqual << 16));
+    }
+    return prog;
+  }
+
+  /* The AttrInfo of an interpreted read: the 5-word header, the program,
+   * a final read section and a subroutine section, each of the two
+   * possibly empty. */
+  static std::vector<Uint32> interpretedReadAttrInfo(
+      const std::vector<Uint32> &prog, const std::vector<Uint32> &finalRead,
+      const std::vector<Uint32> &sub) {
+    std::vector<Uint32> ai = {0, Uint32(prog.size()), 0,
+                              Uint32(finalRead.size()), Uint32(sub.size())};
+    ai.insert(ai.end(), prog.begin(), prog.end());
+    ai.insert(ai.end(), finalRead.begin(), finalRead.end());
+    ai.insert(ai.end(), sub.begin(), sub.end());
+    return ai;
+  }
+
+  int runP60() {
+    /* The handlers of a multi-word instruction read its operand words
+     * without checking them against the end of the program.  The
+     * interpreter fails a program that runs past its end with
+     * ZOUTSIDE_OF_PROGRAM_ERROR, but only when it fetches the next
+     * instruction, after the handler has read the words after the
+     * program and run on them.  The handlers now check the words first
+     * and fail the read with ZOUTSIDE_OF_PROGRAM_ERROR before they read
+     * one.  Before, with a final read section after the program, the
+     * branches below took its attribute headers as operands, so the read
+     * got another reply, given with each case; where the program is the
+     * last section the reply depended on the stale words after it.  The
+     * loads went on past the end and got ZOUTSIDE_OF_PROGRAM_ERROR then,
+     * after the read.
+     *
+     * BRANCH_ATTR_OP_PARAM finds its parameter in the subroutine
+     * section, whose first word gives its length.  That word is the
+     * sender's: lookupInterpreterParameter now refuses one longer than
+     * the section, or a missing section, and handleBranchAttrOp fails
+     * the read with ZOUTSIDE_OF_PROGRAM_ERROR (it gave 99, unknown to
+     * ndberror, for a missing parameter).
+     *
+     * Each control, the same read with the instruction or the section
+     * whole, must get TCKEYREF kRefuseCode: without them a harness whose
+     * read never reaches the instruction would pass.  The controls run
+     * first, so that no read expected to succeed follows one that may
+     * stop a data node. */
+    const Uint32 refuse = Interpreter::EXIT_REFUSE | (kRefuseCode << 16);
+    /* Final read sections: KOL1 or KOL2, as attribute headers */
+    const std::vector<Uint32> readKol1 = {AttributeHeader(0, 0).m_value};
+    const std::vector<Uint32> readKol2 = {AttributeHeader(1, 0).m_value};
+    const std::vector<Uint32> readKol12 = {AttributeHeader(0, 0).m_value,
+                                           AttributeHeader(1, 0).m_value};
+    const std::vector<Uint32> none;
+    const std::vector<Uint32> readLinked0 = {
+        Interpreter::READ_LINKED_TO_MEM | (0u << 16)};
+    const Uint32 breakOut = Uint32(Interpreter::IF_NULL_BREAK_OUT) << 6;
+    const Uint32 colNe =
+        Interpreter::BranchCol(Interpreter::NE, Interpreter::NULL_CMP_EQUAL);
+    const Uint32 colEqCol = Interpreter::BranchColAttrId(
+        Interpreter::EQ, Interpreter::NULL_CMP_EQUAL);
+    const Uint32 memEq = Interpreter::BranchMem(
+        Interpreter::EQ, Interpreter::IF_NULL_BREAK_OUT);
+    const Uint32 memInlineEq = Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE |
+                               breakOut |
+                               (Uint32(Interpreter::EQ) << 12);
+    const Uint32 linkedEq = Interpreter::BranchLinkedLinked(
+        Interpreter::EQ, Interpreter::IF_NULL_BREAK_OUT);
+    const Uint32 paramEq = Interpreter::BranchColParameter(
+        Interpreter::EQ, Interpreter::NULL_CMP_EQUAL);
+    const Uint32 unsignedType = Uint32(NDB_TYPE_UNSIGNED) << 16;
+    /* Parameter 0: [table id][version][KOL1's header, 4 bytes][1], after
+     * the length word of the section */
+    const std::vector<Uint32> param1 = {5, m_tableId, m_schemaVersion,
+                                        AttributeHeader(0, 4).m_value, 1};
+    const std::vector<Uint32> param1Cut(param1.begin(), (param1.end() - 1));
+
+    struct Case {
+      const char *id;
+      std::vector<Uint32> control;
+      std::vector<Uint32> cut;
+      Uint32 error;
+    };
+    const Case cases[] = {
+        /* Before: 876 after reading the word after the program */
+        {"P-60a LOAD_CONST32 without its constant, the program last",
+         interpretedReadAttrInfo(
+             {Interpreter::LoadConst32(0), 7, refuse}, none, none),
+         interpretedReadAttrInfo({Interpreter::LoadConst32(0)}, none, none),
+         kOutsideOfProgram},
+        /* Before: 876 after reading KOL1's header as the high word */
+        {"P-60b LOAD_CONST64 with one of its two constant words, a final "
+         "read after it",
+         interpretedReadAttrInfo(
+             {Interpreter::LoadConst64(0), 7, 0, refuse}, readKol1, none),
+         interpretedReadAttrInfo({Interpreter::LoadConst64(0), 7}, readKol1,
+                                 none),
+         kOutsideOfProgram},
+        /* Before: 876 after reading the two words after the program */
+        {"P-60c LOAD_DOUBLE_CONST without its constant, the program last",
+         interpretedReadAttrInfo(
+             {Interpreter::LoadDoubleConst(0), 0, 0x3FF00000u, refuse}, none,
+             none),
+         interpretedReadAttrInfo({Interpreter::LoadDoubleConst(0)}, none,
+                                 none),
+         kOutsideOfProgram},
+        /* Before: 876 after copying the word after the program to the
+         * heap */
+        {"P-60d LOAD_CONST_MEM with one of the two words of its constant, "
+         "the program last",
+         interpretedReadAttrInfo({Interpreter::LoadConst16(0, 0),
+                                  Interpreter::LoadConstMem(0, 1, 8),
+                                  0x64636261u, 0x68676665u, refuse},
+                                 none, none),
+         interpretedReadAttrInfo({Interpreter::LoadConst16(0, 0),
+                                  Interpreter::LoadConstMem(0, 1, 8),
+                                  0x64636261u},
+                                 none, none),
+         kOutsideOfProgram},
+        /* Before: 899, KOL2's header named KOL2, which is not NULL */
+        {"P-60e BRANCH_ATTR_NE_NULL without its attribute word, a final "
+         "read of KOL2 after it",
+         interpretedReadAttrInfo(
+             branchBackProgram(none, Interpreter::BRANCH_ATTR_NE_NULL,
+                               {Interpreter::BranchCol_2(1)}, true),
+             readKol2, none),
+         interpretedReadAttrInfo(
+             branchBackProgram(none, Interpreter::BRANCH_ATTR_NE_NULL, none,
+                               false),
+             readKol2, none),
+         kOutsideOfProgram},
+        /* Before: the stale word after the program as its word 1, most
+         * likely KOL2's header that P-60e left there: KOL2 against an
+         * empty constant, not equal, 899 */
+        {"P-60f BRANCH_ATTR_OP_ARG without its length word, the program "
+         "last",
+         interpretedReadAttrInfo(
+             branchBackProgram(none, colNe,
+                               {Interpreter::BranchCol_2(0, 4), 0}, true),
+             none, none),
+         interpretedReadAttrInfo(branchBackProgram(none, colNe, none, false),
+                                 none, none),
+         kOutsideOfProgram},
+        /* Before: 899, KOL1's header as the constant 0, KOL1 = 1 is not 0 */
+        {"P-60g BRANCH_ATTR_OP_ARG whose length word gives a constant word "
+         "the program does not have, a final read after it",
+         interpretedReadAttrInfo(
+             branchBackProgram(none, colNe,
+                               {Interpreter::BranchCol_2(0, 4), 0}, true),
+             readKol1, none),
+         interpretedReadAttrInfo(
+             branchBackProgram(none, colNe, {Interpreter::BranchCol_2(0, 4)},
+                               false),
+             readKol1, none),
+         kOutsideOfProgram},
+        /* Before: 899, KOL1's header as word 1: KOL1 = KOL1 */
+        {"P-60h BRANCH_ATTR_OP_ATTR without its word 1, a final read after "
+         "it",
+         interpretedReadAttrInfo(
+             branchBackProgram(none, colEqCol,
+                               {Interpreter::BranchColAttrId_2(0, 0)}, true),
+             readKol1, none),
+         interpretedReadAttrInfo(
+             branchBackProgram(none, colEqCol, none, false), readKol1, none),
+         kOutsideOfProgram},
+        /* Before: 40, the headers as table id 0 and schema version
+         * 0x10000, which is not that of table 0 */
+        {"P-60i BRANCH_MEM_OP_ARG without its table id, schema version and "
+         "constant, a final read after it",
+         interpretedReadAttrInfo(
+             branchBackProgram(readLinked0, memEq,
+                               {Interpreter::BranchMem_2(0, 4), m_tableId,
+                                m_schemaVersion, 1},
+                               true),
+             readKol12, none),
+         interpretedReadAttrInfo(
+             branchBackProgram(readLinked0, memEq,
+                               {Interpreter::BranchMem_2(0, 4)}, false),
+             readKol12, none),
+         kOutsideOfProgram},
+        /* Before: 899, KOL1's header as size 0 and collation 0, and the
+         * staged value is NULL */
+        {"P-60j BRANCH_MEM_OP_ARG_INLINE_TYPE without its size word and "
+         "constant, a final read after it",
+         interpretedReadAttrInfo(
+             branchBackProgram(readLinked0, memInlineEq,
+                               {unsignedType | 4u, (4u << 16) | 0u, 1},
+                               true),
+             readKol1, none),
+         interpretedReadAttrInfo(
+             branchBackProgram(readLinked0, memInlineEq,
+                               {unsignedType | 4u}, false),
+             readKol1, none),
+         kOutsideOfProgram},
+        /* Before: 40, KOL1's header as the type word: the undefined type,
+         * which has no compare function */
+        {"P-60k BRANCH_LINKED_OP_LINKED without its type and size words, a "
+         "final read after it",
+         interpretedReadAttrInfo(
+             branchBackProgram(none, linkedEq,
+                               {Interpreter::BranchLinkedLinked_2(0, 0),
+                                unsignedType | 0u, (4u << 16) | 4u},
+                               true),
+             readKol1, none),
+         interpretedReadAttrInfo(
+             branchBackProgram(none, linkedEq,
+                               {Interpreter::BranchLinkedLinked_2(0, 0)},
+                               false),
+             readKol1, none),
+         kOutsideOfProgram},
+        /* Before: the stale word after the AttrInfo as the length of the
+         * section, most likely the 0 of P-60j's final read: an ndbassert
+         * stopped a debug data node, a release one gave 99 */
+        {"P-60l BRANCH_ATTR_OP_PARAM without a subroutine section",
+         interpretedReadAttrInfo(
+             branchBackProgram(none, paramEq,
+                               {Interpreter::BranchColParameter_2(0, 0)},
+                               true),
+             none, param1),
+         interpretedReadAttrInfo(
+             branchBackProgram(none, paramEq,
+                               {Interpreter::BranchColParameter_2(0, 0)},
+                               true),
+             none, none),
+         kOutsideOfProgram},
+        /* Before: the stale word after the AttrInfo as the value, most
+         * likely the 1 the controls left there: 899 */
+        {("P-60m BRANCH_ATTR_OP_PARAM whose subroutine section is one word "
+          "shorter than its length word"),
+         interpretedReadAttrInfo(
+             branchBackProgram(none, paramEq,
+                               {Interpreter::BranchColParameter_2(0, 0)},
+                               true),
+             none, param1),
+         interpretedReadAttrInfo(
+             branchBackProgram(none, paramEq,
+                               {Interpreter::BranchColParameter_2(0, 0)},
+                               true),
+             none, param1Cut),
+         kOutsideOfProgram},
+    };
+    const char *findingId = "P-60 an instruction cut off at the end of its "
+                            "program";
+
+    for (const Case &c : cases) {
+      const Reply control = sendInterpretedRead(c.control);
+      g_info << "CONTROL of " << c.id << endl;
+      printReply("CONTROL (the instruction or section whole)", control);
+      if (control.gsn != GSN_TCKEYREF || control.errorCode != kRefuseCode) {
+        g_err << "The control of " << c.id << " did not get TCKEYREF "
+              << kRefuseCode << " (got " << gsnName(control.gsn) << ", err "
+              << control.errorCode << ").  The raw interpreted read does "
+                 "not reach the instruction; fix this before trusting the "
+                 "result of P-60." << endl;
+        return clusterHealthy() ? NDBT_FAILED : failNodeDown(findingId);
+      }
+    }
+
+    std::vector<Reply> reps;
+    for (const Case &c : cases) {
+      reps.push_back(sendInterpretedRead(c.cut));
+      printReply(c.id, reps.back());
+    }
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    int result = NDBT_OK;
+    Uint32 i = 0;
+    for (const Case &c : cases) {
+      const Reply &rep = reps[i++];
+      if (rep.gsn != GSN_TCKEYREF || rep.errorCode != c.error) {
+        g_err << c.id << ": FAIL -- expected TCKEYREF " << c.error
+              << ", got " << gsnName(rep.gsn) << " " << rep.errorCode
+              << endl;
+        result = NDBT_FAILED;
+      } else {
+        g_info << c.id << ": PASS (all data nodes started; TCKEYREF "
+               << rep.errorCode << ")" << endl;
+      }
+    }
+    return result;
+  }
+
+  /* ---- Q cases: DBTC's rate queue re-send mark sent by the API -------- *
+   * DBTC's rate queue handler re-sends a queued request to its own DBTC
+   * instance with a mark: the passQueue flag of TCKEYREQ, TCINDXREQ and
+   * SCAN_TABREQ, bit 2 of SCAN_NEXTREQ's stopScan.  DBTC took the mark
+   * from any sender.  From an API it skipped the rate limit, and since a
+   * request that was never queued holds none of the counts the mark takes
+   * it off, an ndbrequire stopped the data node.  DBTC now reports such a
+   * request as tc_queue_flag_not_internal (Tier A, disconnect); the MTR
+   * wrappers check the count.  An invalid connection pointer reaches the
+   * ndbrequire(!flag) of the error paths. */
+  static constexpr Uint32 kInvalidConnectPtr = 0xFFFFFF00u; /* RNIL */
+
+  int runQ1() {  /* TCKEYREQ with passQueue -> ndbrequire(queued > 0) */
+    SpjReq r;
+    makeWellFormedScan(r);
+    r.viaScan = false;
+    r.keyInfo.assign(1, 0x00000001u);
+    r.passQueue = true;
+    return expectSurvive("Q-1 TCKEYREQ with the rate queue flag", r);
+  }
+
+  int runQ2() {  /* long TCINDXREQ with passQueue, invalid connection */
+    const Uint32 nodeId = pickDbNode();
+    Uint32 apiConnectPtr = 0, tcRef = 0, seizeUp = 0;
+    if (!seize(nodeId, apiConnectPtr, tcRef, seizeUp)) return NDBT_FAILED;
+    std::vector<Uint32> words(TcKeyReq::StaticLength);
+    const Uint32 userPointer = ++m_userPointer;
+    SpjMalformedSignals::fillTcKeyReq(words.data(), kInvalidConnectPtr,
+                                      userPointer, m_tableId, m_schemaVersion,
+                                      0x5b200000u + nodeId, userPointer);
+    SpjMalformedSignals::setTcKeyReqPassQueue(words.data());
+    return expectSurviveRaw("Q-2 TCINDXREQ with the rate queue flag", nodeId,
+                            tcRef, GSN_TCINDXREQ, words,
+                            std::vector<Uint32>(1, 0x00000001u));
+  }
+
+  int runQ3() {  /* SCAN_NEXTREQ sent-from-queue bit, invalid connection */
+    const Uint32 nodeId = pickDbNode();
+    Uint32 apiConnectPtr = 0, tcRef = 0, seizeUp = 0;
+    if (!seize(nodeId, apiConnectPtr, tcRef, seizeUp)) return NDBT_FAILED;
+    /* apiConnectPtr, stopScan (bit 2: sent from the queue), transId1,
+     * transId2 */
+    const std::vector<Uint32> words = {kInvalidConnectPtr, 2u,
+                                       0x5b300000u + nodeId, ++m_userPointer};
+    return expectSurviveRaw("Q-3 SCAN_NEXTREQ marked as sent from the queue",
+                            nodeId, tcRef, GSN_SCAN_NEXTREQ, words,
+                            std::vector<Uint32>());
+  }
+
+  int runQ4() {  /* short TCINDXREQ, key length 16, invalid connection */
+    /* Not a malicious request: bit 24 of a short TCINDXREQ is bit 4 of
+     * its key length, here 16 words (8 in the signal, the rest would
+     * follow in KEYINFO).  DBTC read it as the passQueue flag, and its
+     * ndbrequire(!passQueueingFlag) on an invalid or released connection
+     * stopped the data node.  It must be dropped without a report. */
+    const Uint32 nodeId = pickDbNode();
+    Uint32 apiConnectPtr = 0, tcRef = 0, seizeUp = 0;
+    if (!seize(nodeId, apiConnectPtr, tcRef, seizeUp)) return NDBT_FAILED;
+    std::vector<Uint32> words(TcKeyReq::StaticLength);
+    const Uint32 userPointer = ++m_userPointer;
+    SpjMalformedSignals::fillTcKeyReq(words.data(), kInvalidConnectPtr,
+                                      userPointer, m_tableId, m_schemaVersion,
+                                      0x5b400000u + nodeId, userPointer);
+    SpjMalformedSignals::setTcKeyReqKeyLength(words.data(), 16);
+    words.resize(TcKeyReq::StaticLength + TcKeyReq::MaxKeyInfo, 0x01010101u);
+    return expectSurviveRaw("Q-4 short TCINDXREQ with a 16-word key", nodeId,
+                            tcRef, GSN_TCINDXREQ, words,
+                            std::vector<Uint32>());
+  }
+
+  int runQ5() {  /* SCAN_TABREQ with passQueue */
+    /* Not a crash before: DBTC took the flag only from a DBTC block. */
+    SpjReq r;
+    makeWellFormedScan(r);
+    r.passQueue = true;
+    return expectSurvive("Q-5 SCAN_TABREQ with the rate queue flag", r);
+  }
+
+  /* ---- S cases: join aggregation signals from the API ----------------- *
+   * DBTC, DBSPJ, DBLQH and the DBLQH proxy pass the JOIN_AGG_* and CTE_*
+   * signals between data nodes only, so SignalScopes.hpp declares them
+   * Remote, or Local for the three that never leave their node.  They
+   * had no scope, so a data node ran their handlers for an API node too.
+   * A data node now drops a Remote one that an API node sends and
+   * reports it as signal_scope_remote_violation (violation 32, Tier A:
+   * the API node is disconnected); the MTR wrappers check the count. */
+
+  int runS1() {  /* JOIN_AGG_SEND_REQ to DBTC */
+    /* DBTC answered a JOIN_AGG_SEND_REQ from any node with a
+     * JOIN_AGG_SEND_CONF to the block reference in the request, so an
+     * API node could make DBTC send a SEND_CONF to any DBLQH.  No block
+     * unit test sends SEND_REQ, so it is Remote in debug builds too and
+     * the case runs against debug and release data nodes.  The request
+     * names us: a SEND_CONF back means that DBTC took it.  Its word 0
+     * is the reference of the DBTC instance that answers. */
+    const char *const findingId = "S-1 JOIN_AGG_SEND_REQ from the API to DBTC";
+    const Uint32 nodeId = pickDbNode();
+    Uint32 apiConnectPtr = 0, tcRef = 0, seizeUp = 0;
+    if (!seize(nodeId, apiConnectPtr, tcRef, seizeUp)) return NDBT_FAILED;
+    SimpleSignal sig(false);
+    JoinAggSendReq *req =
+        reinterpret_cast<JoinAggSendReq *>(sig.getDataPtrSend());
+    req->senderRef = m_ss->getOwnRef();
+    req->senderData = ++m_userPointer;
+    req->requestId = 0;
+    req->aggStateKey = 0;
+    req->numRowsSent = 0;
+    req->resultBytes = 0;
+    Uint32 reply[25] = {0};
+    m_ss->lock();
+    const SendStatus sent =
+        m_ss->sendSignal(nodeId, sig, refToBlock(tcRef),
+                         GSN_JOIN_AGG_SEND_REQ, JoinAggSendReq::SignalLength);
+    /* The wait also gives a crash time to surface. */
+    const Uint32 gsn =
+        sent == SEND_OK
+            ? waitReplyLocked(GSN_JOIN_AGG_SEND_CONF, GSN_JOIN_AGG_SEND_CONF,
+                              tcRef, nodeId, SettleMillis, reply)
+            : 0;
+    m_ss->unlock();
+    g_info << findingId << ": sent " << (sent == SEND_OK ? "OK" : "FAILED")
+           << endl;
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (gsn == GSN_JOIN_AGG_SEND_CONF) {
+      g_err << findingId << ": FAIL -- DBTC answered with JOIN_AGG_SEND_CONF: "
+               "the data node took a JOIN_AGG_SEND_REQ from an API node"
+            << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId
+           << ": PASS (all data nodes started; no JOIN_AGG_SEND_CONF)" << endl;
+    return NDBT_OK;
+  }
+
+  int runS2() {  /* JOIN_AGG_FINAL_REP to DBLQH, sender node past the max */
+    /* execJOIN_AGG_FINAL_REP stopped the data node on
+     * ndbrequire(senderNodeId < ABS_MAX_NDB_NODES), so one FINAL_REP
+     * from an API node stopped a data node.  The block unit tests send
+     * FINAL_REP from an API node, so a debug data node still takes it
+     * (NDB_SCOPE_REMOTE_EXCEPT_DEBUG in SignalScopes.hpp) and stops: the
+     * case needs release data nodes, and its MTR wrapper skips on debug
+     * ones.  The check comes before any state lookup, so any LDM
+     * instance will do: DBLQH instance 1. */
+    const char *const findingId =
+        "S-2 JOIN_AGG_FINAL_REP from the API, sender node past the maximum";
+    const Uint32 nodeId = pickDbNode();
+    SimpleSignal sig(false);
+    JoinAggFinalRep *rep =
+        reinterpret_cast<JoinAggFinalRep *>(sig.getDataPtrSend());
+    rep->aggStateKey = 0;
+    rep->senderNodeId = 0xFFFF;
+    rep->identWord = 0xFFFFFF00u; /* RNIL */
+    rep->transid[0] = 0x5b510000u + nodeId;
+    rep->transid[1] = ++m_userPointer;
+    rep->redistributeCountLo = 0;
+    rep->redistributeCountHi = 0;
+    rep->errorCode = 0;
+    m_ss->lock();
+    const SendStatus sent =
+        m_ss->sendSignal(nodeId, sig, numberToBlock(DBLQH, 1),
+                         GSN_JOIN_AGG_FINAL_REP, JoinAggFinalRep::SignalLength);
+    m_ss->unlock();
+    g_info << findingId << ": sent " << (sent == SEND_OK ? "OK" : "FAILED")
+           << endl;
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (clusterHealthy()) {
+      g_info << findingId << ": PASS (all data nodes started)" << endl;
+      return NDBT_OK;
+    }
+    return failNodeDown(findingId);
+  }
+
  private:
   SignalSender *const m_ss;
   NdbRestarter *const m_restarter;
@@ -636,12 +3530,11 @@ class SpjMalformedChecker {
   static constexpr Uint32 kAggReceiverId = 0x00010000u;
   static constexpr Uint32 kBatchRows = 16;
   static constexpr Uint32 kBatchBytes = 32768;
-
-  struct Reply {
-    Uint32 gsn{0};
-    Uint32 errorCode{0};
-    bool disconnected{false};
-  };
+  /* The cteIndex of the main program's column metadata block (RNIL) */
+  static constexpr Uint32 kNoCteIndex = 0xFFFFFF00u;
+  static constexpr Uint32 kLatin1 = 8;     /* latin1_swedish_ci */
+  static constexpr Uint32 kAbcd = 0x64636261u;        /* "abcd" */
+  static constexpr Uint32 kFourSpaces = 0x20202020u;  /* "    " */
 
   static const char *gsnName(Uint32 gsn) {
     switch (gsn) {
@@ -649,6 +3542,8 @@ class SpjMalformedChecker {
       case GSN_SCAN_TABREF: return "SCAN_TABREF";
       case GSN_TCKEYCONF: return "TCKEYCONF";
       case GSN_TCKEYREF: return "TCKEYREF";
+      case GSN_SCAN_FRAGCONF: return "SCAN_FRAGCONF";
+      case GSN_SCAN_FRAGREF: return "SCAN_FRAGREF";
       case 0: return "(no reply / disconnected)";
       default: return "(other)";
     }
@@ -722,6 +3617,7 @@ class SpjMalformedChecker {
       len = SpjMalformedSignals::fillScanTabReq(
           d, apiConnectPtr, m_tableId, m_schemaVersion, transId1, transId2,
           kBatchRows, kBatchBytes, r.joinAgg, r.scanParallelism);
+      if (r.passQueue) SpjMalformedSignals::setScanTabReqPassQueue(d);
       gsn = GSN_SCAN_TABREQ;
       /* sections: 0 = receiver ids, 1 = AttrInfo, 2 = KeyInfo (optional) */
       sig.ptr[ScanTabReq::ReceiverIdSectionNum].p = r.rcvIds.data();
@@ -759,6 +3655,7 @@ class SpjMalformedChecker {
       len = SpjMalformedSignals::fillTcKeyReq(d, apiConnectPtr, userPointer,
                                               m_tableId, m_schemaVersion,
                                               transId1, transId2);
+      if (r.passQueue) SpjMalformedSignals::setTcKeyReqPassQueue(d);
       gsn = GSN_TCKEYREQ;
 
       sig.ptr[TcKeyReq::KeyInfoSectionNum].p = r.keyInfo.data();
@@ -785,8 +3682,57 @@ class SpjMalformedChecker {
     return rep;
   }
 
-  /* Caller holds the lock.  Return the first gsn1/gsn2 from nodeId whose
-   * word 0 is word0Match, or 0 on timeout. */
+  /* Send the P-46 range scan of the ordered index with the AttrInfo
+   * section attrInfo, and wait for its first reply. */
+  Reply sendInterpretedRangeScan(Uint32 indexId, Uint32 indexVersion,
+                                 const std::vector<Uint32> &attrInfo) {
+    Reply rep;
+    const Uint32 nodeId = pickDbNode();
+    Uint32 apiConnectPtr = 0, tcRef = 0, seizeUp = 0;
+    if (!seize(nodeId, apiConnectPtr, tcRef, seizeUp)) {
+      rep.disconnected = true;
+      return rep;
+    }
+    const Uint32 userPointer = ++m_userPointer;
+    SimpleSignal sig(false);
+    Uint32 *d = sig.getDataPtrSend();
+    const Uint32 len = SpjMalformedSignals::fillScanTabReq(
+        d, apiConnectPtr, indexId, indexVersion, 0x5b460000u + nodeId,
+        userPointer, kBatchRows, kBatchBytes, false, 1);
+    SpjMalformedSignals::setScanTabReqPlainRangeScan(d);
+
+    std::vector<Uint32> ai(attrInfo);
+    std::vector<Uint32> keyInfo;
+    appendEqRange(keyInfo, 0, 1);
+    appendEqRange(keyInfo, 1, 2);
+    std::vector<Uint32> rcvIds(1, kReceiverId);
+    sig.ptr[ScanTabReq::ReceiverIdSectionNum].p = rcvIds.data();
+    sig.ptr[ScanTabReq::ReceiverIdSectionNum].sz = (Uint32)rcvIds.size();
+    sig.ptr[ScanTabReq::AttrInfoSectionNum].p = ai.data();
+    sig.ptr[ScanTabReq::AttrInfoSectionNum].sz = (Uint32)ai.size();
+    sig.ptr[ScanTabReq::KeyInfoSectionNum].p = keyInfo.data();
+    sig.ptr[ScanTabReq::KeyInfoSectionNum].sz = (Uint32)keyInfo.size();
+    sig.header.m_noOfSections = 3;
+
+    m_ss->lock();
+    const int sent = m_ss->sendFragmentedSignal(nodeId, sig, refToBlock(tcRef),
+                                                GSN_SCAN_TABREQ, len);
+    Uint32 reply[25];
+    if (sent == SEND_OK) {
+      /* The first fragment's SCAN_TABCONF (it has read both ranges), or
+       * the SCAN_TABREF of the scan. */
+      rep.gsn = waitReplyLocked(GSN_SCAN_TABCONF, GSN_SCAN_TABREF, seizeUp,
+                                nodeId, ReplyMillis, reply);
+      if (rep.gsn == GSN_SCAN_TABREF) rep.errorCode = reply[3];
+    } else {
+      rep.disconnected = true;
+    }
+    m_ss->unlock();
+    return rep;
+  }
+
+  /* Caller holds the lock.  Return the first gsn1/gsn2 from nodeId (any
+   * node for 0) whose word 0 is word0Match, or 0 on timeout. */
   Uint32 waitReplyLocked(Uint32 gsn1, Uint32 gsn2, Uint32 word0Match,
                          Uint32 nodeId, Uint32 timeoutMillis, Uint32 *data) {
     const NDB_TICKS start = NdbTick_getCurrentTicks();
@@ -798,7 +3744,8 @@ class SpjMalformedChecker {
       if (s == nullptr) return 0;
       const Uint32 gsn = s->readSignalNumber();
       if ((gsn == gsn1 || gsn == gsn2) &&
-          refToNode(s->header.theSendersBlockRef) == nodeId &&
+          (nodeId == 0 ||
+           refToNode(s->header.theSendersBlockRef) == nodeId) &&
           s->getLength() >= 1 && s->getDataPtr()[0] == word0Match) {
         memcpy(data, s->getDataPtr(), 4 * s->getLength());
         return gsn;
@@ -839,6 +3786,39 @@ class SpjMalformedChecker {
     return failNodeDown(findingId);
   }
 
+  /* Send one signal of `words` with up to one section to the DBTC
+   * instance tcRef on nodeId, expect no reply, then require every data
+   * node to still be started. */
+  int expectSurviveRaw(const char *findingId, Uint32 nodeId, Uint32 tcRef,
+                       Uint16 gsn, std::vector<Uint32> words,
+                       std::vector<Uint32> section0) {
+    SimpleSignal sig(false);
+    std::memcpy(sig.getDataPtrSend(), words.data(),
+                sizeof(Uint32) * words.size());
+    Uint32 nSec = 0;
+    if (!section0.empty()) {
+      sig.ptr[0].p = section0.data();
+      sig.ptr[0].sz = (Uint32)section0.size();
+      nSec = 1;
+    }
+    sig.header.m_noOfSections = nSec;
+    m_ss->lock();
+    const SendStatus sent = m_ss->sendSignal(nodeId, sig, refToBlock(tcRef),
+                                             gsn, (Uint32)words.size());
+    m_ss->unlock();
+    g_info << findingId << ": sent " << (sent == SEND_OK ? "OK" : "FAILED")
+           << endl;
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (clusterHealthy()) {
+      g_info << findingId << ": PASS (all data nodes started)" << endl;
+      return NDBT_OK;
+    }
+    return failNodeDown(findingId);
+  }
+
   int failNodeDown(const char *findingId) {
     g_err << findingId
           << ": FAIL -- a data node went down on the malformed request. "
@@ -858,6 +3838,25 @@ class SpjMalformedChecker {
    * DbspjErr::InvalidRequest, for P-32 from the failed row (1868); the
    * error code is printed, not required, as an error of a fragment scan
    * reaching DBTC first would win. */
+  /* A join aggregation whose leaves the data node must accept: it must
+   * get SCAN_TABCONF, as the control of expectAggRejected.  Send it
+   * before any malformed request, which may disconnect us. */
+  int expectAggAccepted(const char *findingId,
+                        const std::vector<std::vector<Uint32>> &leaves) {
+    SpjReq r;
+    makeJoinAggScan(r, leaves);
+    const Reply rep = sendScanTabReq(r);
+    printReply(findingId, rep);
+    if (rep.gsn != GSN_SCAN_TABCONF) {
+      g_err << findingId << ": FAIL -- expected SCAN_TABCONF, got "
+            << gsnName(rep.gsn) << ", err " << rep.errorCode
+            << ": a well-formed aggregation program was rejected" << endl;
+      return clusterHealthy() ? NDBT_FAILED : failNodeDown(findingId);
+    }
+    g_info << findingId << ": PASS (SCAN_TABCONF)" << endl;
+    return NDBT_OK;
+  }
+
   int expectAggRejected(const char *findingId,
                         const std::vector<std::vector<Uint32>> &leaves) {
     SpjReq good;
@@ -890,6 +3889,52 @@ class SpjMalformedChecker {
             << gsnName(rep.gsn)
             << ": the malformed aggregation program was not rejected"
             << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId << ": PASS (all data nodes started; SCAN_TABREF "
+           << rep.errorCode << ", JOIN_AGG_SETUP_REF sends "
+           << Uint32(DbspjErr::InvalidRequest) << ")" << endl;
+    return NDBT_OK;
+  }
+
+  /* A GROUP BY metadata case: first the join aggregation of
+   * localGroupByLeaf with the metadata of its column (Unsigned, 4 bytes,
+   * no collation), which must get SCAN_TABCONF, then the same with
+   * typeId and csNumber in the metadata, which JOIN_AGG_SETUP_REQ must
+   * refuse (DbspjErr::InvalidRequest) with every data node started. */
+  int expectGroupByMetaRejected(const char *findingId, Uint32 typeId,
+                                Uint32 csNumber) {
+    SpjReq good;
+    makeJoinAggScan(good, {localGroupByLeaf()});
+    appendGroupByMeta(good, NDB_TYPE_UNSIGNED, 4, 0);
+    const Reply control = sendScanTabReq(good);
+    printReply("CONTROL (join aggregation with GROUP BY metadata)", control);
+    if (control.gsn != GSN_SCAN_TABCONF) {
+      g_err << "GROUP BY METADATA CONTROL did not get SCAN_TABCONF (got "
+            << gsnName(control.gsn) << ", err " << control.errorCode
+            << ").  The raw column metadata encoding is wrong; fix this "
+               "before trusting the result of "
+            << findingId << "." << endl;
+      return clusterHealthy() ? NDBT_FAILED : failNodeDown(findingId);
+    }
+
+    SpjReq r;
+    makeJoinAggScan(r, {localGroupByLeaf()});
+    appendGroupByMeta(r, typeId, 4, csNumber);
+    r.waitForEnd = true;
+    const Reply rep = sendScanTabReq(r);
+    printReply(findingId, rep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (rep.gsn != GSN_SCAN_TABREF) {
+      g_err << findingId << ": FAIL -- expected SCAN_TABREF, got "
+            << gsnName(rep.gsn)
+            << ": the GROUP BY metadata was not rejected" << endl;
       return NDBT_FAILED;
     }
     g_info << findingId << ": PASS (all data nodes started; SCAN_TABREF "
@@ -959,6 +4004,173 @@ CASE_STEP(runP29, runP29)
 CASE_STEP(runP30, runP30)
 CASE_STEP(runP31, runP31)
 CASE_STEP(runP32, runP32)
+CASE_STEP(runP33, runP33)
+CASE_STEP(runP35, runP35)
+CASE_STEP(runP36, runP36)
+CASE_STEP(runP37, runP37)
+CASE_STEP(runP40, runP40)
+CASE_STEP(runP41, runP41)
+CASE_STEP(runP43, runP43)
+CASE_STEP(runP44, runP44)
+CASE_STEP(runP45, runP45)
+CASE_STEP(runP48, runP48)
+CASE_STEP(runP50, runP50)
+CASE_STEP(runP51, runP51)
+CASE_STEP(runP38, runP38)
+CASE_STEP(runP39, runP39)
+CASE_STEP(runP52, runP52)
+CASE_STEP(runP54, runP54)
+CASE_STEP(runP55, runP55)
+CASE_STEP(runP56, runP56)
+CASE_STEP(runP57, runP57)
+CASE_STEP(runP58, runP58)
+CASE_STEP(runP59, runP59)
+CASE_STEP(runP60, runP60)
+CASE_STEP(runQ1, runQ1)
+CASE_STEP(runQ2, runQ2)
+CASE_STEP(runQ3, runQ3)
+CASE_STEP(runQ4, runQ4)
+CASE_STEP(runQ5, runQ5)
+CASE_STEP(runS1, runS1)
+CASE_STEP(runS2, runS2)
+
+/* Creates the ordered index indexName on column 0 of tab, after dropping
+ * one that an earlier run left.  Returns it, or nullptr. */
+const NdbDictionary::Index *createOrderedIndexOnColumn0(
+    NdbDictionary::Dictionary *dict, const NdbDictionary::Table *tab,
+    const char *indexName, const char *caseId) {
+  (void)dict->dropIndex(indexName, tab->getName());  /* an earlier run's */
+  NdbDictionary::Index idx(indexName);
+  idx.setTable(tab->getName());
+  idx.setType(NdbDictionary::Index::OrderedIndex);
+  idx.setLogging(false);
+  idx.addColumnName(tab->getColumn(0)->getName());
+  if (dict->createIndex(idx) != 0) {
+    g_err << caseId << ": creating ordered index " << indexName
+          << " failed: " << dict->getNdbError() << endl;
+    return nullptr;
+  }
+  const NdbDictionary::Index *created =
+      dict->getIndex(indexName, tab->getName());
+  if (created == nullptr) {
+    g_err << caseId << ": ordered index " << indexName << " not found: "
+          << dict->getNdbError() << endl;
+  }
+  return created;
+}
+
+/* P-46 scans an ordered index on column 0 of the table, which the step
+ * creates and drops after the case. */
+int runP46(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = nullptr;
+  SignalSender *ss = nullptr;
+  NdbRestarter *restarter = nullptr;
+  SpjMalformedChecker *c = makeChecker(ctx, step, pNdb, ss, restarter);
+  if (c == nullptr) return NDBT_FAILED;
+  const NdbDictionary::Table *tab = ctx->getTab();
+  NdbDictionary::Dictionary *dict = pNdb->getDictionary();
+  const char *const indexName = "P46_ORDERED_COL0";
+  int res = NDBT_FAILED;
+  const NdbDictionary::Index *created =
+      createOrderedIndexOnColumn0(dict, tab, indexName, "P-46");
+  if (created != nullptr) {
+    res = c->runP46(Uint32(created->getObjectId()),
+                    Uint32(created->getObjectVersion()));
+  }
+  (void)dict->dropIndex(indexName, tab->getName());
+  delete c;
+  delete ss;
+  delete restarter;
+  return res;
+}
+
+/* P-49 scans an ordered index on column 0 of the table through the NDB
+ * API; the step creates the index and drops it after the case. */
+int runP49(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = nullptr;
+  SignalSender *ss = nullptr;
+  NdbRestarter *restarter = nullptr;
+  SpjMalformedChecker *c = makeChecker(ctx, step, pNdb, ss, restarter);
+  if (c == nullptr) return NDBT_FAILED;
+  const NdbDictionary::Table *tab = ctx->getTab();
+  NdbDictionary::Dictionary *dict = pNdb->getDictionary();
+  const char *const indexName = "P49_ORDERED_COL0";
+  int res = NDBT_FAILED;
+  const NdbDictionary::Index *created =
+      createOrderedIndexOnColumn0(dict, tab, indexName, "P-49");
+  if (created != nullptr) {
+    res = c->runP49(pNdb, tab, created);
+  }
+  (void)dict->dropIndex(indexName, tab->getName());
+  delete c;
+  delete ss;
+  delete restarter;
+  return res;
+}
+
+/* P-53's table test.p53_cmp, with the row ID 1, VC 'abcd', F 1.5.
+ * Tables are created through MySQL, never through the NDB API: the MTR
+ * test test_spj_malformed_p53 creates and loads it before the case and
+ * drops it after, and the step only looks it up.  MySQL's database test
+ * is the NDB database "test", schema "def"; the step's Ndb object uses
+ * TEST_DB (NDBT), so it uses "test" for the lookup and gets TEST_DB
+ * back after it.  runP53 reads attribute ids 0, 1 and 2 as ID Unsigned
+ * (the key), VC Varchar(8) (a 1-byte length prefix) and F Float. */
+int lookupP53Table(Ndb *pNdb, Uint32 &tableId, Uint32 &tableVersion) {
+  const char *const dbName = "test";
+  const char *const tabName = "p53_cmp";
+  const BaseString savedDb(pNdb->getDatabaseName());
+  if (pNdb->setDatabaseName(dbName) != 0) {
+    g_err << "P-53: setDatabaseName(" << dbName
+          << ") failed: " << pNdb->getNdbError() << endl;
+    return -1;
+  }
+  NdbDictionary::Dictionary *dict = pNdb->getDictionary();
+  const NdbDictionary::Table *tab = dict->getTable(tabName);
+  int res = -1;
+  if (tab == nullptr) {
+    g_err << "P-53: table " << dbName << "." << tabName
+          << " not found: " << dict->getNdbError()
+          << ".  The MTR test test_spj_malformed_p53 creates it through "
+             "MySQL; run P53 from there." << endl;
+  } else if (tab->getNoOfColumns() != 3 ||
+             tab->getColumn(0)->getType() != NdbDictionary::Column::Unsigned ||
+             !tab->getColumn(0)->getPrimaryKey() ||
+             tab->getColumn(1)->getType() != NdbDictionary::Column::Varchar ||
+             tab->getColumn(1)->getLength() != 8 ||
+             tab->getColumn(2)->getType() != NdbDictionary::Column::Float) {
+    g_err << "P-53: table " << dbName << "." << tabName
+          << " does not have the columns that test_spj_malformed_p53 "
+             "creates: ID INT UNSIGNED PRIMARY KEY, VC VARCHAR(8) "
+             "CHARACTER SET latin1, F FLOAT." << endl;
+  } else {
+    tableId = Uint32(tab->getObjectId());
+    tableVersion = Uint32(tab->getObjectVersion());
+    res = 0;
+  }
+  (void)pNdb->setDatabaseName(savedDb.c_str());
+  return res;
+}
+
+/* P-53 reads a table with a VARCHAR and a FLOAT column, which T1 does
+ * not have: test.p53_cmp, which the MTR test creates through MySQL. */
+int runP53(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *pNdb = nullptr;
+  SignalSender *ss = nullptr;
+  NdbRestarter *restarter = nullptr;
+  SpjMalformedChecker *c = makeChecker(ctx, step, pNdb, ss, restarter);
+  if (c == nullptr) return NDBT_FAILED;
+  Uint32 tableId = 0;
+  Uint32 tableVersion = 0;
+  int res = NDBT_FAILED;
+  if (lookupP53Table(pNdb, tableId, tableVersion) == 0) {
+    res = c->runP53(tableId, tableVersion);
+  }
+  delete c;
+  delete ss;
+  delete restarter;
+  return res;
+}
 
 }  // namespace
 
@@ -1032,6 +4244,157 @@ TESTCASE("P32",
          "join aggregation: rows read a register they skipped the load "
          "of") {
   STEP(runP32);
+}
+TESTCASE("P33",
+         "aggregation SCAN_FRAGREQ without an interpreted program, sent "
+         "straight to DBLQH (debug data nodes only)") {
+  STEP(runP33);
+}
+TESTCASE("P35",
+         "join aggregation: a linked attribute entry that runs past the "
+         "linked buffer") {
+  STEP(runP35);
+}
+TESTCASE("P36",
+         "join aggregation: inline-type CHAR compare with charset 0") {
+  STEP(runP36);
+}
+TESTCASE("P37",
+         "join aggregation: inline-type BINARY compare with a charset") {
+  STEP(runP37);
+}
+TESTCASE("P40",
+         "join aggregation: a linked attribute entry shorter than the "
+         "type it is read as") {
+  STEP(runP40);
+}
+TESTCASE("P41",
+         "interpreted read whose AttrInfo header lengths wrap in 32 "
+         "bits") {
+  STEP(runP41);
+}
+TESTCASE("P43",
+         "join aggregation: GROUP BY CHAR column metadata with collation 0") {
+  STEP(runP43);
+}
+TESTCASE("P44",
+         "join aggregation: GROUP BY Unsigned column metadata with a "
+         "collation") {
+  STEP(runP44);
+}
+TESTCASE("P45",
+         "join aggregation: inline-type compare of values of other "
+         "lengths than the staged one") {
+  STEP(runP45);
+}
+TESTCASE("P46",
+         "interpreted range scan with two ranges whose parameter blocks "
+         "run past the parameter area (the block cases on data nodes "
+         "built with ERROR_INSERT only)") {
+  STEP(runP46);
+}
+TESTCASE("P48",
+         "join aggregation: a linked attribute entry shorter than its "
+         "type, compared (on the JIT when it is on) and on an outer "
+         "join's NULL-extended row") {
+  STEP(runP48);
+}
+TESTCASE("P49",
+         "NDB API index scan with two ranges whose program calls a "
+         "subroutine returns the rows of both ranges") {
+  STEP(runP49);
+}
+TESTCASE("P50",
+         "interpreted programs with a subroutine part, or a pattern "
+         "without NI_ATTR_LINKED, which went to the subroutine section "
+         "of the AttrInfo") {
+  STEP(runP50);
+}
+TESTCASE("P51",
+         "join aggregation: a null test of an embedded register that a "
+         "path did not write (refused by the JIT when it is on)") {
+  STEP(runP51);
+}
+TESTCASE("P38",
+         "join aggregation: string MIN and BIGINT MIN in one slot") {
+  STEP(runP38);
+}
+TESTCASE("P39",
+         "join aggregation: MAX of a register that is a BIGINT or a CHAR") {
+  STEP(runP39);
+}
+TESTCASE("P52",
+         "join aggregation: a linked GROUP BY value whose length prefix "
+         "runs past it") {
+  STEP(runP52);
+}
+TESTCASE("P53",
+         "interpreted read comparing a column with a constant its compare "
+         "function cannot take (reads test.p53_cmp, which the MTR test "
+         "test_spj_malformed_p53 creates through MySQL)") {
+  STEP(runP53);
+}
+TESTCASE("P54",
+         "join aggregation: SUM or arithmetic of a string register, two "
+         "aggregates of one slot, a GROUP BY column past the table") {
+  STEP(runP54);
+}
+TESTCASE("P55",
+         "join aggregation: string MAX of two string types in one slot, of "
+         "a kOpMov copy, linked values shorter than their type") {
+  STEP(runP55);
+}
+TESTCASE("P56",
+         "join aggregation: SUM after a SUM of a register set NULL") {
+  STEP(runP56);
+}
+TESTCASE("P57",
+         "join aggregation: an embedded branch of offset 0, to itself") {
+  STEP(runP57);
+}
+TESTCASE("P58",
+         "a branch into the middle of an instruction: join aggregation "
+         "embedded program, interpreted read") {
+  STEP(runP58);
+}
+TESTCASE("P59",
+         "join aggregation: GROUP BY a linked value whose type has no "
+         "compare function") {
+  STEP(runP59);
+}
+TESTCASE("P60",
+         "interpreted read: an instruction cut off at the end of its "
+         "program, a parameter section shorter than its length word") {
+  STEP(runP60);
+}
+TESTCASE("Q1", "TCKEYREQ with the rate queue flag from the API") {
+  STEP(runQ1);
+}
+TESTCASE("Q2",
+         "TCINDXREQ with the rate queue flag from the API, invalid "
+         "connection") {
+  STEP(runQ2);
+}
+TESTCASE("Q3",
+         "SCAN_NEXTREQ marked as sent from the rate queue by the API, "
+         "invalid connection") {
+  STEP(runQ3);
+}
+TESTCASE("Q4",
+         "short TCINDXREQ whose key length sets the rate queue flag bit, "
+         "invalid connection") {
+  STEP(runQ4);
+}
+TESTCASE("Q5", "SCAN_TABREQ with the rate queue flag from the API") {
+  STEP(runQ5);
+}
+TESTCASE("S1", "JOIN_AGG_SEND_REQ from the API to DBTC") {
+  STEP(runS1);
+}
+TESTCASE("S2",
+         "JOIN_AGG_FINAL_REP from the API, sender node past the maximum "
+         "(release data nodes only)") {
+  STEP(runS2);
 }
 NDBT_TESTSUITE_END(testSpjMalformed)
 

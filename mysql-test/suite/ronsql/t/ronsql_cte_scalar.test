@@ -26,7 +26,6 @@ call mtr.add_suppression("Participant timeout");
 #   17-20. Negative tests: comma joins of stored tables and of a
 #      grouped CTE, in the main query and in a CTE body.
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --disable_query_log

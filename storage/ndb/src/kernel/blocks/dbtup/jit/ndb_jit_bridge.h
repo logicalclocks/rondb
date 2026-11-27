@@ -66,7 +66,10 @@ typedef enum {
   JIT_BRIDGE_TYPE_MISMATCH   = 8,   /* operand register type does not match
                                      * the typed opcode (Phase 5C tracker) */
   JIT_BRIDGE_REG_NOT_LOADED  = 9,   /* an instruction reads a register that
-                                     * a path to it does not load (K-1) */
+                                     * a path to it does not load (K-1;
+                                     * embedded registers: RONDB-1124) */
+  JIT_BRIDGE_EMBEDDED_NO_OUTPUT = 10, /* a path through an embedded block
+                                       * ends without interpreter output 0 */
 } JitBridgeReason;
 
 typedef struct {

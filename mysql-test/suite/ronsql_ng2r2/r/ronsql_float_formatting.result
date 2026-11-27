@@ -1,0 +1,159 @@
+SELECT COUNT(*) AS data_nodes FROM ndbinfo.nodes;
+data_nodes
+4
+Scalar FLOAT extrema and DOUBLE control
+== Query ==
+SELECT MIN(f) AS lo, MAX(f) AS hi, MIN(d) AS dlo, MAX(d) AS dhi FROM float_format WHERE g = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Grouped FLOAT extrema: signs, exponents, zero and NULL
+== Query ==
+SELECT g, MIN(f) AS lo, MAX(f) AS hi, MIN(d) AS dlo, MAX(d) AS dhi FROM float_format GROUP BY g;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+FLOAT group keys
+== Query ==
+SELECT f, COUNT(*) AS n FROM float_format GROUP BY f;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+Ordered FLOAT keys and extrema
+== Query ==
+SELECT f, MIN(f) AS lo, MAX(f) AS hi, MIN(d) AS dlo, MAX(d) AS dhi FROM float_format GROUP BY f ORDER BY f;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+CTE projection of native FLOAT and widened MIN
+== Query ==
+WITH a AS (SELECT f, MIN(f) AS lo FROM float_format GROUP BY f) SELECT f, lo FROM a;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+Widened FLOAT CTE group keys
+== Query ==
+WITH a AS (SELECT g, MIN(f) AS lo FROM float_format GROUP BY g) SELECT lo, COUNT(*) AS n FROM a GROUP BY lo;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+Ordered widened FLOAT CTE group keys
+== Query ==
+WITH a AS (SELECT g, MIN(f) AS lo FROM float_format GROUP BY g) SELECT lo, COUNT(*) AS n FROM a GROUP BY lo ORDER BY lo DESC;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+CTE extrema preserve FLOAT while SUM and AVG remain DOUBLE
+== Query ==
+WITH a AS (SELECT g, MIN(f) AS lo, MAX(f) AS hi, SUM(f) AS sf, AVG(f) AS af FROM float_format WHERE g = 1 GROUP BY g) SELECT MIN(lo) AS lo, MAX(hi) AS hi, MIN(sf) AS sf, MAX(af) AS af FROM a;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+CTE extrema preserve FLOAT on the CTE path
+== Query ==
+WITH a AS (SELECT g, MIN(f) AS lo, MAX(f) AS hi, SUM(f) AS sf, AVG(f) AS af FROM float_format WHERE g = 1 GROUP BY g) SELECT COUNT(*) AS n, MIN(lo) AS lo, MAX(hi) AS hi, MIN(sf) AS sf, MAX(af) AS af FROM a;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Chained CTE projection preserves each display type
+== Query ==
+WITH a AS (SELECT g, MIN(f) AS lo, MAX(f) AS hi, SUM(f) AS sf, AVG(f) AS af FROM float_format WHERE g = 1 GROUP BY g), b AS (SELECT g, MAX(lo) AS lo, MIN(hi) AS hi, MIN(sf) AS sf, MAX(af) AS af FROM a GROUP BY g) SELECT g, lo, hi, sf, af FROM b;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Direct FLOAT SUM and AVG retain DOUBLE precision
+== Query ==
+SELECT SUM(f) AS sf, AVG(f) AS af FROM float_format WHERE g = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Empty scalar FLOAT extrema
+== Query ==
+SELECT MIN(f) AS lo, MAX(f) AS hi FROM float_format WHERE g = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Small DOUBLE aggregates printed exactly in fixed point
+pk	v
+1	0.00000000000000000001
+2	-0.00000000000000000001
+3	0.000012345678901234568
+4	0.012345678901234567
+5	0.05
+6	0.000000000000001
+7	0.0000000000000001
+8	0.30000000000000004
+9	2.5
+10	-0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000022250738585072014
+Small DOUBLE group keys printed exactly in fixed point
+d	n
+-0.00000000000000000001	1
+-0.000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000022250738585072014	1
+0.00000000000000000001	1
+0.0000000000000001	1
+0.000000000000001	1
+0.000012345678901234568	1
+0.012345678901234567	1
+0.05	1
+0.30000000000000004	1
+2.5	1

@@ -137,6 +137,10 @@ typedef Int32 NdbAttrId;
 
 class RonSQLPreparer
 {
+  // T-16: EncodeConstantUnitTest and ProgramSizeUnitTest each define this
+  // class to run encode_constant() and the aggregation program emitters
+  // without a cluster.
+  friend class RonSQLPreparerTestAccess;
 public:
   enum class ErrState
   {
@@ -273,6 +277,11 @@ private:
   bool m_parse_only = false;
   LexString m_sql = {NULL, 0};
   ArenaMalloc* m_amalloc;
+#ifdef ERROR_INSERT
+  // T-17: allocation_test_hook with Site::ARENA fails m_amalloc's
+  // allocations while this preparer lives (C++ tests, ERROR_INSERT builds).
+  RonSQLArenaTestHookScope m_arena_test_hook;
+#endif
   Context m_context;
   DynamicArray<LexCString> m_columns;
   DynamicArray<LexCString> m_column_qualifiers; /* table qualifier per col_idx */
@@ -399,6 +408,11 @@ private:
   QueryScope m_main_scope;
 
   DynamicArray<const NdbDictionary::Index*> m_indexes;
+  // X-10: load_single_table found an index in the table's index list (the
+  // RDRS schema cache's, or listIndexes()) that the dictionary no longer
+  // has, so the list is older than the schema; unload_schema reports a
+  // schema change.
+  bool m_load_found_dropped_index = false;
   NdbTransaction* m_trans = NULL;
   yyscan_t m_scanner;
   YY_BUFFER_STATE m_buf;
@@ -1033,11 +1047,21 @@ private:
   void resolve_cte_output_columns();
   void resolve_cte_output_columns_for_scope(QueryScope& scope);
   /**
+   * C-1, J-2: refuse, as unsupported, a CTE whose outputs are not its
+   * GROUP BY columns, in GROUP BY order, followed by its aggregates, each
+   * once: the one layout in which the data nodes and the API number the
+   * columns of a CTE row alike.  Called by validate_cte_execution_shapes().
+   */
+  void check_cte_output_layouts();
+  void check_cte_output_layout(const CteDefinition* cte,
+                               const QueryScope& scope);
+  /**
    * Reject CTE shapes the kernel/SPJ doesn't currently support:
    * CTE_SCAN as an outer-join child (a defensive tripwire — the
    * planner doesn't emit it; see cte_filter_phase_g.md) and an index
    * or table scan below a CTE_SCAN root (RONDB-1121 F18: unfinished
-   * Phase N.1, wrong results).
+   * Phase N.1, wrong results).  Then the order of each CTE's outputs
+   * (check_cte_output_layouts).
    */
   void validate_cte_execution_shapes();
   /**
@@ -1048,6 +1072,20 @@ private:
   void check_cte_groupby_key_types();
   void check_cte_groupby_key_types(QueryScope& scope,
                                    const GroupbyColumns* groupby);
+  /**
+   * T-15: refuse, as unsupported, a statement whose scope reads an ENUM
+   * or SET column (NDB keeps the index or bitmap, not the labels), right
+   * after the scope's columns are resolved.
+   */
+  void check_enum_set_columns(const QueryScope& scope) const;
+  /**
+   * T-15: refuse, as unsupported, ORDER BY on a BIT column of more than
+   * 32 bits in the main query or a CTE body with a LIMIT, whose words
+   * every sort compares low word first.
+   */
+  void check_bit_orderby_columns();
+  void check_bit_orderby_columns(QueryScope& scope,
+                                 const SelectStatement& stmt);
   /**
    * C-6, O-3, O-10: the stored DATE, DATETIME, TIME, TIMESTAMP or YEAR
    * column a CTE output stands for, through CTE outputs that are a column
@@ -1077,6 +1115,22 @@ private:
                                  const NdbDictionary::Column*& first) const;
   void check_cte_temporal_where(const QueryScope& scope,
                                 const struct ConditionalExpression* ce) const;
+  /**
+   * RONDB-1124: refuse, as unsupported, arithmetic on a CHAR, VARCHAR or
+   * LONGVARCHAR value in the main query and in each CTE body, which the
+   * aggregation interpreter cannot compute (MySQL converts the string to
+   * a number).  column_may_be_string: the column col_idx of the scope is
+   * a stored string column, or a CTE output that passes one on or is a
+   * MIN / MAX of one; expr_may_be_string: the value of e may be such a
+   * string.  depth bounds the CTE outputs followed.
+   */
+  void check_string_arithmetic();
+  void check_string_arithmetic(const QueryScope& scope) const;
+  bool column_may_be_string(const QueryScope& scope, Uint32 col_idx,
+                            Uint32 depth) const;
+  bool expr_may_be_string(const QueryScope& scope,
+                          const AggregationAPICompiler::Expr* e,
+                          Uint32 depth) const;
   /**
    * C-6: the packed value of a constant compared with a packed temporal
    * CTE output of `src`'s type, as mysqld compares it; false when the
@@ -1163,6 +1217,17 @@ private:
   void determine_explain();
   bool is_avro_output(const Outputs* o) const;
   void prepare_avro_outputs();
+  /**
+   * O-13: refuse, before any scan, a SELECT output of a type the result
+   * printers cannot print: BIT, BLOB, TEXT and the old DECIMAL and
+   * temporal formats, as a GROUP BY key or passed through.
+   */
+  void check_printed_output_types();
+  /**
+   * O-11: under JSON and JSON_ASCII output, refuse two SELECT outputs of
+   * the same name, which would be one key of each row object.
+   */
+  void check_json_output_names() const;
   bool unload_schema();
   void handle_ronsql_exception(std::exception_ptr eptr);
 
@@ -1175,8 +1240,12 @@ public:
   bool has_binary_output();
 private:
   // Start m_trans, tagged with the rate limit identity if there is one.
-  // Every transaction of a query is started here.
-  void start_transaction();
+  // Every transaction of a query is started here.  X-16: with
+  // hint_pk_lookup, the key reads of the single-table lookup arms
+  // (m_pk_lookup) follow, and the transaction starts on a node that
+  // holds a replica of the first key (start_pk_hinted).
+  void start_transaction(bool hint_pk_lookup = false);
+  NdbTransaction* start_pk_hinted(Ndb* ndb);
   void cleanup_trans();
   void execute_subqueries();
   void substitute_subquery_results();
@@ -1196,9 +1265,12 @@ private:
   // 0 where the exact truth value matters (XOR, IS, comparisons).
   // is_condition: ce is the whole WHERE or an operand of AND, OR, XOR or
   // NOT, so a scalar subquery there is a condition, not a value (S-2).
+  // string_operand: ce is compared with a MIN or MAX, so in HAVING a
+  // scalar subquery there may return a string (O-8).
   void substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
                                       int polarity = 1,
-                                      bool is_condition = false);
+                                      bool is_condition = false,
+                                      bool string_operand = false);
   // S-2: replaces a scalar subquery used as a condition by TRUE, FALSE or
   // UNKNOWN, in the forms fold_where_after_substitution() folds.
   void substitute_condition_result(ConditionalExpression* ce,
@@ -1235,6 +1307,53 @@ private:
   // (which forces QueryPlanner to produce a CTE_SCAN root op and the
   // emit/execute path to use the multi-op infrastructure).
   bool is_join_query() const;
+  /* J-9: how the root operation of a join plan reads its rows.
+   * decide_root_access() makes the choice; emit_root_op() builds what it
+   * decided and EXPLAIN prints it, so the two cannot disagree. */
+  struct RootAccess {
+    enum class Kind : uint8_t {
+      NOT_DECIDED = 0,    // EXPLAIN only: the root's WHERE holds a subquery
+      REFUSED,            // the shape is refused; refusal says why
+      TABLE_SCAN,         // scanTable, filter = the whole WHERE
+      INDEX_SCAN,         // scan-config index scan: bounds and filter
+      PK_LOOKUP,          // readTuple on the primary key
+      PK_INDEX_SCAN,      // scanIndex on an ordered index of the PK
+      CTE_SCAN,           // scanCte, filter = the whole WHERE
+      CTE_LOOKUP,         // lookupCte on the full virtual-table key
+      CTE_GROUP_PROBE,    // G4: lookupCte, key from the CTE body's WHERE
+      CTE_SCALAR_LOOKUP   // lookupCte of a scalar CTE, dummy key
+    };
+    Kind kind = Kind::NOT_DECIDED;
+    // X-3: the WHERE is never TRUE; the root passes no row.
+    bool passes_no_row = false;
+    // The filter on the root's rows, NULL for none: the whole WHERE for
+    // a scan, the conjuncts left after the key for a lookup.
+    struct ConditionalExpression* filter = NULL;
+    // PK_LOOKUP, PK_INDEX_SCAN, CTE_LOOKUP, CTE_GROUP_PROBE: the
+    // constant of each key column, in key order.
+    int nkeys = 0;
+    struct ConditionalExpression* key_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+    // INDEX_SCAN, PK_INDEX_SCAN
+    const NdbDictionary::Index* index = NULL;
+    // Why a lookup was not taken where the WHERE binds the whole key;
+    // NULL when it was, or when the WHERE does not bind the key.
+    const char* reason = NULL;
+    // TABLE_SCAN: the WHERE binds the whole key, but the table has no
+    // ordered index on its primary key for a PK_INDEX_SCAN.
+    bool no_pk_index = false;
+    // REFUSED: the error message.
+    const char* refusal = NULL;
+  };
+  // Whether the scope aggregates: a CTE body always does, the main query
+  // when it is an aggregate query.
+  bool scope_aggregates(const QueryScope& scope) const;
+  // cte_vt: the root's virtual table when the root is a CTE_SCAN.
+  // residual_code: when not NULL, a PK_LOOKUP's filter is built into it
+  // (the decision needs its size); emit_root_op uses it.
+  void decide_root_access(QueryScope& scope, bool aggregating,
+                          const NdbDictionary::Table* cte_vt,
+                          NdbInterpretedCode* residual_code,
+                          RootAccess& ra);
   void emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
                     const NdbQueryOperationDef** opDefs,
                     NdbAggregator* singleAgg = nullptr,
@@ -1307,12 +1426,12 @@ private:
   // fully covers the PK by equality but a readTuple root is unavailable
   // (a scan child exists, or the residual filter exceeds the lookup-op
   // program cap).  Attaches the residual conjuncts as an InterpretedCode
-  // filter.  Returns NULL when the table has no ordered index on the PK
-  // columns; the caller then falls back to a table scan with the full
-  // WHERE filter.
+  // filter.  pk_ordered_idx is the ordered index on the PK columns that
+  // decide_root_access found.
   const NdbQueryOperationDef* emit_pk_equality_index_scan_root(
       NdbQueryBuilder* qb, QueryScope& scope,
       const NdbDictionary::Table* root_table,
+      const NdbDictionary::Index* pk_ordered_idx,
       struct ConditionalExpression* const pk_const[], int nkeys,
       struct ConditionalExpression* residual,
       NdbQueryOptions& rootOpts);
@@ -1495,6 +1614,8 @@ private:
   void print_result_json(NdbAggregator* aggregator);
   void print();
   void print_join_plan_ops(QueryScope& scope, const char* line_prefix);
+  // J-9: the "Root access:" line of a join plan's root.
+  void print_root_access(QueryScope& scope, const char* indent);
   void print(struct ConditionalExpression* ce,
              LexString prefix);
   // E-1: the arguments of GREATEST / LEAST, and a subquery by its table.

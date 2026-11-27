@@ -30,7 +30,6 @@ call mtr.add_suppression("Participant timeout");
 #   2. Same as 1 + WHERE inside the CTE body (Phase B.2b path).
 #   3. PK lookup with no matching real-table row.
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --disable_query_log

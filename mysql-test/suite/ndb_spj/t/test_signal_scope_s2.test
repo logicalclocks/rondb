@@ -1,0 +1,19 @@
+--source include/have_ndb.inc
+# The block unit tests send JOIN_AGG_FINAL_REP from an API node, so a
+# debug data node still takes it (NDB_SCOPE_REMOTE_EXCEPT_DEBUG in
+# SignalScopes.hpp) and this one stops it. Only a release data node drops
+# it and disconnects the API node before DBLQH sees it.
+--source include/check_ndb_debug.inc
+if ($have_ndb_debug)
+{
+  --skip Test requires release compiled NDB
+}
+
+# RONDB-1124, S-2: JOIN_AGG_FINAL_REP from the API, sender node id past
+# ABS_MAX_NDB_NODES. execJOIN_AGG_FINAL_REP stopped the data node on
+# ndbrequire(senderNodeId < ABS_MAX_NDB_NODES).
+# See suite/ndb_spj/include/signal_scope_case.inc.
+
+--let $spj_case = S2
+--let $spj_case_title = S-2: JOIN_AGG_FINAL_REP from the API, sender node past the maximum
+--source suite/ndb_spj/include/signal_scope_case.inc

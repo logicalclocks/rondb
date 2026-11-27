@@ -32,7 +32,6 @@ call mtr.add_suppression("Participant timeout");
 #   4. CTE body with no WHERE — must still produce a valid CTE
 #      via the existing TABLE_SCAN branch (regression).
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --disable_query_log

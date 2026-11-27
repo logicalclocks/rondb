@@ -56,6 +56,12 @@ SELECT sint8
 FROM tbl
 GROUP BY sint8;
 EOF
+# Known bug Q-6 (storage/ndb/claude_files/ronsql_executor/README.md, T-1):
+# an integer / is a DECIMAL in mysqld (4 more digits per division, up to
+# 30), which reaches 0.000000000000000000000000000000; RonSQL divides in
+# double on the data nodes (2^-1075 rounds to 0) and prints the double
+# without the DECIMAL scale, 0.
+--let $known_diff=Q-6_overflow_division_underflow.diff
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo Zero through many integer divisions:

@@ -508,5 +508,6 @@ Delete them, or cover them with unit tests.
 Validate T-2: `cd mysql-test && ./mtr --suite=ronsql_jit ronsql_join_agg ronsql_cte_case ronsql_subquery` (expect result mismatches).
 
 Then refresh: `python3 storage/ndb/claude_files/compiled_interpreter/refresh_jit_mirror_results.py` from `mysql-test/`, and re-run `./mtr --suite=ronsql_jit`.
+(Since T-2 / T-22 were fixed, the RonSQL mirror suites are generated: `perl suite/ronsql/mirrors/ronsql_mirrors.pl --write` from `mysql-test/`, and `./mtr --suite=ronsql ronsql_mirror_check` checks them. The python script now refreshes only `ndb_push_agg_jit` and then runs the perl script.)
 
 Check T-8 quickly: remove `--let $suppress_ronsql_cli=yes` from `suite/ronsql_cte/include/body_joins.inc` locally and run `./mtr --suite=ronsql_cte ronsql_cte_dd_joins`.

@@ -301,47 +301,311 @@ static bool runNumericCases() {
   return true;
 }
 
-static bool runResultSizeCases() {
-  // Exercise complete wire records above the old limit and around the
-  // new limit. Synthetic dictionary sizes avoid needing a cluster.
-  const Uint32 recordSizes[] = {12 * 1024, 16 * 1024 - 4,
-                               16 * 1024, 16 * 1024 + 4};
-  for (Uint32 recordBytes : recordSizes) {
-    for (Uint32 op : {Uint32(kOpCount), Uint32(kOpMin), Uint32(kOpMax)}) {
-      NdbColumnImpl column;
-      column.setType(NdbDictionary::Column::Longvarchar);
-      column.setCharset(&my_charset_bin);
-      column.m_attrSize = 1;
-      // Three result-header words, one group-header word, one slot,
-      // and either a key AttributeHeader or a string length word.
-      column.m_arraySize = recordBytes - 5 * sizeof(Uint32) -
-                           sizeof(AggResItem);
+/* A synthetic column whose values take `bytes` bytes, length prefix
+ * included, as Finalize counts them.  Synthetic dictionary sizes avoid
+ * needing a cluster. */
+static void setColumn(NdbColumnImpl &column, NdbDictionary::Column::Type type,
+                      Uint32 bytes) {
+  column.setType(type);
+  if (type == NdbDictionary::Column::Char ||
+      type == NdbDictionary::Column::Varchar ||
+      type == NdbDictionary::Column::Longvarchar) {
+    column.setCharset(&my_charset_bin);
+  }
+  column.m_attrSize = 1;
+  column.m_arraySize = bytes;
+}
 
+static Uint32 padded(Uint32 bytes) { return (bytes + 3) & ~3U; }
+
+static bool runResultSizeCases() {
+  /* A group's values (16-byte slots, then a length word and the padded
+   * value of each string MIN / MAX, at the declared size) and its GROUP
+   * BY key (an AttributeHeader and the padded value of each column) may
+   * each take up to 0xFFFF bytes, the 16-bit lengths of a result record.
+   * Groups over the 16 KB batch target are accepted: the API's receive
+   * buffers grow to their records.  0xFFFC is the largest multiple of 4
+   * that fits. */
+  const Uint32 sizes[] = {12 * 1024, 16 * 1024 + 4, 32 * 1024,
+                          MAX_AGG_GROUP_VALUE_BYTES - 3,
+                          MAX_AGG_GROUP_VALUE_BYTES + 1};
+  for (Uint32 bytes : sizes) {
+    const bool fits = bytes <= MAX_AGG_GROUP_VALUE_BYTES;
+    // The values: one string MIN or MAX.
+    for (Uint32 op : {Uint32(kOpMin), Uint32(kOpMax)}) {
+      NdbColumnImpl column;
+      setColumn(column, NdbDictionary::Column::Longvarchar,
+                bytes - sizeof(AggResItem) - sizeof(Uint32));
       NdbAggregator agg(nullptr);
-      if (op == kOpCount) {
-        CHECK(agg.GroupByLinked(0, &column));
-        CHECK(agg.LoadInt64(1, 0));
-        CHECK(agg.Count(0, 0));
-      } else {
-        CHECK(agg.LoadLinkedColumn(0, 0, &column));
-        CHECK(op == kOpMin ? agg.Min(0, 0) : agg.Max(0, 0));
-      }
+      CHECK(agg.LoadLinkedColumn(0, 0, &column));
+      CHECK(op == kOpMin ? agg.Min(0, 0) : agg.Max(0, 0));
       const bool accepted = agg.Finalize();
-      CHECK(accepted == (recordBytes <= 16 * 1024));
+      CHECK(accepted == fits);
       if (!accepted) CHECK(agg.GetError().errno_ == kErrTooBigResult);
     }
+    // The GROUP BY key: one string column, with a COUNT.
+    NdbColumnImpl key;
+    setColumn(key, NdbDictionary::Column::Longvarchar,
+              bytes - sizeof(Uint32));
+    NdbAggregator agg(nullptr);
+    CHECK(agg.GroupByLinked(0, &key));
+    CHECK(agg.LoadInt64(1, 0));
+    CHECK(agg.Count(0, 0));
+    const bool accepted = agg.Finalize();
+    CHECK(accepted == (bytes <= MAX_AGG_GROUP_KEY_BYTES));
+    if (!accepted) CHECK(agg.GetError().errno_ == kErrTooBigGroupKey);
+  }
+
+  // Two GROUP BY columns that each fit, but not together.
+  {
+    NdbColumnImpl key;
+    setColumn(key, NdbDictionary::Column::Longvarchar, 33000);
+    NdbAggregator agg(nullptr);
+    CHECK(agg.GroupByLinked(0, &key));
+    CHECK(agg.GroupByLinked(1, &key));
+    CHECK(agg.LoadInt64(1, 0));
+    CHECK(agg.Count(0, 0));
+    CHECK(!agg.Finalize());
+    CHECK(agg.GetError().errno_ == kErrTooBigGroupKey);
+  }
+
+  // Three string MAX slots that each fit, but not together.
+  {
+    NdbColumnImpl value;
+    setColumn(value, NdbDictionary::Column::Longvarchar, 22000);
+    NdbAggregator agg(nullptr);
+    CHECK(agg.LoadLinkedColumn(0, 0, &value));
+    CHECK(agg.Max(0, 0));
+    CHECK(agg.Min(1, 0));
+    CHECK(agg.Max(2, 0));
+    CHECK(!agg.Finalize());
+    CHECK(agg.GetError().errno_ == kErrTooBigResult);
+  }
+
+  // A key and values both at their limit: a record of about 128 KB.
+  {
+    NdbColumnImpl key;
+    setColumn(key, NdbDictionary::Column::Longvarchar,
+              MAX_AGG_GROUP_KEY_BYTES - 3 - sizeof(Uint32));
+    NdbColumnImpl value;
+    setColumn(value, NdbDictionary::Column::Longvarchar,
+              MAX_AGG_GROUP_VALUE_BYTES - 3 - sizeof(AggResItem) -
+                  sizeof(Uint32));
+    NdbAggregator agg(nullptr);
+    CHECK(agg.GroupByLinked(0, &key));
+    CHECK(agg.LoadLinkedColumn(1, 0, &value));
+    CHECK(agg.Max(0, 0));
+    CHECK(agg.Finalize());
   }
 
   // COUNT over a wide string returns only a numeric slot, no payload.
   NdbColumnImpl column;
-  column.setType(NdbDictionary::Column::Longvarchar);
-  column.setCharset(&my_charset_bin);
-  column.m_attrSize = 1;
-  column.m_arraySize = 16 * 1024;
+  setColumn(column, NdbDictionary::Column::Longvarchar,
+            MAX_AGG_GROUP_VALUE_BYTES + 1);
   NdbAggregator count(nullptr);
   CHECK(count.LoadLinkedColumn(0, 0, &column));
   CHECK(count.Count(0, 0));
   CHECK(count.Finalize());
+
+  // A string MAX over a CASE whose arms differ in size counts at its
+  // widest arm, whichever arm that is (RepeatAgg). Counted at the first
+  // arm, a wide later arm made groups the data node cannot send.
+  for (Uint32 valueBytes : {Uint32(MAX_AGG_GROUP_VALUE_BYTES - 3),
+                            Uint32(MAX_AGG_GROUP_VALUE_BYTES + 1)}) {
+    for (Uint32 widePos = 0; widePos < 3; widePos++) {
+      NdbColumnImpl narrow;
+      setColumn(narrow, NdbDictionary::Column::Longvarchar, 300);
+      NdbColumnImpl wide;
+      setColumn(wide, NdbDictionary::Column::Longvarchar,
+                valueBytes - sizeof(AggResItem) - sizeof(Uint32));
+
+      NdbAggregator arms(nullptr);
+      for (Uint32 arm = 0; arm < 3; arm++) {
+        const NdbColumnImpl *col = arm == widePos ? &wide : &narrow;
+        CHECK(arms.LoadLinkedColumn(arm, arm, col));
+        CHECK(arm == 0 ? arms.Max(0, 0) : arms.RepeatAgg(0, arm));
+      }
+      const bool accepted = arms.Finalize();
+      CHECK(accepted == (valueBytes <= MAX_AGG_GROUP_VALUE_BYTES));
+      if (!accepted) CHECK(arms.GetError().errno_ == kErrTooBigResult);
+    }
+  }
+  return true;
+}
+
+/*
+ * RONDB-1124: arithmetic, SUM and AVG of a string register.  A register
+ * holds at most 8 bytes, so one loaded from a CHAR, VARCHAR or
+ * LONGVARCHAR column holds no value arithmetic can use (only MIN and MAX
+ * read its capture).  The data node refuses a program in which an
+ * arithmetic instruction, a SUM or an AVG may read one
+ * (PushdownInterpreter::checkAggSlotKinds), when the scan runs.
+ * NdbAggregator refuses the call when the last load into the register is
+ * a string.
+ */
+typedef bool (NdbAggregator::*ArithmeticOp)(Uint32, Uint32);
+static const ArithmeticOp kArithmeticOps[] = {
+    &NdbAggregator::Add, &NdbAggregator::Minus, &NdbAggregator::Mul,
+    &NdbAggregator::Div, &NdbAggregator::DivInt, &NdbAggregator::Mod};
+
+static bool runStringArithmeticCases() {
+  const NdbDictionary::Column::Type stringTypes[] = {
+      NdbDictionary::Column::Char, NdbDictionary::Column::Varchar,
+      NdbDictionary::Column::Longvarchar};
+  for (NdbDictionary::Column::Type type : stringTypes) {
+    NdbColumnImpl str;
+    setColumn(str, type, 20);
+    for (ArithmeticOp op : kArithmeticOps) {
+      // The string as the left operand (the register written) and as the
+      // right one.
+      for (Uint32 stringReg = 0; stringReg < 2; stringReg++) {
+        NdbAggregator agg(nullptr);
+        CHECK(agg.LoadLinkedColumn(0, stringReg, &str));
+        CHECK(agg.LoadInt64(3, 1 - stringReg));
+        CHECK(!(agg.*op)(0, 1));
+        CHECK(agg.GetError().errno_ == kErrStringArithmetic);
+        // The refused call wrote nothing.  MIN, MAX and COUNT of the
+        // string go, and so does the arithmetic once a number is loaded
+        // over it.
+        CHECK(agg.Max(0, stringReg));
+        CHECK(agg.Min(1, stringReg));
+        CHECK(agg.Count(2, stringReg));
+        CHECK(agg.LoadInt64(4, stringReg));
+        CHECK((agg.*op)(0, 1));
+        CHECK(agg.Sum(3, 0));
+        CHECK(agg.Finalize());
+      }
+    }
+    NdbAggregator agg(nullptr);
+    CHECK(agg.LoadLinkedColumn(0, 0, &str));
+    CHECK(!agg.Sum(0, 0));
+    CHECK(agg.GetError().errno_ == kErrUnsupportedStringOperation);
+    CHECK(!agg.Avg(0, 0));
+    CHECK(agg.GetError().errno_ == kErrUnsupportedStringOperation);
+  }
+
+  // A Mov copy of a string register is a string.
+  NdbColumnImpl varchar;
+  setColumn(varchar, NdbDictionary::Column::Varchar, 20);
+  NdbAggregator agg(nullptr);
+  CHECK(agg.LoadLinkedColumn(0, 0, &varchar));
+  CHECK(agg.Mov(1, 0));
+  CHECK(agg.LoadInt64(2, 2));
+  CHECK(!agg.Add(2, 1));
+  CHECK(agg.GetError().errno_ == kErrStringArithmetic);
+  CHECK(!agg.Sum(0, 1));
+  CHECK(agg.GetError().errno_ == kErrUnsupportedStringOperation);
+  CHECK(agg.Max(0, 1));
+  CHECK(agg.LoadDouble(1.5, 1));
+  CHECK(agg.Mul(2, 1));
+  CHECK(agg.Sum(1, 2));
+  CHECK(agg.Finalize());
+
+  // A constant load into a register past the last one is refused:
+  // it wrote past reg_types_ and reg_columns_.
+  NdbAggregator bad_reg(nullptr);
+  CHECK(!bad_reg.LoadUint64(1, kRegTotal));
+  CHECK(bad_reg.GetError().errno_ == kErrInvalidRegNo);
+  CHECK(!bad_reg.LoadInt64(1, kRegTotal));
+  CHECK(bad_reg.GetError().errno_ == kErrInvalidRegNo);
+  CHECK(!bad_reg.LoadDouble(1.5, kRegTotal + 7));
+  CHECK(bad_reg.GetError().errno_ == kErrInvalidRegNo);
+  return true;
+}
+
+static bool runTypicalSizeCases() {
+  /* typical_record_bytes(): the result header (3 words), the group
+   * header (1 word), the key and the values, with a VARCHAR or
+   * LONGVARCHAR counted at most kTypicalStringBytes past its length
+   * prefix and any other column at its declared size. */
+  const Uint32 headers = 4 * sizeof(Uint32);
+  const Uint32 slot = sizeof(AggResItem);
+  const Uint32 typical = NdbAggregator::kTypicalStringBytes;
+
+  // COUNT without GROUP BY.
+  {
+    NdbAggregator agg(nullptr);
+    CHECK(agg.LoadInt64(1, 0));
+    CHECK(agg.Count(0, 0));
+    CHECK(agg.Finalize());
+    CHECK(agg.typical_record_bytes() == headers + slot);
+  }
+
+  // A string MAX: a long LONGVARCHAR counts at 2 + kTypicalStringBytes, a
+  // VARCHAR shorter than that and a CHAR at their declared sizes.
+  {
+    NdbColumnImpl lvc;
+    setColumn(lvc, NdbDictionary::Column::Longvarchar, 10002);
+    NdbColumnImpl vc;
+    setColumn(vc, NdbDictionary::Column::Varchar, 21);
+    NdbColumnImpl ch;
+    setColumn(ch, NdbDictionary::Column::Char, 100);
+    NdbAggregator agg(nullptr);
+    CHECK(agg.LoadLinkedColumn(0, 0, &lvc));
+    CHECK(agg.LoadLinkedColumn(1, 1, &vc));
+    CHECK(agg.LoadLinkedColumn(2, 2, &ch));
+    CHECK(agg.Max(0, 0));
+    CHECK(agg.Min(1, 1));
+    CHECK(agg.Max(2, 2));
+    CHECK(agg.Finalize());
+    CHECK(agg.typical_record_bytes() ==
+          headers + 3 * slot + sizeof(Uint32) + padded(2 + typical) +
+              sizeof(Uint32) + padded(21) + sizeof(Uint32) + padded(100));
+  }
+
+  // GROUP BY a VARCHAR(255) and an INT, with a COUNT.
+  {
+    NdbColumnImpl vc;
+    setColumn(vc, NdbDictionary::Column::Varchar, 256);
+    NdbColumnImpl intColumn;
+    intColumn.setType(NdbDictionary::Column::Int);
+    intColumn.m_attrSize = 4;
+    intColumn.m_arraySize = 1;
+    NdbAggregator agg(nullptr);
+    CHECK(agg.GroupByLinked(0, &vc));
+    CHECK(agg.GroupByLinked(1, &intColumn));
+    CHECK(agg.LoadInt64(1, 0));
+    CHECK(agg.Count(0, 0));
+    CHECK(agg.Finalize());
+    CHECK(agg.typical_record_bytes() ==
+          headers + sizeof(Uint32) + padded(1 + typical) + sizeof(Uint32) +
+              4 + slot);
+  }
+
+  // A MAX over CASE arms of 302 and 20002 bytes counts its widest arm,
+  // at the typical length.
+  {
+    NdbColumnImpl narrow;
+    setColumn(narrow, NdbDictionary::Column::Longvarchar, 302);
+    NdbColumnImpl wide;
+    setColumn(wide, NdbDictionary::Column::Longvarchar, 20002);
+    NdbAggregator agg(nullptr);
+    CHECK(agg.LoadLinkedColumn(0, 0, &narrow));
+    CHECK(agg.Max(0, 0));
+    CHECK(agg.LoadLinkedColumn(1, 1, &wide));
+    CHECK(agg.RepeatAgg(0, 1));
+    CHECK(agg.Finalize());
+    CHECK(agg.typical_record_bytes() ==
+          headers + slot + sizeof(Uint32) + padded(2 + typical));
+  }
+
+  // A group of about 60 KB at the declared sizes: a small typical record,
+  // far under the 16 KB batch target.
+  {
+    NdbColumnImpl key;
+    setColumn(key, NdbDictionary::Column::Longvarchar, 30000);
+    NdbColumnImpl value;
+    setColumn(value, NdbDictionary::Column::Longvarchar, 30000);
+    NdbAggregator agg(nullptr);
+    CHECK(agg.GroupByLinked(0, &key));
+    CHECK(agg.LoadLinkedColumn(1, 0, &value));
+    CHECK(agg.Max(0, 0));
+    CHECK(agg.Finalize());
+    const Uint32 expected = headers + sizeof(Uint32) + padded(2 + typical) +
+                            slot + sizeof(Uint32) + padded(2 + typical);
+    CHECK(agg.typical_record_bytes() == expected);
+    CHECK(expected < MAX_AGG_RESULT_BATCH_BYTES);
+  }
   return true;
 }
 
@@ -822,6 +1086,8 @@ int main() {
   if (ndb_init() != 0) return 1;
   bool passed = runNumericCases();
   if (!runResultSizeCases()) passed = false;
+  if (!runTypicalSizeCases()) passed = false;
+  if (!runStringArithmeticCases()) passed = false;
   if (!runResultBatchCases()) passed = false;
   for (bool grouped : {false, true}) {
     for (Uint32 type : {Uint32(NDB_TYPE_CHAR), Uint32(NDB_TYPE_VARCHAR),
@@ -866,6 +1132,7 @@ int main() {
   ndb_end(0);
   printf("%s\n", passed
       ? "PASSED: result-size boundaries, bounded result batches, "
+        "string arithmetic refusals, "
         "numeric boundaries, 18 string failure/recovery cases, "
         "19 MergeLocalGroup cases, 4 collation merge cases, "
         "4 DOUBLE zero group cases and 3 program decode cases"

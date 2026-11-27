@@ -14,7 +14,6 @@ call mtr.add_suppression("Participant timeout");
 # READ_LINKED_TO_MEM(s), so a CASE with mixed-LHS atoms is now
 # correct (fixes a latent v1 bug as well).
 
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 
 --echo

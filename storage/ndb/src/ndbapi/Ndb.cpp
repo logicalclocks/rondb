@@ -51,7 +51,7 @@ Name:          Ndb.cpp
  * transactions reuse idle ones.
  *
  * Only a pointer is thread-local; the 5000-byte generator state is on the
- * heap. libndbclient.so uses static TLS, and a library loaded with dlopen()
+ * heap. librondbclient.so uses static TLS, and a library loaded with dlopen()
  * (ClusterJ, other language bindings) must fit glibc's small static TLS
  * surplus, else it fails with "cannot allocate memory in static TLS block".
  */

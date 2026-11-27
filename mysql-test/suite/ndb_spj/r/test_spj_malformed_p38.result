@@ -1,0 +1,8 @@
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# P-38: join aggregation string MIN and BIGINT MIN in one slot
+Running command
+Result of command: 0
+Test program success!

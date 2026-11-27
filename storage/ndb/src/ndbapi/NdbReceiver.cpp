@@ -58,6 +58,14 @@ class NdbReceiverBuffer {
 
   Uint32 getRowCount() const { return m_rows; }
 
+  /**
+   * Words allocRow() can give one row in an empty buffer without keys:
+   * what an aggregation scan's buffer can take of its one record.
+   */
+  Uint32 getRowCapacityWords() const {
+    return m_bufSizeWords - (m_maxRows + 1) - 1;  // Row index, eodMagic
+  }
+
   Uint32 getKeyCount() const { return m_keys; }
 
   /**
@@ -317,6 +325,7 @@ NdbReceiver::NdbReceiver(Ndb *aNdb)
       m_recv_buffer(nullptr),
       m_read_range_no(false),
       m_read_key_info(false),
+      m_agg_records(false),
       m_firstRecAttr(nullptr),
       m_lastRecAttr(nullptr),
       m_firstFinalRecAttr(nullptr),
@@ -329,13 +338,15 @@ NdbReceiver::NdbReceiver(Ndb *aNdb)
       m_received_result_length(0),
       m_num_long_row_allocated(0),
       m_num_long_row_current_used(0),
-      m_long_row_ref(nullptr) {}
+      m_long_row_ref(nullptr),
+      m_agg_buffer(nullptr) {}
 
 NdbReceiver::~NdbReceiver() {
   DBUG_ENTER("NdbReceiver::~NdbReceiver");
   if (m_id != NdbObjectIdMap::InvalidId) {
     m_ndb->theImpl->unmapRecipient(m_id, this);
   }
+  free_agg_buffer();
   DBUG_VOID_RETURN;
 }
 
@@ -365,6 +376,8 @@ int NdbReceiver::init(ReceiverType type, void *owner) {
   m_rec_attr_data = nullptr;
   m_rec_attr_len = 0;
   free_long_row_ref();
+  free_agg_buffer();
+  m_agg_records = false;
   DBUG_PRINT("info", ("NdbReceiver::init(0x%p)", this));
 
   if (m_id == NdbObjectIdMap::InvalidId) {
@@ -405,6 +418,8 @@ void NdbReceiver::release() {
     m_ndb->releaseRecAttr(tSaveRecAttr);
   }
   free_long_row_ref();
+  free_agg_buffer();
+  m_agg_records = false;
   m_firstRecAttr = nullptr;
   m_lastRecAttr = nullptr;
   m_firstFinalRecAttr = nullptr;
@@ -486,7 +501,12 @@ void NdbReceiver::prepareSend() {
   }
 }
 
-void NdbReceiver::prepareReceive(NdbReceiverBuffer *buffer) {
+void NdbReceiver::prepareReceive(NdbReceiverBuffer *buffer,
+                                 bool agg_records) {
+  if (unlikely(m_agg_buffer != nullptr)) {
+    free_agg_buffer();
+  }
+  m_agg_records = agg_records;
   m_recv_buffer = buffer;
   prepareSend();
 }
@@ -781,9 +801,9 @@ void NdbReceiver::result_bufsize(
                  4;
 }
 
-Uint32 NdbReceiver::aggregation_bufsize() {
+Uint32 NdbReceiver::aggregation_bufsize(Uint32 record_bytes) {
   return NdbReceiverBuffer::calculateBufferSizeInWords(
-             1, MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32), 0) *
+             1, (record_bytes + sizeof(Uint32) - 1) / sizeof(Uint32), 0) *
          sizeof(Uint32);
 }
 
@@ -1109,11 +1129,15 @@ int NdbReceiver::unpackRow(const Uint32 *aDataPtr, Uint32 aLength, char *row) {
    *   Mixed scan read results
    */
 
+  /* An aggregation result record.  The one-word row of a record that the
+   * receiver could not store (storeAggRecord) is not one: it goes on as
+   * an extra RecAttr value, which handle_rec_attrs refuses. */
   const AttributeHeader agg_checker_ah(*aDataPtr);
   if (aLength > 0 &&
       (agg_checker_ah.getAttributeId() == AttributeHeader::AGG_RESULT ||
        agg_checker_ah.getAttributeId() ==
-           AttributeHeader::AGG_CHAR_RESULT)) {
+           AttributeHeader::AGG_CHAR_RESULT) &&
+      agg_checker_ah.getByteSize() == 0x0721) {
 #if defined(PA_CHECK) && !defined(NDEBUG)
     /*
      * PA related
@@ -1188,9 +1212,22 @@ int NdbReceiver::unpackRow(const Uint32 *aDataPtr, Uint32 aLength, char *row) {
       if (m_type != NDB_SCANRECEIVER) {
         /* Aggregation on a primary-key read (OO_AGGREGATION, RONDB-1124):
          * the operation's only RecAttr receives the record now, marker
-         * word included, for NdbAggregator::ProcessRes. */
-        return handle_rec_attrs(m_firstRecAttr, m_firstFinalRecAttr,
-                                aDataPtr, aLength);
+         * word included, for NdbAggregator::ProcessRes.  The RecAttr is
+         * allocated at the record's size here; if that fails, the read
+         * fails with 4000 and still completes, so the transaction does
+         * not wait for it (setErrorCode() would also invalidate this
+         * receiver, and the TCKEYCONF still to come would be lost). */
+        if (unlikely(handle_rec_attrs(m_firstRecAttr, m_firstFinalRecAttr,
+                                      aDataPtr, aLength) != 0)) {
+          if (m_type == NDB_QUERY_OPERATION) {
+            static_cast<NdbQueryOperationImpl *>(m_owner)
+                ->getQuery()
+                .setErrorCode(4000);
+          } else {
+            static_cast<NdbOperation *>(m_owner)->setErrorCode(4000);
+          }
+        }
+        return 0;
       }
 
       /* Save position for RecAttr values for later retrieval. */
@@ -1335,10 +1372,13 @@ NdbReceiver::handle_rec_attrs(NdbRecAttr* rec_attr_list,
                currRecAttr->theAttrId == AttributeHeader::AGG_RESULT);
         /*
          * PA related
-         * TODO (Zhao) handle 0x0721 as a legal size
-         * assert(aLength >= (attrSize / sizeof(Uint32)));
+         * The size field of a result record's marker is 0x0721, not a
+         * size.  Any other value is a record the receiver could not
+         * store (AggRecordNotStored, NdbReceiver::storeAggRecord).
          */
-        assert(attrSize == 0x0721);
+        if (unlikely(attrSize != 0x0721)) {
+          return -1;
+        }
         // Phase I.6 (F.2-K.5d): preserve the marker word as the first
         // word of the saved RecAttr data so NdbAggregator::ProcessRes
         // can detect AGG_RESULT vs AGG_CHAR_RESULT on the wire side.
@@ -1346,9 +1386,12 @@ NdbReceiver::handle_rec_attrs(NdbRecAttr* rec_attr_list,
         // AttributeHeader read above; rewind one word.
         const Uint32* with_marker = aDataPtr - 1;
         const Uint32 with_marker_words = aLength + 1;
-        // aLength here is in word size...
-        currRecAttr->receive_data(with_marker,
-                                  with_marker_words * sizeof(Uint32));
+        // aLength here is in word size...  The record's RecAttr grows to
+        // the record; that allocation failing fails the read.
+        if (unlikely(!currRecAttr->receive_agg_record(
+                with_marker, with_marker_words * sizeof(Uint32)))) {
+          return -1;
+        }
         aDataPtr += aLength;
         aLength = 0;
 
@@ -1450,11 +1493,15 @@ int NdbReceiver::execTRANSID_AI(const Uint32 *aDataPtr, Uint32 aLength) {
    * we navigate to each row.
    */
   if (m_recv_buffer != nullptr) {
-    Uint32 *row_recv = m_recv_buffer->allocRow(aLength);
-    if (likely(aLength > 0)) {
-      memcpy(row_recv, aDataPtr, aLength * sizeof(Uint32));
+    if (unlikely(m_agg_records)) {
+      storeAggRecord(aDataPtr, aLength);
+    } else {
+      Uint32 *row_recv = m_recv_buffer->allocRow(aLength);
+      if (likely(aLength > 0)) {
+        memcpy(row_recv, aDataPtr, aLength * sizeof(Uint32));
+      }
+      DBUG_PRINT("info", ("row_recv: 0x%p", row_recv));
     }
-    DBUG_PRINT("info", ("row_recv: 0x%p", row_recv));
   } else {
     if (unpackRow(aDataPtr, aLength, m_row_buffer) == -1) return -1;
   }
@@ -1469,7 +1516,7 @@ NdbReceiver::first_long_row_ref(Uint32 ref,
   DBUG_ENTER("NdbReceiver::first_long_row_ref");
   if (m_num_long_row_allocated == 0) {
     LongRowRef *alloc_ref =
-      (LongRowRef*)calloc(sizeof(LongRowRef), LONG_ROW_ALLOC_START);
+      (LongRowRef*)calloc(LONG_ROW_ALLOC_START, sizeof(LongRowRef));
     if (alloc_ref == nullptr) {
       DBUG_RETURN(nullptr);
     }
@@ -1482,7 +1529,7 @@ NdbReceiver::first_long_row_ref(Uint32 ref,
       m_num_long_row_allocated == m_num_long_row_current_used) {
     Uint32 current_alloced = m_num_long_row_allocated;
     LongRowRef *alloc_ref =
-      (LongRowRef*)calloc(sizeof(LongRowRef), 2 * current_alloced);
+      (LongRowRef*)calloc(2 * current_alloced, sizeof(LongRowRef));
     if (alloc_ref == nullptr) {
       DBUG_RETURN(nullptr);
     }
@@ -1584,6 +1631,86 @@ void NdbReceiver::free_long_row_ref() {
   }
 }
 
+/**
+ * The size field of the one-word row that takes the place of an
+ * aggregation result record the receiver could not store (a result
+ * record's marker word has 0x0721 there).  The application meets it when
+ * it reads the batch: handle_rec_attrs refuses it, and the scan fails
+ * with 4000 (NdbScanOperation::nextResult).
+ */
+static constexpr Uint32 AggRecordNotStored = 0;
+
+/**
+ * Store one aggregation result record, the whole batch of an aggregation
+ * scan (batch_size 1, so the buffer is empty).  The receive buffer is
+ * sized for a typical record; a larger one grows it.  When the larger
+ * buffer cannot be allocated, a one-word row marks the record as not
+ * stored, so the batch completes as usual and the scan fails when the
+ * application reaches it: nothing is written past the buffer, and the
+ * receive thread sets no state of the scan operation.
+ */
+void NdbReceiver::storeAggRecord(const Uint32 *data, Uint32 words) {
+  assert(m_recv_buffer->getRowCount() == 0);
+  if (unlikely(words > m_recv_buffer->getRowCapacityWords()) &&
+      !growAggBuffer(words)) {
+    Uint32 *marker = m_recv_buffer->allocRow(1);
+    *marker =
+        AttributeHeader(AttributeHeader::AGG_RESULT, AggRecordNotStored)
+            .m_value;
+    return;
+  }
+  Uint32 *row_recv = m_recv_buffer->allocRow(words);
+  if (likely(words > 0)) {
+    std::memcpy(row_recv, data, words * sizeof(Uint32));
+  }
+}
+
+/**
+ * Move this aggregation scan receiver to a buffer of its own that holds a
+ * record of 'words' words, at least twice what the current buffer holds,
+ * so a scan whose records keep growing reallocates a few times only.  The
+ * current buffer is empty (storeAggRecord).  The first buffer is a slice
+ * of the scan's buffer (NdbScanOperation::m_scan_buffer); a buffer grown
+ * earlier is freed here.
+ */
+bool NdbReceiver::growAggBuffer(Uint32 words) {
+  const Uint32 capacity = m_recv_buffer->getRowCapacityWords();
+  Uint32 grown_words = words;
+  if (grown_words / 2 < capacity) {
+    grown_words = 2 * capacity;
+  }
+  // Leaves room for the bookkeeping words without overflowing the size.
+  if (unlikely(grown_words > (UINT32_MAX / sizeof(Uint32)) - 64)) {
+    return false;
+  }
+  const Uint32 buf_words =
+      NdbReceiverBuffer::calculateBufferSizeInWords(1, grown_words, 0);
+  Uint32 *buf = new (std::nothrow) Uint32[buf_words];
+  if (unlikely(buf == nullptr)) {
+    return false;
+  }
+  NdbReceiverBuffer *recv_buffer =
+      initReceiveBuffer(buf, buf_words * sizeof(Uint32), 1);
+  assert(recv_buffer->getRowCapacityWords() >= words);
+  delete[] m_agg_buffer;
+  m_agg_buffer = buf;
+  m_recv_buffer = recv_buffer;
+  return true;
+}
+
+void NdbReceiver::free_agg_buffer() {
+  if (m_agg_buffer != nullptr) {
+    /* m_recv_buffer is in it, so it goes too; the next scan prepares a
+     * new one (prepareReceive). */
+    if (m_recv_buffer != nullptr &&
+        reinterpret_cast<Uint32 *>(m_recv_buffer) == m_agg_buffer) {
+      m_recv_buffer = nullptr;
+    }
+    delete[] m_agg_buffer;
+    m_agg_buffer = nullptr;
+  }
+}
+
 /* We only come here if signal is fragmented */
 int NdbReceiver::execTRANSID_AI(const Uint32 *aDataPtr,
                                 Uint32 aLength,
@@ -1671,12 +1798,16 @@ int NdbReceiver::execTRANSID_AI(const Uint32 *aDataPtr,
      * This means that we cannot use this buffer until we have received
      * the full signal.
      */
-    Uint32 *row_recv = m_recv_buffer->allocRow(totalLen);
-    if (row_recv == nullptr) {
-      assert(false);
-      DBUG_RETURN(-1);
+    if (unlikely(m_agg_records)) {
+      storeAggRecord(row_ref->m_row_release_ptr, totalLen);
+    } else {
+      Uint32 *row_recv = m_recv_buffer->allocRow(totalLen);
+      if (row_recv == nullptr) {
+        assert(false);
+        DBUG_RETURN(-1);
+      }
+      std::memcpy(row_recv, row_ref->m_row_release_ptr, 4 * totalLen);
     }
-    std::memcpy(row_recv, row_ref->m_row_release_ptr, 4 * totalLen);
   } else {
     int ret = unpackRow(row_ref->m_row_release_ptr, totalLen, m_row_buffer);
     if (ret == -1) {
@@ -1724,7 +1855,8 @@ const char *NdbReceiver::getNextRow() {
 int NdbReceiver::execSCANOPCONF(Uint32 tcPtrI, Uint32 len, Uint32 rows) {
   assert(m_recv_buffer != nullptr);
   assert(m_recv_buffer->getMaxRows() >= rows);
-  assert(m_recv_buffer->getBufSizeWords() >= len);
+  // An aggregation record may be larger: storeAggRecord grows the buffer.
+  assert(m_agg_records || m_recv_buffer->getBufSizeWords() >= len);
 
   m_tcPtrI = tcPtrI;
 

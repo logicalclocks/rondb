@@ -29,6 +29,7 @@
 #include <string>
 #include "m_string.h"
 #include "ResultPrinter.hpp"
+#include "ResultPrinterInternal.hpp"
 #include "RonSQLParser.y.hpp"
 #include "define_formatter.hpp"
 #include "RonSQLPreparer.hpp"
@@ -37,6 +38,7 @@
 #include "decimal.h"
 #include <decimal_utils.hpp>
 #include "my_time.h"
+#include "mysql/strings/m_ctype.h"
 #include "my_byteorder.h"
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
@@ -127,19 +129,20 @@ DEFINE_FORMATTER(quoted_identifier, LexCString, {
   os.put('`');
 })
 
-static void print_string(std::ostream& output_stream,
-                         LexString ls,
-                         CHARSET_INFO* charset,
-                         bool json_escape,
-                         bool utf8_output,
-                         bool trim_space_suffix);
+// T-16: defined below in ronsql_printer_internal (ResultPrinterInternal.hpp),
+// which ResultPrinterUnitTest calls.
+using ronsql_printer_internal::compare_having_typed;
+using ronsql_printer_internal::decode_temporal_packed;
+using ronsql_printer_internal::double_to_fixed;
+using ronsql_printer_internal::format_fixed_scale;
+using ronsql_printer_internal::having_arithmetic;
+using ronsql_printer_internal::having_negate;
+using ronsql_printer_internal::print_base64;
+using ronsql_printer_internal::print_binary_tsv;
+using ronsql_printer_internal::print_json_ascii;
+using ronsql_printer_internal::print_string;
+using ronsql_printer_internal::print_temporal_packed;
 static double convert_result_to_double(NdbAggregator::Result result);
-static size_t format_fixed_scale(double value, int scale, char* to);
-static void print_base64(std::ostream& out, const unsigned char* bytes,
-                         size_t len);
-static void print_binary_tsv(std::ostream& out, const unsigned char* bytes,
-                             size_t len);
-static void print_json_ascii(std::ostream& out, const std::string& json);
 
 // require or investigate schema version
 static inline void
@@ -285,6 +288,7 @@ ResultPrinter::validate_orderby_columns()
             spec.groupby_idx = i;
             spec.ascending = ob->ascending;
             spec.charset = charset;
+            spec.decimal_scale = double_sort_scale(col_idx);
             m_orderby_specs.push(spec);
             found = true;
             break;
@@ -310,6 +314,7 @@ ResultPrinter::validate_orderby_columns()
         spec.avg_sum_idx = out->avg.agg_index_sum;
         spec.avg_count_idx = out->avg.agg_index_count;
         spec.avg_scale = avg_arg_scale(out);
+        spec.decimal_scale = 0;
         m_orderby_specs.push(spec);
       }
       else if (out->type == Outputs::Type::AGGREGATE ||
@@ -326,6 +331,15 @@ ResultPrinter::validate_orderby_columns()
         spec.charset = out->type == Outputs::Type::AGGREGATE
             ? aggregate_arg_charset(out)
             : NULL;
+        // O-9: a SUM, MIN or MAX over a DECIMAL column is a DOUBLE here.
+        spec.decimal_scale = 0;
+        if (out->type == Outputs::Type::AGGREGATE &&
+            out->aggregate.fun != T_COUNT)
+        {
+          const int scale = exact_arg_scale(out->aggregate.arg);
+          if (scale > 0)
+            spec.decimal_scale = scale;
+        }
         m_orderby_specs.push(spec);
       }
     }
@@ -350,6 +364,7 @@ ResultPrinter::validate_orderby_columns()
           spec.groupby_idx = i;
           spec.ascending = ob->ascending;
           spec.charset = charset;
+          spec.decimal_scale = double_sort_scale(col_idx);
           m_orderby_specs.push(spec);
           found = true;
           break;
@@ -585,12 +600,14 @@ ResultPrinter::compile()
         cmd.print_aggregate.charset = aggregate_arg_charset(o);
         cmd.print_aggregate.float_display = aggregate_uses_float_display(o);
         {
-          // D15: only format with fixed scale when the source DECIMAL is within
-          // DOUBLE's exact range (precision <= 15); wider DECIMALs keep compact
-          // formatting (the value is already a lossy DOUBLE).
+          // D15: a SUM, MIN or MAX over a DECIMAL (precision > 0) prints
+          // at the DECIMAL's scale, as mysqld does.  O-7: also above
+          // precision 15; print_fixed_scale() rounds the double's
+          // shortest digits.  Before, such a value dropped its scale
+          // (10.50 printed 10.5, 0.00 printed 0).
           int sc = aggregate_arg_scale(o);
           int pr = aggregate_arg_precision(o);
-          cmd.print_aggregate.scale = (pr > 0 && pr <= 15) ? sc : 0;
+          cmd.print_aggregate.scale = (pr > 0) ? sc : 0;
         }
         // D17 + temporal: MIN/MAX over a temporal column → decode the
         // Bigunsigned packed value back to its text form.
@@ -747,11 +764,6 @@ ResultPrinter::store_record(NdbAggregator::ResultRecord& record)
   return row;
 }
 
-// Defined with the pass-through printers below.
-static void print_temporal_packed(std::ostream& out, Uint64 w,
-                                  ResultPrinter::TemporalDisplay temporal,
-                                  int fsp, const char* quote);
-
 void
 ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
 {
@@ -760,6 +772,12 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
          m_num_groupby_cols * sizeof(NdbAggregator::Column));
   memcpy(m_regs_a, row.results,
          m_num_aggregates * sizeof(NdbAggregator::Result));
+  print_registers(out);
+}
+
+void
+ResultPrinter::print_registers(std::ostream& out)
+{
   // Run print phase of the program
   for (Uint32 cmd_index = m_print_start_idx;
        cmd_index < m_program.size(); cmd_index++)
@@ -822,14 +840,14 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
         case NdbDictionary::Column::Type::Double:
           // cte_avg_plan.md V4 (C8): a Double GROUP BY column carrying
           // display scale metadata (an AVG or DECIMAL-widened CTE
-          // output) prints with fixed scale like MySQL, gated on the
-          // DOUBLE-exact precision range like print_passthrough_value.
+          // output) prints with fixed scale like MySQL, whatever its
+          // precision (O-7), like print_passthrough_value.
           // It is a DECIMAL in MySQL: rounded HALF_UP, never "-0.00"
           // (print_fixed_scale, O-5/O-6).
           {
             int sc = cmd.print_group_by_column.scale;
             int pr = cmd.print_group_by_column.precision;
-            if (sc > 0 && pr > 0 && pr <= 15) {
+            if (sc > 0 && pr > 0) {
               print_fixed_scale(out, column.data_double(), sc);
             } else {
               print_float_or_double(out, column.data_double(),
@@ -849,12 +867,17 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
             int scale = cmd.print_group_by_column.scale;
             constexpr int DECIMAL_MAX_STR_LEN_IN_BYTES = 68;
             char decStr[DECIMAL_MAX_STR_LEN_IN_BYTES];
-            decimal_bin2str((const void*)column.data(),
-                            column.byte_size(),
-                            precision,
-                            scale,
-                            decStr,
-                            DECIMAL_MAX_STR_LEN_IN_BYTES);
+            // O-14: on an error decimal_bin2str() leaves decStr unwritten.
+            const int dec_ret =
+                decimal_bin2str((const void*)column.data(),
+                                column.byte_size(),
+                                precision,
+                                scale,
+                                decStr,
+                                DECIMAL_MAX_STR_LEN_IN_BYTES);
+            ronsql_require_bug(dec_ret == E_DEC_OK,
+                               "A DECIMAL GROUP BY value could not be "
+                               "converted to text.");
             out << decStr;
             break;
           }
@@ -901,11 +924,12 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
             break;
           }
         case NdbDictionary::Column::Type::Binary:
-          feature_not_implemented("Print GROUP BY column of type Binary");
         case NdbDictionary::Column::Type::Varbinary:
-          feature_not_implemented("Print GROUP BY column of type Varbinary");
         case NdbDictionary::Column::Type::Longvarbinary:
-          feature_not_implemented("Print GROUP BY column of type Longvarbinary");
+          // O-13: as in a pass-through result.
+          print_groupby_as_passthrough(out, column,
+                                       cmd.print_group_by_column.precision);
+          break;
         case NdbDictionary::Column::Type::Datetime:
           feature_not_implemented("Print GROUP BY column of type Datetime");
         case NdbDictionary::Column::Type::Date:
@@ -926,11 +950,16 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
         case NdbDictionary::Column::Type::Time:
           feature_not_implemented("Print GROUP BY column of type Time");
         case NdbDictionary::Column::Type::Year:
-          feature_not_implemented("Print GROUP BY column of type Year");
+          // O-13: as in a pass-through result.
+          print_groupby_as_passthrough(out, column, 0);
+          break;
         case NdbDictionary::Column::Type::Timestamp:
           feature_not_implemented("Print GROUP BY column of type Timestamp");
         case NdbDictionary::Column::Type::Time2:
-          feature_not_implemented("Print GROUP BY column of type Time2");
+          // O-13: as in a pass-through result.
+          print_groupby_as_passthrough(out, column,
+                                       cmd.print_group_by_column.precision);
+          break;
         case NdbDictionary::Column::Type::Datetime2:
           {
             int precision = cmd.print_group_by_column.precision;
@@ -1034,6 +1063,15 @@ ResultPrinter::compare_rows(StoredRow& a, StoredRow& b)
               (res_a.data_uint64() > res_b.data_uint64()) ? 1 : 0;
         break;
       case NdbDictionary::Column::Double:
+        if (spec.decimal_scale > 0)
+        {
+          // O-9: as the DECIMAL it is in MySQL, so that sums that print
+          // alike tie and the next ORDER BY key decides.
+          cmp = ronsql_compare_at_scale(res_a.data_double(),
+                                        res_b.data_double(),
+                                        spec.decimal_scale);
+          break;
+        }
         cmp = (res_a.data_double() < res_b.data_double()) ? -1 :
               (res_a.data_double() > res_b.data_double()) ? 1 : 0;
         break;
@@ -1121,6 +1159,17 @@ ResultPrinter::compare_rows(StoredRow& a, StoredRow& b)
       if (col_a.is_null() && col_b.is_null()) continue;
       if (col_a.is_null()) return spec.ascending ? -1 : 1;
       if (col_b.is_null()) return spec.ascending ? 1 : -1;
+      if (spec.decimal_scale > 0 &&
+          col_a.type() == NdbDictionary::Column::Double)
+      {
+        // O-9: a DECIMAL-derived CTE output, as in the AGGREGATE arm.
+        const int cmp = ronsql_compare_at_scale(col_a.data_double(),
+                                                col_b.data_double(),
+                                                spec.decimal_scale);
+        if (cmp != 0)
+          return spec.ascending ? cmp : -cmp;
+        continue;
+      }
       switch (col_a.type())
       {
       case NdbDictionary::Column::Char:
@@ -1204,23 +1253,7 @@ ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
   {
     DEB_TRACE();
     StoredRow row = store_record(record);
-    // Cross-table filter semantics: suppress groups where no rows passed
-    // the filter (sentinel COUNT == 0). The kernel creates a group before
-    // the filter stops the row, so such a group exists only because of
-    // rows the WHERE rejected. Without GROUP BY the one row is the
-    // aggregate over the whole WHERE result, which SQL returns also when
-    // no row passed (COUNT 0, the others NULL), so it is never
-    // suppressed (F-6).
-    if (m_query->sentinel_agg_slot >= 0 && m_num_groupby_cols > 0) {
-      NdbAggregator::Result sentinel =
-          row.results[m_query->sentinel_agg_slot];
-      if (sentinel.data_int64() == 0) continue;
-    }
-    if (m_query->having_expression != NULL &&
-        evaluate_having(m_query->having_expression) != HAVING_TRUE)
-    {
-      continue;
-    }
+    if (!group_passes()) continue;
     if (m_num_avg_keys > 0)
       set_avg_keys(row);
     rows.push(row);
@@ -1242,17 +1275,13 @@ ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
   {
     sort_array[i] = rows[i];
   }
-  // Sort using ORDER BY comparator
-  std::sort(sort_array, sort_array + num_rows,
-    [this](StoredRow& a, StoredRow& b) -> bool {
-      return compare_rows(a, b) < 0;
-    });
-  // Apply LIMIT
-  Uint32 print_count = num_rows;
-  if (m_query->limit >= 0 && (Int64)print_count > m_query->limit)
-  {
-    print_count = (Uint32)m_query->limit;
-  }
+  // Sort using ORDER BY comparator; under a LIMIT only the rows printed
+  // (O-16: before, every group was sorted).
+  const Uint32 print_count = ronsql_sort_top_n(
+      sort_array, num_rows, m_query->limit,
+      [this](StoredRow& a, StoredRow& b) -> bool {
+        return compare_rows(a, b) < 0;
+      });
   // Print results
   if (m_json_output)
   {
@@ -1271,16 +1300,9 @@ ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
     // The mysql client prints nothing at all for an empty result set —
     // including LIMIT 0 — so suppress the header when no row will be
     // printed (matches the num_rows == 0 early return above).
-    if (m_tsv_headers && print_count > 0)
+    if (print_count > 0)
     {
-      bool first_column = true;
-      for (Uint32 i = 0; i < m_outputs.size(); i++)
-      {
-        Outputs* o = m_outputs[i];
-        if (first_column) first_column = false; else out << '\t';
-        out << o->output_name;
-      }
-      out << '\n';
+      print_tsv_header(out);
     }
     for (Uint32 i = 0; i < print_count; i++)
     {
@@ -1291,6 +1313,93 @@ ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
   {
     DEB_TRACE();
     ronsql_bug("The result printer has neither JSON nor TSV output.");
+  }
+}
+
+bool
+ResultPrinter::group_passes()
+{
+  // Cross-table filter semantics: suppress groups where no rows passed
+  // the filter (sentinel COUNT == 0). The kernel creates a group before
+  // the filter stops the row, so such a group exists only because of
+  // rows the WHERE rejected. Without GROUP BY the one row is the
+  // aggregate over the whole WHERE result, which SQL returns also when
+  // no row passed (COUNT 0, the others NULL), so it is never
+  // suppressed (F-6).
+  if (m_query->sentinel_agg_slot >= 0 && m_num_groupby_cols > 0 &&
+      m_regs_a[m_query->sentinel_agg_slot].data_int64() == 0)
+  {
+    return false;
+  }
+  return m_query->having_expression == NULL ||
+         evaluate_having(m_query->having_expression) == HAVING_TRUE;
+}
+
+// The TSV header line: the output names, unless the format has none.
+void
+ResultPrinter::print_tsv_header(std::ostream& out)
+{
+  if (!m_tsv_headers) return;
+  bool first_column = true;
+  for (Uint32 i = 0; i < m_outputs.size(); i++)
+  {
+    Outputs* o = m_outputs[i];
+    if (first_column) first_column = false; else out << '\t';
+    out << o->output_name;
+  }
+  out << '\n';
+}
+
+/*
+ * O-16: a HAVING, or the sentinel of a cross-table filter, without an
+ * ORDER BY.  Each group is decided alone, so it is loaded into the
+ * registers, tested and printed at once; before, every group was stored
+ * and sorted with no key first, and printed after the last.  A LIMIT
+ * stops the fetch as on the streaming path.  The framing is the one of
+ * print_result_ordered: JSON "[]" for no row, and in TSV the header only
+ * before a first row.
+ */
+void
+ResultPrinter::print_result_filtered(NdbAggregator* aggregator,
+                                     std::basic_ostream<char>* out_stream)
+{
+  DEB_TRACE();
+  assert(out_stream != NULL);
+  std::ostream& out = *out_stream;
+  if (!m_json_output && !m_tsv_output)
+  {
+    ronsql_bug("The result printer has neither JSON nor TSV output.");
+  }
+  if (m_json_output)
+  {
+    out << '[';
+  }
+  Int64 row_count = 0;
+  for (NdbAggregator::ResultRecord record = aggregator->FetchResultRecord();
+       !record.end();
+       record = aggregator->FetchResultRecord())
+  {
+    DEB_TRACE();
+    if (m_query->limit >= 0 && row_count >= m_query->limit)
+    {
+      break;
+    }
+    run_program(0, m_print_start_idx, &record, NULL);
+    if (!group_passes()) continue;
+    if (m_json_output)
+    {
+      if (row_count > 0) out << ',';
+    }
+    else if (row_count == 0)
+    {
+      print_tsv_header(out);
+    }
+    print_registers(out);
+    row_count++;
+  }
+  if (m_json_output)
+  {
+    out << "]\n";
   }
 }
 
@@ -1343,10 +1452,10 @@ ResultPrinter::setup_output_format()
 // also what a raw column re-packs to (see print_passthrough_value).
 // `quote` wraps the text: the printer's m_quote ("" for TSV, "\"" for
 // JSON), for pass-through columns and aggregate results alike.
-static void
-print_temporal_packed(std::ostream& out, Uint64 w,
-                      ResultPrinter::TemporalDisplay temporal, int fsp,
-                      const char* quote)
+void
+ronsql_printer_internal::print_temporal_packed(
+    std::ostream& out, Uint64 w, ResultPrinter::TemporalDisplay temporal,
+    int fsp, const char* quote)
 {
   using TemporalDisplay = ResultPrinter::TemporalDisplay;
   char buf[64];
@@ -1426,6 +1535,73 @@ print_temporal_packed(std::ostream& out, Uint64 w,
   out << quote << buf << quote;
 }
 
+// O-13: a GROUP BY key of a type that print_passthrough_value prints and
+// the GROUP BY printers did not: YEAR, TIME, BINARY and VARBINARY.  A
+// group key holds the column's stored bytes, as an NdbRecAttr does, so it
+// is printed as print_passthrough_value prints the column: YEAR and TIME
+// as text, quoted under JSON; BINARY at its full padded length and
+// VARBINARY as a base64 string under JSON and as the raw bytes with the
+// mysql client's batch-mode escaping under TEXT.
+void
+ResultPrinter::print_groupby_as_passthrough(std::ostream& out,
+                                            NdbAggregator::Column& column,
+                                            int fsp)
+{
+  const unsigned char* data =
+      pointer_cast<const unsigned char*>(column.data());
+  const size_t size = (size_t)column.byte_size();
+  const unsigned char* bytes = data;
+  size_t len = size;
+  switch (column.type())
+  {
+  case NdbDictionary::Column::Year:
+    require_sch(size >= 1, "Empty YEAR GROUP BY column");
+    print_temporal_packed(out, (Uint64)data[0], TemporalDisplay::YEAR, 0,
+                          m_quote);
+    return;
+  case NdbDictionary::Column::Time2:
+  {
+    // 3 bytes and the fraction, big-endian, re-packed into the Uint64
+    // form the shared decoder takes, as print_passthrough_value does.
+    require_sch(fsp >= 0 && fsp <= 6,
+                "Bad precision of a TIME GROUP BY column");
+    const Uint32 n = 3u + (1u + (Uint32)fsp) / 2u;
+    require_sch(n <= size, "Short TIME GROUP BY column");
+    Uint64 w = 0;
+    for (Uint32 i = 0; i < n; i++)
+      w = (w << 8) | data[i];
+    print_temporal_packed(out, w, TemporalDisplay::TIME2, fsp, m_quote);
+    return;
+  }
+  case NdbDictionary::Column::Binary:
+    break;
+  case NdbDictionary::Column::Varbinary:
+    require_sch(size >= 1 && 1 + (size_t)data[0] <= size,
+                "Bad length of a VARBINARY GROUP BY column");
+    bytes = &data[1];
+    len = (size_t)data[0];
+    break;
+  case NdbDictionary::Column::Longvarbinary:
+    require_sch(size >= 2, "Bad length of a VARBINARY GROUP BY column");
+    len = (size_t)data[0] | ((size_t)data[1] << 8);
+    require_sch(2 + len <= size, "Bad length of a VARBINARY GROUP BY column");
+    bytes = &data[2];
+    break;
+  default:
+    ronsql_bug("A GROUP BY key printed as a pass-through value has a type "
+               "that is not YEAR, TIME, BINARY or VARBINARY.");
+  }
+  if (m_json_output) {
+    out << '"';
+    print_base64(out, bytes, len);
+    out << '"';
+  } else if (m_tsv_output) {
+    print_binary_tsv(out, bytes, len);
+  } else {
+    ronsql_bug("The result printer has neither JSON nor TSV output.");
+  }
+}
+
 // Phase E.3 + I.12 helpers: format a single NdbRecAttr value (or its
 // PassthroughValue copy, for a sorted result) for the
 // projection-only pass-through path.  Mirrors the type cases the
@@ -1485,15 +1661,14 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
   case NdbDictionary::Column::Double:
     {
       // D15: a DECIMAL-derived value carried as DOUBLE prints with its source
-      // scale (set on the virt column via setScale) to match MySQL — but only
-      // within DOUBLE's exact range (precision <= 15).  True DOUBLE columns
-      // have scale 0; wider DECIMALs keep the compact formatting.  The
-      // value is a DECIMAL in MySQL (SUM/MIN/MAX of a DECIMAL, AVG of an
-      // exact type): rounded HALF_UP, never "-0.00" (O-5/O-6).
+      // scale (set on the virt column via setScale) to match MySQL, whatever
+      // the DECIMAL's precision (O-7).  True DOUBLE columns have scale 0.
+      // The value is a DECIMAL in MySQL (SUM/MIN/MAX of a DECIMAL, AVG of
+      // an exact type): rounded HALF_UP, never "-0.00" (O-5/O-6).
       const NdbDictionary::Column* col = attr->getColumn();
       int sc = (col != nullptr) ? col->getScale() : 0;
       int pr = (col != nullptr) ? col->getPrecision() : 0;
-      if (sc > 0 && pr > 0 && pr <= 15) {
+      if (sc > 0 && pr > 0) {
         print_fixed_scale(out, attr->double_value(), sc);
       } else {
         print_float_or_double(out, attr->double_value(),
@@ -1589,12 +1764,15 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
       require_sch(col != nullptr, "NULL column on DECIMAL NdbRecAttr");
       constexpr int DECIMAL_MAX_STR_LEN_IN_BYTES = 68;
       char decStr[DECIMAL_MAX_STR_LEN_IN_BYTES];
-      decimal_bin2str((const void*)attr->aRef(),
-                      attr->get_size_in_bytes(),
-                      col->getPrecision(),
-                      col->getScale(),
-                      decStr,
-                      DECIMAL_MAX_STR_LEN_IN_BYTES);
+      // O-14: on an error decimal_bin2str() leaves decStr unwritten.
+      const int dec_ret = decimal_bin2str((const void*)attr->aRef(),
+                                          attr->get_size_in_bytes(),
+                                          col->getPrecision(),
+                                          col->getScale(),
+                                          decStr,
+                                          DECIMAL_MAX_STR_LEN_IN_BYTES);
+      ronsql_require_bug(dec_ret == E_DEC_OK,
+                         "A DECIMAL value could not be converted to text.");
       out << decStr;
       break;
     }
@@ -1792,9 +1970,9 @@ PassthroughValue::copy(const NdbRecAttr* src, ArenaMalloc* amalloc)
     throw std::runtime_error(
         "Pass-through sort: failed to clone a row value.");
   const Uint32 size = src->get_size_in_bytes();
-  const size_t data_len = (size_t(size < 8 ? 8 : size) + 7) & ~size_t(7);
-  void* mem = amalloc->alloc_bytes(sizeof(PassthroughValue) + data_len,
-                                   alignof(Uint64));
+  const size_t total = arena_bytes(size);
+  const size_t data_len = total - sizeof(PassthroughValue);
+  void* mem = amalloc->alloc_bytes(total, alignof(Uint64));
   if (unlikely(mem == NULL)) throw std::bad_alloc();
   PassthroughValue* v = new (mem) PassthroughValue;
   v->m_column = src->getColumn();
@@ -1803,6 +1981,13 @@ PassthroughValue::copy(const NdbRecAttr* src, ArenaMalloc* amalloc)
   if (size > 0) memcpy(data, src->aRef(), size);
   memset(data + size, 0, data_len - size);
   return v;
+}
+
+size_t
+PassthroughValue::arena_bytes(Uint32 size)
+{
+  return sizeof(PassthroughValue) +
+         ((size_t(size < 8 ? 8 : size) + 7) & ~size_t(7));
 }
 
 Int32
@@ -1892,11 +2077,18 @@ ResultPrinter::print_result(NdbAggregator* aggregator,
 {
   DEB_TRACE();
   assert(out_stream != NULL);
-  // Force buffered path when sentinel filtering is needed (cross-table
-  // BranchReg filters) because streaming can't skip already-started records.
-  if (m_has_orderby || m_query->sentinel_agg_slot >= 0)
+  // O-16: only an ORDER BY needs every group before the first is printed.
+  // A HAVING, or the sentinel of a cross-table filter (BranchReg filters),
+  // decides on each group alone, which print_record cannot: it prints
+  // while it reads the record.
+  if (m_orderby_specs.size() > 0)
   {
     print_result_ordered(aggregator, out_stream);
+    return;
+  }
+  if (m_query->having_expression != NULL || m_query->sentinel_agg_slot >= 0)
+  {
+    print_result_filtered(aggregator, out_stream);
     return;
   }
   std::ostream& out = *out_stream;
@@ -1945,18 +2137,10 @@ ResultPrinter::print_result(NdbAggregator* aggregator,
       {
         break;
       }
-      if (!headers_printed && m_tsv_headers)
+      if (!headers_printed)
       {
         DEB_TRACE();
-        // Print the column names.
-        bool first_column = true;
-        for (Uint32 i = 0; i < m_outputs.size(); i++)
-        {
-          Outputs* o = m_outputs[i];
-          if (first_column) first_column = false; else out << '\t';
-          out << o->output_name;
-        }
-        out << '\n';
+        print_tsv_header(out);
         headers_printed = true;
       }
       print_record(record, out);
@@ -2079,7 +2263,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
           {
             int sc = cmd.print_group_by_column.scale;
             int pr = cmd.print_group_by_column.precision;
-            if (sc > 0 && pr > 0 && pr <= 15) {
+            if (sc > 0 && pr > 0) {
               print_fixed_scale(out, column.data_double(), sc);
             } else {
               print_float_or_double(out, column.data_double(),
@@ -2099,12 +2283,17 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
             int scale = cmd.print_group_by_column.scale;
             constexpr int DECIMAL_MAX_STR_LEN_IN_BYTES = 68;
             char decStr[DECIMAL_MAX_STR_LEN_IN_BYTES];
-            decimal_bin2str((const void*)column.data(),
-                            column.byte_size(),
-                            precision,
-                            scale,
-                            decStr,
-                            DECIMAL_MAX_STR_LEN_IN_BYTES);
+            // O-14: on an error decimal_bin2str() leaves decStr unwritten.
+            const int dec_ret =
+                decimal_bin2str((const void*)column.data(),
+                                column.byte_size(),
+                                precision,
+                                scale,
+                                decStr,
+                                DECIMAL_MAX_STR_LEN_IN_BYTES);
+            ronsql_require_bug(dec_ret == E_DEC_OK,
+                               "A DECIMAL GROUP BY value could not be "
+                               "converted to text.");
             out << decStr;
             break;
           }
@@ -2152,11 +2341,12 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
             break;
           }
         case NdbDictionary::Column::Type::Binary:        ///< Len
-          feature_not_implemented("Print GROUP BY column of type Binary");
         case NdbDictionary::Column::Type::Varbinary:     ///< Length bytes: 1, Max: 255
-          feature_not_implemented("Print GROUP BY column of type Varbinary");
         case NdbDictionary::Column::Type::Longvarbinary: ///< Length bytes: 2, little-endian
-          feature_not_implemented("Print GROUP BY column of type Longvarbinary");
+          // O-13: as in a pass-through result.
+          print_groupby_as_passthrough(out, column,
+                                       cmd.print_group_by_column.precision);
+          break;
         case NdbDictionary::Column::Type::Datetime:      ///< Precision down to 1 sec (sizeof(Datetime) == 8 bytes )
           feature_not_implemented("Print GROUP BY column of type Datetime");
         case NdbDictionary::Column::Type::Date:          ///< Precision down to 1 day(sizeof(Date) == 4 bytes )
@@ -2177,11 +2367,16 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         case NdbDictionary::Column::Type::Time:          ///< Time without date
           feature_not_implemented("Print GROUP BY column of type Time");
         case NdbDictionary::Column::Type::Year:          ///< Year 1901-2155 (1 byte)
-          feature_not_implemented("Print GROUP BY column of type Year");
+          // O-13: as in a pass-through result.
+          print_groupby_as_passthrough(out, column, 0);
+          break;
         case NdbDictionary::Column::Type::Timestamp:     ///< Unix time
           feature_not_implemented("Print GROUP BY column of type Timestamp");
         case NdbDictionary::Column::Type::Time2:         ///< 3 bytes + 0-3 fraction
-          feature_not_implemented("Print GROUP BY column of type Time2");
+          // O-13: as in a pass-through result.
+          print_groupby_as_passthrough(out, column,
+                                       cmd.print_group_by_column.precision);
+          break;
         case NdbDictionary::Column::Type::Datetime2:     ///< 5 bytes plus 0-3 fraction
           {
             int precision = cmd.print_group_by_column.precision;
@@ -2262,8 +2457,9 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
 // Base64 (RFC 4648, "=" padding, no line breaks) for binary pass-through
 // values under JSON output.  Not mysys' base64_encode, which inserts a
 // newline every 76 characters.
-static void
-print_base64(std::ostream& out, const unsigned char* bytes, size_t len)
+void
+ronsql_printer_internal::print_base64(std::ostream& out,
+                                      const unsigned char* bytes, size_t len)
 {
   static const char alphabet[] =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -2295,8 +2491,9 @@ print_base64(std::ostream& out, const unsigned char* bytes, size_t len)
 // non-ASCII character \u-escaped.  Non-ASCII characters only occur inside
 // JSON strings, where the escape means the same character, so a run of
 // them is printed as the content of a JSON string would be.
-static void
-print_json_ascii(std::ostream& out, const std::string& json)
+void
+ronsql_printer_internal::print_json_ascii(std::ostream& out,
+                                          const std::string& json)
 {
   size_t i = 0;
   while (i < json.size())
@@ -2339,8 +2536,10 @@ ronsql_print_json_string(std::ostream& out,
 // escaping the mysql client applies in batch mode (client/mysql.cc
 // tee_write, MY_PRINT_ESC_0 | MY_PRINT_CTRL): NUL, tab, newline and
 // backslash are written as \0, \t, \n and \\; every other byte as is.
-static void
-print_binary_tsv(std::ostream& out, const unsigned char* bytes, size_t len)
+void
+ronsql_printer_internal::print_binary_tsv(std::ostream& out,
+                                          const unsigned char* bytes,
+                                          size_t len)
 {
   for (size_t i = 0; i < len; i++)
   {
@@ -2366,13 +2565,13 @@ print_binary_tsv(std::ostream& out, const unsigned char* bytes, size_t len)
 // trim_space_suffix == true:  Ignore trailing spaces
 // trim_space_suffix == false: Print trailing spaces
 // Inspired by `well_formed_copy_nchars` in ../../../../sql-common/sql_string.cc
-static void
-print_string(std::ostream& out,
-             LexString ls,
-             CHARSET_INFO* charset,
-             bool json_escape,
-             bool utf8_output,
-             bool trim_space_suffix)
+void
+ronsql_printer_internal::print_string(std::ostream& out,
+                                      LexString ls,
+                                      CHARSET_INFO* charset,
+                                      bool json_escape,
+                                      bool utf8_output,
+                                      bool trim_space_suffix)
 {
   const uchar* str = pointer_cast<const uchar *>(ls.str);
   const uchar* end = pointer_cast<const uchar *>(&ls.str[ls.len]);
@@ -2626,10 +2825,21 @@ print_string(std::ostream& out,
  * uses for DOUBLE, and write its "d.ddde-NN" form (below 1e-15) in fixed
  * point.  'to' holds FLOATING_POINT_BUFFER + 1 bytes; the longest result,
  * -2.2250738585072014e-308, is 327 characters.
+ *
+ * O-4: from 1e15 up the text is mysqld's, my_gcvt() with the width mysqld
+ * gives it (Protocol_text::store_double).  It writes an exponent when the
+ * shortest digits end before the decimal point (1e15, -1.5e15,
+ * 9.007199254740992e15, 1.2345678901234568e17) and fixed point when they
+ * do not (1000000000000000.5).  my_fcvt_compact() wrote 1e20 as
+ * 100000000000000000000.  From 0.1 up to 1e15 both functions give the
+ * same text.  Inf and NaN set *error in both.
  */
-static size_t
-double_to_fixed(double value, char* to, bool* error)
+size_t
+ronsql_printer_internal::double_to_fixed(double value, char* to, bool* error)
 {
+  if (!(std::fabs(value) < 1e15))
+    return my_gcvt(value, MY_GCVT_ARG_DOUBLE, FLOATING_POINT_BUFFER, to,
+                   error);
   if (!(std::fabs(value) < 0.1) || value == 0.0)
     return my_fcvt_compact(value, to, error);
   // Wide enough that my_gcvt() drops no digit in either format.
@@ -2670,7 +2880,8 @@ ResultPrinter::print_float_or_double(std::ostream& out, double value,
   char buffer[FLOATING_POINT_BUFFER + 1];
   bool error;
   // Match MySQL's text-protocol FLOAT conversion. SUM/AVG and true DOUBLE
-  // values are printed exactly in fixed point (double_to_fixed()).
+  // values are printed exactly, in fixed point below 1e15 and as mysqld
+  // prints a DOUBLE from 1e15 up (double_to_fixed()).
   size_t len = float_display
       ? my_gcvt(value, MY_GCVT_ARG_FLOAT, FLOATING_POINT_BUFFER, buffer, &error)
       : double_to_fixed(value, buffer, &error);
@@ -2702,12 +2913,14 @@ ResultPrinter::print_float_or_double(std::ostream& out, double value,
  *
  * The decimal holds 81 digits in 9 words, as a my_decimal.  A value whose
  * integer and scale words do not fit (from 1e45 at scale 30, from 1e72 at
- * scale 9 or less; no caller comes near) keeps the rounding of my_fcvt().
+ * scale 9 or less) keeps the rounding of my_fcvt().  A MIN, MAX or AVG of
+ * any DECIMAL fits (O-7: precisions above 15 come here too); a SUM gets
+ * there only over about 10^8 rows near the maximum of a DECIMAL(65, s).
  * 'to' holds FLOATING_POINT_BUFFER bytes.  Returns the length, or 0 for
  * Inf and NaN.
  */
-static size_t
-format_fixed_scale(double value, int scale, char* to)
+size_t
+ronsql_printer_internal::format_fixed_scale(double value, int scale, char* to)
 {
   ronsql_require_bug(scale >= 0 && scale <= 30,
                      "A fixed-scale value has a scale outside 0 to 30.");
@@ -2915,17 +3128,17 @@ ResultPrinter::aggregate_arg_scale(const Outputs* out) const
   return m_column_metadata[col_idx].scale;
 }
 
-// Source DECIMAL precision of a MIN/MAX aggregate's argument column.  Used to
-// gate scale-formatting to the DOUBLE-exact range (precision <= 15): wider
-// DECIMALs are unrepresentable as DOUBLE, so fixed-scale formatting would
-// expose mantissa noise — those keep the compact my_fcvt_compact form.
+// Source DECIMAL precision of a MIN/MAX aggregate's argument column.  A
+// precision above 0 marks a DECIMAL, whose result prints at its scale.  O-7:
+// it no longer limits that to precision 15: print_fixed_scale() rounds the
+// double's shortest digits, where snprintf("%.*f") wrote its binary value
+// (0.1 at scale 30 as 0.100000000000000005551115123126).
 int
 ResultPrinter::aggregate_arg_precision(const Outputs* out) const
 {
   if (out == NULL || out->type != Outputs::Type::AGGREGATE)
     return 0;
-  // D15 (MIN/MAX) + D1 (SUM): see aggregate_arg_scale.  The precision gate
-  // keeps fixed-scale formatting within the DOUBLE-exact range (<= 15).
+  // D15 (MIN/MAX) + D1 (SUM): see aggregate_arg_scale.
   if (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX &&
       out->aggregate.fun != T_SUM)
     return 0;
@@ -3150,8 +3363,397 @@ ResultPrinter::scan_having_max_agg(const ConditionalExpression* expr,
   }
 }
 
-double
-ResultPrinter::evaluate_having_value(const ConditionalExpression* expr)
+// O-8: HavingValue, one HAVING operand, is in ResultPrinterInternal.hpp.
+
+// The DECIMAL that format_fixed_scale() prints for value: its shortest
+// digits rounded HALF_UP at scale.  False for Inf and NaN, and for a value
+// whose digits do not fit to (9 words).
+static bool
+double_to_decimal_at_scale(double value, int scale, decimal_t* to)
+{
+  if (!std::isfinite(value))
+    return false;
+  return double2decimal(value, to) <= E_DEC_TRUNCATED &&
+         decimal_round(to, to, scale, HALF_UP) == E_DEC_OK;
+}
+
+/*
+ * O-9: a SUM over a DECIMAL accumulates as a DOUBLE on the data nodes, so
+ * sums that are equal DECIMALs in MySQL can differ in their last bits
+ * (0.10 + 0.20 is 0.30000000000000004, 0.30 is 0.29999999999999999), and
+ * ORDER BY sorted such groups by those bits instead of by its next key.
+ * Compare the values that print at the scale, as avg_sort_key() does for
+ * AVG.  Rounding keeps the order, so only doubles less than two units of
+ * the scale apart can round to the same value: the others compare as
+ * they are, without formatting.
+ */
+int
+ronsql_compare_at_scale(double a, double b, int scale)
+{
+  if (a == b)
+    return 0;
+  const int raw = (a < b) ? -1 : 1;
+  if (!(std::fabs(a - b) < 2 * std::pow(10.0, -scale)))
+    return raw;
+  decimal_digit_t digits_a[9];
+  decimal_digit_t digits_b[9];
+  decimal_t dec_a;
+  decimal_t dec_b;
+  dec_a.len = 9;
+  dec_a.buf = digits_a;
+  dec_b.len = 9;
+  dec_b.buf = digits_b;
+  if (!double_to_decimal_at_scale(a, scale, &dec_a) ||
+      !double_to_decimal_at_scale(b, scale, &dec_b))
+    return raw;
+  const int cmp = decimal_cmp(&dec_a, &dec_b);
+  return (cmp < 0) ? -1 : (cmp > 0) ? 1 : 0;
+}
+
+int
+ResultPrinter::double_sort_scale(Uint32 col_idx) const
+{
+  if (m_column_metadata == NULL || m_column_names == NULL ||
+      col_idx >= m_column_names->size())
+    return 0;
+  const ColumnMetadata& meta = m_column_metadata[col_idx];
+  // avg_scale is -1 for a FLOAT or DOUBLE source.
+  if (!meta.has_metadata || meta.avg_scale < 0 ||
+      meta.temporal != TemporalDisplay::NONE || meta.scale <= 0)
+    return 0;
+  return meta.scale;
+}
+
+int
+ResultPrinter::exact_arg_scale(const AggregationAPICompiler::Expr* arg) const
+{
+  // A column, or a GREATEST / LEAST watermark over columns (D8).
+  const AggregationAPICompiler::Expr* load = ronsql_first_load_in_expr(arg);
+  if (load == NULL)
+    return -1;
+  const Uint32 col_idx = load->getLoadIdx();
+  if (m_column_metadata == NULL || m_column_names == NULL ||
+      col_idx >= m_column_names->size())
+    return -1;
+  const ColumnMetadata& meta = m_column_metadata[col_idx];
+  // avg_scale is -1 for a FLOAT or DOUBLE column, also a CTE output.
+  if (!meta.has_metadata || meta.avg_scale < 0 || meta.charset != NULL ||
+      meta.temporal != TemporalDisplay::NONE)
+    return -1;
+  return meta.scale;
+}
+
+CHARSET_INFO*
+ResultPrinter::string_arg_charset(const AggregationAPICompiler::Expr* arg)
+    const
+{
+  if (arg != NULL && arg->isCase())
+  {
+    // As aggregate_arg_charset(): either arm's column.
+    CHARSET_INFO* cs = load_arg_charset(arg->getLeft());
+    return cs != NULL ? cs : load_arg_charset(arg->getRight());
+  }
+  return load_arg_charset(arg);
+}
+
+// O-8: the value of a packed temporal MIN / MAX, decoded as
+// print_temporal_packed() decodes it for printing.
+void
+ronsql_printer_internal::decode_temporal_packed(
+    Uint64 w, ResultPrinter::TemporalDisplay temporal, int fsp,
+    MYSQL_TIME* mt)
+{
+  using TemporalDisplay = ResultPrinter::TemporalDisplay;
+  memset(mt, 0, sizeof(*mt));
+  Uint8 bytes[8];
+  const Uint32 flen = (1u + static_cast<Uint32>(fsp)) / 2u;
+  switch (temporal)
+  {
+  case TemporalDisplay::DATE:
+    mt->day = static_cast<unsigned int>(w & 31);
+    mt->month = static_cast<unsigned int>((w >> 5) & 15);
+    mt->year = static_cast<unsigned int>(w >> 9);
+    mt->time_type = MYSQL_TIMESTAMP_DATE;
+    return;
+  case TemporalDisplay::YEAR:
+    // 0 is 0000, any other byte the year - 1900.
+    mt->year = (w == 0) ? 0 : static_cast<unsigned int>(w + 1900);
+    mt->time_type = MYSQL_TIMESTAMP_NONE;
+    return;
+  case TemporalDisplay::DATETIME2:
+  {
+    const Uint32 n = 5u + flen;
+    for (Uint32 i = 0; i < n; i++)
+      bytes[i] = static_cast<Uint8>((w >> (8u * (n - 1u - i))) & 0xFFu);
+    TIME_from_longlong_datetime_packed(
+        mt, my_datetime_packed_from_binary(bytes, fsp));
+    return;
+  }
+  case TemporalDisplay::TIME2:
+  {
+    const Uint32 n = 3u + flen;
+    for (Uint32 i = 0; i < n; i++)
+      bytes[i] = static_cast<Uint8>((w >> (8u * (n - 1u - i))) & 0xFFu);
+    TIME_from_longlong_time_packed(mt, my_time_packed_from_binary(bytes, fsp));
+    return;
+  }
+  case TemporalDisplay::TIMESTAMP2:
+  {
+    // In UTC, as it prints.
+    const Uint32 n = 4u + flen;
+    for (Uint32 i = 0; i < n; i++)
+      bytes[i] = static_cast<Uint8>((w >> (8u * (n - 1u - i))) & 0xFFu);
+    my_timeval tv{};
+    my_timestamp_from_binary(&tv, bytes, fsp);
+    ronsql_timestamp_tv_to_TIME(tv, mt);
+    return;
+  }
+  case TemporalDisplay::NONE:
+    break;
+  }
+  ronsql_bug("A temporal HAVING value has no temporal type.");
+}
+
+// O-8: a temporal value where MySQL takes a number: a YEAR is its year;
+// a DATE is YYYYMMDD, a DATETIME or TIMESTAMP YYYYMMDDhhmmss and a TIME
+// [-]hhmmss, with the fraction of a second.  exact: as the DECIMAL that
+// MySQL computes with; otherwise as the DOUBLE that MySQL compares a
+// temporal MIN / MAX with a number as (a YEAR is an integer).
+static void
+having_temporal_to_number(HavingValue& v, bool exact)
+{
+  const MYSQL_TIME& t = v.time;
+  if (v.temporal == ResultPrinter::TemporalDisplay::YEAR)
+  {
+    longlong2decimal(static_cast<longlong>(t.year), v.exact());
+    return;
+  }
+  if (!exact)
+  {
+    const double d = TIME_to_double(t);
+    v.kind = HavingValue::Kind::APPROX;
+    v.dbl = t.neg ? -d : d;
+    return;
+  }
+  char text[48];
+  const int len =
+      snprintf(text, sizeof(text), "%s%llu.%06lu", t.neg ? "-" : "",
+               static_cast<unsigned long long>(TIME_to_ulonglong(t)),
+               static_cast<unsigned long>(t.second_part));
+  ronsql_require_bug(len > 0 && static_cast<size_t>(len) < sizeof(text),
+                     "A temporal HAVING value does not fit its number.");
+  const char* end = text + len;
+  ronsql_require_bug(string2decimal(text, v.exact(), &end) == E_DEC_OK,
+                     "A temporal HAVING value is not a number.");
+  v.clear_negative_zero();
+}
+
+static double
+having_double(HavingValue& v)
+{
+  if (v.kind == HavingValue::Kind::APPROX)
+    return v.dbl;
+  double d = 0.0;
+  decimal2double(v.decimal(), &d);
+  return d;
+}
+
+// O-8: an operand of + - * / and unary minus.  A temporal value is its
+// number, exactly, as MySQL computes with it.
+static void
+having_arithmetic_operand(HavingValue& v)
+{
+  if (v.kind == HavingValue::Kind::TEMPORAL)
+  {
+    having_temporal_to_number(v, true);
+  }
+  else if (v.kind == HavingValue::Kind::STRING)
+  {
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "HAVING does not support arithmetic on a string.");
+  }
+}
+
+void
+ronsql_printer_internal::having_negate(HavingValue& v)
+{
+  if (v.kind == HavingValue::Kind::NULL_VALUE)
+    return;
+  having_arithmetic_operand(v);
+  if (v.kind == HavingValue::Kind::EXACT)
+  {
+    if (!decimal_is_zero(v.decimal()))
+      v.dec.sign = !v.dec.sign;
+    return;
+  }
+  v.dbl = -v.dbl;
+}
+
+/*
+ * O-8: + - * / as MySQL computes them: exactly, as DECIMAL, when both
+ * operands are integers or DECIMALs, where / keeps four more fractional
+ * digits (div_precision_increment) and truncates the quotient at a word
+ * of nine digits, as my_decimal_div() does; in DOUBLE when an operand is
+ * a FLOAT or DOUBLE.  Division by zero is NULL.  Not as MySQL: an integer
+ * result that leaves the BIGINT range (MAX(bigint) + 1 at 2^63 - 1) fails
+ * in MySQL, which computes integers as BIGINT, and is exact here.
+ */
+void
+ronsql_printer_internal::having_arithmetic(TokenKind op, HavingValue& left,
+                                           HavingValue& right,
+                                           HavingValue& out)
+{
+  if (left.kind == HavingValue::Kind::NULL_VALUE ||
+      right.kind == HavingValue::Kind::NULL_VALUE)
+  {
+    out.kind = HavingValue::Kind::NULL_VALUE;
+    return;
+  }
+  having_arithmetic_operand(left);
+  having_arithmetic_operand(right);
+  if (left.kind == HavingValue::Kind::EXACT &&
+      right.kind == HavingValue::Kind::EXACT)
+  {
+    int err = E_DEC_OK;
+    switch (op)
+    {
+    case T_PLUS:
+      err = decimal_add(left.decimal(), right.decimal(), out.exact());
+      break;
+    case T_MINUS:
+      err = decimal_sub(left.decimal(), right.decimal(), out.exact());
+      break;
+    case T_MULTIPLY:
+      err = decimal_mul(left.decimal(), right.decimal(), out.exact());
+      break;
+    default:
+      if (decimal_is_zero(right.decimal()))
+      {
+        out.kind = HavingValue::Kind::NULL_VALUE;
+        return;
+      }
+      err = decimal_div(left.decimal(), right.decimal(), out.exact(), 4);
+      break;
+    }
+    if (err > E_DEC_TRUNCATED)
+    {
+      throw RonSQLPermanentError(
+          RonSQLErrorClass::LIMIT,
+          "A HAVING expression is out of the DECIMAL range.");
+    }
+    out.clear_negative_zero();
+    return;
+  }
+  const double l = having_double(left);
+  const double r = having_double(right);
+  double result = 0.0;
+  switch (op)
+  {
+  case T_PLUS:
+    result = l + r;
+    break;
+  case T_MINUS:
+    result = l - r;
+    break;
+  case T_MULTIPLY:
+    result = l * r;
+    break;
+  default:
+    if (r == 0)
+    {
+      out.kind = HavingValue::Kind::NULL_VALUE;
+      return;
+    }
+    result = l / r;
+    break;
+  }
+  if (std::isnan(result))
+  {
+    out.kind = HavingValue::Kind::NULL_VALUE;
+    return;
+  }
+  out.kind = HavingValue::Kind::APPROX;
+  out.dbl = result;
+}
+
+void
+ResultPrinter::having_aggregate_value(TokenKind fun,
+                                      const AggregationAPICompiler::Expr* arg,
+                                      Uint32 agg_index,
+                                      HavingValue& out)
+{
+  NdbAggregator::Result& result = m_regs_a[agg_index];
+  if (result.is_null())
+  {
+    out.kind = HavingValue::Kind::NULL_VALUE;
+    return;
+  }
+  switch (result.type())
+  {
+  case NdbDictionary::Column::Bigint:
+    longlong2decimal(result.data_int64(), out.exact());
+    return;
+  case NdbDictionary::Column::Bigunsigned:
+  {
+    // A temporal MIN / MAX is its packed value, as print_aggregate_result()
+    // finds it.
+    int fsp = 0;
+    const TemporalDisplay temporal = (fun == T_MIN || fun == T_MAX)
+        ? expr_temporal(arg, fsp)
+        : TemporalDisplay::NONE;
+    if (temporal != TemporalDisplay::NONE)
+    {
+      out.kind = HavingValue::Kind::TEMPORAL;
+      out.temporal = temporal;
+      decode_temporal_packed(result.data_uint64(), temporal, fsp, &out.time);
+      return;
+    }
+    ulonglong2decimal(result.data_uint64(), out.exact());
+    return;
+  }
+  case NdbDictionary::Column::Double:
+  {
+    // Over an integer or DECIMAL column it is a DECIMAL in MySQL: the
+    // double at the column's scale.  Beyond about 15 digits the double
+    // has lost digits of the DECIMAL (Q-6).
+    const int scale = (fun == T_COUNT) ? -1 : exact_arg_scale(arg);
+    if (scale >= 0 &&
+        double_to_decimal_at_scale(result.data_double(), scale, out.exact()))
+      return;
+    out.kind = HavingValue::Kind::APPROX;
+    out.dbl = result.data_double();
+    return;
+  }
+  case NdbDictionary::Column::Char:
+  case NdbDictionary::Column::Varchar:
+  case NdbDictionary::Column::Longvarchar:
+  {
+    CHARSET_INFO* cs = string_arg_charset(arg);
+    require_sch(cs != nullptr,
+                "Could not find charset for string aggregation result");
+    Uint32 len = 0;
+    const char* data = result.data_str(&len);
+    if (result.type() == NdbDictionary::Column::Char)
+    {
+      // MySQL reads a CHAR without its trailing spaces.
+      len = static_cast<Uint32>(cs->cset->lengthsp(cs, data, len));
+    }
+    out.kind = HavingValue::Kind::STRING;
+    out.str = data;
+    out.len = len;
+    out.charset = cs;
+    out.node = NULL;
+    return;
+  }
+  default:
+    bug("Unexpected data type in an aggregate result of HAVING.");
+  }
+}
+
+void
+ResultPrinter::evaluate_having_value(const ConditionalExpression* expr,
+                                     HavingValue& out)
 {
   switch (expr->op)
   {
@@ -3159,44 +3761,95 @@ ResultPrinter::evaluate_having_value(const ConditionalExpression* expr)
   case T_COUNT:
   case T_MIN:
   case T_MAX:
-    return convert_result_to_double(m_regs_a[expr->having_agg.agg_index]);
+    having_aggregate_value(expr->op, expr->having_agg.arg,
+                           expr->having_agg.agg_index, out);
+    return;
   case T_AVG:
   {
-    double numerator =
-      convert_result_to_double(m_regs_a[expr->having_agg.agg_index]);
-    double denominator =
-      convert_result_to_double(m_regs_a[expr->having_agg.agg_index2]);
-    return numerator / denominator;
+    // SUM / COUNT, divided as MySQL divides an AVG: exactly over an
+    // integer or DECIMAL (my_decimal_div() with div_precision_increment).
+    HavingValue sum;
+    HavingValue count;
+    having_aggregate_value(T_SUM, expr->having_agg.arg,
+                           expr->having_agg.agg_index, sum);
+    having_aggregate_value(T_COUNT, NULL, expr->having_agg.agg_index2,
+                           count);
+    having_arithmetic(T_SLASH, sum, count, out);
+    return;
+  }
+  case T_IDENTIFIER:
+  {
+    // The alias of a SELECT-list subquery aggregate, an AGGREGATE output
+    // since RonSQLPreparer::compile(), which has its function and
+    // argument.
+    const Outputs* alias = NULL;
+    for (Uint32 i = 0; i < m_outputs.size() && alias == NULL; i++)
+    {
+      const Outputs* o = m_outputs[i];
+      if (o->type == Outputs::Type::AGGREGATE &&
+          o->aggregate.agg_index == expr->having_agg.agg_index)
+        alias = o;
+    }
+    having_aggregate_value(alias != NULL ? alias->aggregate.fun : T_SUM,
+                           alias != NULL ? alias->aggregate.arg : NULL,
+                           expr->having_agg.agg_index, out);
+    return;
   }
   case T_INT:
-    return static_cast<double>(expr->constant_integer);
+    longlong2decimal(expr->constant_integer, out.exact());
+    return;
   case T_FLOAT:
-    return expr->constant_float.dbl;
+  {
+    // A literal with a fraction is a DECIMAL in MySQL, and a number that
+    // a subquery returned has its exact digits as its text (X-4).  A
+    // subquery number without text keeps its double's digits.
+    const LexString text = expr->constant_float.ls;
+    const char* end = (text.str != NULL) ? text.str + text.len : NULL;
+    if (text.str == NULL || text.len == 0 ||
+        string2decimal(text.str, out.exact(), &end) > E_DEC_TRUNCATED ||
+        end != text.str + text.len)
+    {
+      if (double2decimal(expr->constant_float.dbl, out.exact()) >
+          E_DEC_TRUNCATED)
+      {
+        out.kind = HavingValue::Kind::APPROX;
+        out.dbl = expr->constant_float.dbl;
+        return;
+      }
+    }
+    out.clear_negative_zero();
+    return;
+  }
+  case T_STRING:
+    // A literal (the preparer allows one only beside a MIN or MAX), or a
+    // string a subquery returned.
+    out.kind = HavingValue::Kind::STRING;
+    out.str = expr->string.str;
+    out.len = static_cast<Uint32>(expr->string.len);
+    out.charset = NULL;
+    out.node = expr;
+    return;
   case T_NULL:
-    // Scalar-subquery NULL uses the same marker as NULL aggregate results.
-    return std::numeric_limits<double>::quiet_NaN();
-  case T_IDENTIFIER:
-    // Output alias mapped to agg_index — same as aggregate result
-    return convert_result_to_double(m_regs_a[expr->having_agg.agg_index]);
+    // Also a scalar subquery's NULL.
+    out.kind = HavingValue::Kind::NULL_VALUE;
+    return;
   case T_PLUS:
-    return evaluate_having_value(expr->args.left) +
-           evaluate_having_value(expr->args.right);
   case T_MINUS:
-    if (expr->args.left == NULL)
-      return -evaluate_having_value(expr->args.right);
-    return evaluate_having_value(expr->args.left) -
-           evaluate_having_value(expr->args.right);
   case T_MULTIPLY:
-    return evaluate_having_value(expr->args.left) *
-           evaluate_having_value(expr->args.right);
   case T_SLASH:
   {
-    const double numerator = evaluate_having_value(expr->args.left);
-    const double denominator = evaluate_having_value(expr->args.right);
-    // Division by zero gives NULL in MySQL, not an infinity.
-    if (denominator == 0)
-      return std::numeric_limits<double>::quiet_NaN();
-    return numerator / denominator;
+    if (expr->op == T_MINUS && expr->args.left == NULL)
+    {
+      evaluate_having_value(expr->args.right, out);
+      having_negate(out);
+      return;
+    }
+    HavingValue left;
+    HavingValue right;
+    evaluate_having_value(expr->args.left, left);
+    evaluate_having_value(expr->args.right, right);
+    having_arithmetic(expr->op, left, right, out);
+    return;
   }
   default:
     throw RonSQLPermanentError(
@@ -3204,7 +3857,210 @@ ResultPrinter::evaluate_having_value(const ConditionalExpression* expr)
   }
 }
 
-// A comparison with a NULL (NaN) operand is UNKNOWN, NOT keeps UNKNOWN, and
+static bool
+temporal_with_date(ResultPrinter::TemporalDisplay temporal)
+{
+  return temporal == ResultPrinter::TemporalDisplay::DATE ||
+         temporal == ResultPrinter::TemporalDisplay::DATETIME2 ||
+         temporal == ResultPrinter::TemporalDisplay::TIMESTAMP2;
+}
+
+// O-8: two temporal MIN / MAX values: dates, datetimes and timestamps as
+// datetimes (Arg_comparator::compare_datetime), a TIME with a TIME and a
+// YEAR with a YEAR.  MySQL casts a TIME compared with a date to a
+// datetime of the current day; that and a YEAR beside another type are
+// refused.
+static int
+compare_having_temporals(const HavingValue& a, const HavingValue& b)
+{
+  using TemporalDisplay = ResultPrinter::TemporalDisplay;
+  longlong x = 0;
+  longlong y = 0;
+  if (temporal_with_date(a.temporal) && temporal_with_date(b.temporal))
+  {
+    x = TIME_to_longlong_datetime_packed(a.time);
+    y = TIME_to_longlong_datetime_packed(b.time);
+  }
+  else if (a.temporal == TemporalDisplay::TIME2 &&
+           b.temporal == TemporalDisplay::TIME2)
+  {
+    x = TIME_to_longlong_time_packed(a.time);
+    y = TIME_to_longlong_time_packed(b.time);
+  }
+  else if (a.temporal == TemporalDisplay::YEAR &&
+           b.temporal == TemporalDisplay::YEAR)
+  {
+    x = a.time.year;
+    y = b.time.year;
+  }
+  else
+  {
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "HAVING compares a TIME only with a TIME, and a YEAR only with a "
+        "YEAR or a number.");
+  }
+  return (x < y) ? -1 : (x > y) ? 1 : 0;
+}
+
+// O-8: a string compared with a DATE, DATETIME or TIMESTAMP is a datetime
+// (Arg_comparator::get_date_from_const()); RonSQL takes only a valid one,
+// as for a WHERE on a temporal CTE output.
+static void
+having_string_to_datetime(const HavingValue& s, MYSQL_TIME* mt)
+{
+  MYSQL_TIME_STATUS status;
+  const my_time_flags_t flags = TIME_NO_ZERO_IN_DATE | TIME_NO_ZERO_DATE;
+  if (str_to_datetime(s.str, s.len, mt, flags, &status) ||
+      status.warnings != 0 || status.nanoseconds != 0 ||
+      status.m_deprecation.m_kind !=
+          MYSQL_TIME_STATUS::DEPRECATION::DP_NONE ||
+      (mt->time_type != MYSQL_TIMESTAMP_DATE &&
+       mt->time_type != MYSQL_TIMESTAMP_DATETIME))
+  {
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "HAVING compares a DATE, DATETIME or TIMESTAMP only with a string "
+        "that is a valid date or datetime.");
+  }
+}
+
+LexString
+ResultPrinter::having_constant_in_charset(const HavingValue& constant,
+                                          CHARSET_INFO* cs)
+{
+  // A constant is UTF-8.  As RonSQLPreparer::literal_in_column_charset()
+  // converts a literal compared with a column (RONSQL-13), once per
+  // constant and character set.
+  const LexString text(constant.str, constant.len);
+  if (text.len == 0 || my_charset_same(cs, &my_charset_utf8mb4_bin))
+    return text;
+  if (cs->mbminlen == 1 && (cs->state & MY_CS_NONASCII) == 0)
+  {
+    // ASCII text has the same bytes in an ASCII-based character set.
+    size_t i = 0;
+    while (i < text.len && static_cast<Uint8>(text.str[i]) < 0x80) i++;
+    if (i == text.len)
+      return text;
+  }
+  for (const HavingConstant* c = m_having_constants; c != NULL; c = c->next)
+  {
+    if (c->node == constant.node && c->charset == cs)
+      return c->text;
+  }
+  ronsql_require_bug(text.len <= UINT32_MAX / cs->mbmaxlen,
+                     "A HAVING string constant is too long to convert.");
+  const Uint32 cap = static_cast<Uint32>(text.len * cs->mbmaxlen);
+  char* buf = m_amalloc->alloc_exc<char>(cap);
+  uint errors = 0;
+  const size_t len = my_convert(buf, cap, cs, text.str, text.len,
+                                &my_charset_utf8mb4_bin, &errors);
+  if (errors != 0)
+  {
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::SEMANTIC,
+        std::string("HAVING compares a string constant with a MIN or MAX "
+                    "in character set ") + cs->csname +
+        ", which cannot hold one of its characters.");
+  }
+  HavingConstant* c = m_amalloc->alloc_exc<HavingConstant>(1);
+  c->node = constant.node;
+  c->charset = cs;
+  c->text = LexString(buf, len);
+  c->next = m_having_constants;
+  m_having_constants = c;
+  return c->text;
+}
+
+// O-8: two strings, in the collation of the MIN / MAX (which wins over a
+// constant's in MySQL); MySQL refuses two different collations.
+int
+ResultPrinter::compare_having_strings(HavingValue& left, HavingValue& right)
+{
+  CHARSET_INFO* cs = (left.charset != NULL) ? left.charset : right.charset;
+  if (cs == NULL ||
+      (left.charset != NULL && right.charset != NULL &&
+       left.charset != right.charset))
+  {
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "HAVING compares a string only with a MIN or MAX of the same "
+        "collation.");
+  }
+  const LexString a = (left.charset != NULL)
+      ? LexString(left.str, left.len)
+      : having_constant_in_charset(left, cs);
+  const LexString b = (right.charset != NULL)
+      ? LexString(right.str, right.len)
+      : having_constant_in_charset(right, cs);
+  const int cmp = cs->coll->strnncollsp(
+      cs, pointer_cast<const uchar*>(a.str), a.len,
+      pointer_cast<const uchar*>(b.str), b.len);
+  return (cmp < 0) ? -1 : (cmp > 0) ? 1 : 0;
+}
+
+/*
+ * O-8: two non-NULL HAVING values compared as MySQL compares them
+ * (Arg_comparator::set_cmp_func()): two integers or DECIMALs exactly,
+ * any other two numbers as doubles; strings in a collation; a DATE,
+ * DATETIME or TIMESTAMP with another or with a string as datetimes; a
+ * temporal value with a number as a double of its number (a YEAR as an
+ * integer).  A string beside a number, a TIME or a YEAR is refused: MySQL
+ * converts it with a warning.  Two strings need the printer's constants
+ * in the collation of the MIN or MAX; compare_having_typed() compares
+ * every other pair (T-16: ResultPrinterUnitTest).
+ */
+int
+ResultPrinter::compare_having_values(HavingValue& left, HavingValue& right)
+{
+  if (left.kind == HavingValue::Kind::STRING &&
+      right.kind == HavingValue::Kind::STRING)
+    return compare_having_strings(left, right);
+  return compare_having_typed(left, right);
+}
+
+int
+ronsql_printer_internal::compare_having_typed(HavingValue& left,
+                                              HavingValue& right)
+{
+  using Kind = HavingValue::Kind;
+  if (left.kind == Kind::STRING || right.kind == Kind::STRING)
+  {
+    // Two strings are refused here as a string beside a number is.
+    const bool string_left = (left.kind == Kind::STRING);
+    const HavingValue& str = string_left ? left : right;
+    const HavingValue& other = string_left ? right : left;
+    if (other.kind != Kind::TEMPORAL || !temporal_with_date(other.temporal))
+    {
+      throw RonSQLPermanentError(
+          RonSQLErrorClass::UNSUPPORTED,
+          "HAVING compares a string only with the MIN or MAX of a string, "
+          "DATE, DATETIME or TIMESTAMP column.");
+    }
+    MYSQL_TIME parsed;
+    having_string_to_datetime(str, &parsed);
+    const longlong x = TIME_to_longlong_datetime_packed(other.time);
+    const longlong y = TIME_to_longlong_datetime_packed(parsed);
+    const int cmp = (x < y) ? -1 : (x > y) ? 1 : 0;
+    return string_left ? -cmp : cmp;
+  }
+  if (left.kind == Kind::TEMPORAL && right.kind == Kind::TEMPORAL)
+    return compare_having_temporals(left, right);
+  if (left.kind == Kind::TEMPORAL)
+    having_temporal_to_number(left, false);
+  if (right.kind == Kind::TEMPORAL)
+    having_temporal_to_number(right, false);
+  if (left.kind == Kind::EXACT && right.kind == Kind::EXACT)
+  {
+    const int cmp = decimal_cmp(left.decimal(), right.decimal());
+    return (cmp < 0) ? -1 : (cmp > 0) ? 1 : 0;
+  }
+  const double l = having_double(left);
+  const double r = having_double(right);
+  return (l < r) ? -1 : (l > r) ? 1 : 0;
+}
+
+// A comparison with a NULL operand is UNKNOWN, NOT keeps UNKNOWN, and
 // AND / OR follow SQL, so that e.g. a NULL MAX under `!= 5` or `NOT (> 5)`
 // drops the group as in MySQL.
 ResultPrinter::HavingTruth
@@ -3269,19 +4125,24 @@ ResultPrinter::evaluate_having(const ConditionalExpression* expr)
   case T_EQUALS:
   case T_NOT_EQUALS:
   {
-    const double left = evaluate_having_value(expr->args.left);
-    const double right = evaluate_having_value(expr->args.right);
-    if (std::isnan(left) || std::isnan(right))
+    // O-8: compared as MySQL compares the two types.
+    HavingValue left;
+    HavingValue right;
+    evaluate_having_value(expr->args.left, left);
+    evaluate_having_value(expr->args.right, right);
+    if (left.kind == HavingValue::Kind::NULL_VALUE ||
+        right.kind == HavingValue::Kind::NULL_VALUE)
       return HAVING_UNKNOWN;
+    const int cmp = compare_having_values(left, right);
     bool result = false;
     switch (expr->op)
     {
-    case T_GT: result = left > right; break;
-    case T_GE: result = left >= right; break;
-    case T_LT: result = left < right; break;
-    case T_LE: result = left <= right; break;
-    case T_EQUALS: result = left == right; break;
-    default: result = left != right; break;
+    case T_GT: result = cmp > 0; break;
+    case T_GE: result = cmp >= 0; break;
+    case T_LT: result = cmp < 0; break;
+    case T_LE: result = cmp <= 0; break;
+    case T_EQUALS: result = cmp == 0; break;
+    default: result = cmp != 0; break;
     }
     return result ? HAVING_TRUE : HAVING_FALSE;
   }

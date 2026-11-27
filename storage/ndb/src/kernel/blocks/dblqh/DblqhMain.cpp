@@ -117,6 +117,25 @@
 #include "../dbtup/VecSearchInterpreter.hpp"
 #include <CteLinkedAttr.hpp>
 
+#ifdef ERROR_INSERT
+#include <atomic>
+/* Node-wide one-shot error inserts 5155-5157 (see Dblqh.hpp).  One token
+ * per data node process, shared by its LQH instances. */
+static std::atomic<Uint32> g_lqh_node_one_shot_error{0};
+
+void lqh_arm_node_one_shot_error() {
+  g_lqh_node_one_shot_error.store(1);
+}
+
+bool lqh_take_node_one_shot_error() {
+  if (globalData.ndbMtLqhWorkers == 0) {
+    return true;  // ndbd: one LQH instance, the insert itself is one-shot
+  }
+  Uint32 armed = 1;
+  return g_lqh_node_one_shot_error.compare_exchange_strong(armed, 0);
+}
+#endif
+
 /**
  * overload handling...
  * TODO: cleanup...from all sorts of perspective
@@ -1169,7 +1188,7 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     jam();
     continueJoinAggSend(signal, data0, data1, data2,
                         signal->theData[4], signal->theData[5],
-                        signal->theData[6]);
+                        signal->theData[6], signal->theData[7]);
     return;
   }
   case ZCONTINUE_JOIN_AGG_REDISTRIBUTE:
@@ -9439,7 +9458,7 @@ void Dblqh::handle_release_exclusive_frag_access(Fragrecord *fragPtrP) {
  *    encoded key for inline continuation.
  *  - JAI_ROP_PARKED / _NEW: the request is queued on the placeholder;
  *    the caller unwinds its partial parse WITHOUT sending a REF.  For
- *    _NEW the 10 ms failure sweeper is scheduled here (clobbers
+ *    _NEW the 200 ms failure sweeper is scheduled here (clobbers
  *    signal->theData — legal, both callers' unwinds use locals only).
  *  - JAI_ROP_FAILED: no park capacity; sections restored, record
  *    freed, caller takes its normal error path.
@@ -9539,15 +9558,17 @@ SimulatedBlock::JoinAggResolveOrParkResult Dblqh::parkJoinAggConsumer(
 
   if (res == SimulatedBlock::JAI_ROP_PARKED_NEW) {
     jam();
-    /* Schedule this placeholder's 10 ms failure sweeper on the same
-     * originally-addressed block instance as the re-dispatch target
-     * (plan 2.2: closes the SETUP_REF abort deadlock). */
+    /* Schedule this placeholder's failure sweeper, after
+     * JOIN_AGG_PARK_SWEEP_DELAY_MS, on the same originally-addressed
+     * block instance as the re-dispatch target (plan 2.2: closes the
+     * SETUP_REF abort deadlock). */
     signal->theData[0] = ZCONTINUE_JOIN_AGG_PARK_SWEEP;
     signal->theData[1] = regTcPtr->transid[0];
     signal->theData[2] = regTcPtr->transid[1];
     signal->theData[3] = queryTag;
     signal->theData[4] = cteId;
-    sendSignalWithDelay(rec->m_destRef, GSN_CONTINUEB, signal, 10, 5);
+    sendSignalWithDelay(rec->m_destRef, GSN_CONTINUEB, signal,
+                        JOIN_AGG_PARK_SWEEP_DELAY_MS, 5);
   }
 #ifdef ERROR_INSERT
   /* The header's sender ref was overwritten by sendSignalWithDelay above;
@@ -9580,20 +9601,25 @@ static inline Uint32 joinAggFeedError(Int32 ret, Uint32 fallback) {
 
 /**
  * RONDB-1120 P2: the placeholder failure sweeper.  If the identity is
- * still an unfilled placeholder after 10 ms, SETUP never arrived
- * (SETUP_REF or loss) — abort every parked request with a REF so
- * DBTC's abort (which waits for the CONF/REF of every in-flight
- * request) cannot deadlock, and release the parked sections.  The REFs
+ * still an unfilled placeholder after JOIN_AGG_PARK_SWEEP_DELAY_MS
+ * (200 ms), SETUP never arrived (SETUP_REF or loss) — abort every
+ * parked request with a REF so DBTC's abort (which waits for the
+ * CONF/REF of every in-flight request) cannot deadlock, and release the
+ * parked sections.  The REFs
  * carry the temporary ZJOIN_AGG_SETUP_NOT_RECEIVED: a SETUP that is only
  * late (a loaded instance, a JIT compile) or lost with a failed node is
- * a race a retry of the query survives.
+ * a race a retry of the query survives.  A success FINAL_REP has no REF;
+ * its sender gets an error FINAL_REP with the same code
+ * (failUndeliveredJoinAggFinalRep).  The swept placeholder is removed,
+ * so a late SETUP creates a fresh state, which DBTC reclaims once the
+ * REF or the sender's COMPLETE_REF has failed the query.
  */
 void Dblqh::joinAggParkSweep(Signal *signal) {
   const Uint32 transid[2] = { signal->theData[1], signal->theData[2] };
   const Uint32 queryTag = signal->theData[3];
   const Uint32 cteId = signal->theData[4];
   if (ERROR_INSERTED(5145) || ERROR_INSERTED(5138) || ERROR_INSERTED(5148) ||
-      ERROR_INSERTED(5150)) {
+      ERROR_INSERTED(5150) || ERROR_INSERTED(5161)) {
     jam();
     /* Test hooks. 5145 (NF-11, NF-12): hold until this instance
      * processes NODE_FAILREP or the test clears the insert. The failure
@@ -9602,8 +9628,9 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
      * normally. 5138 / 5148 (PK-1, PK-4): hold while SETUP is held.
      * For guaranteed replay, switch 5138 to extra 0xFFFE first: SETUP
      * runs while sweepers stay held. Clear after the query completes.
-     * 5150 (PK-8): hold while the proxy waits for a NULL_ROW to park;
-     * the SETUP then fills the placeholder before this runs again. */
+     * 5150 (PK-8) / 5161 (PK-8b): hold while the proxy waits for a
+     * NULL_ROW / SCAN_FRAGREQ to park; the SETUP then fills the
+     * placeholder before this runs again. */
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 20, 5);
     return;
   }
@@ -9662,9 +9689,21 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
       sendSignal(rec->m_senderRef, GSN_JOIN_AGG_REDISTRIBUTE_REF, signal,
                  JoinAggRedistributeRef::SignalLength, JBB);
     } else if (rec->m_gsn == GSN_JOIN_AGG_FINAL_REP) {
-      /* Fire-and-forget — nothing to REF; the query dies via the
-       * COMPLETE / redistribute REFs and DBTC's heartbeat timers. */
       jam();
+      /* FINAL_REP has no REF.  Its sender's state waits for this
+       * node's FINAL_REP; when the SETUP is only late, the state it
+       * creates would also wait for the report dropped here.  Answer
+       * the sender with an error FINAL_REP so that it aborts and its
+       * COMPLETE_REF fails the query with the temporary 1274. */
+      const JoinAggFinalRep *rep =
+          reinterpret_cast<const JoinAggFinalRep *>(rec->m_theData);
+      const bool answered = failUndeliveredJoinAggFinalRep(
+          signal, rep->senderNodeId, rep->identWord, rep->transid[0],
+          rep->transid[1], rep->errorCode, ZJOIN_AGG_SETUP_NOT_RECEIVED);
+      g_eventLogger->info(
+          "(%u)DBLQH JoinAgg park sweep FINAL_REP: senderNode=%u "
+          "errorCode=%u answered=%u",
+          instance(), rep->senderNodeId, rep->errorCode, Uint32(answered));
     } else if (rec->m_gsn == GSN_JOIN_AGG_NULL_ROW_REQ) {
       const JoinAggNullRowReq *req =
           reinterpret_cast<const JoinAggNullRowReq *>(rec->m_theData);
@@ -9709,6 +9748,56 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
 }
 
 /**
+ * A success JOIN_AGG_FINAL_REP addressed by identity did not reach a
+ * state on this node: no park record or identity entry was free (1275),
+ * or it parked and the placeholder sweeper expired it because the SETUP
+ * did not come in time (1274).  This node has no state to abort: the
+ * missing state is why the report parked.  The sender's state exists and
+ * waits for this node's FINAL_REP at its checkCteReady barrier, and DBTC
+ * waits for its COMPLETE reply; a state that a late SETUP creates here
+ * would wait for the dropped report too.  FINAL_REP has no REF, so answer
+ * the sender with an error FINAL_REP addressed by identity to its DBLQH
+ * instance 1, the form abortCteRedistribution uses to tell its peers.
+ * The sender aborts its state and its COMPLETE_REF fails the query with
+ * the temporary errorCode; DBTC then cancels the other participants and
+ * reclaims a late SETUP's state.
+ *
+ * An error report (repErrorCode != 0) is never answered: its origin has
+ * already failed the query, and an answer is itself an error report, so
+ * it cannot bounce back.  Only a connected data node other than this one
+ * is answered.  The arguments are values because the caller's report may
+ * lie in the signal buffer this overwrites.  Returns whether it answered.
+ */
+bool Dblqh::failUndeliveredJoinAggFinalRep(Signal *signal,
+                                           Uint32 senderNodeId,
+                                           Uint32 identWord,
+                                           Uint32 transId1,
+                                           Uint32 transId2,
+                                           Uint32 repErrorCode,
+                                           Uint32 errorCode) {
+  if (repErrorCode != 0 || senderNodeId == 0 ||
+      senderNodeId == getOwnNodeId() ||
+      getNodeInfo(senderNodeId).getType() != NodeInfo::DB ||
+      !getNodeInfo(senderNodeId).m_connected) {
+    jam();
+    return false;
+  }
+  jam();
+  JoinAggFinalRep *fail = (JoinAggFinalRep *)signal->getDataPtrSend();
+  fail->aggStateKey = RNIL;
+  fail->senderNodeId = getOwnNodeId();
+  fail->identWord = identWord;
+  fail->transid[0] = transId1;
+  fail->transid[1] = transId2;
+  fail->redistributeCountLo = 0;
+  fail->redistributeCountHi = 0;
+  fail->errorCode = errorCode;
+  sendSignal(numberToRef(DBLQH, 1, senderNodeId), GSN_JOIN_AGG_FINAL_REP,
+             signal, JoinAggFinalRep::SignalLength, JBB);
+  return true;
+}
+
+/**
  * RONDB-1120 P2: re-execute a parked request.  Rebuilds the ORIGINAL
  * signal — words, length, header sender (SCAN_FRAGCONF targets the
  * header sender, so it must read as the original DBSPJ requester,
@@ -9718,26 +9807,35 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
 void Dblqh::joinAggFlushParked(Signal *signal, Uint32 parkRecI) {
   JoinAggParkRec *const rec = joinAggGetParkRec(parkRecI);
 #ifdef ERROR_INSERT
-  if (ERROR_INSERTED(5150)) {
+  if (ERROR_INSERTED(5150) || ERROR_INSERTED(5161)) {
     jam();
-    /* Test hook (PK-8): the SETUP succeeded and detached this record for
-     * replay.  Keep it on this instance's held chain until NODE_FAILREP
-     * clears the insert (the coordinator died), so the replay runs
-     * against a failed coordinator and must be rejected by the guards.
-     * One timer per instance re-checks the chain every 20 ms.  The
-     * event selects one held NULL_ROW per instance and arming. */
+    /* Test hook (PK-8, PK-8b): the SETUP succeeded and detached this
+     * record for replay.  Keep it on this instance's held chain until
+     * NODE_FAILREP clears the insert (the coordinator died), so the
+     * replay runs against a failed coordinator and must be rejected by
+     * the guards.  One timer per instance re-checks the chain every
+     * 20 ms.  The event selects one held NULL_ROW (5150) or SCAN_FRAGREQ
+     * (5161) per instance and arming.  A SCAN_FRAGREQ does not carry its
+     * coordinator, so its event reports coordinator 0. */
     rec->m_next = m_join_agg_held_flush_head;
     m_join_agg_held_flush_head = parkRecI;
-    if (rec->m_gsn == GSN_JOIN_AGG_NULL_ROW_REQ &&
+    const Uint32 observedGsn = ERROR_INSERTED(5161)
+                                   ? GSN_SCAN_FRAGREQ
+                                   : GSN_JOIN_AGG_NULL_ROW_REQ;
+    if (rec->m_gsn == observedGsn &&
         (c_error_insert_extra & (1u << 16)) == 0) {
-      const JoinAggNullRowReq *req =
-          reinterpret_cast<const JoinAggNullRowReq *>(rec->m_theData);
-      m_join_agg_observed_null_row = parkRecI;
+      Uint32 coordinator = 0;
+      if (observedGsn == GSN_JOIN_AGG_NULL_ROW_REQ) {
+        const JoinAggNullRowReq *req =
+            reinterpret_cast<const JoinAggNullRowReq *>(rec->m_theData);
+        coordinator = refToNode(req->coordinatorRef);
+      }
+      m_join_agg_observed_park = parkRecI;
       m_join_agg_observed_iteration = c_error_insert_extra & 0xFFFF;
       infoEvent("[CTE_PK8_REPLAY_HELD node=%u iteration=%u instance=%u "
                 "park=%u coordinator=%u]",
                 getOwnNodeId(), m_join_agg_observed_iteration, instance(),
-                parkRecI, refToNode(req->coordinatorRef));
+                parkRecI, coordinator);
       c_error_insert_extra |= (1u << 16);
     }
     if (!m_join_agg_held_flush_timer) {
@@ -9766,14 +9864,13 @@ void Dblqh::joinAggFlushParked(Signal *signal, Uint32 parkRecI) {
     jam();
 #ifdef ERROR_INSERT
     // The synchronous handler sees the token only for this exact replay.
-    m_join_agg_observed_replay =
-        (parkRecI == m_join_agg_observed_null_row);
+    m_join_agg_observed_replay = (parkRecI == m_join_agg_observed_park);
 #endif
     execJOIN_AGG_NULL_ROW_REQ(signal);
 #ifdef ERROR_INSERT
     if (m_join_agg_observed_replay) {
       m_join_agg_observed_replay = false;
-      m_join_agg_observed_null_row = RNIL;
+      m_join_agg_observed_park = RNIL;
     }
 #endif
   } else if (gsn == GSN_JOIN_AGG_COMPLETE_REQ) {
@@ -9787,17 +9884,28 @@ void Dblqh::joinAggFlushParked(Signal *signal, Uint32 parkRecI) {
     execJOIN_AGG_FINAL_REP(signal);
   } else {
     jam();
+#ifdef ERROR_INSERT
+    // PK-8b: as for the NULL_ROW above, only for this exact replay.
+    m_join_agg_observed_replay = (parkRecI == m_join_agg_observed_park);
+#endif
     execSCAN_FRAGREQ(signal);
+#ifdef ERROR_INSERT
+    if (m_join_agg_observed_replay) {
+      m_join_agg_observed_replay = false;
+      m_join_agg_observed_park = RNIL;
+    }
+#endif
   }
 }
 
 #ifdef ERROR_INSERT
-/* Test hook 5150 (PK-8): while the insert is set, re-check in 20 ms;
- * once NODE_FAILREP cleared it, hand every held record back to the
- * normal flush path, one job each, so the replays run after this
- * instance marked the coordinator down. */
+/* Test hooks 5150 (PK-8) and 5161 (PK-8b): while the insert is set,
+ * re-check in 20 ms; once NODE_FAILREP cleared it, hand every held
+ * record back to the normal flush path, one job each, so the replays
+ * run after this instance marked the coordinator down.  For 5161,
+ * NODE_FAILREP calls this itself, see there. */
 void Dblqh::joinAggReleaseHeldFlush(Signal *signal) {
-  if (ERROR_INSERTED(5150)) {
+  if (ERROR_INSERTED(5150) || ERROR_INSERTED(5161)) {
     jam();
     signal->theData[0] = ZCONTINUE_JOIN_AGG_FLUSH_HELD;
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 20, 1);
@@ -9816,7 +9924,7 @@ void Dblqh::joinAggReleaseHeldFlush(Signal *signal) {
     released++;
     i = next;
   }
-  g_eventLogger->info("DBLQH %u: error insert 5150 released %u held "
+  g_eventLogger->info("DBLQH %u: error insert 5150/5161 released %u held "
                       "parked replays", instance(), released);
 }
 #endif
@@ -9873,6 +9981,22 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     SET_ERROR_INSERT_VALUE(5079);
   }
 
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5155) && LqhKeyReq::getOperation(Treqinfo) == ZREAD &&
+      (ERROR_INSERT_EXTRA == 0 ||
+       ERROR_INSERT_EXTRA ==
+           LqhKeyReq::getTableId(lqhKeyReq->tableSchemaVersion))) {
+    /* Node-wide one-shot (Dblqh.hpp): the first read LQHKEYREQ on the
+     * node, of the table given as the insert's extra value if any, fails
+     * with 1218 (as 5047, below), on whichever LQH instance runs it.
+     * Writes (schema distribution, other sessions) do not take the
+     * token. */
+    CLEAR_ERROR_INSERT_VALUE;
+    if (lqh_take_node_one_shot_error()) {
+      SET_ERROR_INSERT_VALUE(5047);
+    }
+  }
+#endif
   if (ERROR_INSERTED_CLEAR(5047) || ERROR_INSERTED_CLEAR(5108) ||
       ERROR_INSERTED(5079) ||
       (ERROR_INSERTED(5102) && LqhKeyReq::getNoTriggersFlag(Treqinfo)) ||
@@ -10403,8 +10527,12 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
         getJoinAggState(
             JoinAggregationState::decodeBaseKey(
                 regTcPtr->m_join_agg_state_key));
+    /* A feed or a parked replay can arrive after this instance processed
+     * NODE_FAILREP and the proxy started to release the state; check the
+     * host record, not only m_connected (joinAggCoordinatorDown). */
     if (aggState != nullptr &&
-        !getNodeInfo(refToNode(aggState->m_senderRef)).m_connected) {
+        unlikely(joinAggCoordinatorDown(aggState->m_senderRef))) {
+      jam();
       earlyKeyReqAbort_simple(signal, lqhKeyReq,
                               ZNODEFAIL_BEFORE_COMMIT,
                               __LINE__, tcConnectptr);
@@ -16593,11 +16721,23 @@ bool Dblqh::sendEvictedAggGroup(Signal *signal,
   Uint32 words_written = 0;
   static_assert(JOIN_AGG_MAX_RESULT_WORDS <=
                 sizeof(cevictBuffer) / sizeof(Uint32));
-  Int32 evict_ret = interp->evictOneGroup(
-      cevictBuffer,
-      JOIN_AGG_MAX_RESULT_WORDS,
-      &words_written,
-      c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
+  Int32 evict_ret;
+  {
+    /* The other LDM threads feeding this state run ProcessRec under the
+     * interpreter's lock; the eviction unlinks and frees a group, and
+     * m_rows_sent is one counter for all of them, so both need it too.
+     * The group is copied to this thread's cevictBuffer, so the send
+     * below runs unlocked. */
+    std::unique_lock<std::mutex> lock = interp->lockFeederMutex();
+    evict_ret = interp->evictOneGroup(
+        cevictBuffer,
+        JOIN_AGG_MAX_RESULT_WORDS,
+        &words_written,
+        c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
+    if (likely(evict_ret == 0)) {
+      state->m_rows_sent++;
+    }
+  }
   if (unlikely(evict_ret != 0)) {
     jam();
     /* Nothing to evict: the interpreter could not allocate a group even
@@ -16616,8 +16756,6 @@ bool Dblqh::sendEvictedAggGroup(Signal *signal,
   sendTransIdAIRow(signal, state->m_resultRef, receiverData,
                    state->m_transid, cevictBuffer, words_written,
                    /*corrAtEnd=*/false);
-
-  state->m_rows_sent++;
   return true;
 }
 
@@ -16691,13 +16829,18 @@ bool Dblqh::feedOuterJoinAggNullRow(Signal *signal,
   if (attrInfoLen > 0 && regTcPtr->attrInfoIVal != RNIL) {
     copy(cattrInfoBuffer, regTcPtr->attrInfoIVal);
 
-    Uint32 RsubLen = cattrInfoBuffer[4];
-    if (RsubLen > 0) {
-      Uint32 sub_offset = 5 + cattrInfoBuffer[0] + cattrInfoBuffer[1] +
-                          cattrInfoBuffer[2] + cattrInfoBuffer[3];
-      ndbrequire(sub_offset + RsubLen <= attrInfoLen);
-      linked_data = &cattrInfoBuffer[sub_offset + 1];
-      linked_len = RsubLen - 1;
+    /* A section whose regions run past its end fails the row (it was
+     * ndbrequire-fatal, and read a stale header when shorter than 5). */
+    CteAttrInfoRegions regions;
+    if (unlikely(!parseCteAttrInfo(cattrInfoBuffer, attrInfoLen,
+                                   regions))) {
+      jam();
+      regTcPtr->errorCode = ZJOIN_AGG_PARENT_DATA_ERROR;
+      return false;
+    }
+    if (regions.subLen > 0) {
+      linked_data = &cattrInfoBuffer[regions.subStart + 1];
+      linked_len = regions.subLen - 1;
     }
   }
 
@@ -17430,7 +17573,7 @@ void Dblqh::execNODE_FAILREP(Signal *signal) {
     // coordinator status first, after this handler marks failed nodes down.
     CLEAR_ERROR_INSERT_VALUE;
   }
-  if (ERROR_INSERTED(5145) || ERROR_INSERTED(5150)) {
+  if (ERROR_INSERTED(5145) || ERROR_INSERTED(5150) || ERROR_INSERTED(5161)) {
     jam();
     /* End the parking hold on every LDM/query instance at node failure.
      * Keep it off even after the original placeholder has been swept:
@@ -17438,7 +17581,19 @@ void Dblqh::execNODE_FAILREP(Signal *signal) {
      * The proxy's separate SETUP hold is unaffected.  For 5150 (PK-8)
      * the held replays are released by the next re-check, after this
      * handler marked the failed coordinator down below. */
+    const bool releaseHeldNow = ERROR_INSERTED(5161);
     CLEAR_ERROR_INSERT_VALUE;
+    if (releaseHeldNow) {
+      jam();
+      /* 5161 (PK-8b): queue the held replays now, ahead of this
+       * instance's node-failure handling (ZHANDLE_TC_FAILED_SCANS below),
+       * so they run before its NF_COMPLETEREP and so before
+       * JOIN_AGG_NODE_FAIL_REP can release the state. A held SCAN_FRAGREQ
+       * meets the coordinator guard only after its identity lookup;
+       * replayed after the release it would park again instead. The
+       * replays still run after the host record below says ZNODE_DOWN. */
+      joinAggReleaseHeldFlush(signal);
+    }
   }
 #endif
 
@@ -18939,6 +19094,19 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
     CLEAR_ERROR_INSERT_VALUE;
   }
 
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5157) && refToMain(senderBlockRef) != getBACKUP() &&
+      (ERROR_INSERT_EXTRA == 0 ||
+       ERROR_INSERT_EXTRA == tcConnectptr.p->tableref)) {
+    /* Node-wide one-shot (Dblqh.hpp): drop the first SCAN_NEXTREQ on the
+     * node, of a scan of the table given as the insert's extra value if
+     * any (as 5030, below), on whichever LQH instance runs the scan. */
+    CLEAR_ERROR_INSERT_VALUE;
+    if (lqh_take_node_one_shot_error()) {
+      SET_ERROR_INSERT_VALUE(5030);
+    }
+  }
+#endif
   if (ERROR_INSERTED(5030)) {
     if (refToMain(senderBlockRef) != getBACKUP()) {
       ndbout << "ERROR 5030" << endl;
@@ -20060,6 +20228,12 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   const Uint32 requestId = req->requestId;
   Uint32 aggStateKey = req->aggStateKey;
   const Uint32 maxBatchRows = req->maxBatchRows;
+  /* packIdentWord(queryTag, cteId, 0), which is never RNIL; RNIL when
+   * the request has none (a short request, or the keyed form of the
+   * block tests). */
+  const Uint32 identWord =
+      (signal->getLength() >= JoinAggCompleteReq::SignalLength)
+          ? req->identWord : RNIL;
 
   CRASH_INSERTION(5122);  // Crash node on COMPLETE_REQ for join agg NF testing
 
@@ -20071,9 +20245,6 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
      * fired.  Resolve node-locally; park until the local SETUP
      * processes (bounded: one COMPLETE per state); the rewritten key
      * lets the owner-forward below route to the owner LDM. */
-    const Uint32 identWord =
-        (signal->getLength() >= JoinAggCompleteReq::SignalLength)
-            ? req->identWord : RNIL;
     if (likely(identWord != RNIL)) {
       const Uint32 transid[2] = { req->transid[0], req->transid[1] };
       const Uint32 base = joinAggIdentityLookup(
@@ -20134,6 +20305,36 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
 
   JoinAggregationState *state =
       (aggStateKey != RNIL) ? getJoinAggState(aggStateKey) : nullptr;
+  /* The key names a pool slot, the transid and the identWord name the
+   * query. A COMPLETE whose identity is not the state's was not sent
+   * for this state: the late COMPLETE of a released query whose slot a
+   * new SETUP took (a coordinator that failed while its COMPLETE was
+   * still queued here), or a request from an API node, which a GSN
+   * without a signal scope admits. Accepting it started another
+   * query's merge and send, replying to the wrong sender, and that
+   * query's own COMPLETE then met the duplicate-REQ guard below. Refuse
+   * it as naming no state, with its own words; the state is untouched.
+   * The identWord is checked when the request has one: DBTC always
+   * sends it, the block tests' keyed form does not. A request resolved
+   * by identity above matches by construction. The identity fields are
+   * immutable after SETUP, and the owner checks again after a forward. */
+  if (state != nullptr &&
+      unlikely(state->m_transid[0] != req->transid[0] ||
+               state->m_transid[1] != req->transid[1] ||
+               (identWord != RNIL &&
+                identWord != JoinAggregationState::packIdentWord(
+                                 state->m_queryTag, state->m_cte_index,
+                                 0)))) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBLQH execJOIN_AGG_COMPLETE_REQ: aggStateKey=%u "
+                  "transid=0x%x:0x%x identWord=0x%x is not the state's "
+                  "query (0x%x:0x%x queryTag=%u cteIndex=%u): refuse",
+                  getThreadId(), aggStateKey, req->transid[0],
+                  req->transid[1], identWord, state->m_transid[0],
+                  state->m_transid[1], state->m_queryTag,
+                  state->m_cte_index));
+    state = nullptr;
+  }
   if (state == nullptr) {
     jam();
     DEB_JOIN_AGG(("(%u)DBLQH execJOIN_AGG_COMPLETE_REQ:"
@@ -20180,8 +20381,10 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
     SectionHandle handle(this, signal);
     BlockReference ownerRef =
       numberToRef(DBLQH, state->m_owner_instance, getOwnNodeId());
+    /* With the received length: a request without an identWord must
+     * not gain one from the signal buffer. */
     sendSignal(ownerRef, GSN_JOIN_AGG_COMPLETE_REQ, signal,
-	       JoinAggCompleteReq::SignalLength, JBB, &handle);
+               signal->getLength(), JBB, &handle);
     return;
   }
 
@@ -20193,9 +20396,14 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
    * begun (or finished) — the only correct action is to drop.  Every
    * Phase L commit retains this invariant.  See cte_filter_phase_l.md.
    *
-   * ndbassert in debug builds so any path that re-fires the REQ is
-   * caught loudly; the silent return is the production-build safety
-   * net. */
+   * Only this query's COMPLETE gets here (the identity check above),
+   * and DBTC sends one per state, so this is a duplicate: a late
+   * COMPLETE of a coordinator that failed (a CTE state is then
+   * NODE_FAIL_ABORT), or one from an API node. It gets no reply: the
+   * COMPLETE that started the work owns the one reply, and a REF with
+   * the same words would fail a healthy query. Drop it with a
+   * DEB_JOIN_AGG line, as execJOIN_AGG_SEND_CONF drops a CONF that
+   * answers no paused send; an ndbassert here stopped a debug node. */
   {
     JoinAggregationState::State curState = state->m_state.load();
     if (curState == JoinAggregationState::ERROR &&
@@ -20212,9 +20420,10 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
     if (curState != JoinAggregationState::SETUP_COMPLETE) {
       jam();
       DEB_JOIN_AGG(("(%u)DBLQH execJOIN_AGG_COMPLETE_REQ: aggStateKey=%u "
-                    "state=%u != SETUP_COMPLETE — drop duplicate REQ",
-                    getThreadId(), aggStateKey, (Uint32)curState));
-      ndbassert(false);
+                    "state=%u != SETUP_COMPLETE senderRef=0x%x "
+                    "senderData=%u requestId=%u: drop duplicate REQ",
+                    getThreadId(), aggStateKey, (Uint32)curState,
+                    senderRef, senderData, requestId));
       SectionHandle handle(this, signal);
       releaseSections(handle);
       return;
@@ -20373,14 +20582,64 @@ static inline Uint32 joinAggCoordinatorNodeId(Uint32 coordinatorRef) {
   return refToMain(coordinatorRef) == DBTC ? refToNode(coordinatorRef) : 0;
 }
 
-bool Dblqh::isJoinAggCoordinatorFailed(Uint32 coordinatorRef) {
-  // Direct API callers may use their own reference. NODE_FAILREP
-  // applies to DBTC coordinators, which DBSPJ carries in the request.
+/* The one coordinator-liveness rule of join aggregation: every site that
+ * accepts work for a state, or continues work on it, asks this. The
+ * coordinator is down when this instance's host record says ZNODE_DOWN,
+ * or when its transporter is no longer connected.
+ *
+ * ZNODE_DOWN is the condition that is ordered with reclamation. This
+ * instance sets it in its own NODE_FAILREP, before its node-failure
+ * handling and so before its NF_COMPLETEREP. DBDIH sends
+ * JOIN_AGG_NODE_FAIL_REP, and DblqhProxy releases the coordinator's
+ * states, only after every LDM and query instance has reported
+ * NF_COMPLETEREP. A feed, a parked replay or a continuation that runs
+ * here once reclamation may have started therefore always sees
+ * ZNODE_DOWN.
+ *
+ * m_connected alone is not enough: it clears on DISCONNECT_REP, which
+ * TRPMAN sends when the transporter has finished disconnecting. That is
+ * not ordered with NODE_FAILREP (CLOSE_COMCONF does not wait for it),
+ * and when QMGR declares the node dead first, for example on missed
+ * heartbeats, it can come after the whole node-failure protocol. A guard
+ * on m_connected only lets a late feed into a state that the proxy is
+ * already tearing down. m_connected is still part of the rule because,
+ * when the socket closes first, it is false before NODE_FAILREP arrives:
+ * QMGR declares a running data node failed when its transporter
+ * disconnects, so the query can only fail and stopping early is safe.
+ *
+ * After the coordinator restarts, m_connected is true again but the host
+ * record stays ZNODE_DOWN until INCL_NODEREQ, so the rule holds through
+ * the restart too.
+ *
+ * Only DBTC references are subject to the rule. DBSPJ carries the DBTC
+ * coordinator in its requests, and DBTC is the only block that sends
+ * JOIN_AGG_SETUP_REQ. Direct API callers (block unit tests) use their own
+ * reference; their states are never tied to node failure. A DBTC
+ * reference outside the host records cannot name a live data node (the
+ * reference travels in signal data), so it counts as down instead of
+ * failing ptrCheckGuard. Node 0 is ZNODE_DOWN in every host record, so
+ * getNodeInfo sees only node ids 1 .. MAX_NDB_NODES - 1. */
+bool Dblqh::joinAggCoordinatorDown(Uint32 coordinatorRef) {
   if (refToMain(coordinatorRef) != DBTC) return false;
-  HostRecordPtr hostPtr;
-  hostPtr.i = refToNode(coordinatorRef);
-  ptrCheckGuard(hostPtr, chostFileSize, hostRecord);
-  return hostPtr.p->nodestatus == ZNODE_DOWN;
+  const Uint32 nodeId = refToNode(coordinatorRef);
+  if (unlikely(nodeId >= chostFileSize)) {
+    jam();
+    return true;
+  }
+  if (get_node_status(nodeId) == ZNODE_DOWN) {
+    jam();
+    return true;
+  }
+  bool disconnected = !getNodeInfo(nodeId).m_connected;
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5154) || m_join_agg_observed_replay) {
+    /* NF-14 (5154) and the observed replay of PK-8 / PK-8b (5150 /
+     * 5161): simulate a DISCONNECT_REP that lags the whole node-failure
+     * protocol, so that only ZNODE_DOWN can stop the work. */
+    disconnected = false;
+  }
+#endif
+  return disconnected;
 }
 
 /* Identity resolution and parked replay can reorder COMPLETE and CANCEL.
@@ -20471,22 +20730,13 @@ void Dblqh::execJOIN_AGG_CANCEL_REQ(Signal *signal) {
  */
 bool Dblqh::checkJoinAggNodeFailed(Signal*, Uint32 aggStateKey,
                                    Uint32 senderRef) {
-  /* Test this instance's host record too, not only m_connected.
-   * JOIN_AGG_NODE_FAIL_REP reclaims the failed coordinator's states only
+  /* JOIN_AGG_NODE_FAIL_REP reclaims the failed coordinator's states only
    * after every LDM finished its NODE_FAILREP handling, and it skips
    * FINALIZING / SENDING_RESULTS: a continuation still running then is
    * never reclaimed. ZNODE_DOWN is set in this instance's NODE_FAILREP,
-   * so the next slice (queued ahead of the rest of that handling) stops.
-   * m_connected clears on DISCONNECT_REP, which is not ordered with
-   * NODE_FAILREP and can come after the whole node-failure protocol. */
-  bool disconnected = !getNodeInfo(refToNode(senderRef)).m_connected;
-#ifdef ERROR_INSERT
-  if (ERROR_INSERTED(5154)) {
-    // NF-14: simulate a DISCONNECT_REP that lags the whole protocol.
-    disconnected = false;
-  }
-#endif
-  if (disconnected || isJoinAggCoordinatorFailed(senderRef)) {
+   * so the next slice (queued ahead of the rest of that handling) stops
+   * (joinAggCoordinatorDown). */
+  if (joinAggCoordinatorDown(senderRef)) {
     jam();
     // Stop this continuation, but do not release shared state while
     // other workers may still use it. JOIN_AGG_NODE_FAIL_REP performs
@@ -20548,7 +20798,7 @@ bool Dblqh::joinAggParkCapReached() {
  * any SectionHandle is constructed): moves the signal's sections into
  * the park record for the PARKED cases; on RESOLVED / FAILED the
  * sections are restored onto the signal and the record freed, so the
- * caller continues inline.  PARKED_NEW schedules the 10 ms sweeper on
+ * caller continues inline.  PARKED_NEW schedules the 200 ms sweeper on
  * the originally-addressed block instance.
  */
 SimulatedBlock::JoinAggResolveOrParkResult
@@ -20596,7 +20846,8 @@ Dblqh::joinAggResolveOrParkGeneric(Signal *signal, Uint32 gsn,
       signal->theData[2] = transid[1];
       signal->theData[3] = queryTag;
       signal->theData[4] = cteId;
-      sendSignalWithDelay(rec->m_destRef, GSN_CONTINUEB, signal, 10, 5);
+      sendSignalWithDelay(rec->m_destRef, GSN_CONTINUEB, signal,
+                          JOIN_AGG_PARK_SWEEP_DELAY_MS, 5);
     }
     return res;
   }
@@ -20623,7 +20874,7 @@ void Dblqh::joinAggNullRowReqImpl(Signal *signal) {
 
   // The local DBSPJ or a parked replay may outlive the coordinator.
   // Reject before resolving or dereferencing shared aggregation state.
-  if (unlikely(isJoinAggCoordinatorFailed(req->coordinatorRef))) {
+  if (unlikely(joinAggCoordinatorDown(req->coordinatorRef))) {
     jam();
     SectionHandle handle(this, signal);
     releaseSections(handle);
@@ -20635,7 +20886,7 @@ void Dblqh::joinAggNullRowReqImpl(Signal *signal) {
                 "iteration=%u instance=%u park=%u]",
                 getOwnNodeId(), refToNode(req->coordinatorRef),
                 m_join_agg_observed_iteration, instance(),
-                m_join_agg_observed_null_row);
+                m_join_agg_observed_park);
     }
 #endif
     JoinAggNullRowRef *ref =
@@ -20678,7 +20929,7 @@ void Dblqh::joinAggNullRowReqImpl(Signal *signal) {
     /* RONDB-1120 P2c: the wire key is RNIL (or stale) under the
      * un-gated SETUP round — resolve the local main-agg state by
      * identity; on a miss, park this signal like the LQHKEYREQ /
-     * SCAN_FRAGREQ feeds and let the SETUP flush (or the 10 ms
+     * SCAN_FRAGREQ feeds and let the SETUP flush (or the 200 ms
      * sweeper REF) re-drive it. */
     const Uint32 transid[2] = { req->transId[0], req->transId[1] };
     const Uint32 base = joinAggIdentityLookup(
@@ -21149,15 +21400,30 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
     return;
   }
 
+  /* The first batch starts here, with no rows and no bytes: groups
+   * evicted during the scan are in m_rows_sent, not in this batch. */
   continueJoinAggSend(signal, aggStateKey,
                       state->m_rows_sent, 0,
-                      senderRef, senderData, requestId);
+                      senderRef, senderData, requestId, 0);
 }
 
+/**
+ * continueJoinAggSend — stream the groups of a main aggregation.
+ *
+ * num_result_rows counts every group this state has sent, evicted ones
+ * included: the SEND_REQ and the COMPLETE_CONF report it. The flow
+ * control counts the current batch instead: send_batch_rows groups of
+ * send_batch_bytes bytes, which the COMPLETE_REQ or the SEND_CONF that
+ * started the batch set to 0. A batch ends when it holds m_max_batch_rows
+ * groups or MAX_SEND_BATCH_BYTES bytes, whichever comes first, and always
+ * holds at least one group. The CONTINUEB slices of a batch
+ * (GROUPS_PER_BATCH, MAX_BATCH_SIGNAL_BYTES) carry the counts.
+ */
 void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
-                                Uint32 num_result_rows, Uint32 total_bytes,
+                                Uint32 num_result_rows,
+                                Uint32 send_batch_bytes,
                                 Uint32 senderRef, Uint32 senderData,
-                                Uint32 requestId) {
+                                Uint32 requestId, Uint32 send_batch_rows) {
   if (checkJoinAggNodeFailed(signal, aggStateKey, senderRef)) {
     jam();
     return;
@@ -21169,9 +21435,24 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
   static const Uint32 GROUPS_PER_BATCH = 256;
 #endif
   static const Uint32 MAX_BATCH_SIGNAL_BYTES = 64 * 1024;
+  /* The byte limit of a batch: the most a scan batch carries. Without it
+   * maxBatchRows groups of up to 64 KB of key and 64 KB of values each
+   * made a batch of megabytes, all of which the API buffers until the
+   * application has read it. */
+  static const Uint32 MAX_SEND_BATCH_BYTES = MAX_SCAN_BATCH_SIZE;
+  Uint32 max_send_batch_bytes = MAX_SEND_BATCH_BYTES;
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5162)) {
+    /* ID-10b: the byte limit from the insert's extra value. */
+    max_send_batch_bytes = ERROR_INSERT_EXTRA;
+  }
+#endif
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
-  ndbrequire(state != nullptr);
+  if (state == nullptr || state->isAborting()) {
+    jam();
+    return;  // Aborted or released while this continuation was queued.
+  }
   sendJoinAggCompleteHeartbeat(signal, state);
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
 
@@ -21250,7 +21531,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
 
       DEB_JOIN_AGG(("(%u)DBLQH 2:Sending TRANSID_AI to 0x%x, receiverId: %u,"
                     " size: %u aggStateKey=%u keyLen=%u keyWords=%u"
-                    " key[0]=0x%x key[1]=0x%x rowNo=%u totalBytes=%u"
+                    " key[0]=0x%x key[1]=0x%x rowNo=%u batchBytes=%u"
                     " processed_rows=%llu gb_map_size=%u",
         getThreadId(),
         state->m_resultRef,
@@ -21262,15 +21543,32 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
         key0ForDebug,
         key1ForDebug,
         num_result_rows,
-        total_bytes,
+        send_batch_bytes,
         interp->processed_rows(),
         gb_map->size()));
 
-      sendTransIdAIRow(signal, state->m_resultRef, receiverData,
-                       state->m_transid, buf, pos, /*corrAtEnd=*/false);
+      bool sendGroup = true;
+#ifdef ERROR_INSERT
+      if (ERROR_INSERTED(5163)) {
+        /* Count this group but do not send it: the COMPLETE_CONF, and
+         * so DBTC's aggregate SCAN_TABCONF, promises the API one more
+         * row than it gets.  Once per insert on each instance. */
+        jam();
+        CLEAR_ERROR_INSERT_VALUE;
+        sendGroup = false;
+        g_eventLogger->info("DBLQH(%u): error insert 5163: aggregate group "
+                            "%u of aggStateKey %u counted but not sent",
+                            instance(), num_result_rows, aggStateKey);
+      }
+#endif
+      if (likely(sendGroup)) {
+        sendTransIdAIRow(signal, state->m_resultRef, receiverData,
+                         state->m_transid, buf, pos, /*corrAtEnd=*/false);
+      }
 
       num_result_rows++;
-      total_bytes += pos * sizeof(Uint32);
+      send_batch_rows++;
+      send_batch_bytes += pos * sizeof(Uint32);
       batch_count++;
       batch_signal_bytes +=
           (3 + TransIdAI::HeaderLength + 1 + pos) * sizeof(Uint32);
@@ -21285,13 +21583,18 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
         break;
       }
 
-      if (state->m_max_batch_rows > 0 &&
-          num_result_rows >= state->m_max_batch_rows) {
+      if ((state->m_max_batch_rows > 0 &&
+           send_batch_rows >= state->m_max_batch_rows) ||
+          send_batch_bytes >= max_send_batch_bytes) {
         /*
-         * Reached the batch limit set by DBSPJ. Pause sending and
-         * request permission to continue via JOIN_AGG_SEND_REQ.
-         * DBSPJ will reply with JOIN_AGG_SEND_CONF when the API
-         * is ready for more rows.
+         * This batch is full: it holds maxBatchRows groups (of the
+         * COMPLETE_REQ or of the SEND_CONF that started it), or
+         * MAX_SEND_BATCH_BYTES bytes. Pause sending and ask the
+         * coordinator (DBTC) to continue with JOIN_AGG_SEND_REQ; its
+         * JOIN_AGG_SEND_CONF starts the next batch with both counts at
+         * 0. The limits are per batch, not on num_result_rows: against
+         * that cumulative count every group after the first batch would
+         * cost a round trip.
          */
         jam();
         state->m_rows_sent = num_result_rows;
@@ -21303,7 +21606,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
         sendReq->requestId = requestId;
         sendReq->aggStateKey = aggStateKey;
         sendReq->numRowsSent = num_result_rows;
-        sendReq->resultBytes = total_bytes;
+        sendReq->resultBytes = send_batch_bytes;
         sendSignal(senderRef, GSN_JOIN_AGG_SEND_REQ,
                    signal, JoinAggSendReq::SignalLength, JBB);
         return;
@@ -21315,11 +21618,12 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
         signal->theData[0] = ZCONTINUE_JOIN_AGG_SEND;
         signal->theData[1] = aggStateKey;
         signal->theData[2] = num_result_rows;
-        signal->theData[3] = total_bytes;
+        signal->theData[3] = send_batch_bytes;
         signal->theData[4] = senderRef;
         signal->theData[5] = senderData;
         signal->theData[6] = requestId;
-        sendSignal(reference(), GSN_CONTINUEB, signal, 7, JBB);
+        signal->theData[7] = send_batch_rows;
+        sendSignal(reference(), GSN_CONTINUEB, signal, 8, JBB);
         return;
       }
     }
@@ -21334,11 +21638,26 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
   conf->senderData = senderData;
   conf->requestId = requestId;
   conf->numResultRows = num_result_rows;
-  conf->resultBytes = total_bytes;
+  conf->resultBytes = send_batch_bytes;  // the last batch
   sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_CONF,
              signal, JoinAggCompleteConf::SignalLength, JBB);
 }
 
+/**
+ * execJOIN_AGG_SEND_CONF — the coordinator lets a paused send continue.
+ *
+ * The CONF echoes the SEND_REQ, whose senderRef, senderData and
+ * requestId are those of the COMPLETE_REQ being answered. Accept it only
+ * for a state paused for it (WAITING_SEND_CONF) in this block, its owner
+ * LDM (the SEND_REQ went out from there, never from a query block), whose
+ * recorded COMPLETE has the same three words. Anything else is a
+ * duplicate or a stale CONF (released, reused, aborted or completed
+ * state, or a send still running): resuming it would start a second send
+ * chain, revive an aborted state or run on another thread, so drop it.
+ * The query's transid and identWord are not needed: a CONF that passes
+ * can only resume a paused send, with that state's own routing, which
+ * is what the coordinator's CONF does at once anyway.
+ */
 void Dblqh::execJOIN_AGG_SEND_CONF(Signal *signal) {
   jamEntry();
   const JoinAggSendConf *conf =
@@ -21351,14 +21670,32 @@ void Dblqh::execJOIN_AGG_SEND_CONF(Signal *signal) {
   const Uint32 maxBatchRows = conf->maxBatchRows;
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
-  ndbrequire(state != nullptr);
+  if (unlikely(state == nullptr ||
+               m_is_query_block ||
+               state->m_owner_instance != instance() ||
+               state->m_state.load() !=
+                   JoinAggregationState::WAITING_SEND_CONF ||
+               state->m_cte_complete_senderRef != senderRef ||
+               state->m_cte_complete_senderData != senderData ||
+               state->m_cte_complete_requestId != requestId)) {
+    jam();
+    DEB_JOIN_AGG(("(%u)DBLQH execJOIN_AGG_SEND_CONF: aggStateKey=%u "
+                  "state=%u senderRef=0x%x senderData=%u requestId=%u: "
+                  "no paused send for this CONF, drop it",
+                  getThreadId(), aggStateKey,
+                  (state != nullptr) ? (Uint32)state->m_state.load() : RNIL,
+                  senderRef, senderData, requestId));
+    return;
+  }
 
   state->m_max_batch_rows = maxBatchRows;
   state->m_state.store(JoinAggregationState::SENDING_RESULTS);
 
+  /* The CONF starts a new batch, with no rows and no bytes, of up to
+   * maxBatchRows groups. */
   continueJoinAggSend(signal, aggStateKey,
                       state->m_rows_sent, 0,
-                      senderRef, senderData, requestId);
+                      senderRef, senderData, requestId, 0);
 }
 
 static inline bool
@@ -21512,13 +21849,17 @@ emitCteOutputAggSlot(const JoinAggInterpreter *interp,
  *      AggResItem.type when set, falling back to BIGINT (8B) when
  *      undefined (all-null group).
  *
- * Writes up to ZATTR_BUFFER_SIZE words; overflow is ndbrequire-fatal.
- * lenOut receives the word count written.
+ * Writes at most ZATTR_BUFFER_SIZE words; lenOut receives the word count
+ * written.  Returns false when the AttrInfo regions run past attrInfoLen,
+ * or when the row does not fit in ZATTR_BUFFER_SIZE words (outBuf then
+ * holds part of it).  The parent linked columns come from the request,
+ * so the latter is a malformed request too: it was ndbrequire-fatal, and
+ * the GROUP BY key was copied unchecked past the end of outBuf.
  *
  * Shared between cteLookupAggFeed (downstream agg feed) and the filter
  * gate in execCTE_LOOKUP_REQ (WHERE-clause evaluation pre-emit).
  */
-void Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
+bool Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
                                  const char *groupData, Uint32 keyLen,
                                  const Uint32 *attrInfoBuf,
                                  Uint32 attrInfoLen,
@@ -21535,21 +21876,24 @@ void Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
    * (same format as LQHKEYREQ interpreter subroutine section). */
   if (attrInfoBuf != nullptr && attrInfoLen >= 5) {
     jam();
-    const Uint32 initReadLen = attrInfoBuf[0];
-    const Uint32 interpretLen = attrInfoBuf[1];
-    const Uint32 finalUpdateLen = attrInfoBuf[2];
-    const Uint32 finalReadLen = attrInfoBuf[3];
-    const Uint32 subLen = attrInfoBuf[4];
-
-    if (subLen > 1) {
+    CteAttrInfoRegions regions;
+    if (unlikely(!parseCteAttrInfo(attrInfoBuf, attrInfoLen, regions))) {
       jam();
-      const Uint32 subStart = 5 + initReadLen + interpretLen +
-                              finalUpdateLen + finalReadLen;
-      /* Skip the paramLen word (same as prepareAndHandleJoinAggRow) */
-      const Uint32 *parentLinked = &attrInfoBuf[subStart + 1];
-      const Uint32 parentLinkedLen = subLen - 1;
+      return false;
+    }
 
-      ndbrequire(linkedPos + parentLinkedLen < ZATTR_BUFFER_SIZE);
+    if (regions.subLen > 1) {
+      jam();
+      /* Skip the paramLen word (same as prepareAndHandleJoinAggRow) */
+      const Uint32 *parentLinked = &attrInfoBuf[regions.subStart + 1];
+      const Uint32 parentLinkedLen = regions.subLen - 1;
+
+      /* Cannot fail while the section is at most ZATTR_BUFFER_SIZE
+       * words, as CTE_LOOKUP_REQ and CTE_SCAN_REQ require. */
+      if (unlikely(parentLinkedLen > ZATTR_BUFFER_SIZE)) {
+        jam();
+        return false;
+      }
       memcpy(&outBuf[linkedPos], parentLinked,
              parentLinkedLen * sizeof(Uint32));
       linkedPos += parentLinkedLen;
@@ -21562,12 +21906,31 @@ void Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
    * which guarantees init.  Defensive null-check stays for safety. */
   const GBColTypeInfo *gbTypes = interp->gb_types();
 
-  /* Step 2: GROUP BY key columns from the group row */
+  /* Step 2: GROUP BY key columns from the group row.  The parent linked
+   * columns of step 1 can fill most of the buffer, and the GROUP BY key
+   * was copied after them without a check against its end (RONDB-1124).
+   * Each key entry must lie inside the key and fit in the buffer. */
   const Uint32 *keyData = reinterpret_cast<const Uint32 *>(groupData);
-  const Uint32 keyWords = keyLen >> 2;
+  Uint32 keyWords = keyLen >> 2;
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5164) && keyWords > 0) {
+    /* testCteProtocol OV-3: the key one word short, so that its last
+     * entry claims a data word more than the key holds, as in a
+     * corrupt group record. */
+    jam();
+    keyWords--;
+  }
+#endif
   Uint32 kp = 0;
   Uint32 gbIdx = 0;
   while (kp < keyWords) {
+    const Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
+    const Uint32 words = 1 + dataSize;
+    if (unlikely(words > keyWords - kp ||
+                 2 + words > ZATTR_BUFFER_SIZE - linkedPos)) {
+      jam();
+      return false;
+    }
     Uint32 typeId = 0;
     Uint32 maxBytes = 0;
     Uint32 csNumber = 0;
@@ -21578,8 +21941,6 @@ void Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
     }
     outBuf[linkedPos++] = CteLinkedAttr::encodeWord0(typeId, maxBytes);
     outBuf[linkedPos++] = CteLinkedAttr::encodeWord1(csNumber);
-    Uint32 dataSize = AttributeHeader::getDataSize(keyData[kp]);
-    Uint32 words = 1 + dataSize;
     memcpy(&outBuf[linkedPos], &keyData[kp], words * sizeof(Uint32));
     linkedPos += words;
     kp += words;
@@ -21595,12 +21956,18 @@ void Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
       groupData + keyLen);
   for (Uint32 i = 0; i < n_agg_results; i++) {
     const Uint32 attrId = n_gb_cols + i;
-    bool ok = emitCteLinkedAggSlot(interp, accumulators[i], i, attrId,
-                                   outBuf, linkedPos, ZATTR_BUFFER_SIZE);
-    ndbrequire(ok);
+    if (unlikely(!emitCteLinkedAggSlot(interp, accumulators[i], i, attrId,
+                                       outBuf, linkedPos,
+                                       ZATTR_BUFFER_SIZE))) {
+      /* The slot does not fit after the parent linked columns (this was
+       * ndbrequire-fatal), or a string slot has no value. */
+      jam();
+      return false;
+    }
   }
 
   *lenOut = linkedPos;
+  return true;
 }
 
 /**
@@ -21626,14 +21993,24 @@ Dblqh::runCteFilter(Signal *signal,
   if (attrInfoLen < 5 || cinBuf[1] <= 1) return CTE_FILTER_ACCEPT;
 
   jam();
-  const Uint32 initReadLen  = cinBuf[0];
-  const Uint32 interpretLen = cinBuf[1];
-  const Uint32 programStart = 5 + initReadLen;
-  ndbrequire(programStart + interpretLen <= attrInfoLen);
+  /* A section whose regions run past its end fails the filter (it was
+   * ndbrequire-fatal for the program region, and unchecked for the
+   * subroutine region buildCteLinkedBuffer copies). */
+  CteAttrInfoRegions regions;
+  if (unlikely(!parseCteAttrInfo(cinBuf, attrInfoLen, regions))) {
+    jam();
+    return CTE_FILTER_ERROR;
+  }
+  const Uint32 interpretLen = regions.interpretLen;
+  const Uint32 programStart = regions.interpretStart;
 
   Uint32 linkedLen = 0;
-  buildCteLinkedBuffer(interp, groupData, keyLen,
-                       cinBuf, attrInfoLen, cevictBuffer, &linkedLen);
+  if (unlikely(!buildCteLinkedBuffer(interp, groupData, keyLen, cinBuf,
+                                     attrInfoLen, cevictBuffer,
+                                     &linkedLen))) {
+    jam();
+    return CTE_FILTER_ERROR;
+  }
 
   Dbtup::KeyReqStruct filterReqStruct(c_tup);
   /* No scanned table row in a CTE filter (the row comes from the linked
@@ -21710,9 +22087,12 @@ Uint32 Dblqh::feedCteLinkedRow(Signal *signal,
   Uint32 *const linkedBuf = cevictBuffer;
   for (;;) {
     Uint32 linkedPos = 0;
-    buildCteLinkedBuffer(interp, groupData, keyLen,
-                         attrInfoBuf, attrInfoLen,
-                         linkedBuf, &linkedPos);
+    if (unlikely(!buildCteLinkedBuffer(interp, groupData, keyLen,
+                                       attrInfoBuf, attrInfoLen,
+                                       linkedBuf, &linkedPos))) {
+      jam();
+      return ZCTE_LOOKUP_ATTRINFO_MALFORMED;
+    }
     aggReq.no_exec_instructions = 0;
     const Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
         c_tup,
@@ -22112,22 +22492,19 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
           ? reinterpret_cast<const AggResItem *>(groupData + req.keyLen)
           : nullptr;
 
-  /* Parse 5-word AttrInfo header and skip to final-read section */
-  const Uint32 initReadLen = cinBuf[0];
-  const Uint32 execRegionLen = cinBuf[1];
-  const Uint32 finalUpdateLen = cinBuf[2];
-  const Uint32 finalRLen = cinBuf[3];
-
-  /* finalRLen may legitimately be 0 or 1: an intermediate CTE_LOOKUP
+  /* Parse 5-word AttrInfo header and skip to final-read section.
+   * finalRLen may legitimately be 0 or 1: an intermediate CTE_LOOKUP
    * with nothing referenced downstream reads nothing, or only the
    * CORR_FACTOR32 (no FLUSH_AI — its row goes to DBSPJ, not the API). */
-  const Uint32 finalRStart = 5 + initReadLen + execRegionLen + finalUpdateLen;
-  if (unlikely(finalRStart + finalRLen > attrInfoLen)) {
+  CteAttrInfoRegions regions;
+  if (unlikely(!parseCteAttrInfo(cinBuf, attrInfoLen, regions))) {
     jam();
     sendCteLookupRef(signal, req.senderRef, req.senderData,
                      ZCTE_LOOKUP_ATTRINFO_MALFORMED, req.correlation);
     return;
   }
+  const Uint32 finalRStart = regions.finalReadStart;
+  const Uint32 finalRLen = regions.finalReadLen;
 
   /* CTE_LOOKUP reads FLUSH_AI ref/data from the finalR section itself */
   CteOutputParams params;
@@ -22435,6 +22812,15 @@ singleRowCteProbe(JoinAggInterpreter *interp,
       return nullptr;  /* stored NULL => MISS */
     }
     if (types != nullptr && types[pos].cs != nullptr) {
+      /* The bound value comes from the API (a constant of the query or
+       * a parent row's column): cmpVarchar and cmpLongvarchar require
+       * its length prefix to fit it, or stop the node. */
+      if (unlikely(!NdbSqlUtil::check_compare_values(
+              types[pos].typeId, &keyBuf[kp + 1], reqAh.getByteSize(),
+              &stored[spos + 1], storedAh.getByteSize()))) {
+        *malformed = true;
+        return nullptr;
+      }
       const int cmp = (*types[pos].cmpFn)(
           types[pos].cs,
           &keyBuf[kp + 1], reqAh.getByteSize(),
@@ -22542,7 +22928,7 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
 
   // DBSPJ may still be alive after its DBTC coordinator fails.
   // Check the request's coordinator before dereferencing shared state.
-  if (unlikely(isJoinAggCoordinatorFailed(req.routeRef))) {
+  if (unlikely(joinAggCoordinatorDown(req.routeRef))) {
     jam();
     sendCteLookupRef(signal, req.senderRef, req.senderData,
                      ZNODEFAIL_BEFORE_COMMIT, req.correlation, &handle);
@@ -22701,6 +23087,19 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
      * accumulators = groupData + 0 = m_agg_results correctly. */
     req.keyLen = 0;
   } else {
+    /* The key's values come from the API (constants of the query, or a
+     * parent row's columns typed as the CTE's GROUP BY columns): a
+     * VARCHAR length prefix past its value was hashed from past the key
+     * and stopped the node in the compare (cmpVarchar's require). */
+    const JoinGBHashTable *lookupMap = interp->gb_map();
+    if (unlikely(lookupMap != nullptr &&
+                 !lookupMap->checkKey(
+                     reinterpret_cast<const char *>(keyBuf), req.keyLen))) {
+      jam();
+      sendCteLookupRef(signal, req.senderRef, req.senderData,
+                       ZCTE_LOOKUP_ATTRINFO_MALFORMED, req.correlation);
+      return;
+    }
     groupData = interp->lookupGroup(
         reinterpret_cast<const char *>(keyBuf), req.keyLen,
         c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
@@ -22890,16 +23289,16 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
   ndbrequire(c_cteScanIterStatePool.getValidPtr(feedPtr));
   ndbrequire(feedPtr.p->aggFeed);
   if (feedPtr.p->coordinatorNodeId != 0) {  // 0: non-DBTC caller
-    hostPtr.i = feedPtr.p->coordinatorNodeId;
-    ptrCheckGuard(hostPtr, chostFileSize, hostRecord);
-    if (unlikely(hostPtr.p->nodestatus == ZNODE_DOWN)) {
+    if (unlikely(joinAggCoordinatorDown(
+            numberToRef(DBTC, feedPtr.p->coordinatorNodeId)))) {
       jam();
       // DBSPJ is alive and still needs its terminal reply. Stop before
       // accessing either interpreter; NF cleanup waits for this release.
       /* Cluster-log evidence that the feed answered its live requester
        * after the coordinator's failure; the NF-7 test waits for it. */
       infoEvent("[CTE_AGG_FEED_REFUSED node=%u failed=%u requester=%u]",
-                getOwnNodeId(), hostPtr.i, refToNode(senderRef));
+                getOwnNodeId(), feedPtr.p->coordinatorNodeId,
+                refToNode(senderRef));
       releaseCteScanIterState(aggFeedStateI);
       sendCteScanRef(signal, senderRef, senderData,
                      ZNODEFAIL_BEFORE_COMMIT);
@@ -23674,7 +24073,7 @@ void Dblqh::cteScanReqImpl(Signal *signal) {
   }
   // Close above remains valid even after coordinator failure: it
   // releases only the worker-local iterator, without touching CTE state.
-  if (unlikely(isJoinAggCoordinatorFailed(req.coordinatorRef))) {
+  if (unlikely(joinAggCoordinatorDown(req.coordinatorRef))) {
     jam();
     releaseCteScanIterState(scanIterI);
     sendCteScanRef(signal, req.senderRef, req.senderData,
@@ -23729,17 +24128,11 @@ void Dblqh::cteScanReqImpl(Signal *signal) {
    * (worker[0]) receiverId, so its FLUSH_AI words can NOT be trusted —
    * each fragment's request carries its own resultRef/resultData
    * (= per-worker API receiverId) in the signal header instead. */
-  if (attrInfoLen >= 5) {
-    const Uint32 initReadLen = cinBuf[0];
-    const Uint32 execRegionLen = cinBuf[1];
-    const Uint32 finalUpdateLen = cinBuf[2];
-    const Uint32 fr = cinBuf[3];
-    const Uint32 finalRStart = 5 + initReadLen + execRegionLen + finalUpdateLen;
-    if (finalRStart + fr <= attrInfoLen) {
-      finalR = &cinBuf[finalRStart];
-      finalRLen = fr;
-      haveFinalR = (fr > 0);
-    }
+  CteAttrInfoRegions regions;
+  if (parseCteAttrInfo(cinBuf, attrInfoLen, regions)) {
+    finalR = &cinBuf[regions.finalReadStart];
+    finalRLen = regions.finalReadLen;
+    haveFinalR = (finalRLen > 0);
   }
 
   /* Save transId for this scan (first or continuation) — used when
@@ -25361,12 +25754,17 @@ void Dblqh::execJOIN_AGG_FINAL_REP(Signal *signal) {
           aggStateKey = keyOut;
         } else {
           jam();
-          /* Park pool exhausted — fire-and-forget signal, nothing to
-           * REF; the query dies via the redistribute/COMPLETE REFs
-           * and DBTC's heartbeat timers.  Log loudly. */
+          /* Park pool or identity table exhausted, and this node has no
+           * state for the identity yet (its SETUP has not run), so there
+           * is nothing here to abort.  Answer the sender with the
+           * temporary 1275 (failUndeliveredJoinAggFinalRep). */
           g_eventLogger->info(
-              "(%u)DBLQH FINAL_REP park FAILED: senderNode=%u",
-              instance(), senderNodeId);
+              "(%u)DBLQH FINAL_REP park FAILED: senderNode=%u "
+              "errorCode=%u",
+              instance(), senderNodeId, errorCode);
+          (void)failUndeliveredJoinAggFinalRep(
+              signal, senderNodeId, identWord, transid[0], transid[1],
+              errorCode, ZJOIN_AGG_PARK_POOL_EXHAUSTED);
           return;
         }
       }
@@ -25792,6 +26190,20 @@ void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
   const Uint32 senderData = scanFragReq->senderData;
   const Uint32 senderBlockNo = refToMain(senderBlockRef);
   TcConnectionrecPtr tcConnectptr;
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5156) &&
+      !ScanFragReq::getLcpScanFlag(scanFragReq->requestInfo) &&
+      senderBlockNo != getBACKUP() && senderBlockNo != DBUTIL &&
+      (ERROR_INSERT_EXTRA == 0 || ERROR_INSERT_EXTRA == scanFragReq->tableId)) {
+    /* Node-wide one-shot (Dblqh.hpp): refuse the first user scan on the
+     * node, of the table given as the insert's extra value if any, with
+     * 1217 (as 5055, below), on whichever LQH instance runs it. */
+    CLEAR_ERROR_INSERT_VALUE;
+    if (lqh_take_node_one_shot_error()) {
+      SET_ERROR_INSERT_VALUE(5055);
+    }
+  }
+#endif
   if (likely(ctcNumFree > ZNUM_RESERVED_UTIL_CONNECT_RECORDS &&
              ((!ERROR_INSERTED(5099)) &&
               (!ERROR_INSERTED(5055)) &&
@@ -25895,6 +26307,21 @@ void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
     const Uint32 scanLockMode = ScanFragReq::getLockMode(reqinfo);
     const Uint8 keyinfo = ScanFragReq::getKeyinfoFlag(reqinfo);
     const Uint8 rangeScan = ScanFragReq::getRangeScanFlag(reqinfo);
+    /**
+     * Pushdown aggregation runs in the interpreter, so an aggregation
+     * scan must carry an interpreted program. DBTC and DBSPJ never set
+     * the not-interpreted flag, but a raw SCAN_FRAGREQ can set both
+     * (from an API node in a debug build, where SCAN_FRAGREQ is not
+     * restricted to data nodes). Refuse it as LQHKEYREQ refuses an
+     * aggregation read without one.
+     */
+    if (unlikely(ScanFragReq::getAggregationFlag(reqinfo) &&
+                 ScanFragReq::getNotInterpretedFlag(reqinfo))) {
+      jam();
+      errorCode = ZAGG_READ_WRONG_OPERATION;
+      releaseSections(handle);
+      goto error_handler;
+    }
     if (unlikely(!getFragmentrec(fragId))) {
       jam();
       errorCode = 1231;
@@ -26013,7 +26440,7 @@ void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
          * missed — park the ORIGINAL request (plan 2.2) and unwind
          * the partial setup WITHOUT sending SCAN_FRAGREF.  The saved
          * request re-executes from scratch when SETUP fills the
-         * placeholder (or is REF'd by the 10 ms sweeper). */
+         * placeholder (or is REF'd by the 200 ms sweeper). */
         Uint32 keyOut = RNIL;
         Uint32 parkRecI = RNIL;
         const SimulatedBlock::JoinAggResolveOrParkResult pr =
@@ -26310,25 +26737,26 @@ void Dblqh::accScanConfScanLab(Signal *signal,
       jamEntryDebug();
       Uint32 storedProcId = signal->theData[1];
       scanPtr->scanStoredProcId = storedProcId;
-      Uint32 pushdownError = 0;
+      Uint32 scanError = 0;
       if (unlikely(c_tup->scanCopyAttrinfo(storedProcId,
                                            bool(regTcPtr->opExec),
                                            true,
                                            scanPtr,
-                                           &pushdownError) == 0)) {
+                                           &scanError) == 0)) {
         jam();
         scanPtr->scanCompletedStatus = ZTRUE;
         tcConnectptr.p->errorCode = ZMEM_NOMEM_ERROR;
         closeScanLab(signal, tcConnectptr.p);
         return;
       }
-      if (unlikely(pushdownError != 0)) {
-        /* The interpreter of the pushed aggregation or vector search
-         * could not be created; the scan has no interpreter and has not
-         * read a row.  tupScanCloseConfLab sends SCAN_FRAGREF. */
+      if (unlikely(scanError != 0)) {
+        /* DBTUP refused the header of the interpreted program (882), or
+         * the interpreter of the pushed aggregation or vector search
+         * could not be created; the scan has not read a row.
+         * tupScanCloseConfLab sends SCAN_FRAGREF. */
         jam();
         scanPtr->scanCompletedStatus = ZTRUE;
-        tcConnectptr.p->errorCode = pushdownError;
+        tcConnectptr.p->errorCode = scanError;
         closeScanLab(signal, tcConnectptr.p);
         return;
       }
@@ -26349,15 +26777,43 @@ void Dblqh::accScanConfScanLab(Signal *signal,
     jam();
     TcConnectionrec *const regTcPtr = tcConnectptr.p;
 
+    Uint32 scanError = 0;
     if (regTcPtr->opExec)  // has interpreter code, possibly using param
     {
+      /* Only DBSPJ writes one parameter block per range into the
+       * parameter area of the program (scanFrag_send); for any other
+       * sender, such as DBTC with an NDB API scan, the area is the
+       * program's subroutine region, which every range runs whole.
+       * clientBlockref is the sender of SCAN_FRAGREQ.  A release node
+       * takes SCAN_FRAGREQ from data nodes only (SignalScopes.hpp), and
+       * DBTC sends it as itself, so an API node cannot have its scan
+       * read as one from DBSPJ.  Each block of a scan from DBSPJ is
+       * checked against the area as well. */
+      const bool paramBlockPerRange =
+          (refToMain(regTcPtr->clientBlockref) == DBSPJ);
       // Advance to next parameter in the attrInfo
-      c_tup->nextAttrInfoParam(scanPtr->scanStoredProcId);
+      scanError = c_tup->nextAttrInfoParam(scanPtr->scanStoredProcId,
+                                           paramBlockPerRange);
     }
-    (void) c_tup->scanCopyAttrinfo(scanPtr->scanStoredProcId,
-                                   bool(regTcPtr->opExec),
-                                   false,
-                                   scanPtr);
+    if (likely(scanError == 0)) {
+      (void) c_tup->scanCopyAttrinfo(scanPtr->scanStoredProcId,
+                                     bool(regTcPtr->opExec),
+                                     false,
+                                     scanPtr,
+                                     &scanError);
+    }
+    if (unlikely(scanError != 0)) {
+      /* DBTUP found no parameter block for this range of a multi-range
+       * scan within the parameter area of the interpreted program (882):
+       * the block lengths are the sender's.  Close the scan before it
+       * reads a row of the range, as for the first range above;
+       * tupScanCloseConfLab sends SCAN_FRAGREF. */
+      jam();
+      scanPtr->scanCompletedStatus = ZTRUE;
+      tcConnectptr.p->errorCode = scanError;
+      closeScanLab(signal, tcConnectptr.p);
+      return;
+    }
     storedProcConfScanLab(signal, tcConnectptr);
     return;
   }
@@ -28144,9 +28600,23 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
         getJoinAggState(
             JoinAggregationState::decodeBaseKey(
                 scanPtr->m_join_agg_state_key));
+    /* As in execLQHKEYREQ: the host record orders this check with the
+     * proxy's release of the state (joinAggCoordinatorDown). */
     if (aggState != nullptr &&
-        !getNodeInfo(refToNode(aggState->m_senderRef)).m_connected) {
+        unlikely(joinAggCoordinatorDown(aggState->m_senderRef))) {
       jam();
+#ifdef ERROR_INSERT
+      if (m_join_agg_observed_replay) {
+        /* PK-8b (5161): the selected parked SCAN_FRAGREQ, replayed after
+         * NODE_FAILREP with m_connected ignored, was refused here, so
+         * execSCAN_FRAGREQ answers SCAN_FRAGREF 286. */
+        infoEvent("[JOIN_AGG_SCAN_FRAGREQ_REJECTED node=%u failed=%u "
+                  "iteration=%u instance=%u park=%u]",
+                  getOwnNodeId(), refToNode(aggState->m_senderRef),
+                  m_join_agg_observed_iteration, instance(),
+                  m_join_agg_observed_park);
+      }
+#endif
       return ZNODEFAIL_BEFORE_COMMIT;
     }
   }

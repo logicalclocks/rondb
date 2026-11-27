@@ -133,6 +133,7 @@ GROUP BY cchar;
 Number of output lines, including header: 6
 
 == Diff ==
+KNOWN-DIFF Q-6_basic_division.diff
 ==========
 
 
@@ -241,6 +242,7 @@ GROUP BY sint8;
 Number of output lines, including header: 38
 
 == Diff ==
+KNOWN-DIFF Q-6_basic_mixed_division.diff
 ==========
 
 

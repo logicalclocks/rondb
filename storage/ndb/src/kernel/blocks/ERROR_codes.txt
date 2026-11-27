@@ -40,6 +40,11 @@ Next DBACC 3007
       vector search (fragment scan or primary-key read) as if QueryMemory
       ran out: the scan / read fails with 1870 (persistent until cleared;
       also checked for query threads, through the LDM instance)
+4047: Read the parameter area of an interpreted range scan that DBSPJ did
+      not send as one parameter block per range, as for a scan from DBSPJ
+      (Dbtup::nextAttrInfoParam), so a raw scan reaches the block checks
+      (testSpjMalformed P46; persistent until cleared; also checked for
+      query threads, through the LDM instance)
 4060: RONDB-1056 JIT must-JIT: interpreter fallback is fatal for any program /
       scan filter with a compilable region (Dbtup / AggInterpreter /
       JoinAggInterpreter; deliberate-fallback canaries are exempt)
@@ -48,7 +53,7 @@ Next DBACC 3007
       program whose compilable region did not JIT-compile aborts the node;
       per-row fallbacks never trip it (suite-wide strict arming, paired
       with DBLQH 5120)
-Next DBTUP 4047 (4060-4064 reserved for the RONDB-1056 JIT above)
+Next DBTUP 4048 (4060-4064 reserved for the RONDB-1056 JIT above)
 5121: CRASH_INSERTION in execJOIN_AGG_SETUP_REQ (DblqhProxy) — node failure testing
 5122: CRASH_INSERTION in execJOIN_AGG_COMPLETE_REQ (Dblqh) — node failure testing
 5123: CRASH_INSERTION in execJOIN_AGG_RELEASE_REQ (DblqhProxy) — node failure testing
@@ -59,7 +64,8 @@ Next DBTUP 4047 (4060-4064 reserved for the RONDB-1056 JIT above)
       with the temporary 1870 / 20008
 5120: RONDB-1056 JIT strict compile for the join-agg path (DblqhProxy): a
       per-leaf compile failure at JOIN_AGG_SETUP is fatal (suite-wide strict
-      arming, paired with DBTUP 4064)
+      arming, paired with DBTUP 4064); a single-row CTE program (zero
+      aggregate slots, no bytecode) has nothing to compile and is exempt
 5127: RONDB-1056 JIT: dump program + translation at JOIN_AGG_SETUP compile
       (DblqhProxy; DEBUG_JIT builds only). Was 5119 until the TTL replica-
       rowid work took 5119.
@@ -94,8 +100,8 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
       insert, letting SETUP run first. Extra selects: 0 = all, 0xFFFF
       = the main aggregation only, 0xFFFE = none (sweeper hold only),
       otherwise cteIndex + 1.
-5139: Leave ONE SETUP identity unfilled; send SETUP_REF 1274 after 200 ms
-      so consumers can be swept first (sweeper REF 1274, temporary) and
+5139: Leave ONE SETUP identity unfilled; send SETUP_REF 1274 after 1 s
+      (5 sweep delays) so consumers can be swept first (sweeper REF 1274, temporary) and
       DBTC can finish its SETUP round (DblqhProxy, cleared after use).
 5140: Hold inbound JOIN_AGG_REDISTRIBUTE_REQ with RI_NEED_CONF, 200 ms at
       a time, until cleared. Other rows proceed normally, avoiding a timer
@@ -172,7 +178,9 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
       instead capping the join-agg park pool: once it holds at least
       `extra` records a consumer is refused as if the pool were exhausted
       (parkJoinAggConsumer / joinAggResolveOrParkGeneric) and takes its
-      normal resource-error path, the temporary 1275 (PK-4).
+      normal resource-error path, the temporary 1275 (PK-4). With extra 0
+      every park is refused; PK-4b uses it on a node without the state to
+      refuse a peer's identity-addressed FINAL_REP.
 5149: Refuse JOIN_AGG_SETUP_REQ with OutOfQueryMemory once the identity
       table holds at least `extra` entries (DblqhProxy), as if the table
       were full (PK-5).
@@ -187,7 +195,10 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
       Replaying that record into the failed-coordinator guard emits
       "[JOIN_AGG_NULL_ROW_REJECTED node=N failed=C iteration=I instance=B
       park=R]". Ordinary late requests do not emit this event. PK-8
-      requires the matching pair. The proxy's insert is cleared by the test.
+      requires the matching pair. The coordinator guard ignores
+      m_connected for that one replay (a DISCONNECT_REP lagging the
+      node-failure protocol), so only the host record's ZNODE_DOWN can
+      reject it. The proxy's insert is cleared by the test.
 5151: Delay ONE JOIN_AGG_SETUP_REQ 20 ms (DblqhProxy, cleared after use;
       RONDB-1120 P2c). Consumers race ahead and park on the identity
       placeholder, the delayed SETUP flushes them on their original
@@ -198,15 +209,58 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
 5153: As 5152, but crash the non-coordinator node on CANCEL.
 5154: Hold the owner's merge continuation of a main aggregation with a
       remote coordinator (re-queued without delay) until cleared, and ignore
-      m_connected in checkJoinAggNodeFailed (a DISCONNECT_REP lagging the
+      m_connected in the coordinator-liveness rule joinAggCoordinatorDown
+      (every join-aggregation coordinator guard; a DISCONNECT_REP lagging the
       node-failure protocol); emits [JOIN_AGG_MERGE_HELD node=N iteration=I
       coordinator=C] (extra = iteration, top bit = event sent). NF-14: the
       host record's ZNODE_DOWN must stop it
-Next DBLQH 5155
+5155: Fail the next read LQHKEYREQ on the node with 1218 (as 5047), once
+      per data node: every LQH instance, LDM or query worker, is armed (>= 5128)
+      and the first one that gets an LQHKEYREQ takes the node's one token,
+      armed by DblqhProxy (lqh_arm_node_one_shot_error, Dblqh.hpp); the
+      others clear the insert.  ronsql_single_table_faults (RONDB-1124 T-4).
+5156: Refuse the next SCAN_FRAGREQ on the node with 1217 (as 5055), once per
+      data node, as 5155.  LCP, backup and DBUTIL scans are not refused.
+5157: Drop the next SCAN_NEXTREQ on the node (as 5030; DBTC fails the scan
+      with 274 after its timeout), once per data node, as 5155.  Backup
+      scans are not affected.
+      5155-5157 with an extra value ("<node> ERROR 5155 <table id>") act
+      only on requests for that table id; other reads and scans on the node
+      neither take the token nor clear the insert.
+5161: PK-8b, 5150 for a SCAN_FRAGREQ feed (RONDB-1124 bug 8): hold every
+      JOIN_AGG_SETUP_REQ, 20 ms at a time, until a SCAN_FRAGREQ has parked
+      on its identity (DblqhProxy; the sweepers are held meanwhile), then
+      let it succeed and hold the replay of the parked consumers on each
+      instance until the instance processes NODE_FAILREP, which clears its
+      insert and queues the held replays ahead of its own node-failure
+      handling, so they run before JOIN_AGG_NODE_FAIL_REP can release the
+      state. Emits "[CTE_PK8_REPLAY_HELD node=N iteration=I instance=B
+      park=R coordinator=0]" for one held SCAN_FRAGREQ per instance and
+      arming (the request does not name its coordinator). The coordinator
+      guard in initScanrec ignores m_connected for that one replay, so only
+      the host record's ZNODE_DOWN can refuse it, with SCAN_FRAGREF 286;
+      it then emits "[JOIN_AGG_SCAN_FRAGREQ_REJECTED node=N failed=C
+      iteration=I instance=B park=R]". The proxy's insert is cleared by
+      the test.
+5162: ID-10b: a main join aggregation's send batch ends at the insert's
+      extra value in bytes instead of MAX_SCAN_BATCH_SIZE (Dblqh
+      continueJoinAggSend).
+5163: Count one aggregate group of a main join aggregation in the
+      COMPLETE_CONF but do not send its TRANSID_AI to the API (Dblqh
+      continueJoinAggSend), once per insert on each LQH instance: the API
+      is promised more rows than arrive and its wait for them ends in its
+      receive timeout (testJoinAggNdbApi --only 25).
+5164: Take the GROUP BY key of a CTE group one word short when Dblqh
+      buildCteLinkedBuffer builds its linked row, so that the last key
+      entry's AttributeHeader claims a data word more than the key holds,
+      as in a corrupt group record: a CTE filter (CTE_SCAN_REQ,
+      CTE_LOOKUP_REQ) answers 1268 and a CTE feed 1265. Cleared by the
+      test (testCteProtocol OV-3).
+Next DBLQH 5165
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8135
-Next DBTC 8318 (RonDB)
+Next DBTC 8321 (RonDB)
 Next TRPMAN 9007
 Next CMVMI 9993              Note: CMVMI grows downwards
 Next TRPMAN 9007 // Ndb numbers
@@ -773,6 +827,20 @@ DBTC node failure take over testing (RonDB)
 8317: Send TC_HBREP to the API every second instead of every 30 seconds,
       also during a scan. ndb_scan_tc_hbrep keeps a scan that finds no rows
       (5112) running past the API timeout.
+
+8319: Queue every long TCKEYREQ and TCINDXREQ in the rate queue of a
+      database with a rate limit, also the one that starts the
+      transaction and the one with the execute flag, and hold each
+      re-send from the queue for 1 s. testNdbApi
+      RateQueueDirtyReadOtherDatabase
+      (ndb_quota.ndb_rate_queue_other_database). 8318 is taken on
+      26.02-main.
+
+8320: Send the pure EndOfData SCAN_TABCONF that ends a join aggregation
+      scan twice (close_scan_req_send_conf), as DBTC does when an API
+      close crosses it: execSCAN_NEXTREQ answers the close with another
+      EndOfData ("Confirming scan close") after the scan is released.
+      Stays set until cleared (testJoinAggNdbApi --only 26).
 
 
 TRPMAN

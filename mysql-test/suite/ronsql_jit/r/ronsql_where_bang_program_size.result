@@ -1,0 +1,391 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== bg-1: ! over a comparison ===
+== Query ==
+SELECT id FROM bt WHERE !(a = 1);
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM bt WHERE !(a = 1)|
+id
+3
+4
+7
+8
+
+=== bg-2: ! over IS NULL ===
+== Query ==
+SELECT id FROM bt WHERE !(b IS NULL);
+
+Number of output lines, including header: 8
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM bt WHERE !(b IS NULL)|
+id
+1
+3
+4
+5
+7
+8
+9
+
+=== bg-3: ! over OR, with NULL operands ===
+== Query ==
+SELECT id FROM bt WHERE !(a = 1 OR b > 25);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM bt WHERE !(a = 1 OR b > 25)|
+id
+3
+7
+
+=== bg-4: ! over AND, with NULL operands ===
+== Query ==
+SELECT id FROM bt WHERE !(a = 2 AND b > 25);
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM bt WHERE !(a = 2 AND b > 25)|
+id
+1
+2
+3
+5
+7
+8
+
+=== bg-5: ! ! is the comparison ===
+== Query ==
+SELECT id FROM bt WHERE ! !(b > 15);
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM bt WHERE ! !(b > 15)|
+id
+3
+4
+7
+8
+9
+
+=== bg-6: NOT over ! ===
+== Query ==
+SELECT id FROM bt WHERE NOT !(a = 1);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM bt WHERE NOT !(a = 1)|
+id
+1
+2
+
+=== bg-7: ! over a GREATEST comparison ===
+== Query ==
+SELECT id FROM bt WHERE !(GREATEST(a, b) > 15);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM bt WHERE !(GREATEST(a, b) > 15)|
+id
+1
+
+=== bg-8: NOT over ! over a GREATEST comparison ===
+== Query ==
+SELECT id FROM bt WHERE NOT !(GREATEST(a, b) > 15);
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM bt WHERE NOT !(GREATEST(a, b) > 15)|
+id
+3
+4
+7
+8
+
+=== bg-9: index bound and a ! filter ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(b) AS s FROM bt WHERE a >= 2 AND !(b = 20);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(b) AS s FROM bt WHERE a >= 2 AND !(b = 20)|
+n	s
+2	70
+== Explain Query ==
+
+=== bg-10: ! ! over an equality is an index bound ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(b) AS s FROM bt WHERE ! !(a = 3);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(b) AS s FROM bt WHERE ! !(a = 3)|
+n	s
+2	60
+== Explain Query ==
+
+=== bg-11: primary-key lookup with a ! residual filter ===
+== Query ==
+SELECT id, a, b FROM bt WHERE id = 4 AND !(b IS NULL);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id, a, b FROM bt WHERE id = 4 AND !(b IS NULL)|
+id	a	b
+4	2	30
+== Explain Query ==
+
+=== bg-12: aggregating primary-key lookups with a ! residual filter ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(b) AS s FROM bt
+WHERE id IN (1, 2, 3, 4) AND !(a = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(b) AS s FROM bt
+WHERE id IN (1, 2, 3, 4) AND !(a = 2)|
+n	s
+2	10
+== Explain Query ==
+
+=== bg-13: join, ! on the joined table ===
+== Query ==
+SELECT t.g AS g, COUNT(*) AS n, SUM(t.b) AS s
+FROM bt AS t JOIN bj AS j ON j.g = t.g
+WHERE !(j.w > 10)
+GROUP BY t.g;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT t.g AS g, COUNT(*) AS n, SUM(t.b) AS s
+FROM bt AS t JOIN bj AS j ON j.g = t.g
+WHERE !(j.w > 10)
+GROUP BY t.g|
+g	n	s
+1	3	30
+
+=== bg-14: join, ! on the root and on the joined table ===
+== Query ==
+SELECT t.id AS id, j.w AS w
+FROM bt AS t JOIN bj AS j ON j.g = t.g
+WHERE !(t.b IS NULL) AND !(j.w > 10);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT t.id AS id, j.w AS w
+FROM bt AS t JOIN bj AS j ON j.g = t.g
+WHERE !(t.b IS NULL) AND !(j.w > 10)|
+id	w
+1	5
+3	5
+
+=== bg-15: ! in a CTE body WHERE ===
+== Query ==
+WITH cb AS (SELECT g AS k, COUNT(*) AS n, SUM(b) AS s
+FROM bt WHERE !(a = 1 OR b IS NULL) GROUP BY g)
+SELECT k, n, s FROM cb;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cb AS (SELECT g AS k, COUNT(*) AS n, SUM(b) AS s
+FROM bt WHERE !(a = 1 OR b IS NULL) GROUP BY g)
+SELECT k, n, s FROM cb|
+k	n	s
+1	1	20
+2	1	30
+3	2	60
+
+=== bg-16: ! in HAVING ===
+== Query ==
+SELECT g, SUM(b) AS s FROM bt GROUP BY g HAVING !(SUM(b) > 100);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, SUM(b) AS s FROM bt GROUP BY g HAVING !(SUM(b) > 100)|
+g	s
+1	30
+2	40
+
+=== bg-p1: ! binds tighter than AND ===
+== Query ==
+SELECT id FROM bt WHERE !(a = 1) AND b = 20;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM bt WHERE !(a = 1) AND b = 20|
+id
+3
+7
+
+=== bg-p2: ! binds tighter than OR ===
+== Query ==
+SELECT id FROM bt WHERE !(b > 15) OR a = 3;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM bt WHERE !(b > 15) OR a = 3|
+id
+1
+5
+7
+8
+
+=== bg-p4: control, NOT a = 1 is NOT (a = 1) ===
+== Query ==
+SELECT id FROM bt WHERE NOT a = 1;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id FROM bt WHERE NOT a = 1|
+id
+3
+4
+7
+8
+
+=== bg-e1: ! in a CASE condition is refused, as NOT is ===
+Error handling: RPE
+ronsql_cli caught exception: CASE condition atom: only =, !=, <, <=, >, >= supported.
+
+=== bg-e2: control, NOT in a CASE condition is refused ===
+Error handling: RPE
+ronsql_cli caught exception: CASE condition atom: only =, !=, <, <=, >, >= supported.
+
+=== bg-p3: !a = 1 is (!a) = 1, refused ===
+Error handling: RPE
+ronsql_cli caught exception: For comparison operators, at least one of the operands must be a column name
+
+=== bg-p5: !b IS NULL is (!b) IS NULL, refused ===
+Error handling: RPE
+ronsql_cli caught exception: IS NULL / IS NOT NULL requires a column name as its operand
+
+=== pg-1: a program beyond the 8192-word buffer is a limit error ===
+Error handling: RPE
+ronsql_cli caught exception: The aggregate expressions are too large: the aggregation program must be shorter than 1024 words.
+RDRS: HTTP 400, X-RonSQL-Error-Class: limit
+[limit] Caught exception: The aggregate expressions are too large: the aggregation program must be shorter than 1024 words.
+
+=== pg-2: the same over a join ===
+RDRS: HTTP 400, X-RonSQL-Error-Class: limit
+[limit] Caught exception: The aggregate expressions are too large: the aggregation program must be shorter than 1024 words.
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_where_bang_program_size_jit_fallback_delta;
+ronsql_where_bang_program_size_jit_fallback_delta
+0

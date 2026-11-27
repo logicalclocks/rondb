@@ -1,0 +1,44 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== sa-1: MAX of a VARCHAR column plus 1 ===
+Error handling: RPE
+ronsql_cli caught exception: Arithmetic on string columns is not supported.
+
+=== sa-2: SUM of 1 plus a VARCHAR column ===
+Error handling: RPE
+ronsql_cli caught exception: Arithmetic on string columns is not supported.
+
+=== sa-3: COUNT of a negated VARCHAR column ===
+Error handling: RPE
+ronsql_cli caught exception: Arithmetic on string columns is not supported.
+
+=== sa-4: SUM of a VARCHAR column times 2 ===
+Error handling: RPE
+ronsql_cli caught exception: Arithmetic on string columns is not supported.
+
+=== sa-5: AVG of a CHAR column DIV 2 ===
+Error handling: RPE
+ronsql_cli caught exception: Arithmetic on string columns is not supported.
+
+=== sa-6: MIN of a CHAR column modulo 3, with GROUP BY ===
+Error handling: RPE
+ronsql_cli caught exception: Arithmetic on string columns is not supported.
+
+=== sa-7: a VARCHAR column minus 1 in a CASE arm ===
+Error handling: RPE
+ronsql_cli caught exception: Arithmetic on string columns is not supported.
+
+=== sa-8: MAX of a VARCHAR column of a join leaf plus 1 ===
+Error handling: RPE
+ronsql_cli caught exception: Arithmetic on string columns is not supported.
+
+=== sa-9: SUM of a CTE output that is a MAX of a VARCHAR, plus 1 ===
+Error handling: RPE
+ronsql_cli caught exception: Arithmetic on string columns is not supported.
+
+=== sa-10: a VARCHAR column times 2 in a CTE body ===
+Error handling: RPE
+ronsql_cli caught exception: Arithmetic on string columns is not supported.
+
+=== Cleanup ===

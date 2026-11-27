@@ -46,8 +46,10 @@ import (
 // EnvVersion is part of every envelope case id.  v2 (2026-10-06): the
 // real-join and former-hazard productions, HAVING over aggregate
 // functions and the colcol-mixed-type probe change what every seed
-// generates.
-const EnvVersion = "env-v2"
+// generates.  v3 (2026-11-21, RONDB-1124 F-13): the colcol-mixed-type
+// probe compares a DECIMAL with an INT; INT against BIGINT is now a
+// typed compare that must match MySQL.
+const EnvVersion = "env-v3"
 
 // Expectation is one row of the expectation table: a construct present in
 // a statement and the RonSQL outcome it implies.
@@ -101,7 +103,7 @@ var Expectations = []Expectation{
 	{Construct: "left-join-where-null", Reject: true, Pattern: "WHERE on a LEFT JOIN's right side that holds for NULL is not", Finding: "F32", Note: "a WHERE condition on the right side of a LEFT JOIN of real tables that RonSQL cannot prove NULL-rejecting (IS NULL, an OR with IS NULL): the table's operation could only apply it as part of the join condition"},
 	{Construct: "subquery-joined", Reject: true, Pattern: "A WHERE condition with a subquery", Finding: "F32b", Note: "IN (subquery) / EXISTS / a correlated subquery on a joined table's column: its result replaces the node only at execution time and is known to reach the root table's filter only"},
 	{Construct: "fanout-sibling", Reject: true, Pattern: "Aggregation references a column from a join branch that is not an", Finding: "D5", Note: "an aggregation over a CTE_LOOKUP child grouped by a real-table sibling under the same parent (fan-out across a non-ancestor sibling; it crashed RDRS before the guard)"},
-	{Construct: "colcol-mixed-type", Reject: true, Pattern: "requires columns of identical type, precision, length, scale", Finding: "D4", Note: "column-vs-column comparison in a CTE-body WHERE between columns of different types (INT vs BIGINT): supported only for identical types since RONDB-1107"},
+	{Construct: "colcol-mixed-type", Reject: true, Pattern: "A comparison of two columns in a WHERE clause is not supported for", Finding: "D4", Note: "column-vs-column comparison in a WHERE between columns of different types that are not both numeric (DECIMAL vs INT): supported for identical types since RONDB-1107, and for two integer, FLOAT or DOUBLE columns of any types since RONDB-1124 F-13"},
 }
 
 // ExpectationFor returns the table row of a construct.
@@ -597,9 +599,11 @@ func (es *envSampler) probe() {
 		es.tag("probe", "orderby-in-subquery")
 		es.c.SQL = "SELECT COUNT(*) AS `n` FROM `transactions_1` WHERE `customer_id` IN (SELECT `customer_id` FROM `customers_1` WHERE `region_id` = 5 ORDER BY `customer_id`);"
 	default:
-		// The D4 hazard's translation (INT fee vs BIGINT amount).
+		// The D4 hazard's translation, with a DECIMAL against the INT fee:
+		// INT fee vs BIGINT amount, the original, is a typed compare since
+		// RONDB-1124 F-13.
 		es.tag("probe", "colcol-mixed-type")
-		es.c.SQL = "WITH `liq` AS (SELECT `merchant_id` AS `k`, COUNT(*) AS `n`, SUM(`amount`) AS `q` FROM `transactions_1` WHERE `fee` < `amount` GROUP BY `merchant_id`) " +
+		es.c.SQL = "WITH `liq` AS (SELECT `merchant_id` AS `k`, COUNT(*) AS `n`, SUM(`amount`) AS `q` FROM `transactions_1` WHERE `fee` < `amount_dec` GROUP BY `merchant_id`) " +
 			"SELECT `m`.`mcc` AS `mcc`, SUM(`liq`.`n`) AS `n`, SUM(`liq`.`q`) AS `q` FROM `merchants_1` AS `m` JOIN `liq` ON `liq`.`k` = `m`.`merchant_id` GROUP BY `m`.`mcc`;"
 	}
 }

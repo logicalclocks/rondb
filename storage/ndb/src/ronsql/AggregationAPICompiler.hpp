@@ -97,6 +97,11 @@ public:
   bool isGreatest2() const { return op == ExprOp::Greatest2; }
   bool isLeast2() const { return op == ExprOp::Least2; }
   bool isCase() const { return op == ExprOp::Case; }
+  // +, -, *, /, DIV or % (a unary minus is 0 - x).
+  bool isArithmetic() const {
+    return op == ExprOp::Add || op == ExprOp::Minus || op == ExprOp::Mul ||
+           op == ExprOp::Div || op == ExprOp::DivInt || op == ExprOp::Rem;
+  }
   Uint32 getLoadIdx() const { return idx; }
   Uint32 getConstantIdx() const { return idx; }
   AggregationAPICompiler_Expr* getLeft() const { return left; }

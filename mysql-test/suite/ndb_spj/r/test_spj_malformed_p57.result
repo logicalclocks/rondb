@@ -1,0 +1,8 @@
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# P-57: join aggregation embedded branch of offset 0, to itself
+Running command
+Result of command: 0
+Test program success!

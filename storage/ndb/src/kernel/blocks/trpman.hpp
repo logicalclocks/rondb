@@ -135,7 +135,7 @@ public:
   };
   /**
    * Per-transporter receive activity, indexed by TrpId. Allocated in
-   * execREAD_CONFIG_REQ() with mt_get_num_trp_ids() entries (runtime
+   * the constructor with mt_get_num_trp_ids() entries (runtime
    * sized from the configured max node id) instead of being embedded
    * with the compile-time MAX_NTRANSPORTERS ceiling, which costs
    * ~730 KB per TRPMAN instance (one per receive thread) at the 8192

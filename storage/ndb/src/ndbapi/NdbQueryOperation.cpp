@@ -3492,12 +3492,13 @@ NdbQueryImpl::FetchResult NdbQueryImpl::awaitMoreResults(bool forceSend) {
                                 forceSend,
                                 &ndb->m_start_time));
 
-        if (ndb->getNodeSequence(nodeId) != seq)
-          setFetchTerminated(Err_NodeFailCausedAbort, false);
-        else if (likely(waitResult == FetchResult_ok))
-          continue;
-        else if (waitResult == FetchResult_timeOut) {
+        const bool nodeFailed = (ndb->getNodeSequence(nodeId) != seq);
+        if (!nodeFailed && likely(waitResult == FetchResult_ok)) continue;
+
+        const bool timedOut =
+            !nodeFailed && waitResult == FetchResult_timeOut;
 #ifdef DEBUG_QUERY_RECEIVE
+        if (timedOut) {
           const Uint64 transId = m_scanTransaction->getTransactionId();
           DEB_QUERY_RECEIVE(("Query receive timeout: transid=(0x%x,0x%x) "
                              "tcNode=%u workers=%u pending=%u final=%u "
@@ -3510,10 +3511,11 @@ NdbQueryImpl::FetchResult NdbQueryImpl::awaitMoreResults(bool forceSend) {
           for (Uint32 i = 0; i < m_workerCount; i++) {
             m_workers[i].traceReceiveState();
           }
+        }
 #endif
-          setFetchTerminated(Err_ReceiveTimedOut, true);
-        } else
-          setFetchTerminated(Err_NodeFailCausedAbort, false);
+        const int waitError =
+            timedOut ? Err_ReceiveTimedOut : Err_NodeFailCausedAbort;
+        setWaitFailed(waitError, timedOut);
 
         assert(m_state != Failed);
       }  // while(!hasReceivedError())
@@ -3614,11 +3616,23 @@ int NdbQueryImpl::close(bool forceSend) {
     Ndb *const ndb = m_transaction.getNdb();
     if (m_scanTransaction != nullptr) {
       assert(m_state != Closed);
-      assert(m_scanTransaction->m_scanningQuery == this);
-      m_scanTransaction->m_scanningQuery = nullptr;
+      {
+        /* The receiver finds this query through m_scanningQuery, under
+         * the receive mutex (NdbTransaction::receiveSCAN_TABCONF and
+         * receiveSCAN_TABREF).  Detach it under that mutex, so that a
+         * late SCAN_TABCONF or SCAN_TABREF either reaches the query
+         * before this point or finds no query; the scan transaction
+         * stays Connected until closeTransaction() releases it. */
+        PollGuard poll_guard(*ndb->theImpl);
+        assert(m_scanTransaction->m_scanningQuery == this);
+        m_scanTransaction->m_scanningQuery = nullptr;
+      }
       ndb->closeTransaction(m_scanTransaction);
       ndb->theRemainingStartTransactions--;  // Compensate; m_scanTransaction
                                              // was not a real Txn
+      // Ndb::hupp() did not count a start for it, so do not count its
+      // close either (as NdbScanOperation::close does).
+      ndb->theImpl->decClientStat(Ndb::TransCloseCount, 1);
       m_scanTransaction = nullptr;
     }
 
@@ -3688,6 +3702,29 @@ void NdbQueryImpl::setFetchTerminated(int errorCode, bool needClose) {
   m_pendingWorkers = 0;
 }  // NdbQueryImpl::setFetchTerminated()
 
+/*
+ * ::setWaitFailed() Should only be called with mutex locked.
+ * A wait for the TC node ended in a receive timeout or a node failure.
+ * While some worker is not final, terminate the fetch as
+ * ::setFetchTerminated() does.  Once every worker is final, the pure
+ * EndOfData has come and DBTC has closed the scan: a join aggregation
+ * may still wait for aggregate rows that its aggregate SCAN_TABCONF
+ * promised (::awaitMoreResults()), or the poll that delivered the
+ * EndOfData to ::closeTcCursor() also saw the TC node disconnect.
+ * There is no cursor left to terminate or close (::setFetchTerminated()
+ * requires one), and m_pendingWorkers is already 0, so only record the
+ * error.
+ */
+void NdbQueryImpl::setWaitFailed(int errorCode, bool needClose) {
+  assert(errorCode != 0);
+  if (m_finalWorkers < getWorkerCount()) {
+    setFetchTerminated(errorCode, needClose);
+  } else {
+    assert(m_pendingWorkers == 0);
+    m_errorReceived = errorCode;
+  }
+}  // NdbQueryImpl::setWaitFailed()
+
 /* There may be pending (asynchronous received, mutex protected) errors
  * from TC / datanodes. Propagate these into 'API space'.
  * ::hasReceivedError() Should only be called with mutex locked
@@ -3727,14 +3764,36 @@ bool NdbQueryImpl::execTCKEYCONF() {
   return ret;
 }  // NdbQueryImpl::execTCKEYCONF
 
-void NdbQueryImpl::execCLOSE_SCAN_REP(int errorCode, bool needClose) {
+bool NdbQueryImpl::execCLOSE_SCAN_REP(int errorCode, bool needClose) {
   if (traceSignals) {
     ndbout << "NdbQueryImpl::execCLOSE_SCAN_REP()" << endl;
   }
   /* This entry point receives SCAN_TABREF or EndOfData from TC.
    * Local receive timeouts call setFetchTerminated() directly. */
+  if (unlikely(m_finalWorkers == getWorkerCount())) {
+    /* Every worker is final: the scan has ended here, by DBTC's final
+     * SCAN_TABCONF or EndOfData, by a SCAN_TABREF that needed no close,
+     * or by a node failure or protocol error found here.  There is no
+     * cursor left (setFetchTerminated() requires one).
+     *
+     * A pure EndOfData now answers a close that crossed the end of the
+     * scan.  After a receive timeout closeTcCursor() sent
+     * SCAN_NEXTREQ(close) while DBTC still ran the scan; DBTC then
+     * ended it on its own, with its final SCAN_TABCONF or EndOfData
+     * (which made every worker final here), and released it.  For a
+     * join aggregation that is the pure EndOfData after the aggregate
+     * SCAN_TABCONF.  When the close arrived, DBTC answered it with a
+     * second EndOfData ("Confirming scan close" in
+     * Dbtc::execSCAN_NEXTREQ).  Drop that one without waking anyone.
+     * An error is only recorded, as setWaitFailed() does. */
+    assert(m_pendingWorkers == 0);
+    if (errorCode == 0) return false;
+    m_errorReceived = errorCode;
+    return true;
+  }
   m_scanTabRefError = needClose ? errorCode : 0;
   setFetchTerminated(errorCode, needClose);
+  return true;
 }
 
 NdbQueryOperationImpl &NdbQueryImpl::getRoot() const {
@@ -5199,14 +5258,16 @@ int NdbQueryImpl::closeTcCursor(bool forceSend) {
                               forceSend,
                               &ndb->m_start_time));
 
+    /* The EndOfData that makes every worker final can come in the same
+     * poll as the TC node's disconnect: setWaitFailed(). */
     if (unlikely(ndb->getNodeSequence(nodeId) != seq))
-      setFetchTerminated(Err_NodeFailCausedAbort, false);
+      setWaitFailed(Err_NodeFailCausedAbort, false);
     else if (unlikely(result != FetchResult_ok)) {
       if (result == FetchResult_timeOut) {
-        setFetchTerminated(Err_ReceiveTimedOut, true);
+        setWaitFailed(Err_ReceiveTimedOut, true);
         timeoutCase = true;
       } else
-        setFetchTerminated(Err_NodeFailCausedAbort, false);
+        setWaitFailed(Err_NodeFailCausedAbort, false);
     }
     if (hasReceivedError()) {
       break;
@@ -5233,6 +5294,22 @@ int NdbQueryImpl::closeTcCursor(bool forceSend) {
     const int error = sendClose(m_transaction.getConnectedNodeId());
     if (unlikely(error)) return error;
 
+    if (timeoutCase) {
+      /* After a receive timeout DBTC may still be running the scan and
+       * end it on its own, and its final SCAN_TABCONF or EndOfData can
+       * cross this close.  Then that EndOfData ends the wait below, and
+       * DBTC, which has released the scan when the close arrives,
+       * answers the close with a second EndOfData ("Confirming scan
+       * close" in Dbtc::execSCAN_NEXTREQ).  Ndb::hupp() gives the next
+       * scan of this transaction the same transaction id, and possibly
+       * this connection from the idle list, which would take that
+       * EndOfData as its own and end with rows missing.  Release the
+       * connection to TC instead: TC answers its TCRELEASEREQ after the
+       * close, and the stale EndOfData finds a DisConnecting
+       * transaction, which drops it. */
+      m_scanTransaction->theForceReleaseOnClose = true;
+    }
+
     assert(m_finalWorkers + m_pendingWorkers == getWorkerCount());
 
     /* Wait for close to be confirmed: */
@@ -5244,18 +5321,19 @@ int NdbQueryImpl::closeTcCursor(bool forceSend) {
                                 forceSend,
                                 &ndb->m_start_time));
 
+      /* As in the wait above: setWaitFailed(). */
       if (unlikely(ndb->getNodeSequence(nodeId) != seq))
-        setFetchTerminated(Err_NodeFailCausedAbort, false);
+        setWaitFailed(Err_NodeFailCausedAbort, false);
       else if (unlikely(result != FetchResult_ok)) {
         if (result == FetchResult_timeOut) {
-          setFetchTerminated(Err_ReceiveTimedOut, true);
+          setWaitFailed(Err_ReceiveTimedOut, true);
           g_eventLogger->info(
               "NdbQueryOperation :: closeTcCursor() 4008 scan close failed");
           /* Kernel ApiConnectRecord in unknown state, cannot use it */
           /* Still connected, so request TC to release */
           m_scanTransaction->theForceReleaseOnClose = true;
         } else
-          setFetchTerminated(Err_NodeFailCausedAbort, false);
+          setWaitFailed(Err_NodeFailCausedAbort, false);
       }
       if (hasReceivedError()) {
         /* SCAN_TABREF may also arrive while an ordinary close is waiting.

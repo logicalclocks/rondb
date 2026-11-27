@@ -1,0 +1,145 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== e4-0: the plan is root scan -> LEFT JOIN PK_LOOKUP aggregate leaf ===
+== Explain Query ==
+
+=== e4-1: CASE on the leaf column, NULL rows and a NULL value, grouped ===
+== Query ==
+SELECT o.g,
+SUM(CASE WHEN i.v < 15 THEN 1 ELSE 0 END) AS lv,
+SUM(CASE WHEN i.v <> 10 THEN 1 ELSE 0 END) AS nv,
+COUNT(*) AS n
+FROM e4_o AS o
+LEFT JOIN e4_i AS i ON i.id = o.ref
+GROUP BY o.g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.g,
+SUM(CASE WHEN i.v < 15 THEN 1 ELSE 0 END) AS lv,
+SUM(CASE WHEN i.v <> 10 THEN 1 ELSE 0 END) AS nv,
+COUNT(*) AS n
+FROM e4_o AS o
+LEFT JOIN e4_i AS i ON i.id = o.ref
+GROUP BY o.g|
+g	lv	nv	n
+1	1	1	3
+2	0	0	2
+3	0	0	1
+
+=== e4-2: the same CASEs without GROUP BY ===
+== Query ==
+SELECT SUM(CASE WHEN i.v < 15 THEN 1 ELSE 0 END) AS lv,
+SUM(CASE WHEN i.v <> 10 THEN 1 ELSE 0 END) AS nv,
+COUNT(*) AS n
+FROM e4_o AS o
+LEFT JOIN e4_i AS i ON i.id = o.ref;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN i.v < 15 THEN 1 ELSE 0 END) AS lv,
+SUM(CASE WHEN i.v <> 10 THEN 1 ELSE 0 END) AS nv,
+COUNT(*) AS n
+FROM e4_o AS o
+LEFT JOIN e4_i AS i ON i.id = o.ref|
+lv	nv	n
+1	1	6
+
+=== e4-3: CASE on the root column over the NULL rows, grouped ===
+== Query ==
+SELECT o.g,
+SUM(CASE WHEN o.x > 5 THEN 1 ELSE 0 END) AS hx,
+COUNT(*) AS n
+FROM e4_o AS o
+LEFT JOIN e4_i AS i ON i.id = o.ref
+GROUP BY o.g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.g,
+SUM(CASE WHEN o.x > 5 THEN 1 ELSE 0 END) AS hx,
+COUNT(*) AS n
+FROM e4_o AS o
+LEFT JOIN e4_i AS i ON i.id = o.ref
+GROUP BY o.g|
+g	hx	n
+1	1	3
+2	1	2
+3	1	1
+
+=== e4-4: CASE on a root DOUBLE column, register path ===
+== Query ==
+SELECT o.g,
+SUM(CASE WHEN o.d > 3 THEN 1 ELSE 0 END) AS hd,
+COUNT(*) AS n
+FROM e4_o AS o
+LEFT JOIN e4_i AS i ON i.id = o.ref
+GROUP BY o.g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.g,
+SUM(CASE WHEN o.d > 3 THEN 1 ELSE 0 END) AS hd,
+COUNT(*) AS n
+FROM e4_o AS o
+LEFT JOIN e4_i AS i ON i.id = o.ref
+GROUP BY o.g|
+g	hd	n
+1	2	3
+2	0	2
+3	0	1
+
+=== e4-5: CASE comparing two root columns ===
+== Query ==
+SELECT o.g,
+SUM(CASE WHEN o.x > o.g THEN 1 ELSE 0 END) AS xg,
+COUNT(*) AS n
+FROM e4_o AS o
+LEFT JOIN e4_i AS i ON i.id = o.ref
+GROUP BY o.g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.g,
+SUM(CASE WHEN o.x > o.g THEN 1 ELSE 0 END) AS xg,
+COUNT(*) AS n
+FROM e4_o AS o
+LEFT JOIN e4_i AS i ON i.id = o.ref
+GROUP BY o.g|
+g	xg	n
+1	3	3
+2	1	2
+3	1	1
+
+=== e4-6: no DBSPJ request left behind ===

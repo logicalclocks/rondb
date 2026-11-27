@@ -1,0 +1,297 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== ol-1: one GROUP BY column, then the aggregates ===
+== Query ==
+WITH c AS (SELECT g1, COUNT(*) AS n, SUM(x) AS s, MIN(x) AS mn, MAX(x) AS mx
+FROM ol GROUP BY g1)
+SELECT g1, n, s, mn, mx FROM c;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT g1, COUNT(*) AS n, SUM(x) AS s, MIN(x) AS mn, MAX(x) AS mx
+FROM ol GROUP BY g1)
+SELECT g1, n, s, mn, mx FROM c|
+g1	n	s	mn	mx
+1	4	120	10	60
+2	2	90	40	50
+3	1	70	70	70
+
+=== ol-2: two GROUP BY columns of different types, in GROUP BY order ===
+== Query ==
+WITH c AS (SELECT g3, g1, COUNT(*) AS n, MAX(x) AS mx
+FROM ol GROUP BY g3, g1)
+SELECT g3, g1, n, mx FROM c;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT g3, g1, COUNT(*) AS n, MAX(x) AS mx
+FROM ol GROUP BY g3, g1)
+SELECT g3, g1, n, mx FROM c|
+g3	g1	n	mx
+a	1	2	30
+a	2	1	40
+b	1	2	60
+b	2	1	50
+c	3	1	70
+
+=== ol-3: AVG between other aggregates ===
+== Query ==
+WITH c AS (SELECT g1, SUM(x) AS s, AVG(x) AS av, COUNT(*) AS n
+FROM ol GROUP BY g1)
+SELECT g1, s, av, n FROM c;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT g1, SUM(x) AS s, AVG(x) AS av, COUNT(*) AS n
+FROM ol GROUP BY g1)
+SELECT g1, s, av, n FROM c|
+g1	s	av	n
+1	120	30.0000	4
+2	90	45.0000	2
+3	70	70.0000	1
+
+=== ol-4: COUNT(*) and COUNT(col) are two aggregates ===
+== Query ==
+WITH c AS (SELECT g1, COUNT(*) AS n, COUNT(y) AS ny, SUM(y) AS sy
+FROM ol GROUP BY g1)
+SELECT g1, n, ny, sy FROM c;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT g1, COUNT(*) AS n, COUNT(y) AS ny, SUM(y) AS sy
+FROM ol GROUP BY g1)
+SELECT g1, n, ny, sy FROM c|
+g1	n	ny	sy
+1	4	3	21
+2	2	0	NULL
+3	1	1	11
+
+=== ol-5: scalar CTE, the aggregates in output order ===
+== Query ==
+WITH c AS (SELECT COUNT(*) AS n, SUM(x) AS s, MIN(y) AS mn, MAX(y) AS mx
+FROM ol)
+SELECT n, s, mn, mx FROM c;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT COUNT(*) AS n, SUM(x) AS s, MIN(y) AS mn, MAX(y) AS mx
+FROM ol)
+SELECT n, s, mn, mx FROM c|
+n	s	mn	mx
+7	280	5	11
+
+=== ol-6: chained CTEs ===
+== Query ==
+WITH c1 AS (SELECT g1, g2, SUM(x) AS s FROM ol GROUP BY g1, g2),
+c2 AS (SELECT g1, COUNT(*) AS n, SUM(s) AS t FROM c1 GROUP BY g1)
+SELECT g1, n, t FROM c2;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c1 AS (SELECT g1, g2, SUM(x) AS s FROM ol GROUP BY g1, g2),
+c2 AS (SELECT g1, COUNT(*) AS n, SUM(s) AS t FROM c1 GROUP BY g1)
+SELECT g1, n, t FROM c2|
+g1	n	t
+1	2	120
+2	1	90
+3	1	70
+
+=== ol-7: lookupCte root on both keys, WHERE in the other order ===
+== Query ==
+WITH c AS (SELECT g1, g2, COUNT(*) AS n, SUM(x) AS s
+FROM ol GROUP BY g1, g2)
+SELECT g1, g2, n, s FROM c WHERE g2 = 2 AND g1 = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT g1, g2, COUNT(*) AS n, SUM(x) AS s
+FROM ol GROUP BY g1, g2)
+SELECT g1, g2, n, s FROM c WHERE g2 = 2 AND g1 = 1|
+g1	g2	n	s
+1	2	3	60
+
+=== ol-8: lookupCte root joined to a table on its primary key ===
+== Query ==
+WITH c AS (SELECT g1, g2, COUNT(*) AS n FROM ol GROUP BY g1, g2)
+SELECT c.g1, c.g2, c.n, p.pname
+FROM c JOIN olp AS p ON p.pid = c.g2
+WHERE c.g1 = 2 AND c.g2 = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT g1, g2, COUNT(*) AS n FROM ol GROUP BY g1, g2)
+SELECT c.g1, c.g2, c.n, p.pname
+FROM c JOIN olp AS p ON p.pid = c.g2
+WHERE c.g1 = 2 AND c.g2 = 1|
+g1	g2	n	pname
+2	1	2	one
+
+=== ol-9: CTE lookup child on both keys, ON in the other order ===
+== Query ==
+WITH c AS (SELECT g1, g2, COUNT(*) AS n FROM ol GROUP BY g1, g2)
+SELECT p.pid, c.g1, c.g2, c.n
+FROM olp AS p JOIN c ON c.g2 = p.q AND c.g1 = p.pid;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT g1, g2, COUNT(*) AS n FROM ol GROUP BY g1, g2)
+SELECT p.pid, c.g1, c.g2, c.n
+FROM olp AS p JOIN c ON c.g2 = p.q AND c.g1 = p.pid|
+pid	g1	g2	n
+1	1	2	3
+2	2	1	2
+3	3	3	1
+
+=== ol-10: main aggregate over the CTE, filter on an aggregate ===
+== Query ==
+WITH c AS (SELECT g1, COUNT(*) AS n, SUM(x) AS s FROM ol GROUP BY g1)
+SELECT SUM(n) AS tn, MAX(s) AS ms FROM c WHERE n > 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT g1, COUNT(*) AS n, SUM(x) AS s FROM ol GROUP BY g1)
+SELECT SUM(n) AS tn, MAX(s) AS ms FROM c WHERE n > 1|
+tn	ms
+6	120
+
+=== ol-11: single-group root, the body's WHERE fixes both keys ===
+== Query ==
+WITH c AS (SELECT g1, g2, COUNT(*) AS n
+FROM ol WHERE g2 = 1 AND g1 = 2 GROUP BY g1, g2)
+SELECT g1, g2, n FROM c;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT g1, g2, COUNT(*) AS n
+FROM ol WHERE g2 = 1 AND g1 = 2 GROUP BY g1, g2)
+SELECT g1, g2, n FROM c|
+g1	g2	n
+2	1	2
+
+=== ol-12: CTE body that joins two tables ===
+== Query ==
+WITH c AS (SELECT p.pname AS pname, COUNT(*) AS n, SUM(o.x) AS s
+FROM ol AS o JOIN olp AS p ON p.pid = o.g1 GROUP BY p.pname)
+SELECT pname, n, s FROM c;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT p.pname AS pname, COUNT(*) AS n, SUM(o.x) AS s
+FROM ol AS o JOIN olp AS p ON p.pid = o.g1 GROUP BY p.pname)
+SELECT pname, n, s FROM c|
+pname	n	s
+one	4	120
+three	1	70
+two	2	90
+
+=== ol-e1: an aggregate before the GROUP BY column ===
+Error handling: RPE
+ronsql_cli caught exception: The outputs of CTE 'c' must be its GROUP BY columns, in GROUP BY order, and then its aggregates, each aggregate once: output 1 (`n`) is an aggregate where GROUP BY column `g1` is expected.
+
+=== ol-e2: GROUP BY columns in another order, root lookup on both ===
+Error handling: RPE
+ronsql_cli caught exception: The outputs of CTE 'c' must be its GROUP BY columns, in GROUP BY order, and then its aggregates, each aggregate once: output 1 (`g2`) is the column `g2` where GROUP BY column `g1` is expected.
+
+=== ol-e3: a GROUP BY column missing from the outputs ===
+Error handling: RPE
+ronsql_cli caught exception: The outputs of CTE 'c' must be its GROUP BY columns, in GROUP BY order, and then its aggregates, each aggregate once: output 2 (`n`) is an aggregate where GROUP BY column `g2` is expected.
+
+=== ol-e4: no GROUP BY column in the outputs ===
+Error handling: RPE
+ronsql_cli caught exception: The outputs of CTE 'c' must be its GROUP BY columns, in GROUP BY order, and then its aggregates, each aggregate once: output 1 (`n`) is an aggregate where GROUP BY column `g1` is expected.
+
+=== ol-e5: an aggregate repeated ===
+Error handling: RPE
+ronsql_cli caught exception: The outputs of CTE 'c' must be its GROUP BY columns, in GROUP BY order, and then its aggregates, each aggregate once: output 3 (`s2`) repeats the aggregate of output 2 (`s1`).
+
+=== ol-e6: an aggregate repeated in a scalar CTE ===
+Error handling: RPE
+ronsql_cli caught exception: The outputs of CTE 'c' must be its GROUP BY columns, in GROUP BY order, and then its aggregates, each aggregate once: output 3 (`n2`) repeats the aggregate of output 1 (`n`).
+
+=== ol-e7: a column after the aggregates ===
+Error handling: RPE
+ronsql_cli caught exception: The outputs of CTE 'c' must be its GROUP BY columns, in GROUP BY order, and then its aggregates, each aggregate once: output 3 (`k`) is the column `g1` after the GROUP BY columns.
+
+=== ol-e8: a GROUP BY column written another way in the outputs ===
+Error handling: RPE
+ronsql_cli caught exception: The outputs of CTE 'c' must be its GROUP BY columns, in GROUP BY order, and then its aggregates, each aggregate once: output 1 (`k`) is GROUP BY column `g1` written as `o.g1`; write it as the GROUP BY does.
+
+=== ol-e9: ol-e1 through RDRS ===
+HTTP 400
+x-ronsql-error-class: unsupported
+[unsupported] Caught exception: The outputs of CTE 'c' must be its GROUP BY columns, in GROUP BY order, and then its aggregates, each aggregate once: output 1 (`n`) is an aggregate where GROUP BY column `g1` is expected.
+== RDRS still answers ==
+HTTP 200

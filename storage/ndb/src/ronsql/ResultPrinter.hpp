@@ -33,6 +33,8 @@
 #include "LexString.hpp"
 #include "RonSQLCommon.hpp"
 
+#include <algorithm>
+
 class NdbRecAttr;
 
 /*
@@ -52,6 +54,9 @@ public:
   // src holds no value (isNULL() == -1).
   static const PassthroughValue* copy(const NdbRecAttr* src,
                                       ArenaMalloc* amalloc);
+  // O-12: the arena bytes copy() takes for a value of `size` bytes: the
+  // header and the data, at least 8 bytes and rounded up to 8.
+  static size_t arena_bytes(Uint32 size);
   const NdbDictionary::Column* getColumn() const { return m_column; }
   NdbDictionary::Column::Type getType() const { return m_column->getType(); }
   int isNULL() const { return m_size == 0 ? 1 : 0; }
@@ -84,6 +89,30 @@ private:
 };
 static_assert(sizeof(PassthroughValue) % 8 == 0,
               "PassthroughValue data must stay 8-byte aligned");
+
+/*
+ * O-16: order the first min(limit, n) elements of arr[0..n) by `less` and
+ * return how many that is (limit < 0: no limit).  Under a LIMIT below n
+ * only those are ordered, by std::partial_sort (O(n log limit)); otherwise
+ * all, by std::sort.  The aggregate ORDER BY (print_result_ordered) and
+ * the pass-through one (for_each_sorted_passthrough_row) sort with it.
+ */
+template <typename T, typename Less>
+inline Uint32
+ronsql_sort_top_n(T* arr, Uint32 n, Int64 limit, Less less)
+{
+  Uint32 count = n;
+  if (limit >= 0 && (Int64)n > limit) count = (Uint32)limit;
+  if (count < n)
+    std::partial_sort(arr, arr + count, arr + n, less);
+  else
+    std::sort(arr, arr + n, less);
+  return count;
+}
+
+// O-8: one HAVING operand, typed as MySQL types it
+// (ResultPrinterInternal.hpp).
+struct HavingValue;
 
 class ResultPrinter
 {
@@ -220,6 +249,11 @@ private:
     Uint32 avg_sum_idx;
     Uint32 avg_count_idx;
     int avg_scale;
+    // O-9: GROUPBY_COL and AGGREGATE: a DOUBLE that is a DECIMAL in MySQL
+    // (a SUM, MIN or MAX over a DECIMAL, or such a CTE output) sorts by
+    // its value at this scale, as MySQL sorts the DECIMAL; 0 compares the
+    // doubles.
+    int decimal_scale;
   };
   struct StoredRow {
     NdbAggregator::Column* cols;    // array of m_num_groupby_cols Column objects
@@ -241,11 +275,23 @@ private:
   void optimize();
   void print_record(NdbAggregator::ResultRecord& record,
                     std::ostream& out);
+  // O-13: a YEAR, TIME, BINARY or VARBINARY GROUP BY key, printed as in a
+  // pass-through result; `fsp` is the precision of a TIME key.
+  void print_groupby_as_passthrough(std::ostream& out,
+                                    NdbAggregator::Column& column,
+                                    int fsp);
   void run_program(Uint32 from, Uint32 to,
                    NdbAggregator::ResultRecord* record,
                    std::ostream* out);
   StoredRow store_record(NdbAggregator::ResultRecord& record);
   void print_stored_record(StoredRow& row, std::ostream& out);
+  // The print phase of the program, over the registers that the store
+  // phase filled (run_program, or print_stored_record from a stored row).
+  void print_registers(std::ostream& out);
+  // Whether the group in the registers is a result row: the HAVING holds,
+  // and the sentinel of a cross-table filter shows a row passed it.
+  bool group_passes();
+  void print_tsv_header(std::ostream& out);
   int compare_rows(StoredRow& a, StoredRow& b);
   void set_avg_keys(StoredRow& row);
   double avg_sort_key(NdbAggregator::Result sum,
@@ -253,6 +299,8 @@ private:
                       int scale);
   void print_result_ordered(NdbAggregator* aggregator,
                             std::basic_ostream<char>* out_stream);
+  void print_result_filtered(NdbAggregator* aggregator,
+                             std::basic_ostream<char>* out_stream);
   void print_float_or_double(std::ostream& out, double value,
                               bool float_display = false);
   // A DECIMAL result carried as a double, at its scale, the way mysqld
@@ -295,8 +343,37 @@ private:
   // SQL three-valued logic for HAVING; a group is kept only when TRUE.
   enum HavingTruth { HAVING_FALSE, HAVING_TRUE, HAVING_UNKNOWN };
   HavingTruth evaluate_having(const ConditionalExpression* expr);
-  // NaN stands for NULL.
-  double evaluate_having_value(const ConditionalExpression* expr);
+  // O-8: HAVING compares and computes with typed values, as MySQL does,
+  // not with doubles.
+  void evaluate_having_value(const ConditionalExpression* expr,
+                             HavingValue& out);
+  // The value of an aggregate fun(arg) in register agg_index.
+  void having_aggregate_value(TokenKind fun,
+                              const AggregationAPICompiler_Expr* arg,
+                              Uint32 agg_index,
+                              HavingValue& out);
+  // The scale of the integer (0) or DECIMAL column an aggregate argument
+  // loads, so that a DOUBLE result over it is a DECIMAL at that scale;
+  // -1 for any other argument.
+  int exact_arg_scale(const AggregationAPICompiler_Expr* arg) const;
+  // The charset of a string MIN / MAX argument (a column, or the arms of
+  // a CASE).
+  CHARSET_INFO* string_arg_charset(const AggregationAPICompiler_Expr* arg)
+      const;
+  // -1, 0 or 1 as left is less than, equal to or greater than right.
+  int compare_having_values(HavingValue& left, HavingValue& right);
+  int compare_having_strings(HavingValue& left, HavingValue& right);
+  // A string constant of HAVING in the character set cs, converted once.
+  LexString having_constant_in_charset(const HavingValue& constant,
+                                       CHARSET_INFO* cs);
+  struct HavingConstant
+  {
+    const ConditionalExpression* node;
+    CHARSET_INFO* charset;
+    LexString text;
+    HavingConstant* next;
+  };
+  HavingConstant* m_having_constants = NULL;
   void scan_having_max_agg(const ConditionalExpression* expr,
                            Uint32& max_idx);
 public:
@@ -347,6 +424,11 @@ public:
   // `decoder`; `handles` is indexed by output position (see m_avro_handles).
   void set_avro_decoder(RonSQLAvroDecoder* decoder,
                         const void* const* handles);
+  // O-9: the scale of the DECIMAL that column col_idx is in MySQL when
+  // RonSQL carries it as a DOUBLE (a SUM, MIN, MAX or AVG output of a CTE
+  // over an integer or DECIMAL), at which ORDER BY compares it; 0 for any
+  // other column.
+  int double_sort_scale(Uint32 col_idx) const;
   void explain(std::basic_ostream<char>* out_stream);
 private:
   void setup_output_format();
@@ -392,5 +474,11 @@ void ronsql_print_json_string(std::ostream& out,
                               const char* str,
                               size_t len,
                               RonSQLExecParams::OutputFormat format);
+
+// O-9: -1, 0 or 1 as the DECIMAL that a is in MySQL is less than, equal
+// to or greater than the one b is, both carried as doubles, at scale
+// (> 0) fractional digits: values that print alike at the scale are
+// equal.
+int ronsql_compare_at_scale(double a, double b, int scale);
 
 #endif

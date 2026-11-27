@@ -1,0 +1,386 @@
+# ! (logical NOT) in WHERE, and an aggregation program beyond the
+# 8192-word buffer.
+#
+# README finding F-14: the grammar builds T_EXCLAMATION for `!x`, but
+# simplify_ce had no case for it, so the filters built from the
+# simplified WHERE (NdbScanFilter on a scan, a join or CTE operation, a
+# primary-key lookup's residual) refused it as a "Non-boolean term in
+# WHERE condition", while NOT worked. MySQL builds the same negation for
+# both. simplify_ce now makes ! a NOT, so ! works wherever NOT does: in
+# the cases below, and refused as NOT is in a CASE condition. Its
+# precedence is MySQL's: ! binds tighter than every binary operator, so
+# `!a = 1` is `(!a) = 1` and `!b IS NULL` is `(!b) IS NULL`, which
+# RonSQL refuses (a negated value as an operand), while `NOT a = 1` is
+# `NOT (a = 1)`. mysqld lexes `!!` as one `!` (its lexer takes `!!` as
+# an unknown two-character operator and returns the first `!`), so the
+# double negation is written `! !`.
+#
+# README finding F-15: NdbAggregator writes the aggregation program into
+# a buffer of 8192 words and refuses the write that does not fit with
+# kErrTooBigProgram. Programs of 1024 to 8191 words reached Finalize(),
+# which gives the limit error; a larger one failed with "Failed writing
+# aggregation program. Please report a bug." (internal, HTTP 500). It
+# now gets the same limit error (class limit, HTTP 400: RDRS answers 413
+# only for a result or response that is too large).
+#
+# Rows of bt (id: a, b, g), ordered index ix_bt_a on a:
+#   1: 1, 10, 1      2: 1, NULL, 1    3: 2, 20, 1
+#   4: 2, 30, 2      5: NULL, 10, 2   6: NULL, NULL, 2
+#   7: 3, 20, 3      8: 3, 40, 3      9: NULL, 50, 3
+# Rows of bj (g: w): 1: 5   2: NULL   3: 15
+#
+# Case                                            ids or values (= mysqld)
+#   bg-1   !(a = 1)                                3 4 7 8
+#   bg-2   !(b IS NULL)                            1 3 4 5 7 8 9
+#   bg-3   !(a = 1 OR b > 25)                      3 7
+#   bg-4   !(a = 2 AND b > 25)                     1 2 3 5 7 8
+#   bg-5   ! !(b > 15)                             3 4 7 8 9
+#   bg-6   NOT !(a = 1)                            1 2
+#   bg-7   !(GREATEST(a, b) > 15)                  1
+#   bg-8   NOT !(GREATEST(a, b) > 15)              3 4 7 8 (9 kept if the
+#          NOT were applied to the lowered !, as before F-5)
+#   bg-9   a >= 2 AND !(b = 20): index bound and filter, COUNT, SUM: 2, 70
+#   bg-10  ! !(a = 3) is the index bound a = 3, COUNT, SUM: 2, 60
+#   bg-11  id = 4 AND !(b IS NULL): primary-key lookup with a residual
+#          filter: 4, 2, 30
+#   bg-12  id IN (1, 2, 3, 4) AND !(a = 2): aggregating primary-key
+#          lookups with a residual filter, COUNT, SUM: 2, 10
+#   bg-13  join, ! on the joined table: g 1: 3, 30
+#   bg-14  join, ! on the root and on the joined table: (1, 5) (3, 5)
+#   bg-15  ! in a CTE body WHERE: k 1: 1, 20; 2: 1, 30; 3: 2, 60
+#   bg-16  HAVING !(SUM(b) > 100): g 1: 30; 2: 40
+#   bg-e1  ! in a CASE condition is refused, as NOT is (bg-e2)
+#   bg-p1  !(a = 1) AND b = 20 is (!(a = 1)) AND b = 20: 3 7
+#   bg-p2  !(b > 15) OR a = 3 is (!(b > 15)) OR a = 3: 1 5 7 8
+#   bg-p3  !a = 1 is (!a) = 1: refused; NOT a = 1 (bg-p4): 3 4 7 8
+#   bg-p5  !b IS NULL is (!b) IS NULL: refused
+#   pg-1   ten SUM(CASE WHEN a IN (300 values) ...): over 9000 program
+#          words, a limit error through ronsql_cli and RDRS
+#   pg-2   pg-1 over a join, through RDRS
+#
+# Expected results come from mysqld (strict_diff). mysqld warns that !
+# is deprecated; the warnings are not recorded.
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $strict_diff=yes
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/where_bang_explain.out
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE bt (
+  id INT NOT NULL,
+  a  INT,
+  b  INT,
+  g  INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_bt_a (a)
+) ENGINE=NDB;
+CREATE TABLE bj (
+  g INT NOT NULL,
+  w INT,
+  PRIMARY KEY USING HASH (g)
+) ENGINE=NDB;
+INSERT INTO bt VALUES
+  (1, 1, 10, 1), (2, 1, NULL, 1), (3, 2, 20, 1), (4, 2, 30, 2),
+  (5, NULL, 10, 2), (6, NULL, NULL, 2), (7, 3, 20, 3), (8, 3, 40, 3),
+  (9, NULL, 50, 3);
+INSERT INTO bj VALUES (1, 5), (2, NULL), (3, 15);
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === bg-1: ! over a comparison ===
+let $QUERY=
+SELECT id FROM bt WHERE !(a = 1);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM bt WHERE !(a = 1)|
+
+--echo
+--echo === bg-2: ! over IS NULL ===
+let $QUERY=
+SELECT id FROM bt WHERE !(b IS NULL);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM bt WHERE !(b IS NULL)|
+
+--echo
+--echo === bg-3: ! over OR, with NULL operands ===
+let $QUERY=
+SELECT id FROM bt WHERE !(a = 1 OR b > 25);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM bt WHERE !(a = 1 OR b > 25)|
+
+--echo
+--echo === bg-4: ! over AND, with NULL operands ===
+let $QUERY=
+SELECT id FROM bt WHERE !(a = 2 AND b > 25);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM bt WHERE !(a = 2 AND b > 25)|
+
+--echo
+--echo === bg-5: ! ! is the comparison ===
+let $QUERY=
+SELECT id FROM bt WHERE ! !(b > 15);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM bt WHERE ! !(b > 15)|
+
+--echo
+--echo === bg-6: NOT over ! ===
+let $QUERY=
+SELECT id FROM bt WHERE NOT !(a = 1);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM bt WHERE NOT !(a = 1)|
+
+--echo
+--echo === bg-7: ! over a GREATEST comparison ===
+let $QUERY=
+SELECT id FROM bt WHERE !(GREATEST(a, b) > 15);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM bt WHERE !(GREATEST(a, b) > 15)|
+
+--echo
+--echo === bg-8: NOT over ! over a GREATEST comparison ===
+let $QUERY=
+SELECT id FROM bt WHERE NOT !(GREATEST(a, b) > 15);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM bt WHERE NOT !(GREATEST(a, b) > 15)|
+
+--echo
+--echo === bg-9: index bound and a ! filter ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(b) AS s FROM bt WHERE a >= 2 AND !(b = 20);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(b) AS s FROM bt WHERE a >= 2 AND !(b = 20)|
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(b) AS s FROM bt WHERE a >= 2 AND !(b = 20);|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as index scan.' $EXPLAIN_FILE
+--exec grep -qF 'Index: `ix_bt_a`(`a`)' $EXPLAIN_FILE
+--exec grep -qF 'CONDITIONS (1 bound and 1 filter):' $EXPLAIN_FILE
+
+--echo
+--echo === bg-10: ! ! over an equality is an index bound ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(b) AS s FROM bt WHERE ! !(a = 3);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(b) AS s FROM bt WHERE ! !(a = 3)|
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(b) AS s FROM bt WHERE ! !(a = 3);|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as index scan.' $EXPLAIN_FILE
+--exec grep -qF 'Index: `ix_bt_a`(`a`)' $EXPLAIN_FILE
+--exec grep -qF 'CONDITIONS (1 bound):' $EXPLAIN_FILE
+
+--echo
+--echo === bg-11: primary-key lookup with a ! residual filter ===
+let $QUERY=
+SELECT id, a, b FROM bt WHERE id = 4 AND !(b IS NULL);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id, a, b FROM bt WHERE id = 4 AND !(b IS NULL)|
+let $QUERY=
+SELECT id, a, b FROM bt WHERE id = 4 AND !(b IS NULL);|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as primary key lookup.' $EXPLAIN_FILE
+--exec grep -qF 'CONDITIONS (1 key and 1 filter):' $EXPLAIN_FILE
+
+--echo
+--echo === bg-12: aggregating primary-key lookups with a ! residual filter ===
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(b) AS s FROM bt
+WHERE id IN (1, 2, 3, 4) AND !(a = 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS n, SUM(b) AS s FROM bt
+WHERE id IN (1, 2, 3, 4) AND !(a = 2)|
+let $QUERY=
+SELECT COUNT(*) AS n, SUM(b) AS s FROM bt
+WHERE id IN (1, 2, 3, 4) AND !(a = 2);|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 4 aggregating primary key lookups (IN list on `id`: 4 values, 4 distinct).' $EXPLAIN_FILE
+--exec grep -qF 'CONDITIONS (1 key and 1 filter):' $EXPLAIN_FILE
+
+--echo
+--echo === bg-13: join, ! on the joined table ===
+let $QUERY=
+SELECT t.g AS g, COUNT(*) AS n, SUM(t.b) AS s
+FROM bt AS t JOIN bj AS j ON j.g = t.g
+WHERE !(j.w > 10)
+GROUP BY t.g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT t.g AS g, COUNT(*) AS n, SUM(t.b) AS s
+FROM bt AS t JOIN bj AS j ON j.g = t.g
+WHERE !(j.w > 10)
+GROUP BY t.g|
+
+--echo
+--echo === bg-14: join, ! on the root and on the joined table ===
+let $QUERY=
+SELECT t.id AS id, j.w AS w
+FROM bt AS t JOIN bj AS j ON j.g = t.g
+WHERE !(t.b IS NULL) AND !(j.w > 10);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT t.id AS id, j.w AS w
+FROM bt AS t JOIN bj AS j ON j.g = t.g
+WHERE !(t.b IS NULL) AND !(j.w > 10)|
+
+--echo
+--echo === bg-15: ! in a CTE body WHERE ===
+let $QUERY=
+WITH cb AS (SELECT g AS k, COUNT(*) AS n, SUM(b) AS s
+FROM bt WHERE !(a = 1 OR b IS NULL) GROUP BY g)
+SELECT k, n, s FROM cb;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cb AS (SELECT g AS k, COUNT(*) AS n, SUM(b) AS s
+FROM bt WHERE !(a = 1 OR b IS NULL) GROUP BY g)
+SELECT k, n, s FROM cb|
+
+--echo
+--echo === bg-16: ! in HAVING ===
+let $QUERY=
+SELECT g, SUM(b) AS s FROM bt GROUP BY g HAVING !(SUM(b) > 100);|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT g, SUM(b) AS s FROM bt GROUP BY g HAVING !(SUM(b) > 100)|
+
+--echo
+--echo === bg-p1: ! binds tighter than AND ===
+let $QUERY=
+SELECT id FROM bt WHERE !(a = 1) AND b = 20;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM bt WHERE !(a = 1) AND b = 20|
+
+--echo
+--echo === bg-p2: ! binds tighter than OR ===
+let $QUERY=
+SELECT id FROM bt WHERE !(b > 15) OR a = 3;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM bt WHERE !(b > 15) OR a = 3|
+
+--echo
+--echo === bg-p4: control, NOT a = 1 is NOT (a = 1) ===
+let $QUERY=
+SELECT id FROM bt WHERE NOT a = 1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT id FROM bt WHERE NOT a = 1|
+
+DELIMITER ;|
+
+--let $QUERY=
+
+--echo
+--echo === bg-e1: ! in a CASE condition is refused, as NOT is ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(CASE WHEN !(a = 1) THEN 1 ELSE 0 END) AS n FROM bt;' 2>&1
+
+--echo
+--echo === bg-e2: control, NOT in a CASE condition is refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(CASE WHEN NOT (a = 1) THEN 1 ELSE 0 END) AS n FROM bt;' 2>&1
+
+--echo
+--echo === bg-p3: !a = 1 is (!a) = 1, refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id FROM bt WHERE !a = 1;' 2>&1
+
+--echo
+--echo === bg-p5: !b IS NULL is (!b) IS NULL, refused ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id FROM bt WHERE !b IS NULL;' 2>&1
+
+# Ten SUM(CASE WHEN a IN (1, ..., 300) ...): each CASE condition is 300
+# comparisons of 3 words (a branch on an INT column with its value) in
+# one embedded program, so the ten need more than 9000 words. The THEN
+# values differ, so no two are the same expression.
+--let $in = 1
+--let $v = 2
+while ($v <= 300)
+{
+  --let $in = $in, $v
+  --inc $v
+}
+--let $c = 1
+--let $cases = SUM(CASE WHEN a IN ($in) THEN 1 ELSE 0 END) AS n1
+--let $jcases = SUM(CASE WHEN t.a IN ($in) THEN 1 ELSE 0 END) AS n1
+while ($c < 10)
+{
+  --inc $c
+  --let $cases = $cases, SUM(CASE WHEN a IN ($in) THEN $c ELSE 0 END) AS n$c
+  --let $jcases = $jcases, SUM(CASE WHEN t.a IN ($in) THEN $c ELSE 0 END) AS n$c
+}
+
+--echo
+--echo === pg-1: a program beyond the 8192-word buffer is a limit error ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT $cases FROM bt;' 2>&1
+--exec printf '{"query":"SELECT $cases FROM bt;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/pg-body
+--exec curl -s -H "Expect:" -D $MYSQL_TMP_DIR/pg-hdrs -o $MYSQL_TMP_DIR/pg-out -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/pg-body
+--exec grep -qE "^HTTP/[0-9.]+ 400 " $MYSQL_TMP_DIR/pg-hdrs
+--exec grep -qiE "^X-RonSQL-Error-Class: limit" $MYSQL_TMP_DIR/pg-hdrs
+--echo RDRS: HTTP 400, X-RonSQL-Error-Class: limit
+--exec grep -oF '[limit] Caught exception: The aggregate expressions are too large: the aggregation program must be shorter than 1024 words.' $MYSQL_TMP_DIR/pg-out || echo "UNEXPECTED: expected a limit error for a program beyond the 8192-word buffer"
+--remove_file $MYSQL_TMP_DIR/pg-body
+--remove_file $MYSQL_TMP_DIR/pg-hdrs
+--remove_file $MYSQL_TMP_DIR/pg-out
+
+--echo
+--echo === pg-2: the same over a join ===
+--exec printf '{"query":"SELECT $jcases FROM bt AS t JOIN bj AS j ON j.g = t.g;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/pg-body
+--exec curl -s -H "Expect:" -D $MYSQL_TMP_DIR/pg-hdrs -o $MYSQL_TMP_DIR/pg-out -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/pg-body
+--exec grep -qE "^HTTP/[0-9.]+ 400 " $MYSQL_TMP_DIR/pg-hdrs
+--exec grep -qiE "^X-RonSQL-Error-Class: limit" $MYSQL_TMP_DIR/pg-hdrs
+--echo RDRS: HTTP 400, X-RonSQL-Error-Class: limit
+--exec grep -oF '[limit] Caught exception: The aggregate expressions are too large: the aggregation program must be shorter than 1024 words.' $MYSQL_TMP_DIR/pg-out || echo "UNEXPECTED: expected a limit error for a program beyond the 8192-word buffer"
+--remove_file $MYSQL_TMP_DIR/pg-body
+--remove_file $MYSQL_TMP_DIR/pg-hdrs
+--remove_file $MYSQL_TMP_DIR/pg-out
+
+--remove_file $EXPLAIN_FILE
+
+--disable_query_log
+DROP TABLE bj;
+DROP TABLE bt;
+--enable_warnings
+--enable_query_log

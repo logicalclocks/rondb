@@ -137,6 +137,22 @@ g	mx
 1	Kk
 2	Mm
 3	Oo
+
+=== cm-7: arms of 300 and 15000 bytes, a 30 KB record ===
+== Query ==
+SELECT g, MIN(CASE WHEN k > 5 THEN a ELSE b END) AS mn, MAX(CASE WHEN k > 5 THEN a ELSE b END) AS mx FROM cms_wide GROUP BY g;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== cm-8: five slots with arms of 300 and 15000 bytes: a limit error ===
+Error handling: RPE
+ronsql_cli caught exception: The aggregate results of one group can need more than 65535 bytes, counted at the declared column sizes.
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_case_minmax_string_jit_fallback_delta;
 ronsql_case_minmax_string_jit_fallback_delta

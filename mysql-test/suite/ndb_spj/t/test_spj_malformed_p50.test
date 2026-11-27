@@ -1,0 +1,23 @@
+--source include/have_ndb.inc
+
+# P-50: interpreted programs whose words DBSPJ put in the subroutine
+# section of the AttrInfo, word 4 of its 5-word header, which is
+# DBTUP's parameter area (RONDB-1124). Two parts of a pushed-join
+# request went there, through code that a debug data node stopped on
+# with ndbassert(false): the subroutine part of a PI_ATTR_INTERPRET
+# program, and the pattern of an NI_ATTR_INTERPRET tree node without
+# NI_ATTR_LINKED. For an NI_ATTR_LINKED node, which builds that section
+# at each send, the subroutine part also stopped a release data node,
+# on an ndbrequire. The NDB API sends neither, and DBSPJ now refuses
+# both (DbspjErr 20005 and 20004, Tier B security violation).
+# The case sends each request without the part first, which must get
+# SCAN_TABCONF: a scan with a PI_ATTR_INTERPRET program, the same on a
+# join aggregation leaf with NI_ATTR_LINKED, and a scan with an
+# NI_ATTR_INTERPRET program. Then each with the part, which must get
+# SCAN_TABREF with the refusal error and leave every data node started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P50
+--let $spj_case_title = P-50: interpreted program words that went to the subroutine section
+--source suite/ndb_spj/include/spj_malformed_case.inc

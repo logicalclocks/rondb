@@ -1,0 +1,180 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== s5-0: the plan really is root -> CTE_LOOKUP + INDEX_SCAN ===
+== Explain Query ==
+
+=== s5-1: projection-only star, CTE lookup completes after the root ===
+== Query ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, pc.cnt, o.o_orderkey
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+JOIN orders AS o ON o.o_custkey = c.c_custkey
+WHERE c.c_custkey <= 20;
+
+Number of output lines, including header: 101
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, pc.cnt, o.o_orderkey
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+JOIN orders AS o ON o.o_custkey = c.c_custkey
+WHERE c.c_custkey <= 20|
+c_custkey	cnt	o_orderkey
+1	5	1
+1	5	1201
+1	5	301
+1	5	601
+1	5	901
+10	5	10
+10	5	1210
+10	5	310
+10	5	610
+10	5	910
+11	5	11
+11	5	1211
+11	5	311
+11	5	611
+11	5	911
+12	5	12
+12	5	1212
+12	5	312
+12	5	612
+12	5	912
+13	5	1213
+13	5	13
+13	5	313
+13	5	613
+13	5	913
+14	5	1214
+14	5	14
+14	5	314
+14	5	614
+14	5	914
+15	5	1215
+15	5	15
+15	5	315
+15	5	615
+15	5	915
+16	5	1216
+16	5	16
+16	5	316
+16	5	616
+16	5	916
+17	5	1217
+17	5	17
+17	5	317
+17	5	617
+17	5	917
+18	5	1218
+18	5	18
+18	5	318
+18	5	618
+18	5	918
+19	5	1219
+19	5	19
+19	5	319
+19	5	619
+19	5	919
+2	5	1202
+2	5	2
+2	5	302
+2	5	602
+2	5	902
+20	5	1220
+20	5	20
+20	5	320
+20	5	620
+20	5	920
+3	5	1203
+3	5	3
+3	5	303
+3	5	603
+3	5	903
+4	5	1204
+4	5	304
+4	5	4
+4	5	604
+4	5	904
+5	5	1205
+5	5	305
+5	5	5
+5	5	605
+5	5	905
+6	5	1206
+6	5	306
+6	5	6
+6	5	606
+6	5	906
+7	5	1207
+7	5	307
+7	5	607
+7	5	7
+7	5	907
+8	5	1208
+8	5	308
+8	5	608
+8	5	8
+8	5	908
+9	5	1209
+9	5	309
+9	5	609
+9	5	9
+9	5	909
+
+=== s5-2: same, one CTE lookup per data node held 50 ms (5131) ===
+== Query ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey)
+SELECT c.c_custkey, pc.cnt, o.o_orderkey
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+JOIN orders AS o ON o.o_custkey = c.c_custkey
+WHERE c.c_custkey <= 20;
+
+Number of output lines, including header: 101
+
+== Diff ==
+==========
+
+
+
+
+=== s5-3: aggregating form of the same star ===
+== Query ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey)
+SELECT COUNT(*), SUM(o.o_shippriority)
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+JOIN orders AS o ON o.o_custkey = c.c_custkey
+WHERE c.c_custkey <= 20;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pc AS (SELECT o_custkey AS k, COUNT(*) AS cnt
+FROM orders GROUP BY o_custkey)
+SELECT COUNT(*), SUM(o.o_shippriority)
+FROM customer AS c
+JOIN pc ON pc.k = c.c_custkey
+JOIN orders AS o ON o.o_custkey = c.c_custkey
+WHERE c.c_custkey <= 20|
+COUNT(*)	SUM(o.o_shippriority)
+100	200
+
+=== s5-4: no DBSPJ request left behind ===

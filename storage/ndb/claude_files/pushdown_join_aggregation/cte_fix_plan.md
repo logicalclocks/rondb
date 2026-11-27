@@ -434,6 +434,25 @@ Lower priority; some may be intentional scope limits — confirm before building
   back to value-compare cases and re-record.  (Relates to the RONDB-1044
   star-schema fan-out work.)
 
+  **Next phase (recorded 2026-11-27): this must also bring back TPC-H Q9.**
+  Q9 is the real-table form of the shape: a star on lineitem (part,
+  orders, supplier and partsupp join it, nation joins supplier) whose
+  aggregation reads three branches, `o.o_orderyear` and `n.n_name` in the
+  GROUP BY and `ps.ps_supplycost` in the SUM.  RonSQL refuses it at
+  prepare (`linked_source_is_leaf_ancestor`, HTTP 400).  RONDB-1124 T-21
+  (`b4cc3528a55`) un-skipped it in `rdrs2-ronsqltpch.ronsqltpch` on the
+  belief that per-key parent sources (`non_aggregate_phase_6.md` 6b) made
+  it plannable; they let partsupp take both keys from lineitem, but they
+  do not put the other branches' columns on the leaf's ancestor chain,
+  so the test failed and Q9 is skipped again (`ronsqltpch/handler_test.go`,
+  Skip "... next phase: F-fanout").  The likely route for real tables:
+  when the query aggregates, chain the INNER-join PK / unique-key lookup
+  siblings into a line, as the planner already chains sibling
+  CTE_LOOKUPs.  Each such lookup returns at most one row per parent row,
+  so the result is the same.  Take care with outer joins, scan children
+  and the 32-node tree budget.  Done when Q9's skip is cleared and it
+  matches mysqld.
+
 ---
 
 ## Working method

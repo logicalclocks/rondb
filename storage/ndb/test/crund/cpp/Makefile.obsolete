@@ -48,7 +48,7 @@ include	../../env.properties
 #   LDLIBS for project-wide libs (like -lc or -lm)
 #   LOADLIBES for libs for the individual case
 # check with non-gnu makes: use of LOADLIBES, LDLIBS
-  LDLIBS	= -L$(NDB_LIBDIR0) -L$(NDB_LIBDIR1) -lndbclient
+  LDLIBS	= -L$(NDB_LIBDIR0) -L$(NDB_LIBDIR1) -lrondbclient
 # undefined symbols when linking with
 #  LOADLIBES	= -L$(HELPERS) -lutils
 # which seems to be the same as

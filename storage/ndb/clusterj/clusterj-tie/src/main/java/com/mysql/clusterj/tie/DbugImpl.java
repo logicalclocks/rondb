@@ -57,7 +57,7 @@ public class DbugImpl implements Dbug {
     
     public DbugImpl() {
         // Load the native library so we can set up debugging before anything else
-        ClusterConnectionServiceImpl.loadSystemLibrary("ndbclient");
+        ClusterConnectionServiceImpl.loadSystemLibrary("rondbclient");
     }
 
     public String get() {

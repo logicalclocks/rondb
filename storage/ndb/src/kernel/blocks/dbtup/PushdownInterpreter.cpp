@@ -129,41 +129,97 @@ struct AggJoinPoints {
   }
 };
 
-/* True if a branch of the embedded program emb lands on emb[target]. */
-bool embeddedBranchTo(const Uint32* emb, Uint32 target) {
-  Uint32 pc = 0;
-  while (pc < target) {
-    Interpreter::InstructionPreProcessing processing;
-    const Uint32* next = Interpreter::getInstructionPreProcessingInfo(
-        const_cast<Uint32*>(&emb[pc]), processing);
-    if (next == nullptr) {
-      return true;
-    }
-    /* Forward offset from the branch word, as validateEmbeddedProgram. */
-    if (processing == Interpreter::LABEL_ADDRESS_REPLACEMENT &&
-        pc + ((emb[pc] >> 16) & 0x7FFF) == target) {
-      return true;
-    }
-    pc = Uint32(next - emb);
+/* Words of a bitmap with a bit for each word of a program. */
+constexpr Uint32 kProgramBitmapWords = (MAX_AGG_PROGRAM_WORD_SIZE + 31) / 32;
+
+inline bool testProgramBit(const Uint32* bitmap, Uint32 bit) {
+  return ((bitmap[bit >> 5] >> (bit & 31)) & 1) != 0;
+}
+
+inline void setProgramBit(Uint32* bitmap, Uint32 bit) {
+  bitmap[bit >> 5] |= 1U << (bit & 31);
+}
+
+/* A WRITE_INTERPRETER_OUTPUT to interpreter output 0. */
+inline bool isOutput0Write(Uint32 instr) {
+  return Interpreter::getOpCode(instr) ==
+             Interpreter::WRITE_INTERPRETER_OUTPUT &&
+         (instr >> 16) == 0;
+}
+
+/* The registers (bit r for register r) that an embedded instruction
+ * other than LOAD_CONST16 may write: the one in bits 6-8 for the loads
+ * below, none for a branch, an exit or an output write, all of them for
+ * any other instruction. */
+Uint32 embeddedRegWrites(Uint32 instr, bool is_branch) {
+  if (is_branch) {
+    return 0;
   }
-  return false;
+  switch (Interpreter::getOpCode(instr)) {
+    case Interpreter::LOAD_CONST_NULL:
+    case Interpreter::LOAD_CONST32:
+    case Interpreter::LOAD_CONST64:
+    case Interpreter::LOAD_DOUBLE_CONST:
+    case Interpreter::READ_ATTR_INTO_REG:
+    case Interpreter::READ_AGG_REG_TO_REG:
+      return 1U << Interpreter::getReg1(instr);
+    case Interpreter::EXIT_OK:
+    case Interpreter::EXIT_OK_LAST:
+    case Interpreter::EXIT_REFUSE:
+    case Interpreter::WRITE_INTERPRETER_OUTPUT:
+      return 0;
+    default:
+      return ~0U;
+  }
+}
+
+/* Set bit skip of skips for the output-0 write of register reg, which
+ * holds values[reg] when bit reg of known is set.  A skip of n_skips or
+ * more ends the row (embeddedSkipTarget), as
+ * AGG_EMBEDDED_INTERP_STOP_PROGRAM does: no word to land on.  Returns
+ * false when the register may hold another value. */
+bool addEmbeddedSkip(Uint32 reg, Uint32 known, const Uint32* values,
+                     Uint32* skips, Uint32 n_skips) {
+  if (((known >> reg) & 1) == 0) {
+    return false;
+  }
+  const Uint32 skip = values[reg];
+  if (skip != AGG_EMBEDDED_INTERP_STOP_PROGRAM && skip < n_skips) {
+    setProgramBit(skips, skip);
+  }
+  return true;
 }
 
 /*
- * Add a join point for each skip the embedded program emb[0..emb_len)
- * writes to interpreter output 0; emb_end is the word after it.  Every
+ * The skips the embedded program emb[0..emb_len) may write to
+ * interpreter output 0: bit s of skips (kProgramBitmapWords words) for
+ * each skip s below n_skips, the words after the embedded program.  Every
  * emitter (CASE and GREATEST / LEAST of RonSQL, CASE of
- * ha_ndbcluster_push_agg) writes the skip with a LOAD_CONST16 directly
- * followed by WRITE_INTERPRETER_OUTPUT.  Return false, the skips being
- * unknown, when output 0 is written in another way or a branch lands on
- * the write, so that the register may hold another value.
- * AGG_EMBEDDED_INTERP_STOP_PROGRAM ends the row: it is no jump.
+ * ha_ndbcluster_push_agg, RonSQL's guarded COUNT(*) of a subquery)
+ * writes output 0 from a register that a LOAD_CONST16 set.  The walk
+ * keeps the value a LOAD_CONST16 gave each register on the straight line
+ * since the last word a branch lands on.  A write takes the line's value
+ * when the line falls through to it, and the value at each branch to it
+ * (the guarded COUNT(*) branches to its write).  Return false, the skips
+ * being unknown, when the written register may hold another value, or a
+ * branch lands inside an instruction: its operand words would then run
+ * as instructions, which the walk does not see.
  */
-bool addEmbeddedJoinPoints(AggJoinPoints& joins, const Uint32* emb,
-                           Uint32 emb_len, Uint32 emb_end,
-                           const Uint32* reg_types) {
+bool embeddedSkips(const Uint32* emb, Uint32 emb_len, Uint32* skips,
+                   Uint32 n_skips) {
+  memset(skips, 0, kProgramBitmapWords * sizeof(Uint32));
+  if (emb_len > MAX_AGG_PROGRAM_WORD_SIZE ||
+      n_skips > MAX_AGG_PROGRAM_WORD_SIZE) {
+    return false;
+  }
+  Uint32 starts[kProgramBitmapWords];
+  Uint32 targets[kProgramBitmapWords];
+  memset(starts, 0, sizeof(starts));
+  memset(targets, 0, sizeof(targets));
+  Uint32 values[8] = {0};  // Registers 0-7 (Interpreter::getReg1)
+  Uint32 known = 0;
+  bool falls_through = true;
   Uint32 pc = 0;
-  Uint32 prev_pc = ~0U;
   while (pc < emb_len) {
     const Uint32 instr = emb[pc];
     Interpreter::InstructionPreProcessing processing;
@@ -172,22 +228,48 @@ bool addEmbeddedJoinPoints(AggJoinPoints& joins, const Uint32* emb,
     if (next == nullptr) {
       return false;
     }
-    if (Interpreter::getOpCode(instr) ==
-            Interpreter::WRITE_INTERPRETER_OUTPUT &&
-        (instr >> 16) == 0) {
-      if (prev_pc == ~0U ||
-          Interpreter::getOpCode(emb[prev_pc]) != Interpreter::LOAD_CONST16 ||
-          Interpreter::getReg1(emb[prev_pc]) != Interpreter::getReg1(instr) ||
-          embeddedBranchTo(emb, pc)) {
+    setProgramBit(starts, pc);
+    if (falls_through && isOutput0Write(instr) &&
+        !addEmbeddedSkip(Interpreter::getReg1(instr), known, values, skips,
+                         n_skips)) {
+      return false;
+    }
+    if (testProgramBit(targets, pc)) {
+      known = 0;  // Paths join here
+    }
+    const Uint32 op = Interpreter::getOpCode(instr);
+    const bool is_branch =
+        processing == Interpreter::LABEL_ADDRESS_REPLACEMENT;
+    if (op == Interpreter::LOAD_CONST16) {
+      values[Interpreter::getReg1(instr)] = instr >> 16;
+      known |= 1U << Interpreter::getReg1(instr);
+    } else {
+      known &= ~embeddedRegWrites(instr, is_branch);
+    }
+    if (is_branch) {
+      /* Forward offset from the branch word, at least 1, as
+       * validateEmbeddedProgram. */
+      const Uint32 target = pc + ((instr >> 16) & 0x7FFF);
+      if ((instr >> 31) != 0 || target == pc || target >= emb_len) {
         return false;
       }
-      const Uint32 skip = emb[prev_pc] >> 16;
-      if (skip != AGG_EMBEDDED_INTERP_STOP_PROGRAM) {
-        joins.add(emb_end + skip, emb_end + skip, reg_types);
+      setProgramBit(targets, target);
+      if (isOutput0Write(emb[target]) &&
+          !addEmbeddedSkip(Interpreter::getReg1(emb[target]), known, values,
+                           skips, n_skips)) {
+        return false;
       }
     }
-    prev_pc = pc;
+    falls_through = op != Interpreter::EXIT_OK &&
+                    op != Interpreter::EXIT_OK_LAST &&
+                    op != Interpreter::EXIT_REFUSE &&
+                    op != Interpreter::BRANCH;
     pc = Uint32(next - emb);
+  }
+  for (Uint32 i = 0; i < kProgramBitmapWords; i++) {
+    if ((targets[i] & ~starts[i]) != 0) {
+      return false;
+    }
   }
   return true;
 }
@@ -406,10 +488,17 @@ void optimizeAggProgramWalk(Uint32* prog, Uint32 prog_len, Uint32 start_pos,
         /* A NULL-extended row whose condition JoinAggInterpreter cannot
          * evaluate continues right after the embedded program. */
         joins.add(emb_end, emb_end, reg_types);
+        Uint32 skips[kProgramBitmapWords];
         if (emb_end > prog_len ||
-            !addEmbeddedJoinPoints(joins, &prog[exec_pos + 1], emb_len,
-                                   emb_end, reg_types)) {
+            !embeddedSkips(&prog[exec_pos + 1], emb_len, skips,
+                           prog_len - emb_end)) {
           joins.add(emb_end, ~0U, reg_types);
+        } else {
+          for (Uint32 skip = 0; skip < prog_len - emb_end; skip++) {
+            if (testProgramBit(skips, skip)) {
+              joins.add(emb_end + skip, emb_end + skip, reg_types);
+            }
+          }
         }
         reached = false;
         exec_pos += emb_len;
@@ -435,6 +524,76 @@ void optimizeAggProgramWalk(Uint32* prog, Uint32 prog_len, Uint32 start_pos,
   }
 }
 
+/*
+ * The kinds of value a register may hold on the paths that reach a word,
+ * for checkAggSlotKinds: a string (CHAR, VARCHAR or LONGVARCHAR), a value
+ * of another type, or nothing the row loaded.  Register r has the
+ * kRegKindBits bits at r * kRegKindBits of a Uint32, so the kinds of two
+ * paths join with |, and 0 is a word no row reaches.
+ */
+constexpr Uint32 kRegKindString = 1;
+constexpr Uint32 kRegKindOther = 2;
+constexpr Uint32 kRegKindNotLoaded = 4;
+constexpr Uint32 kRegKindValue = kRegKindString | kRegKindOther;
+constexpr Uint32 kRegKindBits = 4;
+static_assert(kRegTotal * kRegKindBits <= 32,
+              "the kinds of all registers fit in a word");
+
+inline Uint32 regKind(Uint32 kinds, Uint32 reg) {
+  return (kinds >> (reg * kRegKindBits)) & ((1U << kRegKindBits) - 1);
+}
+
+inline Uint32 setRegKind(Uint32 kinds, Uint32 reg, Uint32 kind) {
+  const Uint32 shift = reg * kRegKindBits;
+  return (kinds & ~(((1U << kRegKindBits) - 1) << shift)) | (kind << shift);
+}
+
+/* kOpLoadCol, kOpLoadConst, kOpSetRegNull and the aggregates name their
+ * register in bits 16-19. */
+inline bool aggOpUsesReg16(Uint32 op) {
+  return op == kOpLoadCol || op == kOpLoadConst || op == kOpSetRegNull ||
+         aggIsSlotOp(op) || op == kOpAvg;
+}
+
+/* The arithmetic instructions and kOpMov name theirs in bits 12-15 and
+ * 8-11, as executeStandardOpcode decodes them. */
+inline bool aggOpUsesRegs12And8(Uint32 op) {
+  return (op >= kOpPlus && op <= kOpMod) ||
+         (op >= kOpPlusBigint && op <= kOpDivIntBigint) || op == kOpMov;
+}
+
+/* The aggregate an instruction that updates a slot computes, one bit
+ * each, for checkAggSlotKinds: the typed variants compute the aggregate
+ * of their generic form. */
+constexpr Uint8 kSlotFamilySum = 1;
+constexpr Uint8 kSlotFamilyAvg = 2;
+constexpr Uint8 kSlotFamilyMax = 4;
+constexpr Uint8 kSlotFamilyMin = 8;
+constexpr Uint8 kSlotFamilyCount = 16;
+
+inline Uint8 aggSlotFamily(Uint32 op) {
+  switch (op) {
+    case kOpSum:
+    case kOpSumBigint:
+    case kOpSumDouble:
+      return kSlotFamilySum;
+    case kOpAvg:
+      return kSlotFamilyAvg;
+    case kOpMax:
+    case kOpMaxBigint:
+    case kOpMaxDouble:
+      return kSlotFamilyMax;
+    case kOpMin:
+    case kOpMinBigint:
+    case kOpMinDouble:
+      return kSlotFamilyMin;
+    case kOpCount:
+      return kSlotFamilyCount;
+    default:
+      return 0;
+  }
+}
+
 }  // namespace
 
 void
@@ -446,6 +605,205 @@ PushdownInterpreter::OptimizeProgramBuffer(Uint32* prog, Uint32 prog_len,
   }
   optimizeAggProgramWalk(prog, prog_len, start_pos, slot_types, false);
   optimizeAggProgramWalk(prog, prog_len, start_pos, slot_types, true);
+}
+
+/*
+ * checkAggSlotKinds — see PushdownInterpreter.hpp.  The walk follows the
+ * jumps of the program as OptimizeProgramBuffer does, but keeps every
+ * jump to every word (jumps_to), so a CASE with many arms costs no
+ * precision.  At runtime an aggregate, kOpMov or an arithmetic
+ * instruction fails the row when it reads a register the row did not
+ * load (m_loaded_regs), so only the loaded kinds of a register count.
+ */
+const char*
+PushdownInterpreter::checkAggSlotKinds(const Uint32* prog, Uint32 prog_len,
+                                       Uint32 start_pos) {
+  if (prog_len > MAX_AGG_PROGRAM_WORD_SIZE) {
+    return "longer than MAX_AGG_PROGRAM_WORD_SIZE words";
+  }
+  /* The register kinds of the rows that jump to each word, and of those
+   * that may land on any later word (an embedded program whose skips
+   * are unknown). */
+  Uint32 jumps_to[MAX_AGG_PROGRAM_WORD_SIZE];
+  memset(jumps_to, 0, prog_len * sizeof(Uint32));
+  Uint32 jumps_anywhere = 0;
+  /* kRegKindString and kRegKindOther of what the writers of each slot
+   * put there. */
+  Uint8 slot_kinds[MAX_AGG_N_RESULTS];
+  memset(slot_kinds, 0, sizeof(slot_kinds));
+  /* aggSlotFamily of the instructions that update each slot */
+  Uint8 slot_families[MAX_AGG_N_RESULTS];
+  memset(slot_families, 0, sizeof(slot_families));
+  Uint32 skips[kProgramBitmapWords];
+
+  /* A row starts with no register loaded. */
+  Uint32 kinds = 0;
+  for (Uint32 r = 0; r < kRegTotal; r++) {
+    kinds = setRegKind(kinds, r, kRegKindNotLoaded);
+  }
+  bool falls_through = true;
+  for (Uint32 pos = start_pos; pos < prog_len;) {
+    const Uint32 word = prog[pos];
+    const Uint32 words = aggInstructionWords(word);
+    if (words > prog_len - pos) {
+      return "operand words past the end";
+    }
+    kinds = (falls_through ? kinds : 0) | jumps_to[pos] | jumps_anywhere;
+    falls_through = true;
+    if (kinds == 0) {
+      pos += words;  // No row reaches this instruction
+      continue;
+    }
+    const Uint32 op = aggProgramOp(word);
+    /* Register fields: bits 16-19 of the loads and aggregates, bits
+     * 12-15 (written) and 8-11 of the two-register instructions.
+     * checkProgram has checked them and the slot field; as they index
+     * kinds and slot_kinds here, they are checked again. */
+    const Uint32 reg = (word >> 16) & 0xF;
+    const Uint32 reg_a = (word >> 12) & 0xF;
+    const Uint32 reg_b = (word >> 8) & 0xF;
+    const Uint32 slot = word & 0xFFFF;
+    if ((aggOpUsesReg16(op) && reg >= kRegTotal) ||
+        (aggOpUsesRegs12And8(op) &&
+         (reg_a >= kRegTotal || reg_b >= kRegTotal))) {
+      return "register out of range";
+    }
+    if ((aggIsSlotOp(op) || op == kOpAvg) && slot >= MAX_AGG_N_RESULTS) {
+      return "aggregate slot out of range";
+    }
+    switch (op) {
+      case kOpLoadCol: {
+        const Uint32 type = aggLoadColType(word);
+        const bool is_string = type == NDB_TYPE_CHAR ||
+                               type == NDB_TYPE_VARCHAR ||
+                               type == NDB_TYPE_LONGVARCHAR;
+        kinds = setRegKind(kinds, reg,
+                           is_string ? kRegKindString : kRegKindOther);
+        break;
+      }
+      case kOpLoadConst:
+        kinds = setRegKind(kinds, reg, kRegKindOther);
+        break;
+      case kOpSetRegNull:
+        /* The register keeps its type: that of an earlier row when this
+         * row did not load it, which may be any. */
+        if ((regKind(kinds, reg) & kRegKindNotLoaded) != 0) {
+          kinds = setRegKind(kinds, reg, kRegKindValue);
+        }
+        break;
+      case kOpMov:
+        kinds = setRegKind(kinds, reg_a,
+                           regKind(kinds, reg_b) & kRegKindValue);
+        break;
+      case kOpPlus:
+      case kOpMinus:
+      case kOpMul:
+      case kOpDiv:
+      case kOpDivInt:
+      case kOpMod:
+      case kOpPlusBigint:
+      case kOpPlusDouble:
+      case kOpMinusBigint:
+      case kOpMinusDouble:
+      case kOpMulBigint:
+      case kOpMulDouble:
+      case kOpDivDouble:
+      case kOpDivIntBigint:
+        /* A string register holds the type and 0, its value is in
+         * m_register_string_data.  The arithmetic took it for a number,
+         * and the generic forms (RegPlusReg ...) assert that a register
+         * that is not a DOUBLE is a BIGINT. */
+        if (((regKind(kinds, reg_a) | regKind(kinds, reg_b)) &
+             kRegKindString) != 0) {
+          return "arithmetic on a register that may hold a string";
+        }
+        /* The result is a BIGINT or a DOUBLE (InterpreterCommonOp.hpp). */
+        kinds = setRegKind(kinds, reg_a, kRegKindOther);
+        break;
+      case kOpMax:
+      case kOpMin:
+        /* executeStandardOpcode: minMaxString for a string register,
+         * Max or Min for any other. */
+        slot_kinds[slot] = static_cast<Uint8>(
+            slot_kinds[slot] | (regKind(kinds, reg) & kRegKindValue));
+        slot_families[slot] =
+            static_cast<Uint8>(slot_families[slot] | aggSlotFamily(op));
+        break;
+      case kOpSum:
+      case kOpSumBigint:
+      case kOpSumDouble:
+      case kOpMaxBigint:
+      case kOpMaxDouble:
+      case kOpMinBigint:
+      case kOpMinDouble:
+      case kOpAvg:
+        /* Only the generic kOpMax / kOpMin take a string.  Sum stored
+         * the string register in the slot and asserted on the next row
+         * that the slot is a number, the typed aggregates read its 0. */
+        if ((regKind(kinds, reg) & kRegKindString) != 0) {
+          return "a numeric aggregate of a register that may hold a "
+                 "string";
+        }
+        [[fallthrough]];
+      case kOpCount:
+        /* A number in the slot, whatever the register holds. */
+        if ((regKind(kinds, reg) & kRegKindValue) != 0) {
+          slot_kinds[slot] =
+              static_cast<Uint8>(slot_kinds[slot] | kRegKindOther);
+        }
+        slot_families[slot] =
+            static_cast<Uint8>(slot_families[slot] | aggSlotFamily(op));
+        break;
+      case kOpSkip: {
+        const Uint32 target = pos + 1 + (word & 0xFFFF);
+        if (target < prog_len) {
+          jumps_to[target] |= kinds;
+        }
+        falls_through = false;
+        break;
+      }
+      case kOpEmbeddedInterp: {
+        /* As OptimizeProgramBuffer: a NULL-extended row whose condition
+         * JoinAggInterpreter cannot evaluate continues right after the
+         * embedded program, the others skip what it wrote. */
+        const Uint32 emb_end = pos + words;
+        if (emb_end < prog_len) {
+          jumps_to[emb_end] |= kinds;
+        }
+        if (embeddedSkips(&prog[pos + 1], words - 1, skips,
+                          prog_len - emb_end)) {
+          for (Uint32 skip = 0; skip < prog_len - emb_end; skip++) {
+            if (testProgramBit(skips, skip)) {
+              jumps_to[emb_end + skip] |= kinds;
+            }
+          }
+        } else {
+          jumps_anywhere |= kinds;
+        }
+        falls_through = false;
+        break;
+      }
+      default:
+        break;
+    }
+    pos += words;
+  }
+
+  for (Uint32 slot = 0; slot < MAX_AGG_N_RESULTS; slot++) {
+    if (slot_kinds[slot] == kRegKindValue) {
+      return "a string MIN / MAX and another aggregate update one slot";
+    }
+    /* One aggregate per slot: the merges take the slot's one operation
+     * (extractAggOps), and Count asserts that its slot holds an
+     * unsigned BIGINT, which a SUM or a MAX of the slot need not leave
+     * there.  The arms of a CASE repeat one aggregate
+     * (NdbAggregator::RepeatAgg). */
+    const Uint8 families = slot_families[slot];
+    if ((families & (families - 1)) != 0) {
+      return "two different aggregates update one slot";
+    }
+  }
+  return nullptr;
 }
 
 PushdownType

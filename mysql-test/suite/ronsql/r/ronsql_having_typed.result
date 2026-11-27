@@ -1,0 +1,653 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== ht-1: MAX(BIGINT) > a neighbour above 2^53 ===
+== Query ==
+SELECT g, MAX(b) AS mx FROM hv_n GROUP BY g
+HAVING MAX(b) > 1234567890123456788;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MAX(b) AS mx FROM hv_n GROUP BY g
+HAVING MAX(b) > 1234567890123456788|
+g	mx
+2	9223372036854775807
+3	1234567890123456789
+
+=== ht-2: SUM(BIGINT) = 2^53 is FALSE for 2^53 + 1 ===
+== Query ==
+SELECT g, SUM(b) AS s FROM hv_n GROUP BY g
+HAVING SUM(b) = 9007199254740992;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, SUM(b) AS s FROM hv_n GROUP BY g
+HAVING SUM(b) = 9007199254740992|
+g	s
+
+=== ht-3: SUM(BIGINT) = 2^53 + 1, MAX(BIGINT) > 2^63 - 2 ===
+== Query ==
+SELECT g, SUM(b) AS s FROM hv_n GROUP BY g
+HAVING SUM(b) = 9007199254740993 OR MAX(b) > 9223372036854775806;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, SUM(b) AS s FROM hv_n GROUP BY g
+HAVING SUM(b) = 9007199254740993 OR MAX(b) > 9223372036854775806|
+g	s
+1	9007199254740993
+2	9223372036854775807
+
+=== ht-4: MIN(BIGINT) < -(2^63 - 2) ===
+== Query ==
+SELECT g, MIN(b) AS mn FROM hv_n GROUP BY g
+HAVING MIN(b) < -9223372036854775806;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MIN(b) AS mn FROM hv_n GROUP BY g
+HAVING MIN(b) < -9223372036854775806|
+g	mn
+3	-9223372036854775807
+
+=== ht-5: MAX(BIGINT UNSIGNED) - (2^63 - 1) > 2^63 - 1 ===
+== Query ==
+SELECT g, MAX(u) AS mx FROM hv_n GROUP BY g
+HAVING MAX(u) - 9223372036854775807 > 9223372036854775807;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MAX(u) AS mx FROM hv_n GROUP BY g
+HAVING MAX(u) - 9223372036854775807 > 9223372036854775807|
+g	mx
+1	18446744073709551615
+
+=== ht-6: MAX(BIGINT UNSIGNED) > a subquery's BIGINT UNSIGNED ===
+== Query ==
+SELECT g, MAX(u) AS mx FROM hv_n GROUP BY g
+HAVING MAX(u) > (SELECT MAX(u) FROM hv_n WHERE g = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MAX(u) AS mx FROM hv_n GROUP BY g
+HAVING MAX(u) > (SELECT MAX(u) FROM hv_n WHERE g = 2)|
+g	mx
+1	18446744073709551615
+
+=== ht-7: SUM(DECIMAL) = 0.3 for every sum that prints 0.30 ===
+== Query ==
+SELECT g, SUM(d) AS s FROM hv_n GROUP BY g
+HAVING SUM(d) = 0.3;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, SUM(d) AS s FROM hv_n GROUP BY g
+HAVING SUM(d) = 0.3|
+g	s
+1	0.30
+2	0.30
+3	0.30
+
+=== ht-8: SUM(DECIMAL) neither above nor below 0.30 ===
+== Query ==
+SELECT g, SUM(d) AS s FROM hv_n GROUP BY g
+HAVING SUM(d) > 0.30 OR SUM(d) < 0.30;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, SUM(d) AS s FROM hv_n GROUP BY g
+HAVING SUM(d) > 0.30 OR SUM(d) < 0.30|
+g	s
+
+=== ht-9: AVG(DECIMAL) = 0.15 ===
+== Query ==
+SELECT g, AVG(d) AS a FROM hv_n GROUP BY g
+HAVING AVG(d) = 0.15;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, AVG(d) AS a FROM hv_n GROUP BY g
+HAVING AVG(d) = 0.15|
+g	a
+1	0.150000
+3	0.150000
+
+=== ht-10: control, SUM(DOUBLE) = 0.3 compares doubles ===
+== Query ==
+SELECT g FROM hv_n GROUP BY g
+HAVING SUM(f) = 0.3;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g FROM hv_n GROUP BY g
+HAVING SUM(f) = 0.3|
+g
+2
+
+=== ht-11: COUNT(*) / 3 is a DECIMAL with nine fractional digits ===
+== Query ==
+SELECT g, COUNT(*) AS n FROM hv_n GROUP BY g
+HAVING COUNT(*) / 3 = 0.333333333;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, COUNT(*) AS n FROM hv_n GROUP BY g
+HAVING COUNT(*) / 3 = 0.333333333|
+g	n
+2	1
+4	1
+
+=== ht-12: NULL under NOT, and IS NULL ===
+== Query ==
+SELECT g, COUNT(*) AS n FROM hv_n GROUP BY g
+HAVING NOT (MAX(b) > 0) OR SUM(d) IS NULL;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, COUNT(*) AS n FROM hv_n GROUP BY g
+HAVING NOT (MAX(b) > 0) OR SUM(d) IS NULL|
+g	n
+4	1
+
+=== tt-1: MAX(DATE) > YYYYMMDD ===
+== Query ==
+SELECT g, MAX(d) AS mx FROM hv_t GROUP BY g
+HAVING MAX(d) > 19960101;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MAX(d) AS mx FROM hv_t GROUP BY g
+HAVING MAX(d) > 19960101|
+g	mx
+2	1996-06-15
+3	2024-03-05
+
+=== tt-2: MIN(DATE) = and MAX(DATE) > date strings ===
+== Query ==
+SELECT g, MIN(d) AS mn, MAX(d) AS mx FROM hv_t GROUP BY g HAVING MIN(d) = '1995-01-01' OR MAX(d) > '2000-01-01';
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MIN(d) AS mn, MAX(d) AS mx FROM hv_t GROUP BY g HAVING MIN(d) = '1995-01-01' OR MAX(d) > '2000-01-01'|
+g	mn	mx
+2	1995-01-01	1996-06-15
+3	1996-06-15	2024-03-05
+
+=== tt-3: MAX(DATE) < a datetime string one second after midnight ===
+== Query ==
+SELECT g, MAX(d) AS mx FROM hv_t GROUP BY g HAVING MAX(d) < '1995-01-01 00:00:01';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MAX(d) AS mx FROM hv_t GROUP BY g HAVING MAX(d) < '1995-01-01 00:00:01'|
+g	mx
+1	1995-01-01
+
+=== tt-4: MAX(DATETIME(3)) between strings with a fraction ===
+== Query ==
+SELECT g, MAX(dt) AS mx FROM hv_t GROUP BY g HAVING MAX(dt) > '1996-06-15 12:00:00.0005' AND MAX(dt) < '2000-01-01';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MAX(dt) AS mx FROM hv_t GROUP BY g HAVING MAX(dt) > '1996-06-15 12:00:00.0005' AND MAX(dt) < '2000-01-01'|
+g	mx
+2	1996-06-15 12:00:00.001
+
+=== tt-5: MIN(DATETIME(3)) < YYYYMMDDhhmmss ===
+== Query ==
+SELECT g, MIN(dt) AS mn FROM hv_t GROUP BY g
+HAVING MIN(dt) < 19950101000000;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MIN(dt) AS mn FROM hv_t GROUP BY g
+HAVING MIN(dt) < 19950101000000|
+g	mn
+1	1994-12-31 23:59:59.999
+3	1993-07-04 08:15:00.000
+
+=== tt-6: MIN(TIME(2)) < a negative hhmmss ===
+== Query ==
+SELECT g, MIN(t) AS mn FROM hv_t GROUP BY g
+HAVING MIN(t) < -13000;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MIN(t) AS mn FROM hv_t GROUP BY g
+HAVING MIN(t) < -13000|
+g	mn
+1	-01:30:00.25
+
+=== tt-7: MAX(TIME(2)) between hhmmss.ff numbers ===
+== Query ==
+SELECT g, MAX(t) AS mx FROM hv_t GROUP BY g
+HAVING MAX(t) > 123456.785 AND MAX(t) < 200000;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MAX(t) AS mx FROM hv_t GROUP BY g
+HAVING MAX(t) > 123456.785 AND MAX(t) < 200000|
+g	mx
+2	12:34:56.79
+
+=== tt-8: MAX(YEAR) and MIN(YEAR) against years ===
+== Query ==
+SELECT g, MIN(y) AS mn, MAX(y) AS mx FROM hv_t GROUP BY g
+HAVING MAX(y) = 2001 OR MIN(y) < 1994;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MIN(y) AS mn, MAX(y) AS mx FROM hv_t GROUP BY g
+HAVING MAX(y) = 2001 OR MIN(y) < 1994|
+g	mn	mx
+2	2000	2001
+3	1993	2024
+
+=== tt-9: MAX(TIMESTAMP) between datetime strings ===
+== Query ==
+SELECT g, MAX(ts) AS mx FROM hv_t GROUP BY g HAVING MAX(ts) >= '1996-06-15 12:00:01' AND MAX(ts) < '2000-01-01';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MAX(ts) AS mx FROM hv_t GROUP BY g HAVING MAX(ts) >= '1996-06-15 12:00:01' AND MAX(ts) < '2000-01-01'|
+g	mx
+2	1996-06-15 12:00:01
+
+=== tt-10: MAX(DATE) > MIN(DATETIME(3)) ===
+== Query ==
+SELECT g, MAX(d) AS mx, MIN(dt) AS mn FROM hv_t GROUP BY g
+HAVING MAX(d) > MIN(dt);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MAX(d) AS mx, MIN(dt) AS mn FROM hv_t GROUP BY g
+HAVING MAX(d) > MIN(dt)|
+g	mx	mn
+1	1995-01-01	1994-12-31 23:59:59.999
+3	2024-03-05	1993-07-04 08:15:00.000
+
+=== tt-11: MAX(DATE) + 0 and MAX(YEAR) - 1, NULL in IS NULL ===
+== Query ==
+SELECT g, COUNT(*) AS n FROM hv_t GROUP BY g
+HAVING (MAX(d) + 0 > 19960101 AND MAX(y) - 1 = 2000) OR MAX(d) IS NULL;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, COUNT(*) AS n FROM hv_t GROUP BY g
+HAVING (MAX(d) + 0 > 19960101 AND MAX(y) - 1 = 2000) OR MAX(d) IS NULL|
+g	n
+2	2
+4	1
+
+=== hs-1: MAX(VARCHAR) = a literal in another letter case ===
+== Query ==
+SELECT g, MAX(nm) AS mx FROM hv_s GROUP BY g HAVING MAX(nm) = 'banana';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MAX(nm) AS mx FROM hv_s GROUP BY g HAVING MAX(nm) = 'banana'|
+g	mx
+1	Banana
+
+=== hs-2: MIN(VARCHAR) < and MAX(VARCHAR) >= literals ===
+== Query ==
+SELECT g, MIN(nm) AS mn, MAX(nm) AS mx FROM hv_s GROUP BY g HAVING MIN(nm) < 'b' OR MAX(nm) >= 'CHERRY';
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MIN(nm) AS mn, MAX(nm) AS mx FROM hv_s GROUP BY g HAVING MIN(nm) < 'b' OR MAX(nm) >= 'CHERRY'|
+g	mn	mx
+1	apple	Banana
+2	cherry	cherry
+
+=== hs-3: MAX(VARCHAR) = a literal without its accent ===
+== Query ==
+SELECT g, MAX(nm) AS mx FROM hv_s GROUP BY g HAVING MAX(nm) = 'cafe';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, MAX(nm) AS mx FROM hv_s GROUP BY g HAVING MAX(nm) = 'cafe'|
+g	mx
+4	café
+
+=== hs-4: MAX of a latin1 VARCHAR = a non-ASCII literal ===
+== Query ==
+SELECT g FROM hv_s GROUP BY g HAVING MAX(lnm) = 'café';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g FROM hv_s GROUP BY g HAVING MAX(lnm) = 'café'|
+g
+4
+
+=== hs-5: MAX(VARCHAR) = a string a subquery returned ===
+== Query ==
+SELECT g FROM hv_s GROUP BY g
+HAVING MAX(nm) = (SELECT MIN(nm) FROM hv_s WHERE g = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g FROM hv_s GROUP BY g
+HAVING MAX(nm) = (SELECT MIN(nm) FROM hv_s WHERE g = 2)|
+g
+2
+
+=== ob-1: ORDER BY a DECIMAL SUM, ties at the printed scale ===
+== Query ==
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g ORDER BY s, g;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g ORDER BY s, g|
+g	s
+5	0.29
+1	0.30
+2	0.30
+3	0.30
+4	0.31
+
+=== ob-2: ORDER BY a DECIMAL SUM DESC, then g DESC ===
+== Query ==
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g ORDER BY s DESC, g DESC;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g ORDER BY s DESC, g DESC|
+g	s
+4	0.31
+3	0.30
+2	0.30
+1	0.30
+5	0.29
+
+=== ob-3: ORDER BY a DECIMAL SUM with LIMIT 2 ===
+== Query ==
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g ORDER BY s, g LIMIT 2;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g ORDER BY s, g LIMIT 2|
+g	s
+5	0.29
+1	0.30
+
+=== ob-4: ORDER BY a DECIMAL SUM DESC with LIMIT 2 ===
+== Query ==
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g ORDER BY s DESC, g DESC LIMIT 2;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g ORDER BY s DESC, g DESC LIMIT 2|
+g	s
+4	0.31
+3	0.30
+
+=== ob-5: HAVING SUM(DECIMAL) = 0.3 ORDER BY it DESC, then g ===
+== Query ==
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g
+HAVING SUM(d) = 0.3 ORDER BY s DESC, g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, SUM(d) AS s FROM hv_o GROUP BY g
+HAVING SUM(d) = 0.3 ORDER BY s DESC, g|
+g	s
+1	0.30
+2	0.30
+3	0.30
+
+=== ob-6: ORDER BY a DECIMAL SUM output of a CTE ===
+== Query ==
+WITH c AS (SELECT g, SUM(d) AS s FROM hv_o GROUP BY g)
+SELECT g, s FROM c ORDER BY s, g;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT g, SUM(d) AS s FROM hv_o GROUP BY g)
+SELECT g, s FROM c ORDER BY s, g|
+g	s
+5	0.29
+1	0.30
+2	0.30
+3	0.30
+4	0.31
+
+=== ob-7: ORDER BY a DECIMAL SUM output of a CTE DESC with LIMIT 3 ===
+== Query ==
+WITH c AS (SELECT g, SUM(d) AS s FROM hv_o GROUP BY g)
+SELECT g, s FROM c ORDER BY s DESC, g DESC LIMIT 3;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT g, SUM(d) AS s FROM hv_o GROUP BY g)
+SELECT g, s FROM c ORDER BY s DESC, g DESC LIMIT 3|
+g	s
+4	0.31
+3	0.30
+2	0.30
+
+=== he-1: a string MIN beside a number is refused ===
+Error handling: RPE
+ronsql_cli caught exception: HAVING compares a string only with the MIN or MAX of a string, DATE, DATETIME or TIMESTAMP column.
+
+=== he-2: a TIME MAX beside a string is refused ===
+Error handling: RPE
+ronsql_cli caught exception: HAVING compares a string only with the MIN or MAX of a string, DATE, DATETIME or TIMESTAMP column.
+
+=== he-3: a string literal beside a SUM is refused ===
+Error handling: RPE
+ronsql_cli caught exception: Unsupported expression type in HAVING clause.
+
+=== he-4: a string a subquery returned beside a SUM is refused ===
+Error handling: RPE
+ronsql_cli caught exception: Subquery returned a non-numeric result.

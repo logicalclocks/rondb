@@ -1,0 +1,8 @@
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# P-52: join aggregation GROUP BY a linked value whose length prefix runs past it
+Running command
+Result of command: 0
+Test program success!

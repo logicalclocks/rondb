@@ -1,0 +1,8 @@
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# P-59: join aggregation GROUP BY a linked value whose type has no compare function
+Running command
+Result of command: 0
+Test program success!

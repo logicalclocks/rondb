@@ -72,13 +72,24 @@
 
 /*
   Debug-build exception: the block unit tests (storage/ndb/block_unit_test/)
-  impersonate DBTC/DBSPJ from an API node, driving DBLQH directly with
-  LQHKEYREQ and SCAN_FRAGREQ. In production only data nodes send these two
-  signals, so they are Remote and an API-node sender is disconnected (Tier A).
-  Debug builds (VM_TRACE, also set by WITH_NDB_DEBUG) relax exactly these two
-  entries to Unclassified so the tests can run; their MTR wrappers source
+  impersonate DBTC, DBSPJ and the DBLQH of another data node from an API
+  node. They drive DBLQH directly with LQHKEYREQ and SCAN_FRAGREQ and with
+  the join aggregation and CTE signals that DBLQH takes from those blocks
+  (JOIN_AGG_SETUP_REQ, ..._COMPLETE_REQ, ..._RELEASE_REQ, ..._SEND_CONF,
+  ..._CANCEL_REQ, ..._NULL_ROW_REQ, ..._REDISTRIBUTE_REQ/CONF/REF,
+  ..._FINAL_REP, CTE_LOOKUP_REQ and CTE_SCAN_REQ). In production only data
+  nodes send these signals, so they are Remote and an API-node sender is
+  disconnected (Tier A). Debug builds (VM_TRACE, also set by WITH_NDB_DEBUG)
+  relax exactly the entries declared NDB_SCOPE_REMOTE_EXCEPT_DEBUG to
+  Unclassified so the tests can run; their MTR wrappers source
   include/have_ndb_debug.inc, which probes the same VM_TRACE capability, so
-  the tests skip on non-debug clusters.
+  the tests skip on non-debug clusters. (JOIN_AGG_NULL_ROW_REQ even stays on
+  its node: DBSPJ sends it to an LDM of its own node only. It is declared
+  Remote, one rung looser than Local, for the tests.)
+
+  A test that sends any other signal of this table from an API node must
+  have it declared NDB_SCOPE_REMOTE_EXCEPT_DEBUG; otherwise the data node
+  disconnects the test's API node in debug builds too.
 */
 #ifdef VM_TRACE
 #define NDB_SCOPE_REMOTE_EXCEPT_DEBUG Unclassified
@@ -132,15 +143,52 @@
   X(GSN_ALLOC_MEM_REQ, Local)                                                  \
   X(GSN_ALLOC_MEM_REF, Local)                                                  \
   X(GSN_ALLOC_MEM_CONF, Local)                                                 \
+  /* Join aggregation: DBDIH -> the DBLQH proxy of its own node, and        */ \
+  /* DBLQH -> DBSPJ, the answer to a JOIN_AGG_NULL_ROW_REQ, which DBSPJ     */ \
+  /* sends to an LDM of its own node only (get_lqhkeyreq_ref)               */ \
+  X(GSN_JOIN_AGG_NODE_FAIL_REP, Local)                                         \
+  X(GSN_JOIN_AGG_NULL_ROW_CONF, Local)                                         \
+  X(GSN_JOIN_AGG_NULL_ROW_REF, Local)                                          \
   /* ================== Remote (data nodes only) ===================== */     \
   X(GSN_FAIL_REP, Remote)                                                      \
   /* Remote in production, Unclassified in debug builds - see the comment  */  \
   /* above the SIGNAL_SCOPES define.                                       */  \
   X(GSN_LQHKEYREQ, NDB_SCOPE_REMOTE_EXCEPT_DEBUG)                              \
   X(GSN_SCAN_FRAGREQ, NDB_SCOPE_REMOTE_EXCEPT_DEBUG)                           \
+  /* Join aggregation and CTE: DBTC, DBSPJ or another DBLQH -> DBLQH or     */ \
+  /* the DBLQH proxy, which the block unit tests send as well               */ \
+  X(GSN_JOIN_AGG_SETUP_REQ, NDB_SCOPE_REMOTE_EXCEPT_DEBUG)                     \
+  X(GSN_JOIN_AGG_COMPLETE_REQ, NDB_SCOPE_REMOTE_EXCEPT_DEBUG)                  \
+  X(GSN_JOIN_AGG_RELEASE_REQ, NDB_SCOPE_REMOTE_EXCEPT_DEBUG)                   \
+  X(GSN_JOIN_AGG_SEND_CONF, NDB_SCOPE_REMOTE_EXCEPT_DEBUG)                     \
+  X(GSN_JOIN_AGG_CANCEL_REQ, NDB_SCOPE_REMOTE_EXCEPT_DEBUG)                    \
+  X(GSN_JOIN_AGG_NULL_ROW_REQ, NDB_SCOPE_REMOTE_EXCEPT_DEBUG)                  \
+  X(GSN_JOIN_AGG_REDISTRIBUTE_REQ, NDB_SCOPE_REMOTE_EXCEPT_DEBUG)              \
+  X(GSN_JOIN_AGG_REDISTRIBUTE_CONF, NDB_SCOPE_REMOTE_EXCEPT_DEBUG)             \
+  X(GSN_JOIN_AGG_REDISTRIBUTE_REF, NDB_SCOPE_REMOTE_EXCEPT_DEBUG)              \
+  X(GSN_JOIN_AGG_FINAL_REP, NDB_SCOPE_REMOTE_EXCEPT_DEBUG)                     \
+  X(GSN_CTE_LOOKUP_REQ, NDB_SCOPE_REMOTE_EXCEPT_DEBUG)                         \
+  X(GSN_CTE_SCAN_REQ, NDB_SCOPE_REMOTE_EXCEPT_DEBUG)                           \
   X(GSN_GCP_PREPARE, Remote)                                                   \
   X(GSN_LCP_FRAG_ORD, Remote)                                                  \
   X(GSN_COPY_FRAGREQ, Remote)                                                  \
+  /* Join aggregation and CTE: DBLQH or the DBLQH proxy -> DBTC or DBSPJ,   */ \
+  /* DBTC <-> DBSPJ. CTE_SCAN_COMPLETE_REP is retired: DBSPJ sent it,       */ \
+  /* DBTC drops it.                                                         */ \
+  X(GSN_JOIN_AGG_SETUP_CONF, Remote)                                           \
+  X(GSN_JOIN_AGG_SETUP_REF, Remote)                                            \
+  X(GSN_JOIN_AGG_COMPLETE_CONF, Remote)                                        \
+  X(GSN_JOIN_AGG_COMPLETE_REF, Remote)                                         \
+  X(GSN_JOIN_AGG_RELEASE_CONF, Remote)                                         \
+  X(GSN_JOIN_AGG_SEND_REQ, Remote)                                             \
+  X(GSN_CTE_LOOKUP_CONF, Remote)                                               \
+  X(GSN_CTE_LOOKUP_REF, Remote)                                                \
+  X(GSN_CTE_SCAN_CONF, Remote)                                                 \
+  X(GSN_CTE_SCAN_REF, Remote)                                                  \
+  X(GSN_CTE_START_MAIN_REQ, Remote)                                            \
+  X(GSN_CTE_PHASE_START_REQ, Remote)                                           \
+  X(GSN_CTE_PHASE_COMPLETE_REP, Remote)                                        \
+  X(GSN_CTE_SCAN_COMPLETE_REP, Remote)                                         \
   /* Only DBDICT sends these, as replies; a data node never receives one */   \
   X(GSN_GET_COLLATION_INFO_CONF, Remote)                                       \
   X(GSN_GET_COLLATION_INFO_REF, Remote)                                        \

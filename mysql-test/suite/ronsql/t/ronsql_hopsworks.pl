@@ -53,7 +53,8 @@ my @data_types = (
   {typename => 'DECIMAL(30,10)',
    values => ['-99999999999999999999.9999999999', '0', '1.5',
               '99999999999999999999.9999999999', "NULL"],
-   eq => "val = 0", range => "val >= 0 AND val < 1.5"},
+   eq => "val = 0", range => "val >= 0 AND val < 1.5",
+   known_diff => 'Q-6_hopsworks_decimal_30_10'},
   {typename => 'DECIMAL(10,0)',
    values => ['-9999999999', '0', '1', '9999999999', "NULL"],
    eq => "val = 0", range => "val >= 0 AND val < 1"},
@@ -68,10 +69,12 @@ my @data_types = (
               ('9' x 35) . '.' . ('9' x 30), "NULL"],
    eq => "val = 0",
    range => ["val >= 0 AND val < 1.5",
-             "val >= 5" . ('0' x 34) . '.' . ('0' x 29) . "2 AND val < 7"]},
+             "val >= 5" . ('0' x 34) . '.' . ('0' x 29) . "2 AND val < 7"],
+   known_diff => 'Q-6_hopsworks_decimal_65_30'},
   {typename => 'DECIMAL(30,10) UNSIGNED',
    values => ['0', '1.5', '99999999999999999999.9999999999', "NULL"],
-   eq => "val = 0", range => "val >= 0 AND val < 1.5"},
+   eq => "val = 0", range => "val >= 0 AND val < 1.5",
+   known_diff => 'Q-6_hopsworks_decimal_30_10_unsigned'},
   {typename => 'DECIMAL(10,0) UNSIGNED',
    values => ['0', '1', '9999999999', "NULL"],
    eq => "val = 0", range => "val >= 0 AND val < 1"},
@@ -296,6 +299,30 @@ sub go {
   }
 }
 
+# Known bug Q-6 (storage/ndb/claude_files/ronsql_executor/README.md, T-1):
+# the data nodes aggregate a DECIMAL as a double, so SUM, AVG, MIN and MAX of
+# values beyond about 15 significant digits lose digits (SUM
+# 300000000000000000061.4999999997 prints 300000000000000000000.0000000000).
+# For the types with a known_diff prefix, the two aggregate comparisons
+# assert that exact diff (suite/ronsql/known_diffs/<prefix>_*.diff) instead
+# of failing.
+# The first statement on tbl after it was dropped and created again under
+# the same name, or altered, may run twice in RDRS: a pooled Ndb object can
+# still hold the old table (DBDICT's drop/alter notification is best-effort
+# and asynchronous), the data nodes refuse it as a stale schema, and RDRS
+# reloads the schema and retries (attempts=2). Seen for the GROUP BY right
+# after the second CREATE TABLE tbl. ronsql_compare.inc asserts attempts=1
+# (T-7) unless allow_retry is set; it resets after each comparison.
+sub allow_retry_after_ddl {
+  l "--let \$allow_retry=yes";
+}
+
+sub known_diff {
+  my ($type, $what) = @_;
+  return unless defined $type->{known_diff};
+  l "--let \$known_diff=" . $type->{known_diff} . "_$what.diff";
+}
+
 # ============================================================================
 # Test Generation
 # ============================================================================
@@ -319,12 +346,14 @@ foreach my $type (@data_types) {
   create_table($type);
 
   l "--echo $disp: SELECT with GROUP BY";
+  allow_retry_after_ddl();
   go("SELECT val, COUNT(*) as cnt",
      "FROM tbl",
      "GROUP BY val;");
 
   if ($aggregable) {
     l "--echo $disp: All aggregates";
+    known_diff($type, 'all_aggregates');
     go("SELECT COUNT(val) as cnt_val,",
        $summable ? "       AVG(val) as avg_val," : (),
        $summable ? "       SUM(val) as sum_val," : (),
@@ -357,6 +386,7 @@ foreach my $type (@data_types) {
   l "--enable_warnings";
 
   l "--echo $disp: Index scan equality. Expect INDEX SCAN on idx_val_foo.";
+  allow_retry_after_ddl();
   go("SELECT COUNT(*) as cnt FROM tbl WHERE " . $type->{eq} . ";",
      ["Execute as index scan.",
       "Index: `idx_val_foo`(`val`, `foo`)",
@@ -409,6 +439,7 @@ foreach my $type (@data_types) {
 
   if ($aggregable) {
     l "--echo $disp: Multi-column aggregates";
+    known_diff($type, 'multi_column');
     go("SELECT COUNT(*) as cnt_all",
        "     , COUNT(val) as cnt_val",
        "     , COUNT(foo) as cnt_foo",

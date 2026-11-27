@@ -1,0 +1,12 @@
+--source include/have_ndb.inc
+
+# RONDB-1124, Q-2: TCINDXREQ with the rate queue flag from the API.
+# A long TCINDXREQ with the passQueue flag on an invalid connection.
+# Before, ndbrequire(!passQueueingFlag) on the invalid connection
+# stopped the data node.
+# See suite/ndb_spj/include/tc_queue_flag_case.inc.
+
+--let $spj_case = Q2
+--let $spj_case_title = Q-2: TCINDXREQ with the rate queue flag from the API
+--let $tc_queue_flag_reported = 1
+--source suite/ndb_spj/include/tc_queue_flag_case.inc

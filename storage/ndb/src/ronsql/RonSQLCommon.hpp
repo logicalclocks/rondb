@@ -49,7 +49,9 @@ class CappedOStream;    // RDRS's response buffer (capped_ostream.hpp), X-7
  * Per-request phase timing statistics.  All *_us values are microseconds
  * from a monotonic clock.  A phase that did not run for the given query
  * shape stays 0.  On internal retries (ronsql_op), values reflect the LAST
- * attempt; attempts counts how many attempts ran (1 = no retry).  Capture
+ * attempt; attempts counts how many attempts ran (1 = no retry), and
+ * retry_ndb is the NDB error code of the last attempt that failed with a
+ * retryable error (0 = none, or a retry without an NDB error).  Capture
  * sites are compiled in only under RONSQL_PHASE_STATS (RonSQLPerf.hpp,
  * default on) and additionally require this sink to be non-NULL on
  * RonSQLExecParams::phase_stats.
@@ -105,6 +107,8 @@ struct RonSQLPhaseStats
                             // per TRANSID_AI, i.e. per scanned or read
                             // row; mysqld's ndb_api_read_row_count)
   Uint32 attempts = 0;      // ronsql_op attempts (1 = no retry)
+  Uint32 retry_ndb = 0;     // NDB error code that made the last retry
+                            // (0 = no retry, or one without an NDB code)
 };
 
 /*
@@ -156,6 +160,13 @@ struct RonSQLAllocationTestHook
     DECIMAL_BUFFER,
     PARSER_STACK,
     LEXER,
+#ifdef ERROR_INSERT
+    // Every allocation from the request arena (RonSQLExecParams::amalloc),
+    // the three sites above included: while a RonSQLPreparer lives, the
+    // arena asks the hook first (RonSQLArenaTestHookScope).  ERROR_INSERT
+    // builds only, as ArenaMalloc's fail hook.
+    ARENA,
+#endif
   };
   Site site;
   size_t fail_on = 0;
@@ -167,7 +178,49 @@ struct RonSQLAllocationTestHook
     ++attempts;
     return fail_on != 0 && attempts == fail_on;
   }
+
+#ifdef ERROR_INSERT
+  // The ArenaMalloc::FailHook of Site::ARENA; ctx is the hook.
+  static bool arena_should_fail(void* ctx) noexcept
+  {
+    return static_cast<RonSQLAllocationTestHook*>(ctx)->should_fail(
+        Site::ARENA);
+  }
+#endif
 };
+
+#ifdef ERROR_INSERT
+// Site::ARENA: makes the arena call the hook before each allocation, from
+// construction to destruction.  RonSQLPreparer holds one, so the hook
+// covers each attempt from parsing to the end of execution, an attempt
+// whose constructor throws included.  Does nothing for another site or
+// without a hook.
+class RonSQLArenaTestHookScope
+{
+public:
+  RonSQLArenaTestHookScope(ArenaMalloc* arena,
+                           RonSQLAllocationTestHook* hook) noexcept
+    : m_arena(NULL)
+  {
+    if (arena != NULL && hook != NULL &&
+        hook->site == RonSQLAllocationTestHook::Site::ARENA)
+    {
+      arena->set_fail_hook(&RonSQLAllocationTestHook::arena_should_fail,
+                           hook);
+      m_arena = arena;
+    }
+  }
+  ~RonSQLArenaTestHookScope()
+  {
+    if (m_arena != NULL) m_arena->set_fail_hook(NULL, NULL);
+  }
+  RonSQLArenaTestHookScope(const RonSQLArenaTestHookScope&) = delete;
+  RonSQLArenaTestHookScope& operator=(const RonSQLArenaTestHookScope&) =
+      delete;
+private:
+  ArenaMalloc* m_arena;
+};
+#endif
 
 struct RonSQLExecParams
 {
@@ -222,6 +275,12 @@ struct RonSQLExecParams
   // (NUL, tab, newline and backslash as \0 \t \n \\).  BLOB / TEXT
   // columns are not supported in pass-through results.
   OutputFormat output_format = OutputFormat::JSON;
+  // O-11: under JSON and JSON_ASCII each result row is an object keyed by
+  // the output names, so a statement with two outputs of the same name is
+  // refused (a JSON reader keeps one of the two values).  The caller sets
+  // this when it reads the values of a row by position instead, as
+  // execute_subqueries does with the output of a subquery.
+  bool outputs_read_by_position = false;
   std::basic_ostream<char>* err_stream = NULL;
   const char* operation_id = NULL; // Only used with RDRS
   // Rate limit identity (RONDB-978), only used with RDRS: when set, every
@@ -336,6 +395,11 @@ struct ConditionalExpression
     {
       Uint32 agg_index;   // register in m_regs_a (SUM, COUNT, MIN, MAX, or AVG sum)
       Uint32 agg_index2;  // only for AVG: the count register
+      // O-8: SUM, COUNT, MIN, MAX and AVG: the argument, from whose
+      // column ResultPrinter takes the type HAVING compares the result
+      // as; NULL for COUNT(*).  Not set for an output alias
+      // (T_IDENTIFIER), whose output has it.
+      AggregationAPICompiler_Expr* arg;
     } having_agg;
     struct
     {
@@ -487,7 +551,7 @@ struct CorrelatedPair {
   SubqueryResult val;
 };
 
-/* RonSQL uses 5 types of exceptions:
+/* RonSQL uses 6 types of exceptions:
  * - RonSQLRetryableError indicates that the RonSQL query might be worth
  *   retrying.
  * - RonSQLPermanentError indicates that the RonSQL query is not worth retrying.
@@ -505,10 +569,15 @@ struct CorrelatedPair {
  *   RetryableError, otherwise as a PermanentError. In particular, this is used
  *   for operations that can fail due to stale schema without causing any Ndb
  *   errors, such as RonSQL type checking.
+ * - RonSQLDictionaryError is used internally when a dictionary call failed. It
+ *   carries the dictionary's error, which decides whether it is rethrown as a
+ *   RetryableError or a PermanentError (X-9).
  * - std::runtime_error is used internally to indicate errors where it's unknown
- *   whether they should be retried. This will cause an investigation of Ndb
- *   error codes. Then, it will be rethrown as a RetryableError, a
- *   RateLimitError or a PermanentError.
+ *   whether they should be retried. This will cause an investigation of the
+ *   open transaction's Ndb error code. Then, it will be rethrown as a
+ *   RetryableError, a RateLimitError or a PermanentError. With no open
+ *   transaction there is no error of this statement to investigate, and it is
+ *   an internal PermanentError (X-9).
  */
 class RonSQLRetryableError : public std::runtime_error {
  public:
@@ -628,6 +697,26 @@ class RonSQLRateLimitError : public std::runtime_error {
 };
 class RonSQLMaybeStaleSchema : public std::runtime_error {
   using std::runtime_error::runtime_error;
+};
+/*
+ * X-9: a dictionary call (getTable, getIndex, listIndexes) failed.  It
+ * carries the dictionary's own error, read right after the call, so that
+ * handle_ronsql_exception classifies the error of the call that failed, not
+ * one the transaction or the Ndb object holds: a temporary error or an
+ * unavailable cluster is retried, an unknown result is a resource error,
+ * and any other error (723, no such table) fails the statement with the
+ * class its message gives and the NDB code.
+ */
+class RonSQLDictionaryError : public std::runtime_error {
+ public:
+  RonSQLDictionaryError(const std::string& msg, const NdbError& ndb_error)
+    : std::runtime_error(msg), m_ndb_error(ndb_error) {
+    // The details can point into storage the dictionary owns.
+    m_ndb_error.details = nullptr;
+  }
+  const NdbError& ndb_error() const { return m_ndb_error; }
+ private:
+  NdbError m_ndb_error;
 };
 
 /*

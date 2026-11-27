@@ -275,6 +275,22 @@ class JoinAggInterpreter : public AggInterpreterBase {
   Int32 mergeScalarAccumulators(const char* accumulators, Uint32 accLen);
 
   void setUseMutex(bool v) { m_use_mutex = v; }
+  /* Several LDM threads feed one interpreter (MUTEX_BASED).  Whatever
+   * touches the group table or the chunk lists outside
+   * processRecWithLinkedAttrs / processNullExtendedRow holds this lock:
+   * an eviction (Dblqh::sendEvictedAggGroup) unlinks and frees a group
+   * another thread may be accumulating into.  The lock is not owned
+   * when the interpreter has a single feeder. */
+  std::unique_lock<std::mutex> lockFeederMutex() {
+    std::unique_lock<std::mutex> lock(m_mutex, std::defer_lock);
+    if (m_use_mutex) lock.lock();
+    return lock;
+  }
+  /* Number of groups, read under the lock. */
+  Uint32 numGroupsLocked() {
+    std::unique_lock<std::mutex> lock = lockFeederMutex();
+    return (m_gb_map != nullptr) ? m_gb_map->size() : 0;
+  }
   void setMaxGroups(Uint32 v) { m_max_groups = v; }
   Uint32 maxGroups() const { return m_max_groups; }
 
@@ -388,6 +404,14 @@ class JoinAggInterpreter : public AggInterpreterBase {
   int compareGroupsByOrderSpec(const char* a_data, Uint32 a_key_len,
                                const char* b_data,
                                Uint32 b_key_len) const;
+  /* Whether a row's GROUP BY key can become a group: the hash table can
+   * hash and compare it (JoinGBHashTable::checkKey), and each GROUP BY
+   * column of the ORDER BY spec that compareGroupsByOrderSpec gives to
+   * its type's compare function (orderGroupByType) holds a value the
+   * function takes (NdbSqlUtil::check_compare_values).  A linked
+   * GROUP BY column's value and type come from a request.  ProcessRec
+   * calls it once the GROUP BY types are known (m_gb_types_inited). */
+  bool checkGroupKey(const char* key, Uint32 key_len) const;
   Int32 evictOneGroup(Uint32* buf, Uint32 buf_words,
                       Uint32* words_written,
                       uchar* xfrm_buf, Uint32 xfrm_buf_len);
@@ -499,6 +523,12 @@ class JoinAggInterpreter : public AggInterpreterBase {
     Uint8 is_agg;    /* 0 = GROUP BY column, 1 = aggregate slot */
     Uint8 desc;      /* 1 = descending */
   };
+  /* The type of the GROUP BY column that oc orders by, or nullptr where
+   * compareGroupsByOrderSpec orders the values as equal: an aggregate
+   * slot, GROUP BY types not known yet, or a type without a compare
+   * function (publishGBTypes refuses it, so not once the types are
+   * known).  checkGroupKey checks the columns this gives a type for. */
+  const GBColTypeInfo* orderGroupByType(const OrderCol& oc) const;
   void limitHeapSiftDown(Uint32 i);
   OrderCol m_order_spec[MAX_ORDER_COLS];
   Uint32 m_n_order_cols;

@@ -1,0 +1,175 @@
+SELECT COUNT(*) AS data_nodes FROM ndbinfo.nodes;
+data_nodes
+4
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== cf-1: COUNT(*) and SUM, no row passes the filter ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(l.price) AS s
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(l.price) AS s
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000|
+n	s
+0	NULL
+
+=== cf-2: COUNT(col), MIN, MAX and AVG, no row passes the filter ===
+== Query ==
+SELECT COUNT(l.price) AS n, MIN(l.qty) AS mn, MAX(l.qty) AS mx,
+AVG(l.price) AS av
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(l.price) AS n, MIN(l.qty) AS mn, MAX(l.qty) AS mx,
+AVG(l.price) AS av
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000|
+n	mn	mx	av
+0	NULL	NULL	NULL
+
+=== cf-3: no row reaches the filter (absent root key) ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(l.price) AS s
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE o.id = 99 AND l.qty > o.lim;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(l.price) AS s
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE o.id = 99 AND l.qty > o.lim|
+n	s
+0	NULL
+
+=== cf-4: HAVING COUNT(*) = 0 over the empty filtered set ===
+== Query ==
+SELECT COUNT(*) AS n
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000
+HAVING COUNT(*) = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000
+HAVING COUNT(*) = 0|
+n
+0
+
+=== cf-5: control, HAVING COUNT(*) > 0 drops the row ===
+== Query ==
+SELECT COUNT(*) AS n
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000
+HAVING COUNT(*) > 0;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000
+HAVING COUNT(*) > 0|
+n
+
+=== cf-6: control, some rows pass the filter ===
+== Query ==
+SELECT COUNT(*) AS n, SUM(l.price) AS s
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, SUM(l.price) AS s
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim|
+n	s
+3	1000
+
+=== cf-7: control, GROUP BY drops the group whose rows all fail ===
+== Query ==
+SELECT o.id AS id, COUNT(*) AS n, SUM(l.price) AS s
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim
+GROUP BY o.id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS id, COUNT(*) AS n, SUM(l.price) AS s
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim
+GROUP BY o.id|
+id	n	s
+1	1	200
+2	1	300
+3	1	500
+
+=== cf-8: control, GROUP BY with no row passing returns no row ===
+== Query ==
+SELECT o.id AS id, COUNT(*) AS n
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000
+GROUP BY o.id;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id AS id, COUNT(*) AS n
+FROM xo AS o JOIN xl AS l ON l.oid = o.id
+WHERE l.qty > o.lim + 1000
+GROUP BY o.id|
+id	n

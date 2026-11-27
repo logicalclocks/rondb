@@ -327,6 +327,32 @@ static inline void patch_branch_disp(uint8_t *site, int32_t byte_disp) {
                 (uint32_t)disp_words);
 }
 
+/* A BL/B imm26 reaches only +-128 MB. Linux places the code memory
+ * (mmap area) and the PIE executable (the helpers) terabytes apart, so
+ * a cold call out of the arena goes through a veneer at the end of the
+ * blob, the same long branch a static linker inserts:
+ *
+ *     ldr x16, #8      ; load the literal below
+ *     br  x16
+ *     .quad helper
+ *
+ * x16 (IP0) is the register the AAPCS64 reserves for veneers: it is
+ * dead across every call, and BR through it passes a BTI c landing
+ * pad. */
+#define J1_VENEER_SIZE   16u
+#define J1_BL_RANGE      ((int64_t)1 << 27)
+
+static inline void emit_veneer(uint8_t *dst, uint64_t target) {
+  static const uint8_t code[8] = {
+    0x50, 0x00, 0x00, 0x58,   /* ldr x16, #8 */
+    0x00, 0x02, 0x1f, 0xd6,   /* br  x16     */
+  };
+  memcpy(dst, code, sizeof(code));
+  for (int i = 0; i < 8; ++i) {
+    dst[8 + i] = (uint8_t)(target >> (8 * i));
+  }
+}
+
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -561,6 +587,11 @@ Jit1Prog *jit1_compile(NdbJitCodeMem *mem,
 
   uint32_t pc_byte_off[BC_MAX_OPS + 1];   /* +1 for "end of program" */
   uint32_t total = PREAMBLE_SIZE;
+#if defined(__aarch64__)
+  JitHelperFn veneer_fn[J1_MAX_HELPERS];
+  uint8_t  n_veneers = 0;
+  uint32_t veneer_off = 0;
+#endif
   for (uint16_t pc = 0; pc < prog->n_ops; ++pc) {
     pc_byte_off[pc] = total;
     /* admit_program() guarantees kind ∈ [1, OP_KIND_MAX] and
@@ -571,8 +602,28 @@ Jit1Prog *jit1_compile(NdbJitCodeMem *mem,
     const Stencil *st = &g_stencils[kind];
     assert(st->n_bytes > 0);
     total += st->n_bytes;
+#if defined(__aarch64__)
+    /* One veneer per distinct helper the program calls. A helper that
+     * is not registered fails the compile in pass 2. */
+    for (uint8_t h = 0; h < st->n_holes; ++h) {
+      if (st->holes[h].kind != HK_COLDCALL) continue;
+      JitHelperFn fn = jit1_lookup_helper(st->holes[h].helper_name);
+      if (fn == NULL) continue;
+      uint8_t v = 0;
+      while (v < n_veneers && veneer_fn[v] != fn) ++v;
+      if (v == n_veneers) {
+        assert(n_veneers < J1_MAX_HELPERS);
+        veneer_fn[n_veneers++] = fn;
+      }
+    }
+#endif
   }
   pc_byte_off[prog->n_ops] = total;
+#if defined(__aarch64__)
+  /* The veneers follow the last stencil, with 8-byte aligned literals. */
+  veneer_off = (total + 7u) & ~7u;
+  total = veneer_off + (uint32_t)n_veneers * J1_VENEER_SIZE;
+#endif
 
   if (out_timing) t_pass1_end = j1_now_ns();
 
@@ -717,6 +768,17 @@ Jit1Prog *jit1_compile(NdbJitCodeMem *mem,
           const void *rx_site = (const uint8_t *)slot.rx + patch_site_off;
           int64_t byte_disp = (int64_t)(intptr_t)helper -
                                (int64_t)(uintptr_t)rx_site;
+          if (byte_disp < -J1_BL_RANGE || byte_disp >= J1_BL_RANGE) {
+            /* Out of BL range: branch to the helper's veneer. */
+            uint8_t v = 0;
+            while (v < n_veneers && veneer_fn[v] != helper) ++v;
+            if (v == n_veneers) {
+              errno = EINVAL;   /* pass 1 reserves one per helper */
+              goto fail;
+            }
+            byte_disp = (int64_t)(veneer_off + v * J1_VENEER_SIZE) -
+                        (int64_t)patch_site_off;
+          }
           patch_branch_disp(patch, (int32_t)byte_disp);
 #endif
           break;
@@ -779,6 +841,13 @@ Jit1Prog *jit1_compile(NdbJitCodeMem *mem,
     errno = EINVAL;     /* a branch target was never reached */
     goto fail;
   }
+
+#if defined(__aarch64__)
+  for (uint8_t v = 0; v < n_veneers; ++v) {
+    emit_veneer(blob_rw + veneer_off + v * J1_VENEER_SIZE,
+                (uint64_t)(uintptr_t)veneer_fn[v]);
+  }
+#endif
 
   if (out_timing) t_emit_end = j1_now_ns();
 

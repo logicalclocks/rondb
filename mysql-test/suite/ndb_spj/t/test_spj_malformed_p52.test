@@ -1,0 +1,17 @@
+--source include/have_ndb.inc
+
+# P-52: a join aggregation that groups by a linked column, whose value
+# and type (the CTE marker of the linked entry) the API chooses: a
+# VARCHAR whose length byte runs past its value, and a LONGVARCHAR of
+# one byte. The group hash table hashed the length the prefix gave
+# from past the key, and the compare of two such keys (cmpVarchar,
+# cmpLongvarchar) failed its require, which stopped any data node.
+# JoinAggInterpreter::checkGroupKey now refuses the key, which fails
+# the row: SCAN_TABREF, with every data node started. The control,
+# the VARCHAR 'abcd', must get SCAN_TABCONF.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P52
+--let $spj_case_title = P-52: join aggregation GROUP BY a linked value whose length prefix runs past it
+--source suite/ndb_spj/include/spj_malformed_case.inc

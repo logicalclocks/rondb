@@ -1,0 +1,78 @@
+# RONDB-1124 O-12: the memory cap of a pass-through ORDER BY counts what
+# the buffered rows take.
+#
+# A projection-only query with ORDER BY that no index serves buffers the
+# whole result in the statement's arena and sorts it there, under a cap of
+# 1000000 rows and 256 MB (buffer_passthrough_row).  The cap counted only
+# the bytes of the values, while each value takes a 16-byte header and at
+# least 8 bytes of data in the arena (PassthroughValue::copy), and its
+# slot in the row 8 more: a TINYINT counted 1 byte and took 32.  Now the
+# cap counts the arena bytes: the row's slots and its two pointers, and
+# each value's copy.
+#
+# sc has 201 columns: id (a hash primary key, so ORDER BY id is a sort in
+# the API) and c1..c200 TINYINT.  A row takes 201 * 32 + 16 = 6448 bytes,
+# so the cap is reached after 41631 rows.  Counted as before, a row was
+# 204 bytes and 50000 rows about 10 MB.
+#
+#   sc-1  30000 rows (184 of the 256 MB): sorted and printed
+#   sc-2  50000 rows: refused at the cap; before, buffered and printed
+#
+# ronsql_cli runs the queries (RDRS runs the same code); the result is not
+# compared with mysqld, whose output of 50000 x 201 values would only
+# cost time.
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--disable_query_log
+--let $col_defs=
+--let $col_names=id
+--let $i=1
+while ($i <= 200)
+{
+  --let $col_defs=$col_defs, c$i TINYINT NOT NULL DEFAULT 0
+  --let $col_names=$col_names, c$i
+  --inc $i
+}
+--disable_warnings
+eval CREATE TABLE sc (id INT NOT NULL$col_defs, PRIMARY KEY USING HASH (id)) ENGINE=NDB;
+SET SESSION cte_max_recursion_depth = 10000;
+--let $chunk=0
+while ($chunk < 5)
+{
+  eval INSERT INTO sc (id)
+    WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 10000)
+    SELECT $chunk * 10000 + n FROM seq;
+  --inc $chunk
+}
+--enable_warnings
+--enable_query_log
+SELECT COUNT(*) AS sc_rows FROM sc;
+
+--echo
+--echo === sc-1: 30000 rows of 201 columns, sorted in the API ===
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT $col_names FROM sc WHERE id <= 30000 ORDER BY id;' > $MYSQL_TMP_DIR/sc.out
+--echo lines, including the header:
+--exec wc -l < $MYSQL_TMP_DIR/sc.out | tr -d ' '
+--echo id of the first and the last row:
+--exec head -n 2 $MYSQL_TMP_DIR/sc.out | tail -n 1 | cut -f1
+--exec tail -n 1 $MYSQL_TMP_DIR/sc.out | cut -f1
+--remove_file $MYSQL_TMP_DIR/sc.out
+
+--echo
+--echo === sc-2: 50000 rows of 201 columns, refused at the cap ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT $col_names FROM sc ORDER BY id;' > $MYSQL_TMP_DIR/sc.out 2>&1
+--exec grep -qF 'cap (1000000 rows / 256 MB)' $MYSQL_TMP_DIR/sc.out && grep -qxF 'ronsql_cli caught exception: Pass-through ORDER BY result too large.' $MYSQL_TMP_DIR/sc.out && echo "refused: Pass-through ORDER BY result too large." || echo "UNEXPECTED: the sort was not refused at the cap"
+--remove_file $MYSQL_TMP_DIR/sc.out
+
+--disable_query_log
+--disable_warnings
+DROP TABLE sc;
+--enable_warnings
+--enable_query_log

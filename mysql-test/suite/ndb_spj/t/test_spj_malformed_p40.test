@@ -1,0 +1,20 @@
+--source include/have_ndb.inc
+
+# P-40: a join aggregation leaf that reads a linked attribute entry as a
+# type wider than the entry (RONDB-1124). The leaf's NI_ATTR_LINKED
+# pattern is a P_DATA token, which DBSPJ copies verbatim into the linked
+# buffer of every LQHKEYREQ of the leaf. Its one entry holds 4 bytes,
+# and the leaf's embedded program reads it with
+# READ_LINKED_COLUMN_TO_REG as a BIGINT, which decoded 8 bytes: 4 from
+# past the end of the buffer. Such an entry now reads as NULL, as a
+# missing one does, and the program goes on only for a NULL.
+# The case runs the same join aggregation with a NULL entry, which must
+# get SCAN_TABCONF, the 4-byte entry, which must get SCAN_TABCONF too,
+# and an 8-byte entry, whose rows fail (SCAN_TABREF), with every data
+# node still started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P40
+--let $spj_case_title = P-40: join aggregation linked attribute entry shorter than its type
+--source suite/ndb_spj/include/spj_malformed_case.inc

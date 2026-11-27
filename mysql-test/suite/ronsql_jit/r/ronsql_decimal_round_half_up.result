@@ -1,0 +1,306 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== hu-1: AVG(i) GROUP BY g, exact ties at the fifth decimal ===
+== Query ==
+SELECT g, AVG(i) AS a FROM rhu_i GROUP BY g;
+
+Number of output lines, including header: 8
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, AVG(i) AS a FROM rhu_i GROUP BY g|
+g	a
+1	0.0313
+2	0.0938
+3	0.1563
+4	-0.0313
+5	1000000.1563
+6	0.0313
+7	2.3333
+
+=== hu-2: AVG(i) without GROUP BY ===
+== Query ==
+SELECT AVG(i) AS a FROM rhu_i WHERE g = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT AVG(i) AS a FROM rhu_i WHERE g = 1|
+a
+0.0313
+
+=== hu-3: a negative tie without GROUP BY ===
+== Query ==
+SELECT AVG(i) AS a, COUNT(*) AS c FROM rhu_i WHERE g = 4;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT AVG(i) AS a, COUNT(*) AS c FROM rhu_i WHERE g = 4|
+a	c
+-0.0313	32
+
+=== hu-4: ORDER BY the AVG, then g DESC ===
+== Query ==
+SELECT g, AVG(i) AS a FROM rhu_i GROUP BY g ORDER BY a, g DESC;
+
+Number of output lines, including header: 8
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, AVG(i) AS a FROM rhu_i GROUP BY g ORDER BY a, g DESC|
+g	a
+4	-0.0313
+6	0.0313
+1	0.0313
+2	0.0938
+3	0.1563
+7	2.3333
+5	1000000.1563
+
+=== hu-5: ORDER BY the AVG DESC, then g, LIMIT 6 ===
+== Query ==
+SELECT g, AVG(i) AS a FROM rhu_i GROUP BY g ORDER BY a DESC, g LIMIT 6;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, AVG(i) AS a FROM rhu_i GROUP BY g ORDER BY a DESC, g LIMIT 6|
+g	a
+5	1000000.1563
+7	2.3333
+3	0.1563
+2	0.0938
+1	0.0313
+6	0.0313
+
+=== hu-6: CTE AVG output, pass-through ===
+== Query ==
+WITH a AS (SELECT g, AVG(i) AS av FROM rhu_i GROUP BY g) SELECT g, av FROM a;
+
+Number of output lines, including header: 8
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT g, AVG(i) AS av FROM rhu_i GROUP BY g) SELECT g, av FROM a|
+g	av
+1	0.0313
+2	0.0938
+3	0.1563
+4	-0.0313
+5	1000000.1563
+6	0.0313
+7	2.3333
+
+=== hu-7: CTE AVG output as a GROUP BY key ===
+== Query ==
+WITH a AS (SELECT g, AVG(i) AS av FROM rhu_i WHERE g < 6 GROUP BY g) SELECT av, COUNT(*) AS n FROM a GROUP BY av;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT g, AVG(i) AS av FROM rhu_i WHERE g < 6 GROUP BY g) SELECT av, COUNT(*) AS n FROM a GROUP BY av|
+av	n
+-0.0313	1
+0.0313	1
+0.0938	1
+0.1563	1
+1000000.1563	1
+
+=== hu-8: CTE AVG output as a GROUP BY key, ORDER BY it DESC ===
+== Query ==
+WITH a AS (SELECT g, AVG(i) AS av FROM rhu_i WHERE g < 6 GROUP BY g) SELECT av, COUNT(*) AS n FROM a GROUP BY av ORDER BY av DESC;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT g, AVG(i) AS av FROM rhu_i WHERE g < 6 GROUP BY g) SELECT av, COUNT(*) AS n FROM a GROUP BY av ORDER BY av DESC|
+av	n
+1000000.1563	1
+0.1563	1
+0.0938	1
+0.0313	1
+-0.0313	1
+
+=== hu-9: MIN and MAX of a CTE AVG output ===
+== Query ==
+WITH a AS (SELECT g, AVG(i) AS av FROM rhu_i GROUP BY g) SELECT MIN(av) AS mn, MAX(av) AS mx FROM a;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT g, AVG(i) AS av FROM rhu_i GROUP BY g) SELECT MIN(av) AS mn, MAX(av) AS mx FROM a|
+mn	mx
+-0.0313	1000000.1563
+
+=== hu-c1: control, AVG over a DOUBLE stays compact ===
+== Query ==
+SELECT g, AVG(x) AS ax FROM rhu_i WHERE g < 6 GROUP BY g;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, AVG(x) AS ax FROM rhu_i WHERE g < 6 GROUP BY g|
+g	ax
+1	0.03125
+2	0.09375
+3	0.15625
+4	-0.03125
+5	1000000.15625
+
+=== nz-1: SUM, AVG, MIN, MAX over DECIMAL(10,2) GROUP BY g ===
+== Query ==
+SELECT g, SUM(d) AS s, AVG(d) AS a, MIN(d) AS mn, MAX(d) AS mx FROM rhu_d GROUP BY g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, SUM(d) AS s, AVG(d) AS a, MIN(d) AS mn, MAX(d) AS mx FROM rhu_d GROUP BY g|
+g	s	a	mn	mx
+1	0.00	0.000000	-0.20	0.30
+2	3.75	1.875000	1.25	2.50
+3	0.25	0.007813	0.00	0.25
+
+=== nz-2: SUM and AVG without GROUP BY ===
+== Query ==
+SELECT SUM(d) AS s, AVG(d) AS a FROM rhu_d WHERE g = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(d) AS s, AVG(d) AS a FROM rhu_d WHERE g = 1|
+s	a
+0.00	0.000000
+
+=== nz-3: ORDER BY the AVG DESC ===
+== Query ==
+SELECT g, SUM(d) AS s, AVG(d) AS a FROM rhu_d GROUP BY g ORDER BY a DESC;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g, SUM(d) AS s, AVG(d) AS a FROM rhu_d GROUP BY g ORDER BY a DESC|
+g	s	a
+2	3.75	1.875000
+3	0.25	0.007813
+1	0.00	0.000000
+
+=== nz-4: CTE SUM and AVG outputs, pass-through ===
+== Query ==
+WITH s AS (SELECT g, SUM(d) AS sd, AVG(d) AS ad FROM rhu_d GROUP BY g) SELECT g, sd, ad FROM s;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT g, SUM(d) AS sd, AVG(d) AS ad FROM rhu_d GROUP BY g) SELECT g, sd, ad FROM s|
+g	sd	ad
+1	0.00	0.000000
+2	3.75	1.875000
+3	0.25	0.007813
+
+=== nz-5: CTE SUM and AVG outputs as GROUP BY keys ===
+== Query ==
+WITH s AS (SELECT g, SUM(d) AS sd, AVG(d) AS ad FROM rhu_d GROUP BY g) SELECT sd, ad, COUNT(*) AS n FROM s GROUP BY sd, ad;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT g, SUM(d) AS sd, AVG(d) AS ad FROM rhu_d GROUP BY g) SELECT sd, ad, COUNT(*) AS n FROM s GROUP BY sd, ad|
+sd	ad	n
+0.00	0.000000	1
+0.25	0.007813	1
+3.75	1.875000	1
+
+=== nz-6: MIN and MAX of CTE SUM and AVG outputs ===
+== Query ==
+WITH s AS (SELECT g, SUM(d) AS sd, AVG(d) AS ad FROM rhu_d GROUP BY g) SELECT MIN(sd) AS mn, MAX(sd) AS mx, MIN(ad) AS amn FROM s;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT g, SUM(d) AS sd, AVG(d) AS ad FROM rhu_d GROUP BY g) SELECT MIN(sd) AS mn, MAX(sd) AS mx, MIN(ad) AS amn FROM s|
+mn	mx	amn
+0.00	3.75	0.000000
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_decimal_round_half_up_jit_fallback_delta;
+ronsql_decimal_round_half_up_jit_fallback_delta
+0

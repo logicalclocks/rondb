@@ -1,0 +1,21 @@
+# The mirror suites of the RonSQL suites are generated: ronsql_jit,
+# ronsql_cte_jit and ronsql_fs_jit (the JIT arms), ronsql_cte_ng1r3 /
+# ng2r2 / ng2r3 / ng4r2, ronsql_fs_ng2r2 / ng4r2 and ronsql_ng2r2 (the
+# topology arms).  suite/ronsql/mirrors/ronsql_mirrors.pl writes their
+# t/*.test and r/*.result from the base suites ronsql, ronsql_cte and
+# ronsql_fs and from suite/ronsql/mirrors/ronsql_mirrors.cfg, which lists
+# the base tests that are not mirrored, each with its reason, and the
+# per-test differences (a recorded JIT fallback delta, a test that is not
+# strict-armed).
+#
+# This test runs the script with --check and fails, listing the problems,
+# when a mirror file is missing or differs from what the script would
+# write (a base test or result changed without the mirrors), when a base
+# test has neither a mirror nor an exclude line, or when a mirror suite
+# holds a test the config does not account for.  The fix is printed with
+# the problems:
+#   perl suite/ronsql/mirrors/ronsql_mirrors.pl --write   (from mysql-test/)
+# after adding an exclude line to ronsql_mirrors.cfg for a new base test
+# that must not be mirrored.
+
+--exec perl $MYSQL_TEST_DIR/suite/ronsql/mirrors/ronsql_mirrors.pl --check 2>&1

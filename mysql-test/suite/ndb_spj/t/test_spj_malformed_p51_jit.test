@@ -1,0 +1,21 @@
+--source include/have_ndb.inc
+
+# P-51 (see test_spj_malformed_p51) with the JIT on
+# (CompiledInterpreter=ON, test_spj_malformed_p51_jit.cnf). The JIT's
+# registers hold no NULL, so the compiler folds a BRANCH_REG_EQ_NULL to
+# "not taken", which is right for a register every path to it wrote.
+# P-51's guard tests a register that the path of a linked value of 7
+# does not write: the interpreter takes the guard and fails the row
+# (SCAN_TABREF), the compiled program went on and counted the row
+# (SCAN_TABCONF). The compiler now refuses a program that reads an
+# embedded register a path does not write (reg_not_loaded,
+# RONDB-1124); the program runs on the interpreter and P-51 gets the
+# results it gets with the JIT off. The fallback counter shows the
+# refusal.
+
+SET @jit_f0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+--let $spj_case = P51
+--let $spj_case_title = P-51: join aggregation null test of a register a path did not write, JIT on
+--source suite/ndb_spj/include/spj_malformed_case.inc
+SELECT (SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_f0 > 0
+       AS p51_refused_by_jit;

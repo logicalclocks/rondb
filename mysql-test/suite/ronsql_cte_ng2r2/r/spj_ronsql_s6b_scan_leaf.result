@@ -1,0 +1,61 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== s6b-0: the CTE body is s6b_p LEFT JOIN INDEX_SCAN s6b_c ===
+== Explain Query ==
+
+=== s6b-1: control, aggregating main over the CTE ===
+== Query ==
+WITH pc AS (SELECT p.id AS k, COUNT(*) AS n, SUM(c.val) AS s
+FROM s6b_p AS p
+LEFT JOIN s6b_c AS c ON c.pid = p.id
+GROUP BY p.id)
+SELECT COUNT(*), SUM(n), SUM(s) FROM pc;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pc AS (SELECT p.id AS k, COUNT(*) AS n, SUM(c.val) AS s
+FROM s6b_p AS p
+LEFT JOIN s6b_c AS c ON c.pid = p.id
+GROUP BY p.id)
+SELECT COUNT(*), SUM(n), SUM(s) FROM pc|
+COUNT(*)	SUM(n)	SUM(s)
+7	12	165
+
+=== s6b-2: projection-only main over the same CTE ===
+== Query ==
+WITH pc AS (SELECT p.id AS k, COUNT(*) AS n, SUM(c.val) AS s
+FROM s6b_p AS p
+LEFT JOIN s6b_c AS c ON c.pid = p.id
+GROUP BY p.id)
+SELECT k, n, s FROM pc;
+
+Number of output lines, including header: 8
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH pc AS (SELECT p.id AS k, COUNT(*) AS n, SUM(c.val) AS s
+FROM s6b_p AS p
+LEFT JOIN s6b_c AS c ON c.pid = p.id
+GROUP BY p.id)
+SELECT k, n, s FROM pc|
+k	n	s
+1	2	30
+2	1	30
+3	3	45
+4	1	40
+5	3	20
+6	1	NULL
+7	1	NULL
+
+=== s6b-3: no DBSPJ request left behind ===

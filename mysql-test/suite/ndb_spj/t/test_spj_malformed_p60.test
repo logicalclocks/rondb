@@ -1,0 +1,22 @@
+--source include/have_ndb.inc
+
+# P-60: an instruction cut off at the end of its program (RONDB-1124).
+# The DBTUP handlers of a multi-word instruction (LOAD_CONST32 /
+# LOAD_CONST64 / LOAD_DOUBLE_CONST / LOAD_CONST_MEM, BRANCH_ATTR_*,
+# BRANCH_MEM_OP_ARG / BRANCH_MEM_OP_ARG_INLINE_TYPE,
+# BRANCH_LINKED_OP_LINKED) read its operand words without checking them
+# against the end of the program: an interpreted read whose program ends
+# inside one took the final read section after it, or the stale words of
+# cinBuffer after the AttrInfo, as its operands. The handlers now check
+# the words first, and each such read must fail with
+# ZOUTSIDE_OF_PROGRAM_ERROR (876), with every data node started.
+# BRANCH_ATTR_OP_PARAM reads whose parameter section is missing, or one
+# word shorter than its length word, must fail the same way (876). The
+# controls, the same reads with the instruction or the section
+# whole, must get TCKEYREF 899.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P60
+--let $spj_case_title = P-60: an instruction cut off at the end of its program
+--source suite/ndb_spj/include/spj_malformed_case.inc

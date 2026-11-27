@@ -33,9 +33,14 @@
 #   16/16b full-key CTE root + col-vs-col residual (former P1
 #         rejection, flipped by Phase i26's typed-register upgrade)
 #   P2    rejection: out-of-range literal -> permanent error, no retries
-#   P3    rejection: join-path RMS -> single-attempt RMS->RPE (pins the
-#         join-aware unload_schema version walk)
-#   P4    rejection: CTE-root RMS still lands RMS->RPE under the walk
+#   P3    rejection: a type mismatch on the join path fails in one
+#         attempt
+#   P4    rejection: the same under a CTE root
+#
+# Cases 1, 3, 5, 7, 11, 12, 13 and 15 also print the root access that
+# EXPLAIN shows (root_access.inc, J-9 / T-13): the readTuple, PK index
+# scan, lookupCte or table-scan fallback each case is named for, with the
+# reason a lookup was not taken.
 #
 # NOTE (discovered by rpr-1 on first record): aggregate queries WITHOUT
 # CTEs whose root is PK-equality-covered used to emit a readTuple root,
@@ -55,7 +60,6 @@
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 --source suite/ronsql_cte/include/cte_schema.inc
 --source suite/ronsql_cte/include/cte_data.inc
@@ -88,6 +92,7 @@ let $QUERY=
 SELECT COUNT(*) AS c, SUM(cu.c_nationkey) AS s
 FROM orders AS o JOIN customer AS cu ON cu.c_custkey = o.o_custkey
 WHERE o.o_orderkey = 77 AND o.o_custkey < 401;|
+--source suite/ronsql_cte/include/root_access.inc
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -118,6 +123,7 @@ let $QUERY=
 SELECT COUNT(*) AS c, SUM(o.o_shippriority) AS s
 FROM acct AS a JOIN orders AS o ON o.o_custkey = a.a_grp
 WHERE a.a_id = 7 AND a.a_val > 0;|
+--source suite/ronsql_cte/include/root_access.inc
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -146,6 +152,7 @@ let $QUERY=
 WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
             FROM orders GROUP BY o_custkey)
 SELECT cf.k, cf.n FROM cf WHERE cf.k = 7 AND cf.n > 1;|
+--source suite/ronsql_cte/include/root_access.inc
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -176,6 +183,7 @@ WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
 SELECT cu.c_custkey, cf.n
 FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
 WHERE cu.c_custkey = 42 AND cu.c_nationkey >= 0;|
+--source suite/ronsql_cte/include/root_access.inc
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -243,8 +251,8 @@ WHERE cu.c_custkey = 42 AND cu.c_custkey = 43|
 # actually enters the readTuple branch: 40 always-true conjuncts
 # (c_nationkey <= 24) push the residual program past the 64-word lookup
 # cap, and customer's USING HASH PK has no ordered index, so the emit
-# cascades to a table scan with the full WHERE filter.  Correctness only
-# — the plan is an emit-time decision and not visible in EXPLAIN.
+# cascades to a table scan with the full WHERE filter.  The "Root access:"
+# line of EXPLAIN shows that choice (J-9).
 # The literals stay within TINYINT range (< 88 .. < 127): RonSQL's
 # filter encoder rejects integer literals outside the column's type
 # range rather than constant-folding them like MySQL.
@@ -268,6 +276,7 @@ WHERE cu.c_custkey = 42
   AND cu.c_nationkey < 121 AND cu.c_nationkey < 122 AND cu.c_nationkey < 123
   AND cu.c_nationkey < 124 AND cu.c_nationkey < 125 AND cu.c_nationkey < 126
   AND cu.c_nationkey < 127;|
+--source suite/ronsql_cte/include/root_access.inc
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -316,6 +325,7 @@ WHERE a.a_id = 7
   AND a.a_val < 9034 AND a.a_val < 9035 AND a.a_val < 9036
   AND a.a_val < 9037 AND a.a_val < 9038 AND a.a_val < 9039
   AND a.a_val < 9040;|
+--source suite/ronsql_cte/include/root_access.inc
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -351,6 +361,7 @@ SELECT cu.c_custkey AS ck, SUM(cf.n) AS sn
 FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey
 WHERE cu.c_custkey = 42 AND cu.c_nationkey >= 0
 GROUP BY cu.c_custkey;|
+--source suite/ronsql_cte/include/root_access.inc
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -407,6 +418,7 @@ WHERE cu.c_custkey = 42
   AND cu.c_nationkey < 124 AND cu.c_nationkey < 125 AND cu.c_nationkey < 126
   AND cu.c_nationkey < 127
 GROUP BY cu.c_custkey;|
+--source suite/ronsql_cte/include/root_access.inc
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -476,23 +488,26 @@ DELIMITER ;|
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n FROM orders GROUP BY o_custkey) SELECT cu.c_custkey, cf.n FROM customer AS cu JOIN cf ON cf.k = cu.c_custkey WHERE cu.c_custkey = 42 AND cu.c_nationkey < 200;' 2>&1
 
 --echo
---echo === rpr-P3 (rejection): join-path RMS resolves in ONE attempt ===
-# Pins the join-aware unload_schema version walk (the tracked defect in
-# findings/root_pk_residual.md): a string constant against an INT
-# column throws RonSQLMaybeStaleSchema at emit; the schema has NOT
-# changed, so this must classify RMS->RPE in a single attempt.  Before
-# the fix, the join-path comparison misreported "schema changed"
-# whenever the root table had any online ordered index (orders has
-# four), burning every retry attempt ("RMS->RRE" x3 via the CLI, exit
-# code 3, "caught retryable error after 3 attempts").
+--echo === rpr-P3 (rejection): a join-path type mismatch fails in ONE attempt ===
+# A string constant against an INT column fails in a single attempt.
+# It threw RonSQLMaybeStaleSchema at emit until RONDB-1124 T-18, which
+# made encode_constant's refusals permanent (RPE, no unload_schema); the
+# case first pinned the join-aware unload_schema version walk (the
+# tracked defect in findings/root_pk_residual.md): before that fix the
+# join-path comparison misreported "schema changed" whenever the root
+# table had any online ordered index (orders has four), burning every
+# retry attempt ("RMS->RRE" x3 via the CLI, exit code 3, "caught
+# retryable error after 3 attempts").  The walk is reached now by a
+# real schema change (ronsql_stale_join_root_index, X-10).
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "SELECT COUNT(*) FROM orders AS o JOIN customer AS cu ON cu.c_custkey = o.o_custkey WHERE cu.c_nationkey < 'x';" 2>&1
 
 --echo
---echo === rpr-P4 (rejection): CTE-root RMS still resolves RMS->RPE ===
-# The old NULL-root short-circuit returned "no change" without looking
-# at the CTE bodies' real tables; the join-aware walk now inspects them
-# and must still land RMS->RPE here (nothing changed).
+--echo === rpr-P4 (rejection): a type mismatch under a CTE root fails in ONE attempt ===
+# The same under a CTE root: one attempt, RPE since T-18.  Before, the
+# old NULL-root short-circuit of unload_schema returned "no change"
+# without looking at the CTE bodies' real tables; the join-aware walk
+# inspected them and had to land RMS->RPE here (nothing changed).
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e "WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n FROM orders GROUP BY o_custkey) SELECT cf.k, cf.n FROM cf WHERE cf.k = 7 AND cf.n < 'x';" 2>&1
 

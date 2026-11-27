@@ -49,9 +49,6 @@ call mtr.add_suppression("Participant timeout");
 # Run:    ./mtr --suite=ronsql ronsql_cte_minmax_string_redist
 # Record: ./mtr --suite=ronsql --record ronsql_cte_minmax_string_redist
 
-# ronsql_cli does not refresh its dictionary cache for join queries
-# (ronsql_cte_basic.test): compare RDRS against MySQL only.
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 --let $EXPLAIN_FILE=$MYSQL_TMP_DIR/ronsql-cte-minmax-string-redist-explain.out
 

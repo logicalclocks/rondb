@@ -3,7 +3,7 @@ Looking for a suitable Java...
 Found Java
 Found clusterj.jar
 Found clusterj_test jar
-Found ndbclient library
+Found rondbclient library
 Java VERSION
 Running named tests in 'CLUSTERJ_TEST_JAR'
 Found 2 test classes.

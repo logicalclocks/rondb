@@ -25,6 +25,8 @@
 #define CTE_LINKED_ATTR_HPP
 
 #include "ndb_types.h"
+#include "my_compiler.h"  // unlikely
+#include "AttributeHeader.hpp"
 
 /**
  * Inline encoding of CTE virtual-column type info in the per-entry
@@ -90,6 +92,68 @@ namespace CteLinkedAttr {
   /** Decode flags from a CTE-marked word 1. */
   static inline Uint32 decodeFlags(Uint32 word1) {
     return word1 & FLAGS_MASK;
+  }
+
+  /**
+   * The AttributeHeader word of entry `position` of the linked-attr
+   * buffer linked[0..linked_len), or nullptr when the buffer is absent
+   * or has no such complete entry: it ends before the entry, or an
+   * entry up to and including it runs past its end.  Words 0 and 1 of
+   * the entry are at [-2] and [-1] of the result, and all of its
+   * getDataSize() data words lie inside the buffer.
+   *
+   * The one walk of the buffer (RONDB-1124 bug 12).  Each caller
+   * decides what nullptr means: a NULL value, an error or a fallback.
+   */
+  static inline const Uint32* linkedEntryAH(const Uint32* linked,
+                                            Uint32 linked_len,
+                                            Uint32 position) {
+    if (unlikely(linked == nullptr)) return nullptr;
+    const Uint32* p = linked;
+    const Uint32* const p_end = linked + linked_len;
+    for (Uint32 pos = 0;; pos++) {
+      if (unlikely(p_end - p < 3)) return nullptr;
+      const Uint32 data_words = AttributeHeader::getDataSize(p[2]);
+      if (unlikely(Uint32((p_end - p) - 3) < data_words)) return nullptr;
+      if (pos == position) return p + 2;
+      p += 3 + data_words;
+    }
+  }
+
+  /**
+   * The bytes READ_LINKED_COLUMN_TO_REG decodes from an entry of the
+   * NDB column type ndbType, or 0 for a type it does not load.  An
+   * entry whose AttributeHeader holds fewer bytes is too short for the
+   * type: its data words end before the value does, and for the last
+   * entry the buffer does too.  Dbtup's handler and the evaluator of
+   * an outer join's NULL-extended row
+   * (JoinAggInterpreter::evalEmbeddedForNullRow) read such an entry as
+   * NULL and the JIT helper takes the per-row fallback, as for a
+   * missing entry (RONDB-1124).
+   */
+  static inline Uint32 linkedColumnBytes(Uint32 ndbType) {
+    switch (ndbType) {
+      case NDB_TYPE_TINYINT:
+      case NDB_TYPE_TINYUNSIGNED:
+        return 1;
+      case NDB_TYPE_SMALLINT:
+      case NDB_TYPE_SMALLUNSIGNED:
+        return 2;
+      case NDB_TYPE_MEDIUMINT:
+      case NDB_TYPE_MEDIUMUNSIGNED:
+      case NDB_TYPE_DATE:
+        return 3;
+      case NDB_TYPE_INT:
+      case NDB_TYPE_UNSIGNED:
+      case NDB_TYPE_FLOAT:
+        return 4;
+      case NDB_TYPE_BIGINT:
+      case NDB_TYPE_BIGUNSIGNED:
+      case NDB_TYPE_DOUBLE:
+        return 8;
+      default:
+        return 0;
+    }
   }
 }
 

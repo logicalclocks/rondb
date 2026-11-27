@@ -32,7 +32,8 @@
 #      1970-01-01 — local tz1 table)
 #   8  CTE MIN over zero TIMESTAMPs (packed Bigunsigned zero decode)
 #   9  aggregate GROUP BY over a zero TIMESTAMP (raw group-by print arm)
-#   P1 rejection: BIT projection (clean error, local table)
+#   P1 rejection: BIT projection (clean error, local table; refused at
+#      prepare time since O-13, before the scan and the header)
 #   P2 (accepted since RONDB-1124 M1.4): VARBINARY projection through an
 #      I.8 chain (local table; raw bytes in the TEXT compare)
 
@@ -41,7 +42,6 @@
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 --enable_warnings
---let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
 --source suite/ronsql_cte/include/cte_schema.inc
 --source suite/ronsql_cte/include/cte_data.inc
