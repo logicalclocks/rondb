@@ -2,7 +2,9 @@
 
 Status: proposed 2026-11-25; implemented 2026-11-26 on
 RONDB-1124-autotest-fixes, not yet built or tested; locked reads added
-the same day (see Which operations). It replaces the
+the same day (see Which operations), and since 2026-11-27 ordered
+against a write only when the read has the higher savepoint (see
+Ordering rules). It replaces the
 approach in `design.md` (keep the replica chain at COMMIT_STORED, chain
 clock and fragment stamps with the DBTC 1204 check, rebalance in start
 phase 120), which is reverted.
@@ -19,10 +21,12 @@ directly: a write is not sent while an earlier write of the same
 transaction on the same row (same table, fragment and row hash) is in
 flight along a different chain. It waits in DBTC and is sent when the
 earlier write gets LQHKEYCONF or LQHKEYREF. A write that takes the same
-chain as the earlier one is sent at once, as today. Locked reads are
-ordered the same way against writes of the row: a locked read and a
-write keep their order at once only if the read goes to the write's
-first replica.
+chain as the earlier one is sent at once, as today. A read and a write
+of the row in one batch need no order: the read has the write's
+savepoint and returns the row as before the batch either way. A locked
+read with a higher savepoint than a write in flight (the read of an
+immediate trigger) is ordered the same way: it keeps its order with the
+write at once only if it goes to the write's first replica.
 
 DBDIH may then change chains whenever it needs to, as it did before:
 COMMIT_STORED switches the primary back to the restarted node fragment by
@@ -39,18 +43,34 @@ for this and is flow control in its own right.
   batch order for writes of one row (waiters are resumed first in, first
   out), which is what the RonDB comment at the read routing in
   `DbtcMain.cpp` promises for rows a transaction writes itself.
-- Committed reads are not ordered against writes of the same batch:
-  reading your own writes within a batch with a committed read is
-  documented as unsafe, the read returns either the old or the new row.
-- Locked reads are ordered against writes of the same row in the batch
-  order. The comment at the query thread decision in
-  `Dbtc::sendlqhkeyreq()` says that the metadata handling (`ndb_schema`)
-  and the replication code rely on a locked read and a following write of
-  the same row in one batch being executed in that order. Normally both
-  go to the primary's LDM along the same link; when the primary changes
-  between them, the read would go to the old primary directly and the
-  write through the new primary, and could reach the old primary after
-  the write.
+- A read sees the transaction's own changes by savepoint, not by the
+  order of execution. DBTC gives every operation of a batch the
+  transaction's current savepoint and increases it after the operation
+  with the execute flag, the last one of the batch
+  (`Dbtc::execTCKEYREQ()`). DBTUP shows a read of the transaction only
+  the changes of lower savepoints (`Dbtup::setup_read()`,
+  `find_savepoint()`), committed reads of the transaction included. So
+  every read of a batch, locked or committed, returns the row as it was
+  before the batch, whether a write of the row in the batch executes
+  before or after it. Writes are not affected: a write applies to the
+  latest version of the row.
+- The exception is the read of an immediate trigger (foreign key
+  checks): it gets the savepoint of the triggering operation plus one, so
+  it sees the writes of that batch that executed before it.
+- Committed reads are not ordered against writes of the same batch: by
+  the savepoints they return the row as before the batch (the NDB API
+  documents reading your own writes within a batch as undefined).
+- Locked reads are ordered against a write of the same row only when the
+  read's savepoint is higher than the write's (decision 5). Otherwise the
+  read does not see the write in any order. The comment at the query
+  thread decision in `Dbtc::sendlqhkeyreq()` says that the metadata
+  handling (`ndb_schema`) and the replication code rely on a locked read
+  of a row reading the row before a following write of it in the same
+  batch; the savepoints give that in any order. The order matters for
+  the read of an immediate trigger, which must see a write of its batch
+  that may still be in flight along another path: a foreign key check of
+  a child row inserted in the same batch as its parent could otherwise
+  miss the parent.
 - Any read sees the transaction's own writes of earlier batches: the API
   starts the next batch only after the previous one has completed, and
   DBTC confirms a write only after LQHKEYCONF, which the last replica
@@ -105,7 +125,8 @@ Covered by this, with no other mechanism:
   inserted by another in the same batch is serialized like any row.
 
 It aborts nothing and delays nothing unless a chain changed between two
-writes, or a locked read and a write, of one row in one batch. Today's chain clock also aborts
+writes of one row in one batch, or between a write and a trigger's read
+of the row. Today's chain clock also aborts
 transactions that are safe: `ndb_stored_chain` updates a row, lets STORED
 insert node 3, and updates the row again in the next statement; the
 second UPDATE gets 1204 (shown as lock wait timeout) although the first
@@ -132,8 +153,9 @@ one had completed on all replicas.
   updates. These are holders and can be waiters.
 - Locked reads: shared, exclusive and simple reads, including the reads
   of unique index lookups and foreign key checks. Holders and waiters
-  against writes of the row, never against other reads.
-  (`isRowOrderedOperation()` is every tracked operation but an unlock.)
+  against writes of the row with a lower savepoint than the read's,
+  never against other reads. (`isRowOrderedOperation()` is every
+  tracked operation but an unlock.)
 - Committed reads, unlock operations and scans: not involved. A
   committed read never reports back; an unlock goes by its lock handle to
   the node with the lock, which the API has only after the read returned.
@@ -161,7 +183,9 @@ one had completed on all replicas.
   common case.
 - Order kept without waiting: two writes with the same node list; a
   locked read and a write when the read goes to the write's first
-  replica's DBLQH. Two reads never wait for each other.
+  replica's DBLQH. No order needed: a locked read and a write when the
+  read's savepoint is not higher than the write's (`savePointId`, which
+  every operation has), and two reads.
 - Holder: a write or locked read from sending LQHKEYREQ until
   LQHKEYCONF, LQHKEYREF or its release in an abort.
 - All write holders of a key have the same node list, but read holders
@@ -173,8 +197,8 @@ one had completed on all replicas.
   the key is released at the start of `execLQHKEYCONF`, before them. The
   wait therefore adds no deadlock inside DBTC; waits between transactions
   on row locks are unchanged. A locked read that waits in LQH for another
-  transaction's lock holds back a later write of its row in DBTC, which
-  would otherwise wait for the same lock in LQH.
+  transaction's lock does not hold back a later write of its row in the
+  same batch; that write waits for the same lock in LQH.
 
 ### Limit on operations in flight
 
@@ -368,7 +392,8 @@ one had completed on all replicas.
   operations that waited for the limit or behind other waiting
   operations.
 - Error insert 8321: a write or locked read waits whenever an earlier
-  write or locked read of the row is in flight (not two reads), as if
+  write or locked read of the row is in flight (not two reads, and a
+  read and a write only when the read has the higher savepoint), as if
   every path had changed. Error insert 8322: the limit is 4.
 
 ## Costs
@@ -379,11 +404,10 @@ one had completed on all replicas.
   counter per tracked operation for the limit; the saved DIGETNODESREQ
   inputs. A batch of one operation does not touch the key table.
   Committed reads nothing.
-- Latency: a write or locked read waits only when the path changed
-  between it and an earlier operation of the same row in the same batch,
-  or a locked read of a row with a write in flight goes through DBSPJ or
-  to `V_QUERY` (single-operation batches and the API's batch-safe flag
-  only); then about one round trip. Operations beyond the limit wait for
+- Latency: a write waits only when the chain changed between it and an
+  earlier write of the same row in the same batch; a trigger's locked
+  read only when a write of its row with a lower savepoint is in flight
+  along another path; then about one round trip. Operations beyond the limit wait for
   a free slot, which is the intended flow control.
 - Memory: about 28 bytes per `TcConnectRecord`, 24 per `ApiConnectRecord`,
   12 per cache record, 64 KB of buckets per DBTC instance, and one cache
@@ -480,10 +504,11 @@ every replica.
 - New in testNodeRestart, in both suites:
   - `SameRowWriteWait`: batches with update/update, delete/insert,
     exclusive read/update, update/shared read and insert/update/delete of
-    the same rows with error insert 8321; the results are those of the
-    batch executed in order (the reads return the row before, and after,
-    the update), `SAME_ROW_WAITS` increases, all replicas agree
-    (`verifyTableReplicas` on a Read Backup table).
+    the same rows with error insert 8321; the writes apply in batch
+    order (the later writes wait), both reads return the row as it was
+    before the batch and do not wait (all operations of a batch have the
+    same savepoint, see Ordering rules), `SAME_ROW_WAITS` increases, all
+    replicas agree (`verifyTableReplicas` on a Read Backup table).
   - `ParallelOperationLimit`: the same with error insert 8322;
     `PARALLEL_OP_WAITS` increases.
   - `WaitingOperationAbort`: with 8322, a transaction whose first four
@@ -532,7 +557,12 @@ every replica.
    point: `ndb_schema` and replication rely on a locked read and a
    following write of a row in one batch executing in that order, which
    a primary change between them could break; the chain clock refused it
-   with 1204). See Which operations and Key, path and lifetime.
+   with 1204). See Which operations and Key, path and lifetime. Changed
+   2026-11-27 after weekly-devel--04, whose test expected a locked read
+   after an update in the same batch to see the update: within a batch
+   the savepoints make a read return the row as before the batch in any
+   order (Ordering rules), so a read and a write are ordered only when
+   the read has the higher savepoint, the read of an immediate trigger.
 
 Also decided while implementing: the existing unused state `OS_WAIT_DIH`
 instead of a new one; one strict first-in, first-out queue (a later

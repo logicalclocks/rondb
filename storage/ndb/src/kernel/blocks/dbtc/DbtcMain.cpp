@@ -6041,15 +6041,19 @@ void Dbtc::attrinfoDihReceivedLab(Signal *signal, CacheRecordPtr cachePtr,
  * overtake it whatever chain it gets. Writes along the same chain are sent
  * at once: signal order between two block instances is kept.
  *
- * Locked reads are ordered the same way against writes of the row: the
- * metadata handling (ndb_schema) and replication read a row with a lock
- * and write it in the same batch, and the read must see the row before
- * the write (see the query thread decision in sendlqhkeyreq()). A read
- * executes only in the node it is sent to, so a read and a write keep
- * their order only if the read goes to the write's first replica, to its
- * DBLQH. Reads are not ordered among themselves. Committed reads do not
- * report back to DBTC, so they take no part (they see the old or the new
- * row).
+ * A read sees the transaction's own writes by savepoint, not by the order
+ * in which they execute: every operation of a batch gets the same
+ * savePointId, and DBTUP shows a read only the changes of lower
+ * savepoints (Dbtup::find_savepoint()). So a read of a batch returns the
+ * row as it was before the batch whether a write of the row in the batch
+ * executes before or after it, and the two need no order. Only a read
+ * with a higher savepoint than a write in flight must come after it: the
+ * read of an immediate trigger (foreign key check) gets the savepoint of
+ * its triggering operation plus one, to see the writes of that batch. A
+ * read executes only in the node it is sent to, so such a read and write
+ * keep their order only if the read goes to the write's first replica,
+ * to its DBLQH. Reads are not ordered among themselves. Committed reads
+ * do not report back to DBTC, so they take no part.
  *
  * In addition a transaction has at most MaxParallelOperationsPerTransaction
  * operations in flight (all except committed reads), the others wait.
@@ -6467,9 +6471,11 @@ void Dbtc::rowKeyRemove(TcConnectRecordPtr const opPtr) {
  * Is an operation of the row in flight in the transaction whose order
  * against regTcPtr's (with path flags pathFlags) the paths do not keep?
  * - Two writes: kept along the same chain only.
- * - A locked read and a write: the read executes in tcNodedata[0] only,
- *   so kept only if that is the write's first replica and the read goes
- *   to its DBLQH (SF_READ_VIA_LDM), along the link the write takes.
+ * - A locked read and a write: ordered only if the read's savepoint is
+ *   higher than the write's, else the read does not see the write in any
+ *   order. The read executes in tcNodedata[0] only, so the order is kept
+ *   only if that is the write's first replica and the read goes to its
+ *   DBLQH (SF_READ_VIA_LDM), along the link the write takes.
  * - Two reads: not ordered.
  * All writes of a row in flight have the same chain, but the reads need
  * not have the same node, so every holder of the row is checked.
@@ -6494,6 +6500,14 @@ bool Dbtc::rowKeyHasHolderOnOtherPath(Uint32 apiConnectPtrI,
     const bool holderIsRead = (holderFlags & TcConnectRecord::SF_READ) != 0;
     if (isRead && holderIsRead) {
       continue;
+    }
+    if (isRead || holderIsRead) {
+      const TcConnectRecord *readOp = isRead ? regTcPtr : holder;
+      const TcConnectRecord *writeOp = isRead ? holder : regTcPtr;
+      if (readOp->savePointId <= writeOp->savePointId) {
+        /* The read does not see the write, whichever executes first */
+        continue;
+      }
     }
     jam();
 #ifdef ERROR_INSERT
@@ -6846,10 +6860,14 @@ void Dbtc::sendlqhkeyreq(Signal *signal, BlockReference TBRef,
        * Currently writes cannot be executed by Query threads, so this will
        * require a solution when this is implemented.
        *
-       * The order is kept along the same path only. When the read and the
-       * write of a row take different paths (the primary changed between
-       * them, or the read goes to a query thread), mustWaitToSend() holds
-       * back the later one until the earlier one is answered.
+       * A read and a write of a row in the same batch need no order: the
+       * read has the same savepoint as the write, so it returns the row
+       * as before the batch whichever executes first
+       * (Dbtup::find_savepoint()). The writes of a row keep their order
+       * along the same path only; mustWaitToSend() holds back a write
+       * whose chain differs from that of an earlier write in flight, and
+       * a read with a higher savepoint than a write in flight on another
+       * path (the read of an immediate trigger).
        */
       Uint32 version = getNodeInfo(nodeId).m_version;
       Uint32 operation_type = LqhKeyReq::getOperation(lqhKeyReq->requestInfo);

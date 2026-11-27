@@ -325,10 +325,10 @@ class Dbtc : public SimulatedBlock {
     OS_ABORT_SENT = 10,
     OS_TAKE_OVER = 11,
     /**
-     * Fully received, waits in DBTC to be sent: an earlier write or
-     * locked read of the same row in the same transaction is in flight
-     * along another path, or the transaction has its limit of operations
-     * in flight.
+     * Fully received, waits in DBTC to be sent: an earlier operation of
+     * the same row in the same transaction whose order with it matters
+     * is in flight along another path, or the transaction has its limit
+     * of operations in flight.
      * See Dbtc::mustWaitToSend().
      */
     OS_WAIT_DIH = 12,
@@ -1030,7 +1030,8 @@ class Dbtc : public SimulatedBlock {
      * was in flight or waiting is not linked yet, see
      * ApiConnectRecord::m_unlinked_row_op.
      * SF_READ: that operation is a locked read, executed in tcNodedata[0]
-     * only. SF_READ_VIA_LDM: and sent to DBLQH there, not through DBSPJ or
+     * only, ordered against a write only when its savePointId is higher.
+     * SF_READ_VIA_LDM: and sent to DBLQH there, not through DBSPJ or
      * V_QUERY, so along the same link as a write's first replica.
      * SF_PARKED: the operation owns the cache record in m_parked_cache;
      * it waits to be sent (OS_WAIT_DIH, linked through m_parked_next into
@@ -4080,7 +4081,8 @@ class Dbtc : public SimulatedBlock {
    * the operations of one transaction in flight at a time.
    *
    * The counters are in ndbinfo.counters: writes and locked reads that
-   * waited for an earlier operation of the same row, and operations that
+   * waited for an earlier operation of the same row (a read and a write
+   * only when the read has the higher savepoint), and operations that
    * waited for the limit.
    */
   static constexpr Uint32 ROW_KEY_HASH_SIZE = 16384;  // power of 2

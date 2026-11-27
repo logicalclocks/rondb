@@ -844,7 +844,8 @@ DBTC node failure take over testing (RonDB)
 
 8321: Same-row serialization: a write or locked read of a row waits
       while an earlier write or locked read of the same row in the same
-      transaction is in flight (not both reads), as if the path had
+      transaction is in flight (not both reads, and a read and a write
+      only when the read has the higher savepoint), as if the path had
       changed between them (stays set until cleared). The SAME_ROW_WAITS
       counter of ndbinfo.counters counts it.
 8322: Limit the operations in flight of a transaction to 4 instead of
