@@ -1,0 +1,101 @@
+# RONDB-1124: arithmetic on a string column.
+#
+# A register of the aggregation interpreter loaded from a CHAR, VARCHAR or
+# LONGVARCHAR column holds no number: its value is a capture that only MIN
+# and MAX read.  The data node refuses a program whose arithmetic, SUM or
+# AVG may read such a register (PushdownInterpreter::checkAggSlotKinds),
+# but only when the scan runs, as an error of the data node.  RonSQL let
+# MAX(s + 1), COUNT(-s) and SUM(1 + s) through to the data node, and
+# reported SUM(s * 2) as a SUM over a string column.  MySQL converts the
+# string to a number; RonSQL refuses arithmetic on a string column while
+# the statement is planned (RonSQLPreparer::check_string_arithmetic), as
+# it refuses SUM and AVG of one (ronsql_avg_sum_types), and NdbAggregator
+# refuses to write it (kErrStringArithmetic).  MIN, MAX and COUNT of a
+# string column still run (ronsql_avg_sum_types f16-7,
+# ronsql_minmax_string).
+#
+#   sa-1  MAX(VARCHAR + 1)              sa-6  MIN(CHAR % 3), GROUP BY
+#   sa-2  SUM(1 + VARCHAR)              sa-7  arithmetic in a CASE arm
+#   sa-3  COUNT(-VARCHAR), unary minus  sa-8  a join leaf's VARCHAR
+#   sa-4  SUM(VARCHAR * 2)              sa-9  a CTE output that is a MAX
+#   sa-5  AVG(CHAR DIV 2)                     of a VARCHAR
+#                                       sa-10 arithmetic in a CTE body
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE sa_t (
+  id INT NOT NULL,
+  s  VARCHAR(16) NOT NULL,
+  ch CHAR(4) NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+INSERT INTO sa_t VALUES
+  (1, 'apple',  'a1'),
+  (2, 'banana', 'b2'),
+  (3, 'cherry', 'c3');
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === sa-1: MAX of a VARCHAR column plus 1 ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT MAX(s + 1) AS a FROM sa_t;' 2>&1
+
+--echo
+--echo === sa-2: SUM of 1 plus a VARCHAR column ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(1 + s) AS a FROM sa_t;' 2>&1
+
+--echo
+--echo === sa-3: COUNT of a negated VARCHAR column ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(-s) AS a FROM sa_t;' 2>&1
+
+--echo
+--echo === sa-4: SUM of a VARCHAR column times 2 ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(s * 2) AS a FROM sa_t;' 2>&1
+
+--echo
+--echo === sa-5: AVG of a CHAR column DIV 2 ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT AVG(ch DIV 2) AS a FROM sa_t;' 2>&1
+
+--echo
+--echo === sa-6: MIN of a CHAR column modulo 3, with GROUP BY ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT id, MIN(ch % 3) AS a FROM sa_t GROUP BY id;' 2>&1
+
+--echo
+--echo === sa-7: a VARCHAR column minus 1 in a CASE arm ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(CASE WHEN id > 1 THEN s - 1 ELSE 0 END) AS a FROM sa_t;' 2>&1
+
+--echo
+--echo === sa-8: MAX of a VARCHAR column of a join leaf plus 1 ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT a.id, MAX(b.s + 1) AS x FROM sa_t AS a JOIN sa_t AS b ON b.id = a.id GROUP BY a.id;' 2>&1
+
+--echo
+--echo === sa-9: SUM of a CTE output that is a MAX of a VARCHAR, plus 1 ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c AS (SELECT id, MAX(s) AS ms FROM sa_t GROUP BY id) SELECT SUM(ms + 1) AS x FROM c;' 2>&1
+
+--echo
+--echo === sa-10: a VARCHAR column times 2 in a CTE body ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c AS (SELECT id, MAX(s * 2) AS ms FROM sa_t GROUP BY id) SELECT COUNT(ms) AS x FROM c;' 2>&1
+
+--echo
+--echo === Cleanup ===
+
+--disable_query_log
+DROP TABLE sa_t;
+--enable_query_log

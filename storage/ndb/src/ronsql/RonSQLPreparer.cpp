@@ -183,6 +183,15 @@ check_groupby_limit(const GroupbyColumns* groupby)
 }
 
 /*
+ * RONDB-1124: arithmetic on a CHAR, VARCHAR or LONGVARCHAR value, which
+ * check_string_arithmetic refuses while the statement is planned, and
+ * program_write_or_fail when NdbAggregator refuses it
+ * (kErrStringArithmetic) in a shape that check did not see.
+ */
+static const char* const STRING_ARITHMETIC_UNSUPPORTED =
+    "Arithmetic on string columns is not supported.";
+
+/*
  * F-15: the aggregation program is too large, a limit error.  The data
  * nodes take a program of fewer than MAX_AGG_PROGRAM_WORD_SIZE words,
  * which Finalize() checks.  NdbAggregator writes the program into a
@@ -204,12 +213,16 @@ throw_if_program_too_big(NdbAggregator* agg)
 }
 
 // F-15: a write to the aggregation program of agg that returned ok, or
-// the limit error of a program too large, or msg.
+// the limit error of a program too large, or the unsupported error of
+// arithmetic on a string, or msg.
 static void
 program_write_or_fail(NdbAggregator* agg, bool ok, const char* msg)
 {
   if (likely(ok)) return;
   throw_if_program_too_big(agg);
+  if (agg->GetError().errno_ == kErrStringArithmetic)
+    throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
+                               STRING_ARITHMETIC_UNSUPPORTED);
   throw RonSQLPermanentError(msg);
 }
 
@@ -365,6 +378,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
       check_cte_groupby_key_types();
       check_cte_temporal_outputs();
     }
+    check_string_arithmetic();  // RONDB-1124
     check_bit_orderby_columns();  // T-15
     if (m_cte_scopes.size() > 0 && is_join_query())
       check_pushed_query_size();
@@ -16771,6 +16785,88 @@ RonSQLPreparer::check_cte_temporal_where(const QueryScope& scope,
   const ConditionChildren children = condition_children(*ce);
   check_cte_temporal_where(scope, children.first);
   check_cte_temporal_where(scope, children.second);
+}
+
+void
+RonSQLPreparer::check_string_arithmetic()
+{
+  check_string_arithmetic(m_main_scope);
+  for (Uint32 c = 0; c < m_cte_scopes.size(); c++) {
+    if (m_cte_scopes[c] != NULL)
+      check_string_arithmetic(*m_cte_scopes[c]);
+  }
+}
+
+/*
+ * RONDB-1124: a register loaded from a CHAR, VARCHAR or LONGVARCHAR column
+ * holds no number.  The data node refuses a program whose arithmetic may
+ * read one (PushdownInterpreter::checkAggSlotKinds), and NdbAggregator
+ * refuses to write that arithmetic (kErrStringArithmetic).  MAX(s + 1),
+ * COUNT(-s) and SUM(1 + s) reached the data node, which failed the scan;
+ * SUM(s + 1) failed as a SUM of a string.  MySQL converts the string to a
+ * number; RonSQL refuses the construct while the statement is planned, as
+ * it refuses SUM and AVG of a string (F16).  The parser builds the
+ * expressions of a scope's compiler only for the arguments of its
+ * aggregates, HAVING ones included.  A string reaches arithmetic as a
+ * column, as a CTE output that passes one on or is a MIN / MAX of one,
+ * or through GREATEST / LEAST (whose stored column operands
+ * validate_greatest_least_pair_loads later limits to integers); a CASE
+ * is no operand of arithmetic (Context::non_case_operand).
+ */
+void
+RonSQLPreparer::check_string_arithmetic(const QueryScope& scope) const
+{
+  if (scope.agg == NULL || scope.resolved_columns == NULL) return;
+  scope.agg->for_each_expr([&](const AggregationAPICompiler::Expr* e) {
+    if (e->isArithmetic() &&
+        (expr_may_be_string(scope, e->getLeft(), 0) ||
+         expr_may_be_string(scope, e->getRight(), 0)))
+      throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
+                                 STRING_ARITHMETIC_UNSUPPORTED);
+  });
+}
+
+bool
+RonSQLPreparer::column_may_be_string(const QueryScope& scope, Uint32 col_idx,
+                                     Uint32 depth) const
+{
+  if (scope.resolved_columns == NULL || col_idx >= m_columns.size() ||
+      depth > m_cte_scopes.size())
+    return false;
+  const QueryScope::ResolvedColumnRef& ref = scope.resolved_columns[col_idx];
+  if (ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn) {
+    if (ref.dict_column == NULL) return false;
+    const NdbDictionary::Column::Type type = ref.dict_column->getType();
+    return type == NdbDictionary::Column::Char ||
+           type == NdbDictionary::Column::Varchar ||
+           type == NdbDictionary::Column::Longvarchar;
+  }
+  const Outputs* o = ref.cte_output;
+  if (ref.kind != QueryScope::ResolvedColumnRef::Kind::CteResultColumn ||
+      o == NULL || ref.cte_def_idx >= m_cte_scopes.size())
+    return false;
+  const QueryScope* cs = m_cte_scopes[ref.cte_def_idx];
+  if (cs == NULL) return false;
+  if (o->type == Outputs::Type::COLUMN)
+    return column_may_be_string(*cs, o->column.col_idx, depth + 1);
+  if (o->type == Outputs::Type::AGGREGATE &&
+      (o->aggregate.fun == T_MIN || o->aggregate.fun == T_MAX))
+    return expr_may_be_string(*cs, o->aggregate.arg, depth + 1);
+  return false;  // COUNT, SUM, AVG: numbers
+}
+
+bool
+RonSQLPreparer::expr_may_be_string(const QueryScope& scope,
+                                   const AggregationAPICompiler::Expr* e,
+                                   Uint32 depth) const
+{
+  if (e == NULL) return false;
+  if (e->isLoad())
+    return column_may_be_string(scope, e->getLoadIdx(), depth);
+  if (e->isGreatest2() || e->isLeast2() || e->isCase())
+    return expr_may_be_string(scope, e->getLeft(), depth) ||
+           expr_may_be_string(scope, e->getRight(), depth);
+  return false;  // A constant, or arithmetic: a number
 }
 
 static const char* const CTE_TEMPORAL_CONSTANT_UNSUPPORTED =

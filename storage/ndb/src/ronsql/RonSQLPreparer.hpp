@@ -1116,6 +1116,22 @@ private:
   void check_cte_temporal_where(const QueryScope& scope,
                                 const struct ConditionalExpression* ce) const;
   /**
+   * RONDB-1124: refuse, as unsupported, arithmetic on a CHAR, VARCHAR or
+   * LONGVARCHAR value in the main query and in each CTE body, which the
+   * aggregation interpreter cannot compute (MySQL converts the string to
+   * a number).  column_may_be_string: the column col_idx of the scope is
+   * a stored string column, or a CTE output that passes one on or is a
+   * MIN / MAX of one; expr_may_be_string: the value of e may be such a
+   * string.  depth bounds the CTE outputs followed.
+   */
+  void check_string_arithmetic();
+  void check_string_arithmetic(const QueryScope& scope) const;
+  bool column_may_be_string(const QueryScope& scope, Uint32 col_idx,
+                            Uint32 depth) const;
+  bool expr_may_be_string(const QueryScope& scope,
+                          const AggregationAPICompiler::Expr* e,
+                          Uint32 depth) const;
+  /**
    * C-6: the packed value of a constant compared with a packed temporal
    * CTE output of `src`'s type, as mysqld compares it; false when the
    * constant lies between two values of the type (`packed` is then the
