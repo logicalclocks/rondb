@@ -138,6 +138,16 @@ class FsReadWriteReq;
 
 #endif // DEBUG_PA
 
+/**
+ * Debug output of node restart copy decisions on character keys and of
+ * key errors (626, 630) on any replica, see Dblqh::nr_key_debug(). Compiled
+ * only into debug and error insert builds, and off until DUMP 2368 1
+ * (LqhNrKeyDebug) turns it on.
+ */
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+#define DBLQH_NR_KEY_DEBUG
+#endif
+
 #define ZINVALID_SCHEMA_VERSION 1227
 
 #ifdef DBLQH_C
@@ -826,7 +836,8 @@ class Dblqh : public SimulatedBlock {
       m_local_matched_ranges(nullptr),
       m_local_matched_words(0),
       m_ttl_purge_window_size(0),
-      m_ttl_now_sec(0)
+      m_ttl_now_sec(0),
+      m_route_api_signals(0)
     {
     }
 
@@ -1009,6 +1020,12 @@ class Dblqh : public SimulatedBlock {
     Uint8 m_ring_buffer_show_meta;
     Uint32 m_ttl_now_sec;       // wall-clock "now" (UTC epoch sec) sampled once
                                 // per scan batch for TTL expiry checks; 0 = unset
+    /**
+     * Set once per scan batch by set_scan_api_route(): the batch sends its
+     * KEYINFO20 (DBLQH) and TRANSID_AI (DBTUP) routed via TC, also when the
+     * connection to the API node comes up during the batch.
+     */
+    Uint8 m_route_api_signals;
   };
   static constexpr Uint32 DBLQH_SCAN_RECORD_TRANSIENT_POOL_INDEX = 1;
   typedef Ptr<ScanRecord> ScanRecordPtr;
@@ -2910,6 +2927,7 @@ class Dblqh : public SimulatedBlock {
   bool is_ttl_table(Uint32 table_id);
   bool is_ring_buffer_table(Uint32 table_id);
   void set_scan_ttl_now_sec(ScanRecord *scanPtr, Uint32 table_id);
+  void set_scan_api_route(ScanRecord *scanPtr);
   // TTL related (Bug #2). True iff table_id is an internal UNIQUE hash index.
   // Used by DBTUP's same-owner check to scope the duplicate-vs-live-owner
   // rejection to unique indexes (NOT BLOB part-tables, which also have
@@ -4704,8 +4722,16 @@ private:
   void exec_acckeyreq(Signal*, Ptr<TcConnectionrec>);
   int compare_key(const TcConnectionrec*, const Uint32 * ptr, Uint32 len);
   void nr_copy_delete_row(Signal*, Ptr<TcConnectionrec>, Local_key*, Uint32);
-  Uint32 getKeyInfoWordOrZero(const TcConnectionrec* regTcPtr, 
+  Uint32 getKeyInfoWordOrZero(const TcConnectionrec* regTcPtr,
                               Uint32 offset);
+#ifdef DBLQH_NR_KEY_DEBUG
+  bool nr_key_debug_wanted(Uint32 tableId);
+  void nr_key_debug(const char *what, const TcConnectionrec *regTcPtr,
+                    const Uint32 *storedKey, int storedLen, int match,
+                    bool uncommitted, const Local_key *rowid = nullptr);
+  void keyref_debug(const TcConnectionrec *regTcPtr, Uint32 errorCode,
+                    const char *source, bool accFound);
+#endif
 
   NdbMutex m_read_redo_log_data_mutex;
   Uint64 m_tot_written_bytes;

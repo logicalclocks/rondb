@@ -203,12 +203,20 @@ class DumpStateOrd {
     // GROUP BY table size hints (m3_run6_plan.md D1a): 0 = not applied
     // (still recorded), 1 = applied (the default), 2 = forget them all
     LqhGroupTableSizeHints = 2367,
+    // 1 / 0: log node restart copy decisions on tables with character
+    // keys and key errors 626/630 on any replica (debug and error insert
+    // builds only, used by testNodeRestart -n InplaceCharPkChange*)
+    LqhNrKeyDebug = 2368,
 
     TupDumpOneScanRec = 2380,
     TupSaveCopyTupleCount = 2381,
     TupCheckCopyTupleCount = 2382,
     // RONDB-1056: log every live JIT-compiled interpreter program
     TupDumpJitPrograms = 2383,
+    // <tableId>: crash when an insert or update leaves a row of this table
+    // that is not what Hugo writes for its id and update count. No table
+    // id: off. Debug and error insert builds only.
+    TupHugoRowCheck = 2384,
 
     AccDumpOneScanRec = 2400,
     AccDumpAllScanRec = 2401,

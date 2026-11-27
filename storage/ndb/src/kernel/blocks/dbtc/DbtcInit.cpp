@@ -663,6 +663,9 @@ Dbtc::Dbtc(Block_context& ctx, Uint32 instanceNo):
   m_deferred_enabled = ~Uint32(0);
   m_max_writes_per_trans = ~Uint32(0);
   m_dbinfo_full_apiconnectrecord = false;
+  for (Uint32 i = 0; i < ROW_KEY_HASH_SIZE; i++) {
+    c_row_key_hash[i] = RNIL;
+  }
 
   c_transient_pools[DBTC_ATTRIBUTE_BUFFER_TRANSIENT_POOL_INDEX] =
       &c_theAttributeBufferPool;

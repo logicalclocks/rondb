@@ -4400,7 +4400,9 @@ int MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
    * another node id allocation (NodeFailureHandlingNotCompleted, Busy).
    * A data node given its node id locally then would connect to us
    * before NF_COMPLETEREP of its previous failure arrives, see
-   * ClusterMgr::execNF_COMPLETEREP().
+   * ClusterMgr::execNF_COMPLETEREP(). For the same reason try_alloc()
+   * does not reserve a data node id locally while our ClusterMgr waits
+   * for NF_COMPLETEREP of it, whatever the data nodes answered.
    */
   const NDB_TICKS alloc_start = NdbTick_getCurrentTicks();
   const Uint32 alloc_deadline_ms = (timeout_ms != 0) ? timeout_ms : 20000;
@@ -4480,6 +4482,18 @@ int MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
         const AllocNodeIdRef *const ref =
             CAST_CONSTPTR(AllocNodeIdRef, signal->getDataPtr());
         last_ref_error = ref->errorCode;
+        if (ref->errorCode == AllocNodeIdRef::NotMaster &&
+            free_node_id != 0 &&
+            refToNode(ref->masterRef) == free_node_id) {
+          /*
+            The data node still has the previous start of the node id
+            we allocate as its president: it has not handled the failure
+            of that node yet, e.g. while it waits for arbitration. Same as
+            NodeFailureHandlingNotCompleted from the master, the node id
+            must not be given locally at the deadline.
+          */
+          last_ref_error = AllocNodeIdRef::NodeFailureHandlingNotCompleted;
+        }
         if (ref->errorCode == AllocNodeIdRef::NotMaster &&
             refToNode(ref->masterRef) == 0xFFFF) {
           /*
@@ -4866,6 +4880,26 @@ int MgmtSrvr::try_alloc(NodeId id, ndb_mgm_node_type type, Uint32 timeout_ms,
       g_eventLogger->debug("Retrying allocation of nodeid %u...", id);
       NdbSleep_MilliSleep(1000);
       continue;
+    }
+
+    if (res == NO_CONTACT_WITH_DB_NODES && type == NDB_MGM_NODE_TYPE_NDB &&
+        !getNodeInfo(id).nfCompleteRep) {
+      /*
+        No conclusive answer from the data nodes, but our ClusterMgr still
+        waits for NF_COMPLETEREP of the previous start of this node id, so
+        an alive data node has not handled that failure yet. ClusterMgr
+        completes it itself when no data node is alive, so this is not a
+        cluster that is down. E.g. a president that still waits for
+        arbitration after the failure of the old master answers NotMaster
+        naming itself, until it has taken over as DIH master. Reserving
+        the node id locally would let the node connect before
+        NF_COMPLETEREP, see ClusterMgr::execNF_COMPLETEREP().
+      */
+      g_eventLogger->info(
+          "Nodeid %u not reserved locally, the data nodes have not "
+          "completed the failure of its previous start",
+          id);
+      res = NODEID_ALLOC_NOT_READY;
     }
 
     if (res == NODEID_ALLOC_NOT_READY) {

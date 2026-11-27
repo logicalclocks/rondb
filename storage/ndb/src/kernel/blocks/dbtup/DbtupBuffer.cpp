@@ -316,6 +316,17 @@ void Dbtup::sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
   transIdAI->transId[1] = sig2;
 
   const Uint32 routeBlockref = req_struct->TC_ref;
+  if (req_struct->scan_rec != nullptr &&
+      static_cast<const Dblqh::ScanRecord *>(req_struct->scan_rec)
+          ->m_route_api_signals &&
+      refToMain(routeBlockref) == DBTC) {
+    /**
+     * The batch started routed, route all its rows like DBLQH routes
+     * their KEYINFO20, see Dblqh::set_scan_api_route().
+     */
+    jam();
+    connectedToNode = false;
+  }
   ndbassert(refToMain(routeBlockref) == DBTC ||
             refToMain(routeBlockref) == DBSPJ ||
             (nodeId == getOwnNodeId() && connectedToNode));

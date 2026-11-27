@@ -5090,6 +5090,33 @@ void Dblqh::set_scan_ttl_now_sec(ScanRecord *scanPtr, Uint32 table_id) {
   }
 }
 
+/**
+ * The API pairs the KEYINFO20 and the TRANSID_AI of a scan row by their
+ * order of arrival in each receiver: key n belongs to row n. While a node
+ * has no connection to the API node, sendKeyinfo20() and
+ * Dbtup::sendReadAttrinfo() route these signals via TC (KEYINFO20_R and
+ * TRANSID_AI_R), else they send them directly. If the connection comes up
+ * during a batch, the first rows of the batch take the longer way via TC
+ * and the rest the direct way, and the two ways can mix keys and rows in
+ * different orders. updateCurrentTuple(), lockCurrentTuple() and
+ * deleteCurrentTuple() of row n then act on the row of key n with the
+ * values of another row, and an ordered scan returns rows out of order.
+ * A node restart opens that window: the node is primary for its fragments
+ * after the copy phase, but API nodes connect to it only at the end of the
+ * restart.
+ *
+ * So decide at each batch start, at the same points as
+ * set_scan_ttl_now_sec(), and keep routing for the whole batch. The
+ * receiver of the next batch has received all rows of this batch before it
+ * asks for it, and a prefetched batch of a parallel ordered scan goes to
+ * another receiver. A connection that goes down during a batch still
+ * switches its remaining rows to routing, as before.
+ */
+void Dblqh::set_scan_api_route(ScanRecord *scanPtr) {
+  const Uint32 nodeId = refToNode(scanPtr->scanApiBlockref);
+  scanPtr->m_route_api_signals = !getNodeInfo(nodeId).m_connected;
+}
+
 bool Dblqh::is_unique_hash_index_table(Uint32 table_id) {
   TablerecPtr t_tabptr;
   t_tabptr.i = table_id;
@@ -6867,6 +6894,19 @@ void Dblqh::execTUPKEYREF(Signal *signal) {
         useStat.m_keyRefCount++;
         useStat.m_keyInstructionCount += tupKeyRef->noExecInstructions;
       }
+#ifdef DBLQH_NR_KEY_DEBUG
+      if (unlikely(errorCode == ZTUPLE_ALREADY_EXIST ||
+                   errorCode == ZNO_TUPLE_FOUND)) {
+        /**
+         * DBTUP refuses an insert that follows another operation than a
+         * delete of the same row in the same transaction (630), and any
+         * operation after a delete (626). ACC found the row for both.
+         * keyref_debug checks if DUMP 2368 turned the output on.
+         */
+        jam();
+        keyref_debug(tcConnectptr.p, errorCode, "TUP", true);
+      }
+#endif
       abortErrorLab(signal, tcConnectptr, errorCode);
       return;
     }
@@ -10829,9 +10869,13 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
      * will first update the primary replica in node 1, followed by the
      * backup replica in node 2 and finally the backup replica in node 3.
      *
-     * The consistency of the replicas in node 1 and node 3 is not at risk
-     * here. They are part of the write transactions in both distribution key
-     * 2 and 3. Thus we only need to care about the new replica in node 2.
+     * Node 3 used to receive writes from node 1 and now receives them
+     * from node 2. Between transactions the row locks in each replica keep
+     * the order. Within a transaction, DBTC does not send a write of a row
+     * while an earlier write of the same row is in flight along another
+     * chain (Dbtc::mustWaitToSend()), so node 3 cannot get two writes of a
+     * row in the wrong order either. The check below protects the copy to
+     * node 2.
      *
      * The new replica is brought up by synchronising the data in node 2 with
      * the data in the primary replica in node 1. This uses a copy scan that
@@ -11604,6 +11648,11 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
      */
     jam();
     if (TRACENR_FLAG) TRACENR(" Waiting for COPY_ACTIVEREQ" << endl);
+#ifdef DBLQH_NR_KEY_DEBUG
+    if (nr_key_debug_wanted(regTcPtr.p->tableref)) {
+      nr_key_debug("NO_ROWID_TO_NORMAL", regTcPtr.p, nullptr, 0, 0, false);
+    }
+#endif
     ndbassert(!LqhKeyReq::getNrCopyFlag(regTcPtr.p->reqinfo));
     regTcPtr.p->activeCreat = Fragrecord::AC_NORMAL;
     fragptr.p->m_copy_started_state = Fragrecord::AC_NORMAL;
@@ -11628,6 +11677,21 @@ void Dblqh::handle_nr_copy(Signal *signal, Ptr<TcConnectionrec> regTcPtr) {
   if (TRACENR_FLAG)
     TRACENR(" len: " << len << " match: " << match
                      << " uncommitted: " << uncommitted);
+
+#ifdef DBLQH_NR_KEY_DEBUG
+  /**
+   * Skip the bulk of uninteresting lines: copy DELETE by rowid of an empty
+   * rowid (only updates the GCI), deletes by rowid from RESTORE and
+   * updates of a matching row.
+   */
+  if (!(nrCopyFlag && op == ZDELETE && len == 0) &&
+      !(op == ZUPDATE && match) &&
+      refToMain(regTcPtr.p->tcBlockref) != getRESTORE() &&
+      nr_key_debug_wanted(regTcPtr.p->tableref)) {
+    nr_key_debug("HANDLE_NR_COPY", regTcPtr.p, dst, len, match ? 1 : 0,
+                 uncommitted);
+  }
+#endif
 
   /**
    * len == 0 here means that the row id had no record attached to it.
@@ -12044,6 +12108,15 @@ Dblqh::nr_copy_delete_row(Signal* signal,
 
   TRACENR("DELETED: " << regTcPtr.p->m_row_id << endl);
 
+#ifdef DBLQH_NR_KEY_DEBUG
+  /* The rowid printed is that of the deleted row */
+  if (refToMain(regTcPtr.p->tcBlockref) != getRESTORE() &&
+      nr_key_debug_wanted(tableId)) {
+    nr_key_debug(rowid ? "DELETED_AT_ROWID" : "DELETED_BY_KEY", regTcPtr.p,
+                 nullptr, 0, 0, false);
+  }
+#endif
+
   regTcPtr.p->m_dealloc_state = TcConnectionrec::DA_IDLE;
   regTcPtr.p->m_dealloc_data.m_dealloc_ref_count = RNIL;
   regTcPtr.p->m_row_id = save;
@@ -12162,6 +12235,148 @@ Uint32 Dblqh::getKeyInfoWordOrZero(const TcConnectionrec *regTcPtr,
   }
   return 0;
 }
+
+#ifdef DBLQH_NR_KEY_DEBUG
+/**
+ * Targeted output to find how a replica ends up with a primary key that
+ * the primary replica does not have (testNodeRestart
+ * -n InplaceCharPkChange*). Only in debug and error insert builds, and
+ * off until DUMP 2368 1 (LqhNrKeyDebug). The flag is per data node
+ * process, so a restarted node needs the DUMP again; the test sends it
+ * while the node is held in no-start.
+ *
+ * nr_key_debug traces the node restart copy decisions of handle_nr_copy,
+ * but only for tables whose primary key has character columns, and at
+ * most NR_KEY_DEBUG_MAX lines after each DUMP 2368 1.
+ *
+ * keyref_debug prints when a replica fails an operation with 626 or 630,
+ * from ACC or from TUP. A backup replica that agrees with the primary
+ * never does that. The primary replica is included too, but only for
+ * tables whose primary key has character columns, since the
+ * InplaceCharPkChange tests expect no 626 or 630 at all. It prints what
+ * the replica holds at the rowid the primary sent and at the rowid ACC
+ * found for the key (for 630, the row that already holds the key). At
+ * most KEYREF_DEBUG_MAX of these after each DUMP 2368 1.
+ */
+static constexpr Uint32 NR_KEY_DEBUG_MAX = 20000;
+static constexpr Uint32 KEYREF_DEBUG_MAX = 1000;
+static std::atomic<bool> g_nr_key_debug{false};
+static std::atomic<Uint32> g_nr_key_debug_lines{0};
+static std::atomic<Uint32> g_keyref_debug_lines{0};
+
+static void format_key_bytes(char *buf, size_t bufsz, const Uint32 *key,
+                             Uint32 words) {
+  const Uint8 *b = reinterpret_cast<const Uint8 *>(key);
+  size_t pos = 0;
+  buf[0] = 0;
+  for (Uint32 i = 0; i < 4 * words && pos + 5 < bufsz; i++) {
+    if (b[i] >= 0x20 && b[i] < 0x7f && b[i] != '\\') {
+      buf[pos++] = (char)b[i];
+      buf[pos] = 0;
+    } else {
+      pos += snprintf(buf + pos, bufsz - pos, "\\x%02x", b[i]);
+    }
+  }
+}
+
+bool Dblqh::nr_key_debug_wanted(Uint32 tableId) {
+  if (likely(!g_nr_key_debug.load(std::memory_order_relaxed))) return false;
+  if (!g_key_descriptor_pool.getPtr(tableId)->hasCharAttr) return false;
+  return g_nr_key_debug_lines.fetch_add(1) < NR_KEY_DEBUG_MAX;
+}
+
+void Dblqh::nr_key_debug(const char *what, const TcConnectionrec *regTcPtr,
+                         const Uint32 *storedKey, int storedLen, int match,
+                         bool uncommitted, const Local_key *rowid) {
+  /* The rowid printed is regTcPtr->m_row_id unless one is given */
+  if (rowid == nullptr) rowid = &regTcPtr->m_row_id;
+  Uint32 reqKey[MAX_KEY_SIZE_IN_WORDS];
+  Uint32 reqLen = 0;
+  if (regTcPtr->keyInfoIVal != RNIL &&
+      regTcPtr->primKeyLen <= MAX_KEY_SIZE_IN_WORDS) {
+    copy(reqKey, regTcPtr->keyInfoIVal);
+    reqLen = regTcPtr->primKeyLen;
+  }
+  char reqBuf[128];
+  char storedBuf[128];
+  format_key_bytes(reqBuf, sizeof(reqBuf), reqKey, reqLen);
+  format_key_bytes(storedBuf, sizeof(storedBuf), storedKey,
+                   storedLen > 0 ? (Uint32)storedLen : 0);
+  bool binDiff = (storedLen > 0 && reqLen > 0 &&
+                  (reqLen != (Uint32)storedLen ||
+                   memcmp(reqKey, storedKey, 4 * reqLen) != 0));
+  g_eventLogger->info(
+      "NRKEY LDM(%u) %s tab(%u,%u) op %u%s rowid(%u,%u) gci %u"
+      " transid(0x%x,0x%x) len %d match %d%s unc %u req '%s' stored '%s'",
+      instance(), what, regTcPtr->tableref, regTcPtr->fragmentid,
+      regTcPtr->operation,
+      LqhKeyReq::getNrCopyFlag(regTcPtr->reqinfo) ? " NrCopy" : "",
+      rowid->m_page_no, rowid->m_page_idx,
+      regTcPtr->gci_hi, regTcPtr->transid[0], regTcPtr->transid[1],
+      storedLen, match, binDiff ? " BINDIFF" : "", (Uint32)uncommitted,
+      reqBuf, storedBuf);
+}
+
+void Dblqh::keyref_debug(const TcConnectionrec *regTcPtr, Uint32 errorCode,
+                         const char *source, bool accFound) {
+  if (likely(!g_nr_key_debug.load(std::memory_order_relaxed))) return;
+  const bool primary = (regTcPtr->seqNoReplica == 0);
+  if (primary &&
+      !g_key_descriptor_pool.getPtr(regTcPtr->tableref)->hasCharAttr)
+    return;
+  if (g_keyref_debug_lines.fetch_add(1) >= KEYREF_DEBUG_MAX) return;
+  FragrecordPtr fragPtr;
+  ndbrequire(c_fragment_pool.getPtr(fragPtr, regTcPtr->fragmentptr));
+  const bool rowidFlag = LqhKeyReq::getRowidFlag(regTcPtr->reqinfo);
+  g_eventLogger->info(
+      "KEYREF %u from %s LDM(%u) %s tab(%u,%u) op %u seqNoReplica %u"
+      " lastReplicaNo %u tc node %u next node %u activeCreat %u"
+      " copy state %u fragStatus %u copyNode %u rowidFlag %u",
+      errorCode, source, instance(), primary ? "primary" : "backup",
+      regTcPtr->tableref, regTcPtr->fragmentid, regTcPtr->operation,
+      regTcPtr->seqNoReplica, regTcPtr->lastReplicaNo,
+      refToNode(regTcPtr->tcBlockref), regTcPtr->nextReplica,
+      (Uint32)regTcPtr->activeCreat, (Uint32)fragPtr.p->m_copy_started_state,
+      (Uint32)fragPtr.p->fragStatus, (Uint32)fragPtr.p->copyNode,
+      (Uint32)rowidFlag);
+  if (m_is_in_query_thread) {
+    nr_key_debug("KEYREF", regTcPtr, nullptr, 0, 0, false);
+    return;
+  }
+  Uint32 stored[MAX_KEY_SIZE_IN_WORDS + 64];
+  if (rowidFlag) {
+    /* What does this replica hold at the rowid the primary sent? */
+    bool uncommitted = false;
+    Local_key rowid = regTcPtr->m_row_id;
+    const int len =
+        c_tup->nr_read_pk(fragPtr.p->tupFragptr, &rowid, stored, uncommitted);
+    const int match =
+        (len > 0) ? compare_key(regTcPtr, stored, (Uint32)len) == 0 : 0;
+    nr_key_debug("KEYREF_AT_WIRE_ROWID", regTcPtr, stored, len, match,
+                 uncommitted);
+  }
+  const Dbacc::Operationrec *accOp = regTcPtr->accConnectPtrP;
+  if (accFound && accOp != nullptr && !accOp->localdata.isInvalid()) {
+    /**
+     * getElement() stores the rowid of the element it found in the ACC
+     * operation, also when ACC then refuses the operation. For 630 it is
+     * the row that already holds the key. When ACC did not find the key
+     * (626 from ACC) the field is left from an earlier operation, so the
+     * caller says whether ACC found it.
+     */
+    bool uncommitted = false;
+    Local_key rowid = accOp->localdata;
+    const int len =
+        c_tup->nr_read_pk(fragPtr.p->tupFragptr, &rowid, stored, uncommitted);
+    const int match =
+        (len > 0) ? compare_key(regTcPtr, stored, (Uint32)len) == 0 : 0;
+    nr_key_debug("KEYREF_AT_ACC_ROWID", regTcPtr, stored, len, match,
+                 uncommitted, &rowid);
+  } else if (!rowidFlag) {
+    nr_key_debug("KEYREF", regTcPtr, nullptr, 0, 0, false);
+  }
+}
+#endif  // DBLQH_NR_KEY_DEBUG
 
 void Dblqh::unlockError(Signal *signal, Uint32 error,
                         const TcConnectionrecPtr tcConnectptr) {
@@ -16575,6 +16790,16 @@ void Dblqh::continueACCKEYREF(Signal *signal, TcConnectionrecPtr tcConnectptr,
   }  // switch
   tcPtr->errorCode = errorCode;
 
+#ifdef DBLQH_NR_KEY_DEBUG
+  if (unlikely(g_nr_key_debug.load(std::memory_order_relaxed)) &&
+      (errorCode == ZTUPLE_ALREADY_EXIST || errorCode == ZNO_TUPLE_FOUND)) {
+    /* ACC found the key only for 630 */
+    jam();
+    keyref_debug(tcPtr, errorCode, "ACC",
+                 errorCode == ZTUPLE_ALREADY_EXIST);
+  }
+#endif
+
   if (TRACENR_FLAG) {
     TRACENR("ACCKEYREF: " << errorCode << " ");
     switch (tcPtr->operation) {
@@ -19262,6 +19487,7 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
   // batch after it resamples at its own start in sendScanFragConf.
   if (scanPtr->m_continous_scan_state == ScanRecord::CONTINOUS_SCAN_IDLE) {
     set_scan_ttl_now_sec(scanPtr, tcConnectptr.p->tableref);
+    set_scan_api_route(scanPtr);
   }
 
   /* --------------------------------------------------------------------
@@ -28350,6 +28576,7 @@ void Dblqh::restart_queued_scan(Signal *signal, Uint32 scanPtrI) {
   // resample the per-batch "now" so its first batch doesn't evaluate TTL
   // expiry with the clock read back at SCAN_FRAGREQ time (initScanrec).
   set_scan_ttl_now_sec(loc_scanptr.p, m_tc_connect_ptr.p->tableref);
+  set_scan_api_route(loc_scanptr.p);
   // Hiding read only version in outer scope
   continueAfterReceivingAllAiLab(signal, m_tc_connect_ptr);
   jamDebug();
@@ -28443,6 +28670,7 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
   scanPtr->tupScan = tupScan;
   scanPtr->scanApiBlockref = resultRef;
   scanPtr->scanTcrec = tcPtrI;
+  set_scan_api_route(scanPtr);
   TcConnectionrec *const regTcPtr = tcConnectptr.p;
   const bool accScan = (rangeScan == 0) && (tupScan == 0);
 
@@ -29086,6 +29314,7 @@ void Dblqh::init_release_scanrec(Signal *signal, ScanRecord *scanPtr) {
   // including the NR copy-fragment scan, which is set up directly and bypasses
   // initScanrec (it runs with m_ttl_ignore=1, so checkTTL never reads this).
   scanPtr->m_ttl_now_sec = 0;
+  scanPtr->m_route_api_signals = 0;
   /*
    * PA related
    * reset aggregation variables
@@ -29159,7 +29388,14 @@ Uint32 Dblqh::sendKeyinfo20(Signal *signal, ScanRecord *scanP,
   const BlockReference ref = scanP->scanApiBlockref;
   const Uint32 scanOp = scanP->m_curr_batch_size_rows;
   Uint32 nodeId = refToNode(ref);
-  const bool connectedToNode = getNodeInfo(nodeId).m_connected;
+  /**
+   * Route the whole batch if it started routed, see set_scan_api_route().
+   * Dbtup::sendReadAttrinfo() does the same for TRANSID_AI.
+   */
+  const bool connectedToNode =
+      getNodeInfo(nodeId).m_connected &&
+      !(scanP->m_route_api_signals &&
+        refToMain(tcConP->clientBlockref) == DBTC);
 #ifdef NOT_USED
   const Uint32 type = getNodeInfo(nodeId).m_type;
   const bool is_api = (type >= NodeInfo::API && type <= NodeInfo::REP);
@@ -29940,6 +30176,7 @@ void Dblqh::sendScanFragConf(Signal *signal,
     // per-batch "now" so its rows don't reuse the timestamp sampled when
     // the batch just sent to the API began.
     set_scan_ttl_now_sec(scanPtr, regTcPtr->tableref);
+    set_scan_api_route(scanPtr);
 
     DEB_CONT_SCAN(("(%u) LQH SCAN_FRAGCONF sent scanPtrI: %u, "
                    "CONT_SCAN_IDLE -> CONT_SCAN_ACTIVE"
@@ -37881,6 +38118,14 @@ void Dblqh::execCOPY_FRAG_DONE_REP(Signal *signal) {
    * AC_NORMAL: The signal came after COPY_FRAGCONF -> COPY_ACTIVEREQ
    */
   g_eventLogger->info("m_copy_started_state before: %u", fragptr.p->m_copy_started_state);
+#ifdef DBLQH_NR_KEY_DEBUG
+  if (nr_key_debug_wanted(rep->tableId)) {
+    g_eventLogger->info("NRKEY LDM(%u) COPY_FRAG_DONE_REP tab(%u,%u)"
+                        " m_copy_started_state before: %u",
+                        instance(), rep->tableId, rep->fragId,
+                        (Uint32)fragptr.p->m_copy_started_state);
+  }
+#endif
   fragptr.p->m_copy_started_state = Fragrecord::AC_NORMAL;
 }
 
@@ -44944,6 +45189,27 @@ void Dblqh::execDUMP_STATE_ORD(Signal *signal) {
     }
     return;
   }
+#ifdef DBLQH_NR_KEY_DEBUG
+  if (arg == DumpStateOrd::LqhNrKeyDebug) {
+    jam();
+    /**
+     * Handled at the top, since the test sends it to a node held in
+     * no-start, before READ_CONFIG_REQ. Every instance receives it; the
+     * flag is per data node process. Turning it on restarts the line
+     * budgets.
+     */
+    const bool on = signal->getLength() < 2 || signal->theData[1] != 0;
+    if (on && !g_nr_key_debug.load(std::memory_order_relaxed)) {
+      g_nr_key_debug_lines.store(0, std::memory_order_relaxed);
+      g_keyref_debug_lines.store(0, std::memory_order_relaxed);
+    }
+    g_nr_key_debug.store(on, std::memory_order_relaxed);
+    if (instance() == 1 && !m_is_query_block) {
+      g_eventLogger->info("NRKEY debug %s", on ? "on" : "off");
+    }
+    return;
+  }
+#endif
   if (arg == DumpStateOrd::LqhGroupTableSizeHints) {
     jam();
     /* Process-wide like the trace; every instance gets it, which only

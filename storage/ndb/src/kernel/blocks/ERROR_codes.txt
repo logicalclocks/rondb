@@ -260,7 +260,7 @@ Next DBLQH 5165
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8135
-Next DBTC 8321 (RonDB)
+Next DBTC 8323 (RonDB)
 Next TRPMAN 9007
 Next CMVMI 9993              Note: CMVMI grows downwards
 Next TRPMAN 9007 // Ndb numbers
@@ -841,6 +841,16 @@ DBTC node failure take over testing (RonDB)
       close crosses it: execSCAN_NEXTREQ answers the close with another
       EndOfData ("Confirming scan close") after the scan is released.
       Stays set until cleared (testJoinAggNdbApi --only 26).
+
+8321: Same-row serialization: a write or locked read of a row waits
+      while an earlier write or locked read of the same row in the same
+      transaction is in flight (not both reads, and a read and a write
+      only when the read has the higher savepoint), as if the path had
+      changed between them (stays set until cleared). The SAME_ROW_WAITS
+      counter of ndbinfo.counters counts it.
+8322: Limit the operations in flight of a transaction to 4 instead of
+      MaxParallelOperationsPerTransaction (stays set until cleared). The
+      PARALLEL_OP_WAITS counter of ndbinfo.counters counts the waits.
 
 
 TRPMAN

@@ -1620,8 +1620,9 @@ void NdbReceiver::free_long_row_ref() {
     for (Uint32 i = 0; i < m_num_long_row_allocated; i++) {
       LongRowRef *row_ref = &m_long_row_ref[i];
       if (row_ref->m_blockref != 0) {
+        /* Allocated with new[] in first_long_row_ref() */
         assert(row_ref->m_row_release_ptr != nullptr);
-        free(row_ref->m_row_release_ptr);
+        delete[] row_ref->m_row_release_ptr;
       }
     }
     m_num_long_row_allocated = 0;

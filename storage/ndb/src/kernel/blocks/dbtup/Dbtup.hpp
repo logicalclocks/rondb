@@ -81,6 +81,18 @@ inline const char *dbgmask(const Uint32 bm[2]) {
 }
 #endif
 
+/**
+ * Hugo row check, see Dbtup::hugo_row_check(). Compiled only into debug
+ * and error insert builds, and off until DUMP 2384 <tableId>
+ * (TupHugoRowCheck) names the table to check.
+ */
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+#define DBTUP_HUGO_ROW_CHECK
+#include <atomic>
+/* Table id to check, RNIL when off. One value per data node process. */
+extern std::atomic<Uint32> g_dbtup_hugo_row_check_table;
+#endif
+
 #define ZWORDS_ON_PAGE 8192 /* NUMBER OF WORDS ON A PAGE.      */
 #define ZMIN_PAGE_LIMIT_TUPKEYREQ 5
 #define ZTUP_VERSION_BITS 15
@@ -4212,6 +4224,15 @@ public:
                        Uint32 *afterBuffer, Uint32 &noAfterWords,
                        Uint32 *beforeBuffer, Uint32 &noBeforeWords, bool disk,
                        bool ttl_as_update = false);
+
+#ifdef DBTUP_HUGO_ROW_CHECK
+  /* lqhOpPtrP is the Dblqh::TcConnectionrec of the operation */
+  void hugo_row_check(KeyReqStruct *req_struct, Operationrec *regOperPtr,
+                      Tablerec *regTabPtr, Fragrecord *regFragPtr, bool disk,
+                      const void *lqhOpPtrP);
+  /* Allocated at the first check in this instance */
+  Uint32 *m_hugo_row_check_buf{nullptr};
+#endif
 
   void sendTrigAttrInfo(Signal *signal, Uint32 *data, Uint32 dataLen,
                         bool executeDirect, BlockReference receiverReference);

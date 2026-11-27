@@ -1209,6 +1209,18 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      "timeout backstop resolves deadlocks (the pre-RONDB-1062 behaviour).",
      ConfigInfo::CI_USED, 0, ConfigInfo::CI_BOOL, "false", "false", "true"},
 
+    {CFG_DB_DISALLOW_DIRTY_WRITES, "DisallowDirtyWrites", DB_TOKEN,
+     "Reject NDB API dirty writes coordinated by this data node.",
+     ConfigInfo::CI_USED, 0, ConfigInfo::CI_BOOL, "false", "false", "true"},
+
+    {CFG_DB_MAX_PARALLEL_OPS_PER_TRANSACTION,
+     "MaxParallelOperationsPerTransaction", DB_TOKEN,
+     "Max key operations of one transaction that a transaction coordinator "
+     "has sent to the data nodes and not yet got an answer for (committed "
+     "reads not counted); further operations wait in the coordinator",
+     ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT, "1024", "1",
+     STR_VALUE(MAX_INT32)},
+
     {CFG_DB_DISCLESS, "Diskless", DB_TOKEN, "Run wo/ disk", ConfigInfo::CI_USED,
      CI_RESTART_INITIAL | CI_RESTART_SYSTEM, ConfigInfo::CI_BOOL, "false",
      "false", "true"},

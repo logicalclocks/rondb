@@ -1,0 +1,6 @@
+!include suite/ndb/my_3rpl.cnf
+
+[cluster_config.1]
+# Copy every row transactionally after STORED, including the locked row.
+TwoPassInitialNodeRestartCopy=0
+TransactionInactiveTimeout=300000

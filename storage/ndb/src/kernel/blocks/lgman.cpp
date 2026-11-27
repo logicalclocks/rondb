@@ -4396,7 +4396,7 @@ void Lgman::execFSREADCONF(Signal *signal) {
   if (page->m_page_header.m_page_type == File_formats::PT_Unallocated)
   {
     jam();
-    DEB_LGMAN_START(("Read page %u in file %u, PT_Unallocated",
+    DEB_LGMAN_START_EXTRA(("Read page %u in file %u, PT_Unallocated",
       file_ptr.p->m_online.m_read_page_idx,
       file_ptr.p->m_file_id));
 

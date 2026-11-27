@@ -40,6 +40,11 @@
 #include <signaldata/TransIdAI.hpp>
 #include "AttributeOffset.hpp"
 #include "../dblqh/Dblqh.hpp"
+#ifdef DBTUP_HUGO_ROW_CHECK
+#include <ndb_constants.h>
+#include <signaldata/LqhKey.hpp>
+#include <new>
+#endif
 #ifdef TEST_MR
 #include <time.h>
 #endif
@@ -330,6 +335,30 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
     return;
   }//if
 #endif
+#ifdef DBTUP_HUGO_ROW_CHECK
+  if (dumpState->args[0] == DumpStateOrd::TupHugoRowCheck)
+  {
+    jam();
+    /**
+     * Needs nothing but the block itself, so a test can send it to a
+     * restarted node while the node is held in no-start. The rows that
+     * RESTORE, the REDO log and the copy fragment phase write are then
+     * checked as well. Every instance receives it, the table id is per
+     * data node process.
+     */
+    const Uint32 tableId =
+        (signal->getLength() >= 2) ? signal->theData[1] : RNIL;
+    g_dbtup_hugo_row_check_table.store(tableId, std::memory_order_relaxed);
+    if (instance() == 1 && !m_is_query_block)
+    {
+      if (tableId == RNIL)
+        g_eventLogger->info("Hugo row check off");
+      else
+        g_eventLogger->info("Hugo row check on table %u", tableId);
+    }
+    return;
+  }
+#endif
   if (dumpState->args[0] == DumpStateOrd::TupDumpJitPrograms)
   {
     jam();
@@ -582,6 +611,408 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
   }
 #endif
 }  // Dbtup::execDUMP_STATE_ORD()
+
+#ifdef DBTUP_HUGO_ROW_CHECK
+std::atomic<Uint32> g_dbtup_hugo_row_check_table{RNIL};
+
+/**
+ * Hugo row check
+ * --------------
+ * The NDBT test programs write rows through HugoCalculator: every column
+ * is a function of the row's id (the first Unsigned column) and of its
+ * update count (the last Unsigned column that is not part of the primary
+ * key). A row that does not match that function was written wrong, by
+ * the data node or by the test.
+ *
+ * With DUMP 2384 <tableId> every insert and update of that table is
+ * checked as soon as DBTUP has prepared the new row version, whatever sent
+ * the operation: the API, a scan take-over, the previous replica, the copy
+ * fragment phase, RESTORE or the REDO log. A mismatch logs the operation
+ * and crashes the node where the wrong row is written.
+ *
+ * A test case enables it only when all its own writes follow
+ * HugoCalculator, and turns it off at the end.
+ *
+ * The functions below are HugoCalculator::calcValue() and its helpers
+ * (storage/ndb/test/src/HugoCalculator.cpp) and must be kept equal to it.
+ */
+static Uint32 hugo_rand(Uint64 *seed) {
+  const Uint64 mul = 0x5deece66dull;
+  const Uint64 add = 0xb;
+  const Uint64 loc_result = *seed * mul + add;
+  *seed = loc_result;
+  return (Uint32)(loc_result >> 1);
+}
+
+static Uint32 hugo_calc_len(Uint32 rvalue, Uint32 maxlen) {
+  Uint32 minlen;
+  if ((rvalue >> 16) < 4096)
+    minlen = 15;
+  else if ((rvalue >> 16) < 8192)
+    minlen = 25;
+  else if ((rvalue >> 16) < 16384)
+    minlen = 35;
+  else
+    minlen = 64;
+  if (maxlen <= minlen) return maxlen;
+  /* Ensure coverage of maxlen */
+  if ((rvalue & 64) == 0) return maxlen;
+  return minlen + (rvalue % (maxlen - minlen));
+}
+
+static const char hugo_base64[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "0123456789+/";
+
+static Uint32 hugo_seed_sum(Uint32 record, Uint32 attrib, Uint32 updates,
+                            bool pk) {
+  return pk ? record + attrib : record + attrib + updates;
+}
+
+/**
+ * The value Hugo writes in a column. Returns false for NULL. bytes is the
+ * column size as NdbDictionary::Column::getSizeInBytes() gives it, bits
+ * the length of a Bit column. Blob and Text columns are not handled.
+ */
+static bool hugo_calc_value(Uint32 record, Uint32 attrib, Uint32 updates,
+                            Uint32 type, bool pk, bool nullable, Uint32 bytes,
+                            Uint32 bits, Uint8 *buf, Uint32 *outlen) {
+  /* Hugo adds ints and assigns the sum to a Uint64, which sign-extends */
+  Uint64 seed =
+      (Uint64)(Int64)(Int32)hugo_seed_sum(record, attrib, updates, pk);
+  Uint32 val = hugo_rand(&seed);
+  *outlen = bytes;
+  if (nullable && ((val >> 16) & 255) > 220) {
+    *outlen = 0;
+    return false;
+  }
+  Uint32 len = bytes;
+  Uint32 pos = 0;
+  Uint8 *dst = buf;
+  switch (type) {
+    case NDB_TYPE_FLOAT: {
+      const float x = (float)hugo_rand(&seed);
+      memcpy(buf, &x, 4);
+      return true;
+    }
+    case NDB_TYPE_DOUBLE: {
+      const double x = (double)hugo_rand(&seed);
+      memcpy(buf, &x, 8);
+      return true;
+    }
+    case NDB_TYPE_VARCHAR:
+    case NDB_TYPE_VARBINARY:
+      len = hugo_calc_len(hugo_rand(&seed), bytes - 1);
+      *outlen = len + 1;
+      buf[0] = (Uint8)len;
+      dst = buf + 1;
+      break;
+    case NDB_TYPE_LONGVARCHAR:
+    case NDB_TYPE_LONGVARBINARY:
+      len = hugo_calc_len(hugo_rand(&seed), bytes - 2);
+      *outlen = len + 2;
+      buf[0] = (Uint8)(len & 0xff);
+      buf[1] = (Uint8)(len >> 8);
+      dst = buf + 2;
+      break;
+    case NDB_TYPE_CHAR:
+      break;
+    default:
+      /* Integer, decimal, binary, bit, date and time types */
+      while (len > 4) {
+        memcpy(buf + pos, &val, 4);
+        pos += 4;
+        len -= 4;
+        val = hugo_rand(&seed);
+      }
+      memcpy(buf + pos, &val, len);
+      if (type == NDB_TYPE_BIT && (bits & 31) != 0) {
+        /* At a multiple of 32 bits Hugo masks a word after the column */
+        Uint32 last;
+        memcpy(&last, buf + 4 * (bits >> 5), 4);
+        last &= ((1U << (bits & 31)) - 1);
+        memcpy(buf + 4 * (bits >> 5), &last, 4);
+      }
+      return true;
+  }
+  /* Characters, also of the var types: base64 of the random values */
+  const Uint8 *ptr = (const Uint8 *)&val;
+  while (len >= 4) {
+    len -= 4;
+    dst[pos++] = hugo_base64[ptr[0] & 0x3f];
+    dst[pos++] = hugo_base64[ptr[1] & 0x3f];
+    dst[pos++] = hugo_base64[ptr[2] & 0x3f];
+    dst[pos++] = hugo_base64[ptr[3] & 0x3f];
+    val = hugo_rand(&seed);
+  }
+  /* Hugo takes the last characters from bytes len..1 of the value */
+  for (; len; len--, pos++) dst[pos] = hugo_base64[ptr[len] & 0x3f];
+  return true;
+}
+
+/**
+ * The two seed sums (record + attrib + updates) whose first random value
+ * is value, to name the record a wrong Unsigned column belongs to.
+ */
+static void hugo_seed_sums(Uint32 value, Uint32 sums[2]) {
+  const Uint64 mul = 0x5deece66dull;
+  Uint64 inv = mul; /* Newton iteration, correct to 96 bits after 5 steps */
+  for (Uint32 i = 0; i < 5; i++) inv *= 2 - mul * inv;
+  for (Uint32 b = 0; b < 2; b++) {
+    const Uint64 x = ((Uint64)value << 1) | b;
+    sums[b] = (Uint32)((x - 0xb) * inv);
+  }
+}
+
+/* Hex of the first bytes, ".." when cut */
+static void hugo_hex(char *out, size_t outsz, const Uint8 *data, Uint32 len) {
+  size_t pos = 0;
+  Uint32 i = 0;
+  out[0] = 0;
+  for (; i < len && pos + 5 < outsz; i++) {
+    pos += snprintf(out + pos, outsz - pos, "%02x", data[i]);
+  }
+  if (i < len) snprintf(out + pos, outsz - pos, "..");
+}
+
+void Dbtup::hugo_row_check(KeyReqStruct *req_struct, Operationrec *regOperPtr,
+                           Tablerec *regTabPtr, Fragrecord *regFragPtr,
+                           bool disk, const void *lqhOpPtrP_void) {
+  jam();
+  const Dblqh::TcConnectionrec *lqhOpPtrP =
+      static_cast<const Dblqh::TcConnectionrec *>(lqhOpPtrP_void);
+  const Uint32 noOfAttrs = regTabPtr->m_no_of_attributes;
+  const Uint32 *tab_descr = regTabPtr->tabDescriptor;
+
+  /* The id and update count columns, found as HugoCalculator finds them */
+  Uint32 idCol = RNIL;
+  Uint32 updCol = RNIL;
+  for (Uint32 i = 0; i < noOfAttrs; i++) {
+    const Uint32 desc = tab_descr[i * ZAD_SIZE];
+    if (AttributeDescriptor::getType(desc) != NDB_TYPE_UNSIGNED) continue;
+    if (idCol == RNIL) idCol = i;
+    if (!AttributeDescriptor::getPrimaryKey(desc)) updCol = i;
+  }
+  if (idCol == RNIL || updCol == RNIL || idCol == updCol) {
+    static std::atomic<bool> warned{false};
+    if (!warned.exchange(true)) {
+      g_eventLogger->warning(
+          "Hugo row check: table %u has no Hugo id and update count"
+          " columns, its rows are not checked",
+          regFragPtr->fragTableId);
+    }
+    return;
+  }
+
+  static constexpr Uint32 IN_WORDS = MAX_ATTRIBUTES_IN_TABLE;
+  static constexpr Uint32 OFF_WORDS = MAX_ATTRIBUTES_IN_TABLE;
+  static constexpr Uint32 OUT_WORDS =
+      MAX_TUPLE_SIZE_IN_WORDS + MAX_ATTRIBUTES_IN_TABLE;
+  static constexpr Uint32 EXP_WORDS = MAX_TUPLE_SIZE_IN_WORDS + 2;
+  if (m_hugo_row_check_buf == nullptr) {
+    m_hugo_row_check_buf = new (std::nothrow)
+        Uint32[IN_WORDS + OFF_WORDS + OUT_WORDS + EXP_WORDS];
+    if (m_hugo_row_check_buf == nullptr) return;
+  }
+  Uint32 *const inBuf = m_hugo_row_check_buf;
+  Uint32 *const offs = inBuf + IN_WORDS;
+  Uint32 *const outBuf = offs + OFF_WORDS;
+  Uint8 *const expected = (Uint8 *)(outBuf + OUT_WORDS);
+
+  /**
+   * Disk columns can only be read when the disk part is available, as
+   * for the immediate triggers. Blob and Text columns are not checked.
+   */
+  const bool readDisk = disk && regTabPtr->m_no_of_disk_attributes > 0;
+  Uint32 numIn = 0;
+  for (Uint32 i = 0; i < noOfAttrs; i++) {
+    const Uint32 desc = tab_descr[i * ZAD_SIZE];
+    const Uint32 type = AttributeDescriptor::getType(desc);
+    offs[i] = RNIL;
+    if (type == NDB_TYPE_BLOB || type == NDB_TYPE_TEXT ||
+        type == NDB_TYPE_UNDEFINED) {
+      continue;
+    }
+    if (AttributeDescriptor::getDiskBased(desc) && !readDisk) continue;
+    AttributeHeader::init(&inBuf[numIn++], i, 0);
+  }
+
+  /**
+   * Read the new row version as readTriggerInfo reads the after values,
+   * and leave req_struct as it was for the rest of execTUPKEYREQ.
+   */
+  Tuple_header *const save_tuple_ptr = req_struct->m_tuple_ptr;
+  Tuple_header *const save_disk_ptr = req_struct->m_disk_ptr;
+  const PagePtr save_disk_page_ptr = req_struct->m_disk_page_ptr;
+  KeyReqStruct::Var_data save_var_data[2];
+  memcpy(save_var_data, req_struct->m_var_data, sizeof(save_var_data));
+  const bool save_is_expanded = req_struct->is_expanded;
+  Tablerec *const save_tablePtrP = req_struct->tablePtrP;
+  Operationrec *const save_operPtrP = req_struct->operPtrP;
+  Uint32 *const save_attr_descr = req_struct->attr_descr;
+  const Uint32 save_check_offset_mm = req_struct->check_offset[MM];
+  const Uint32 save_check_offset_dd = req_struct->check_offset[DD];
+  const Uint32 save_max_read = req_struct->max_read;
+  const Uint32 save_out_buf_index = req_struct->out_buf_index;
+  const Uint32 save_out_buf_bits = req_struct->out_buf_bits;
+  const Uint32 save_partial_size = req_struct->partial_size;
+  const bool save_xfrm_flag = req_struct->xfrm_flag;
+
+  req_struct->tablePtrP = regTabPtr;
+  req_struct->operPtrP = regOperPtr;
+  req_struct->check_offset[MM] = regTabPtr->get_check_offset(MM);
+  req_struct->check_offset[DD] = regTabPtr->get_check_offset(DD);
+  req_struct->attr_descr = regTabPtr->tabDescriptor;
+  if (regTabPtr->need_expand(readDisk)) {
+    if (req_struct->m_disk_page_ptr.i != RNIL &&
+        regOperPtr->m_disk_extra_callback_page != RNIL) {
+      /* As in readTriggerInfo: the disk part is on the original page */
+      req_struct->m_disk_page_ptr.i = regOperPtr->m_disk_callback_page;
+    }
+    prepare_read(req_struct, regTabPtr, readDisk);
+  }
+  const int ret = readAttributes(req_struct, inBuf, numIn, outBuf, OUT_WORDS);
+
+  req_struct->m_tuple_ptr = save_tuple_ptr;
+  req_struct->m_disk_ptr = save_disk_ptr;
+  req_struct->m_disk_page_ptr = save_disk_page_ptr;
+  memcpy(req_struct->m_var_data, save_var_data, sizeof(save_var_data));
+  req_struct->is_expanded = save_is_expanded;
+  req_struct->tablePtrP = save_tablePtrP;
+  req_struct->operPtrP = save_operPtrP;
+  req_struct->attr_descr = save_attr_descr;
+  req_struct->check_offset[MM] = save_check_offset_mm;
+  req_struct->check_offset[DD] = save_check_offset_dd;
+  req_struct->max_read = save_max_read;
+  req_struct->out_buf_index = save_out_buf_index;
+  req_struct->out_buf_bits = save_out_buf_bits;
+  req_struct->partial_size = save_partial_size;
+  req_struct->xfrm_flag = save_xfrm_flag;
+
+  if (ret < 0) {
+    jam();
+    g_eventLogger->warning(
+        "Hugo row check: reading tab(%u,%u) failed with error %d, row not"
+        " checked",
+        regFragPtr->fragTableId, regFragPtr->fragmentId, -ret);
+    return;
+  }
+  for (Uint32 pos = 0; pos < (Uint32)ret;) {
+    const AttributeHeader ah(outBuf[pos]);
+    if (ah.getAttributeId() < noOfAttrs) offs[ah.getAttributeId()] = pos;
+    pos += 1 + ah.getDataSize();
+  }
+  if (offs[idCol] == RNIL || offs[updCol] == RNIL) {
+    /* Disk based id or update count column without the disk part */
+    return;
+  }
+  const AttributeHeader idAh(outBuf[offs[idCol]]);
+  const AttributeHeader updAh(outBuf[offs[updCol]]);
+  if (idAh.isNULL() || updAh.isNULL()) {
+    /* Hugo never writes NULL in these columns */
+    g_eventLogger->error(
+        "Hugo row check failed: tab(%u,%u) instance %u rowid(%u,%u) TUP op"
+        " %u: id (attribute %u) or update count (attribute %u) is NULL",
+        regFragPtr->fragTableId, regFragPtr->fragmentId, instance(),
+        regOperPtr->fragPageId, regOperPtr->m_tuple_location.m_page_idx,
+        (Uint32)regOperPtr->op_type, idCol, updCol);
+    ndbabort();
+  }
+  const Uint32 record = outBuf[offs[idCol] + 1];
+  const Uint32 updates = outBuf[offs[updCol] + 1];
+
+  Uint32 wrongCols = 0;
+  Uint32 firstWrong = RNIL;
+  Uint32 firstExpLen = 0;
+  bool firstExpNull = false;
+  for (Uint32 i = 0; i < noOfAttrs; i++) {
+    if (i == idCol || i == updCol || offs[i] == RNIL) continue;
+    const Uint32 desc = tab_descr[i * ZAD_SIZE];
+    const Uint32 type = AttributeDescriptor::getType(desc);
+    const Uint32 bits = AttributeDescriptor::getArraySize(desc);
+    const Uint32 bytes = (type == NDB_TYPE_BIT)
+                             ? ((bits + 31) >> 5) * 4
+                             : AttributeDescriptor::getSizeInBytes(desc);
+    if (bytes > 4 * (EXP_WORDS - 2)) continue;
+    Uint32 expLen = 0;
+    const bool notNull = hugo_calc_value(
+        record, i, updates, type, AttributeDescriptor::getPrimaryKey(desc),
+        AttributeDescriptor::getNullable(desc), bytes, bits, expected,
+        &expLen);
+    const AttributeHeader ah(outBuf[offs[i]]);
+    const Uint8 *stored = (const Uint8 *)&outBuf[offs[i] + 1];
+    const bool ok = notNull
+                        ? (!ah.isNULL() && ah.getByteSize() == expLen &&
+                           memcmp(stored, expected, expLen) == 0)
+                        : ah.isNULL();
+    if (ok) continue;
+    if (wrongCols++ == 0) {
+      firstWrong = i;
+      firstExpLen = expLen;
+      firstExpNull = !notNull;
+    }
+  }
+  if (likely(wrongCols == 0)) return;
+
+  /* Report the first wrong column, recompute its expected value */
+  const Uint32 desc = tab_descr[firstWrong * ZAD_SIZE];
+  const Uint32 type = AttributeDescriptor::getType(desc);
+  const bool pk = AttributeDescriptor::getPrimaryKey(desc);
+  const Uint32 bits = AttributeDescriptor::getArraySize(desc);
+  const Uint32 bytes = (type == NDB_TYPE_BIT)
+                           ? ((bits + 31) >> 5) * 4
+                           : AttributeDescriptor::getSizeInBytes(desc);
+  Uint32 expLen = 0;
+  hugo_calc_value(record, firstWrong, updates, type, pk,
+                  AttributeDescriptor::getNullable(desc), bytes, bits,
+                  expected, &expLen);
+  const AttributeHeader ah(outBuf[offs[firstWrong]]);
+  const Uint8 *stored = (const Uint8 *)&outBuf[offs[firstWrong] + 1];
+  char expHex[80];
+  char storedHex[80];
+  hugo_hex(expHex, sizeof(expHex), expected, firstExpNull ? 0 : firstExpLen);
+  hugo_hex(storedHex, sizeof(storedHex), stored,
+           ah.isNULL() ? 0 : ah.getByteSize());
+
+  g_eventLogger->error(
+      "Hugo row check failed: tab(%u,%u) instance %u rowid(%u,%u) TUP op %u"
+      " id %u update count %u: %u wrong columns, first is attribute %u"
+      " type %u",
+      regFragPtr->fragTableId, regFragPtr->fragmentId, instance(),
+      regOperPtr->fragPageId, regOperPtr->m_tuple_location.m_page_idx,
+      (Uint32)regOperPtr->op_type, record, updates, wrongCols, firstWrong,
+      type);
+  g_eventLogger->error("  expected%s len %u: %s", firstExpNull ? " NULL" : "",
+                       firstExpNull ? 0 : firstExpLen, expHex);
+  g_eventLogger->error("  stored%s len %u: %s", ah.isNULL() ? " NULL" : "",
+                       ah.isNULL() ? 0 : ah.getByteSize(), storedHex);
+  if (type == NDB_TYPE_UNSIGNED && !pk && !ah.isNULL()) {
+    /* Which id has this value with the stored update count */
+    Uint32 sums[2];
+    hugo_seed_sums(*(const Uint32 *)stored, sums);
+    g_eventLogger->error(
+        "  stored value is the value of id %u or id %u with this update"
+        " count",
+        sums[0] - firstWrong - updates, sums[1] - firstWrong - updates);
+  }
+  if (lqhOpPtrP != nullptr) {
+    g_eventLogger->error(
+        "  LQH op %u transid(0x%x,0x%x) from block %u node %u seqNoReplica"
+        " %u lastReplicaNo %u scan take-over %u NR copy %u REDO %u"
+        " activeCreat %u dirty %u rowid flag %u wire rowid(%u,%u)",
+        (Uint32)lqhOpPtrP->operation, lqhOpPtrP->transid[0],
+        lqhOpPtrP->transid[1], refToMain(lqhOpPtrP->tcBlockref),
+        refToNode(lqhOpPtrP->tcBlockref), (Uint32)lqhOpPtrP->seqNoReplica,
+        (Uint32)lqhOpPtrP->lastReplicaNo, (Uint32)lqhOpPtrP->indTakeOver,
+        LqhKeyReq::getNrCopyFlag(lqhOpPtrP->reqinfo),
+        c_lqh->c_executing_redo_log, (Uint32)lqhOpPtrP->activeCreat,
+        (Uint32)lqhOpPtrP->dirtyOp, (Uint32)req_struct->m_use_rowid,
+        req_struct->m_row_id.m_page_no, req_struct->m_row_id.m_page_idx);
+  }
+  ndbabort();
+}
+#endif  // DBTUP_HUGO_ROW_CHECK
 
 /* ---------------------------------------------------------------- */
 /* ---------      MEMORY       CHECK        ----------------------- */
