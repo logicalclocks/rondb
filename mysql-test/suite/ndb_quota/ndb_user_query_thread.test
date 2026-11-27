@@ -1,0 +1,219 @@
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+# RONDB-978 gap: USER rate accounting must also work for reads that execute
+# in query threads (DBQLQH). CREATE_DB_REQ is routed to the LDM workers only,
+# so the query blocks hold no user records; before the fix they resolved the
+# user id of LQHKEYREQ/SCAN_FRAGREQ against their own (empty) hash, the charge
+# fell back to the table's database record, no quota reports were sent and a
+# user-tagged read running in a query thread was never throttled.
+#
+# At MTR load levels the distribution handle picks the LDM thread for every
+# read, which is why ndb_user_rate_limits.test cannot see the gap. Error
+# insert 8318 in DBTC forces every eligible committed read into the query
+# block of the target LDM instance, making the query-thread path
+# deterministic (requires a debug build, hence have_debug).
+#
+# Each path gets its own account so a throttle proves that path's own
+# charging rather than budget state left behind by an earlier scenario:
+# key_user only ever does PK lookups, scan_user only full scans.
+
+CREATE DATABASE qtdb;
+CREATE TABLE qtdb.t1 (a INT PRIMARY KEY, b INT) ENGINE ndb;
+INSERT INTO qtdb.t1 VALUES
+  (1,0),(2,0),(3,0),(4,0),(5,0),(6,0),(7,0),(8,0),(9,0),(10,0);
+
+CREATE USER 'key_user'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'scan_user'@'%' IDENTIFIED BY 'pw';
+CREATE USER 'ctrl_user'@'%' IDENTIFIED BY 'pw';
+GRANT ALL PRIVILEGES ON qtdb.* TO 'key_user'@'%';
+GRANT ALL PRIVILEGES ON qtdb.* TO 'scan_user'@'%';
+GRANT ALL PRIVILEGES ON qtdb.* TO 'ctrl_user'@'%';
+
+--disable_result_log
+--exec $NDB_MGM -e "USER SET key_user --rate-per-sec=1"
+--exec $NDB_MGM -e "USER SET scan_user --rate-per-sec=1"
+--exec $NDB_MGM -e "USER SET ctrl_user --rate-per-sec=1"
+--exec $NDB_MGM -e "ALL ERROR 8318"
+--enable_result_log
+
+connect (key_conn,  127.0.0.1, key_user,  pw, qtdb, $MASTER_MYPORT);
+connect (scan_conn, 127.0.0.1, scan_user, pw, qtdb, $MASTER_MYPORT);
+connect (ctrl_conn, 127.0.0.1, ctrl_user, pw, qtdb, $MASTER_MYPORT);
+
+--echo #
+--echo # 1. PK reads forced into query threads charge the USER (LQHKEYREQ).
+--echo #
+connection key_conn;
+--disable_query_log
+--disable_result_log
+let $throttled = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT b FROM qtdb.t1 WHERE a = 1;
+  --enable_abort_on_error
+  # Only the quota error counts as a throttle; anything else is a bug the
+  # result file surfaces loudly.
+  if ($mysql_errno == 1297)
+  {
+    inc $throttled;
+  }
+  if ($mysql_errno != 1297)
+  {
+    if ($mysql_errno)
+    {
+      --echo UNEXPECTED ERROR $mysql_errno
+    }
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($throttled)
+{
+  --echo key_user: throttled as expected
+}
+if (!$throttled)
+{
+  --echo key_user: NOT THROTTLED - query-thread key reads are not charged
+}
+
+--echo #
+--echo # 2. Scans forced into query threads charge the USER (SCAN_FRAGREQ).
+--echo #
+connection scan_conn;
+--disable_query_log
+--disable_result_log
+let $throttled = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT a, b FROM qtdb.t1;
+  --enable_abort_on_error
+  # Only the quota error counts as a throttle; anything else is a bug the
+  # result file surfaces loudly.
+  if ($mysql_errno == 1297)
+  {
+    inc $throttled;
+  }
+  if ($mysql_errno != 1297)
+  {
+    if ($mysql_errno)
+    {
+      --echo UNEXPECTED ERROR $mysql_errno
+    }
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($throttled)
+{
+  --echo scan_user: throttled as expected
+}
+if (!$throttled)
+{
+  --echo scan_user: NOT THROTTLED - query-thread scans are not charged
+}
+
+--echo #
+--echo # 3. Dropping the USER mid-traffic turns the account unmetered; the
+--echo #    stale id a query thread still receives resolves to nothing and
+--echo #    must be charged nowhere (fail generous, no crash).
+--echo #
+--disable_result_log
+--exec $NDB_MGM -e "USER DROP key_user"
+--enable_result_log
+# Wait out the client-side backoff window (ClusterMgr keeps a rejected user
+# in backoff for 1s) plus the data nodes' own rate window.
+--sleep 3
+connection key_conn;
+--disable_query_log
+--disable_result_log
+let $after_drop = 0;
+let $count = 100;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT b FROM qtdb.t1 WHERE a = 1;
+  --enable_abort_on_error
+  if ($mysql_errno)
+  {
+    --echo UNEXPECTED ERROR $mysql_errno
+    inc $after_drop;
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($after_drop)
+{
+  --echo key_user: STILL THROTTLED after USER DROP
+}
+if (!$after_drop)
+{
+  --echo key_user: unmetered after USER DROP as expected
+}
+
+--echo #
+--echo # 4. Control: with the error insert cleared the LDM path still
+--echo #    throttles, so the resolve rework did not regress LDM reads.
+--echo #
+--disable_result_log
+--exec $NDB_MGM -e "ALL ERROR 0"
+--enable_result_log
+connection ctrl_conn;
+--disable_query_log
+--disable_result_log
+let $throttled = 0;
+let $count = 300;
+while ($count)
+{
+  --disable_abort_on_error
+  SELECT b FROM qtdb.t1 WHERE a = 1;
+  --enable_abort_on_error
+  # Only the quota error counts as a throttle; anything else is a bug the
+  # result file surfaces loudly.
+  if ($mysql_errno == 1297)
+  {
+    inc $throttled;
+  }
+  if ($mysql_errno != 1297)
+  {
+    if ($mysql_errno)
+    {
+      --echo UNEXPECTED ERROR $mysql_errno
+    }
+  }
+  dec $count;
+}
+--enable_result_log
+--enable_query_log
+if ($throttled)
+{
+  --echo ctrl_user: throttled on the LDM path as expected
+}
+if (!$throttled)
+{
+  --echo ctrl_user: NOT THROTTLED - LDM path regressed
+}
+
+# Cleanup
+connection default;
+disconnect key_conn;
+disconnect scan_conn;
+disconnect ctrl_conn;
+--disable_result_log
+--exec $NDB_MGM -e "ALL ERROR 0"
+--exec $NDB_MGM -e "USER DROP scan_user"
+--exec $NDB_MGM -e "USER DROP ctrl_user"
+--enable_result_log
+DROP USER 'key_user'@'%';
+DROP USER 'scan_user'@'%';
+DROP USER 'ctrl_user'@'%';
+DROP DATABASE qtdb;
+
+--echo USER rate limiting in query threads completed

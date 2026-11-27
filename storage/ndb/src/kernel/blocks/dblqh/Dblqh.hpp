@@ -2909,6 +2909,10 @@ class Dblqh : public SimulatedBlock {
     {
     }
     Uint64 fragmentptr;
+    /* The raw user id of a user-tagged operation, RNIL64 when untagged
+     * (a raw Uint32 id can never equal RNIL64). Resolved at charge time
+     * in update_rate_usage; a pool index cached at setup could outlive a
+     * concurrent USER DROP. */
     Uint64 m_user_ptr_i;
     Dbacc::Operationrec *accConnectPtrP;
     Dbtup::Operationrec *tupConnectPtrP;
@@ -4729,6 +4733,7 @@ public:
       m_last_rep_disk_space_page32k = 0;
       m_is_memory_quota_exceeded = false;
       m_is_disk_quota_exceeded = false;
+      m_report_deferred = false;
       m_continue_delay = 0;
       m_memory_report_limit = 0;
       m_disk_space_report_limit = 0;
@@ -4756,6 +4761,8 @@ public:
 
     bool m_is_memory_quota_exceeded;
     bool m_is_disk_quota_exceeded;
+    /* A report the full buffer turned away; execSEND_PACKED retries it. */
+    bool m_report_deferred;
 
     Uint32 m_memory_report_limit;
     Uint32 m_disk_space_report_limit;
@@ -4775,7 +4782,8 @@ public:
   typedef Ptr64<DatabaseRecord> DatabaseRecordPtr;
   typedef RecordPool64<RWPool64<DatabaseRecord> > DatabaseRecord_pool;
   DatabaseRecord_pool m_databaseRecordPool;
-  DL64HashTable<DatabaseRecord_pool, DatabaseRecord> m_databaseRecordHash;
+  typedef DL64HashTable<DatabaseRecord_pool, DatabaseRecord> DatabaseRecord_hash;
+  DatabaseRecord_hash m_databaseRecordHash;
   NdbMutex m_database_hash_mutex;
   void lock_database_hash()
   {
@@ -4800,6 +4808,12 @@ public:
   SendDatabaseQuotaRep *c_send_database_quota_rec;
   Uint32 c_send_database_quota_rep_file_size;
   Uint32 m_num_send_database_quota_rep;
+  /* Records with m_report_deferred set, retried after each drain. */
+  Uint32 m_num_deferred_quota_reports;
+  /* Hash bucket where the retry walk last stopped on a full buffer: the
+   * next walk starts there, so a record turned away twice is reached
+   * before any record deferred after it. */
+  Uint64 m_deferred_walk_bucket;
   bool m_restart_completed;
 
   struct MonotonicCounters {
@@ -5479,7 +5493,7 @@ private:
                                Int32 num_32k_pages,
                                Uint32 line,
                                Uint32 pageId);
-  void update_rate_usage(Uint32 tableId, Uint64 databasePtrI, Uint32 added_rate);
+  void update_rate_usage(Uint32 tableId, Uint64 userId, Uint32 added_rate);
   void send_database_quota_rep(DatabaseRecordPtr dbPtr, NDB_TICKS);
   Uint32 get_delay(Uint32 tableId);
   void change_report_limits(DatabaseRecord *dbPtrP,
