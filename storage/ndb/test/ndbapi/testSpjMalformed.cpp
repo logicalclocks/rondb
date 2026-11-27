@@ -92,6 +92,11 @@
  * stopped a debug data node (RONDB-1124).  P-57 sends an embedded
  * program with a branch to itself, which ran forever in the LDM thread
  * and which JOIN_AGG_SETUP_REQ must refuse (validateEmbeddedProgram).
+ * P-58 sends embedded programs with a branch onto the constant of a
+ * load, which ran it as an instruction and which JOIN_AGG_SETUP_REQ must
+ * refuse, and an interpreted read whose branch lands on a constant that
+ * reads as a branch back past the start of the program, which DBTUP
+ * must fail with ZOUTSIDE_OF_PROGRAM_ERROR (RONDB-1124).
  * P-59 groups by a linked value typed TEXT, BLOB, undefined or unknown,
  * types without a compare function, which fails the row (RONDB-1124,
  * AggInterpreterBase::publishGBTypes).
@@ -2769,6 +2774,170 @@ class SpjMalformedChecker {
     return result;
   }
 
+  /* ---- P-58: a branch into the middle of an instruction --------------- *
+   * A leaf whose rows run, then COUNT(1):
+   *   0     LOAD_CONST16 0 into register 0
+   *   1     branch, with offset in its bits 16-30
+   *   2     LOAD_CONST32 (n = 1) or LOAD_CONST64 (n = 2) into register
+   *         1, its constant in the n words after it, each of them
+   *         LOAD_CONST16 0 into register 0 when run as an instruction
+   *   3+n   WRITE_INTERPRETER_OUTPUT 0 of register 0: go on after it
+   *   4+n   EXIT_OK
+   * The offset counts from the branch word: 2 + n lands on the WRITE,
+   * 2 .. 1 + n on a constant word. */
+  static std::vector<Uint32> branchOverConstLeaf(Uint32 branch,
+                                                 Uint32 offset, Uint32 n) {
+    std::vector<Uint32> emb = {
+        Interpreter::LoadConst16(0, 0), branch | (offset << 16),
+        (n == 1) ? Interpreter::LoadConst32(1) : Interpreter::LoadConst64(1)};
+    for (Uint32 i = 0; i < n; i++) {
+      emb.push_back(Interpreter::LoadConst16(0, 0));
+    }
+    emb.push_back(Interpreter::WriteInterpreterOutput(0, 0));
+    emb.push_back(Interpreter::ExitOK());
+    return embeddedCountLeaf(emb);
+  }
+
+  /* An interpreted read (P-41's sendInterpretedRead) whose program
+   * branches over a LOAD_CONST32 whose constant reads as a branch back
+   * past the start of the program:
+   *   0 BRANCH, with offset in its bits 16-30
+   *   1 LOAD_CONST32 into register 0
+   *   2   the constant: BRANCH back 3 words, to word -1
+   *   3 EXIT_REFUSE kRefuseCode
+   * Offset 3 lands on the EXIT_REFUSE, 2 on the constant.  DBTUP's
+   * ZOUTSIDE_OF_PROGRAM_ERROR: */
+  static constexpr Uint32 kOutsideOfProgram = 876;
+
+  static std::vector<Uint32> branchOverConstRead(Uint32 offset) {
+    const std::vector<Uint32> prog = {
+        Interpreter::BRANCH | (offset << 16), Interpreter::LoadConst32(0),
+        Interpreter::BRANCH | (3u << 16) | (1u << 31),
+        Interpreter::EXIT_REFUSE | (kRefuseCode << 16)};
+    std::vector<Uint32> ai = {0, Uint32(prog.size()), 0, 0, 0};
+    ai.insert(ai.end(), prog.begin(), prog.end());
+    return ai;
+  }
+
+  int runP58() {
+    /* validateEmbeddedProgram checked that a branch goes forward and
+     * lands inside the program, not that it lands on an instruction.
+     * One that lands on the operand words of an instruction made the
+     * interpreter run them as instructions, which the walk had not
+     * seen, so its checks did not cover them: a constant may hold any
+     * word.  Here the constant words run as LOAD_CONST16, so the rows
+     * went on and the scan got SCAN_TABCONF.  An unconditional BRANCH
+     * into the constant of a LOAD_CONST32, and a BRANCH_REG_EQ_NULL of
+     * register 1, which is NULL when the embedded program starts, into
+     * the second constant word of a LOAD_CONST64.  The program is the
+     * only leaf, so the rows of T1 run it.  JOIN_AGG_SETUP_REQ now
+     * refuses it (DbspjErr::InvalidRequest): each request must get
+     * SCAN_TABREF with every data node started.  The controls, the same
+     * programs with the branch to the WRITE_INTERPRETER_OUTPUT after
+     * the load, must get SCAN_TABCONF: without them a harness whose
+     * rows never reach the program would pass.
+     *
+     * A plain interpreted read has no such check: its program is the
+     * API's to write, and the word a branch lands on runs as the
+     * instruction it reads as.  interpreterNextLab read each instruction
+     * before it checked the program counter against the program, so a
+     * branch back past the start read a word 16 GB past the program.
+     * P-58c lands on a constant that reads as such a branch and must
+     * fail with ZOUTSIDE_OF_PROGRAM_ERROR.  Its control, the branch to
+     * the EXIT_REFUSE, must fail with the refuse code.
+     *
+     * The controls run first, so that no request expected to succeed
+     * follows one that may stop a data node. */
+    const Uint32 branches[2] = {Interpreter::BRANCH,
+                                Interpreter::BRANCH_REG_EQ_NULL | (1u << 6)};
+    const Uint32 constWords[2] = {1, 2};
+    const char *const controlIds[2] = {
+        "P-58 control: BRANCH over a LOAD_CONST32",
+        "P-58 control: BRANCH_REG_EQ_NULL of a NULL register over a "
+        "LOAD_CONST64"};
+    const char *const ids[2] = {
+        "P-58a join aggregation embedded BRANCH into the constant of a "
+        "LOAD_CONST32",
+        "P-58b join aggregation embedded BRANCH_REG_EQ_NULL of a NULL "
+        "register into the constant of a LOAD_CONST64"};
+    const char *readId =
+        "P-58c interpreted read: BRANCH into a constant that reads as a "
+        "branch back past the start";
+
+    for (int i = 0; i < 2; i++) {
+      SpjReq good;
+      makeJoinAggScan(good, {branchOverConstLeaf(branches[i],
+                                                 2 + constWords[i],
+                                                 constWords[i])});
+      good.waitForEnd = true;
+      const Reply control = sendScanTabReq(good);
+      printReply(controlIds[i], control);
+      if (control.gsn != GSN_SCAN_TABCONF) {
+        g_err << controlIds[i] << " did not get SCAN_TABCONF (got "
+              << gsnName(control.gsn) << ", err " << control.errorCode
+              << ").  The rows do not reach the leaf program; fix this "
+                 "before trusting the result of P-58." << endl;
+        return clusterHealthy() ? NDBT_FAILED : failNodeDown(controlIds[i]);
+      }
+    }
+    const Reply readControl = sendInterpretedRead(branchOverConstRead(3));
+    printReply("P-58 control: interpreted read, BRANCH over a LOAD_CONST32 "
+               "to EXIT_REFUSE", readControl);
+    if (readControl.gsn != GSN_TCKEYREF ||
+        readControl.errorCode != kRefuseCode) {
+      g_err << "P-58 read control did not get TCKEYREF " << kRefuseCode
+            << " (got " << gsnName(readControl.gsn) << ", err "
+            << readControl.errorCode << ").  The raw interpreted read does "
+               "not reach the program; fix this before trusting the result "
+               "of P-58c." << endl;
+      return clusterHealthy() ? NDBT_FAILED : failNodeDown(readId);
+    }
+
+    Reply reps[2];
+    for (int i = 0; i < 2; i++) {
+      SpjReq bad;
+      makeJoinAggScan(bad, {branchOverConstLeaf(branches[i],
+                                                1 + constWords[i],
+                                                constWords[i])});
+      bad.waitForEnd = true;
+      reps[i] = sendScanTabReq(bad);
+      printReply(ids[i], reps[i]);
+    }
+    const Reply readRep = sendInterpretedRead(branchOverConstRead(2));
+    printReply(readId, readRep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown("P-58");
+    }
+    int result = NDBT_OK;
+    for (int i = 0; i < 2; i++) {
+      if (reps[i].gsn != GSN_SCAN_TABREF) {
+        g_err << ids[i] << ": FAIL -- expected SCAN_TABREF, got "
+              << gsnName(reps[i].gsn) << " " << reps[i].errorCode
+              << ": the branch into the constant was not refused" << endl;
+        result = NDBT_FAILED;
+      } else {
+        g_info << ids[i] << ": PASS (all data nodes started; SCAN_TABREF "
+               << reps[i].errorCode << ", JOIN_AGG_SETUP_REF sends "
+               << Uint32(DbspjErr::InvalidRequest) << ")" << endl;
+      }
+    }
+    if (readRep.gsn != GSN_TCKEYREF ||
+        readRep.errorCode != kOutsideOfProgram) {
+      g_err << readId << ": FAIL -- expected TCKEYREF " << kOutsideOfProgram
+            << ", got " << gsnName(readRep.gsn) << " " << readRep.errorCode
+            << endl;
+      result = NDBT_FAILED;
+    } else {
+      g_info << readId << ": PASS (all data nodes started; TCKEYREF "
+             << readRep.errorCode << ")" << endl;
+    }
+    return result;
+  }
+
   /* ---- P-59: a GROUP BY column whose type has no compare function ----- *
    * The leaf groups by linked position 0 (linkedGroupByLeaf), and the
    * CTE marker of the linked entry types the column, so the API chooses
@@ -3532,6 +3701,7 @@ CASE_STEP(runP54, runP54)
 CASE_STEP(runP55, runP55)
 CASE_STEP(runP56, runP56)
 CASE_STEP(runP57, runP57)
+CASE_STEP(runP58, runP58)
 CASE_STEP(runP59, runP59)
 CASE_STEP(runQ1, runQ1)
 CASE_STEP(runQ2, runQ2)
@@ -3858,6 +4028,11 @@ TESTCASE("P56",
 TESTCASE("P57",
          "join aggregation: an embedded branch of offset 0, to itself") {
   STEP(runP57);
+}
+TESTCASE("P58",
+         "a branch into the middle of an instruction: join aggregation "
+         "embedded program, interpreted read") {
+  STEP(runP58);
 }
 TESTCASE("P59",
          "join aggregation: GROUP BY a linked value whose type has no "

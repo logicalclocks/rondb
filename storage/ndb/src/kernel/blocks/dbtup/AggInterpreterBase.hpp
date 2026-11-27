@@ -293,7 +293,8 @@ class AggInterpreterBase : public PushdownInterpreter {
    *     (bin2decimal trusts them);
    *   - constants have a type executeStandardOpcode loads;
    *   - embedded programs pass validateEmbeddedProgram, which also
-   *     checks the type and collation of each inline-type compare;
+   *     checks that each branch lands on an instruction, and the type
+   *     and collation of each inline-type compare;
    *   - a kOpSkip lands on an instruction or at the end;
    *   - no aggregate slot may get both a string MIN / MAX and a number
    *     from another aggregate or a MIN / MAX of another type, or two
@@ -586,11 +587,13 @@ class AggInterpreterBase : public PushdownInterpreter {
    * stricter JoinAgg form is adopted here for both — the allow-list
    * covers every opcode either path emits, and the backward-branch
    * reject closes a potential infinite-loop class, as does the reject
-   * of a branch of offset 0, a branch to itself.  A
-   * BRANCH_MEM_OP_ARG_INLINE_TYPE must lie inside the program and carry
-   * a collation exactly for a string type
-   * (NdbSqlUtil::get_compare_collation).  Pure function over
-   * arguments; no instance state needed.
+   * of a branch of offset 0, a branch to itself.  A branch must land on
+   * the first word of an instruction, not on its operand words, which
+   * would run as instructions that this check did not see.  Every
+   * instruction must lie inside the program, and a
+   * BRANCH_MEM_OP_ARG_INLINE_TYPE carry a collation exactly for a
+   * string type (NdbSqlUtil::get_compare_collation).  Pure function
+   * over arguments; no instance state needed.
    */
   static bool validateEmbeddedProgram(const Uint32* emb_prog, Uint32 emb_len);
 

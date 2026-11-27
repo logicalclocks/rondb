@@ -11326,16 +11326,6 @@ int Dbtup::interpreterNextLab(Signal* signal,
     /* EXECUTE THE NEXT INTERPRETER INSTRUCTION.                        */
     /* ---------------------------------------------------------------- */
     RnoOfInstructions++;
-    theInstruction = TcurrentProgram[TprogramCounter];
-    theRegister = Interpreter::getReg1(theInstruction) << 2;
-#ifdef TRACE_INTERPRETER
-    g_eventLogger->info(
-        "(%u)Interpreter : Instruction: 0x%x"
-        " RnoOfInstructions : %u.  TprogramCounter : %u.  Opcode : %u",
-        instance(), theInstruction, RnoOfInstructions, TprogramCounter,
-        Interpreter::getOpCode(theInstruction));
-#endif
-
 #ifdef TRACE_INTERPRETER_REGISTERS
     g_eventLogger->info(
       "REG0: %lld NULL: %u\n"
@@ -11364,6 +11354,20 @@ int Dbtup::interpreterNextLab(Signal* signal,
       TregMemBuffer[28]);
 #endif
     if (TprogramCounter < TcurrentSize) {
+      /* Read the instruction only now (RONDB-1124): brancher does not
+       * check its target, so a branch, or an operand word that a branch
+       * into an instruction runs as a branch, may have set the counter
+       * up to 32767 words past the end of the program, or, going back
+       * past its start, to nearly 2^32, which read 16 GB past it. */
+      theInstruction = TcurrentProgram[TprogramCounter];
+      theRegister = Interpreter::getReg1(theInstruction) << 2;
+#ifdef TRACE_INTERPRETER
+      g_eventLogger->info(
+          "(%u)Interpreter : Instruction: 0x%x"
+          " RnoOfInstructions : %u.  TprogramCounter : %u.  Opcode : %u",
+          instance(), theInstruction, RnoOfInstructions, TprogramCounter,
+          Interpreter::getOpCode(theInstruction));
+#endif
       TprogramCounter++;
       Uint32 opCode = Interpreter::getOpCode(theInstruction);
       jamDebug();

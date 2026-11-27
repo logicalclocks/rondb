@@ -1039,9 +1039,9 @@ static bool nullRowCondHolds(Uint32 cond, int res1) {
  * column type from the parent table's descriptor through meta_tup;
  * without it the program is EMB_NULL_ROW_UNSUPPORTED.  Init has
  * validated the opcodes, the instruction lengths, that every branch
- * goes forward within the program and the type and collation of each
- * BRANCH_MEM_OP_ARG_INLINE_TYPE; the operand words are still bounded
- * here.
+ * goes forward within the program to the first word of an instruction
+ * and the type and collation of each BRANCH_MEM_OP_ARG_INLINE_TYPE; the
+ * operand words are still bounded here.
  *
  * READ_AGG_REG_TO_REG copies one of agg_regs, the aggregation registers,
  * as Dbtup's handleReadAggRegToReg does, and fails as it does for a

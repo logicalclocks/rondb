@@ -660,6 +660,18 @@ const char* AggInterpreterBase::checkProgram(const Uint32* prog,
  */
 bool AggInterpreterBase::validateEmbeddedProgram(
     const Uint32* emb_prog, Uint32 emb_len) {
+  /* checkProgram refused a longer program, so the bitmap below fits. */
+  if (emb_len > MAX_AGG_PROGRAM_WORD_SIZE) {
+    g_eventLogger->debug("validateEmbeddedProgram: %u words", emb_len);
+    return false;
+  }
+  /* A bit for each word that a branch lands on.  A branch into the
+   * operand words of an instruction (a constant, a length word or an
+   * attribute header) runs them as instructions, which this walk does
+   * not see.  Every branch goes forward, so the walk has recorded such a
+   * branch by the end of the instruction it lands in. */
+  Uint32 targets[(MAX_AGG_PROGRAM_WORD_SIZE + 31) >> 5];
+  memset(targets, 0, insnStartWords(emb_len) * sizeof(Uint32));
   Uint32 pc = 0;
   while (pc < emb_len) {
     Uint32 instr = emb_prog[pc];
@@ -757,8 +769,19 @@ bool AggInterpreterBase::validateEmbeddedProgram(
             "(emb_len=%u) at pc=%u", target, emb_len, pc);
         return false;
       }
+      targets[target >> 5] |= 1U << (target & 31);
     }
 
+    /* getInstructionPreProcessingInfo reads the length of these from
+     * their word 1. */
+    if ((opCode == Interpreter::BRANCH_ATTR_OP_ARG ||
+         opCode == Interpreter::BRANCH_MEM_OP_ARG ||
+         opCode == Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE) &&
+        emb_len - pc < 2) {
+      g_eventLogger->debug(
+          "validateEmbeddedProgram: instruction past the end at pc=%u", pc);
+      return false;
+    }
     Interpreter::InstructionPreProcessing processing;
     Uint32* next = Interpreter::getInstructionPreProcessingInfo(
         const_cast<Uint32*>(&emb_prog[pc]), processing);
@@ -768,6 +791,24 @@ bool AggInterpreterBase::validateEmbeddedProgram(
       return false;
     }
     Uint32 instr_len = (Uint32)(next - &emb_prog[pc]);
+    /* The DBTUP handlers read the operand words of an instruction
+     * without checking them against the end of the program: an
+     * instruction past the end took the words after the embedded
+     * program, or after the whole program, as its operands. */
+    if (instr_len > emb_len - pc) {
+      g_eventLogger->debug(
+          "validateEmbeddedProgram: instruction past the end at pc=%u", pc);
+      return false;
+    }
+    for (Uint32 word = pc + 1; word < pc + instr_len; word++) {
+      if (((targets[word >> 5] >> (word & 31)) & 1) != 0) {
+        g_eventLogger->debug(
+            "validateEmbeddedProgram: branch to word %u inside the "
+            "instruction at pc=%u",
+            word, pc);
+        return false;
+      }
+    }
     if (opCode == Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE) {
       /* [instr][typeId << 16 | argLen][size << 16 | csNumber][arg].  A
        * CHAR, VARCHAR or LONGVARCHAR needs a known collation and the
@@ -775,12 +816,6 @@ bool AggInterpreterBase::validateEmbeddedProgram(
        * cmpVarchar with a null collation in Dbtup's
        * handleBranchMemOpArgInlineType and in evalEmbeddedForNullRow.
        * Refused here once, before any row. */
-      if (instr_len > emb_len - pc) {
-        g_eventLogger->warning(
-            "validateEmbeddedProgram: instruction past the end at pc=%u",
-            pc);
-        return false;
-      }
       const Uint32 type_id =
           Interpreter::getBranchCol_AttrId(emb_prog[pc + 1]);
       const Uint32 cs_number = emb_prog[pc + 2] & 0xFFFF;

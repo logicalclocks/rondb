@@ -682,6 +682,29 @@ static int br_emb_branch_target(uint8_t emb_op, uint32_t inst,
   }
 }
 
+/* RONDB-1124: the pc of the first branch before end_pc that lands on
+ * the embedded word target, for the error of a branch into the operand
+ * words of an instruction.  The instruction starts before end_pc are
+ * the pcs with an op index in emb_pc_to_op_idx (0xFF inside an
+ * instruction; an op index is below BC_MAX_OPS).  end_pc when there is
+ * none. */
+static uint32_t br_emb_branch_into(const uint32_t *emb_prog,
+                                   uint32_t emb_len,
+                                   const uint8_t *emb_pc_to_op_idx,
+                                   uint32_t end_pc, uint32_t target) {
+  for (uint32_t pc = 0; pc < end_pc; pc++) {
+    if (emb_pc_to_op_idx[pc] == 0xFF) continue;
+    const uint32_t inst = emb_prog[pc];
+    const uint8_t op = (uint8_t)((inst & 0x3Fu) |
+                                 (((inst >> 15) & 0x1u) << 6));
+    uint32_t t = 0;
+    if (br_emb_branch_target(op, inst, pc, emb_len, &t) && t == target) {
+      return pc;
+    }
+  }
+  return end_pc;
+}
+
 /* RONDB-1124: the embedded registers an embedded instruction reads and
  * writes, bit r = register r, for the path walk of
  * translate_embedded_block; the fields are the ones its cases decode.
@@ -1178,6 +1201,10 @@ static JitBridgeReason translate_embedded_block(
   uint8_t emb_jit_branch_in[BR_EMB_MAX_LEN];
   memset(emb_jit_branch_in, 0, sizeof(emb_jit_branch_in));
   uint8_t last_lc16_reg = 0xFF;
+  /* RONDB-1124: a bit for each pc that a branch of the block lands on,
+   * on a path or not, the folded branches included. */
+  uint32_t emb_branch_in_bits[(BR_EMB_MAX_LEN + 31) / 32];
+  memset(emb_branch_in_bits, 0, sizeof(emb_branch_in_bits));
 
   /* Pass 1: linear walk, emit Ops with target_emb_pc in c. */
   uint32_t emb_pc = 0;
@@ -2712,6 +2739,37 @@ static JitBridgeReason translate_embedded_block(
         return JIT_BRIDGE_UNSUPPORTED_OP;
     }
 
+    /* RONDB-1124: a branch must land on the first word of an
+     * instruction.  One that lands on its operand words (a constant, an
+     * attribute header, a length word) makes the interpreter run them as
+     * instructions, which this walk does not see: the path state merged
+     * into such a pc was never used, a folded branch had no fixup, and
+     * the other branches got UNSUPPORTED_OP only in pass 2.  Every
+     * branch goes forward, so all branches into the words of this
+     * instruction, its own included, are recorded by now. */
+    {
+      uint32_t target_pc = 0;
+      if (br_emb_branch_target(emb_op, inst, inst_pc, emb_len,
+                               &target_pc)) {
+        emb_branch_in_bits[target_pc >> 5] |= 1u << (target_pc & 31u);
+      }
+      for (uint32_t word = inst_pc + 1; word < emb_pc; word++) {
+        if (((emb_branch_in_bits[word >> 5] >> (word & 31u)) & 1u) != 0) {
+          if (out_err) {
+            const uint32_t branch_pc = br_emb_branch_into(
+                emb_prog, emb_len, emb_pc_to_op_idx, inst_pc + 1, word);
+            const uint32_t branch_inst = emb_prog[branch_pc];
+            out_err->reason         = JIT_BRIDGE_MALFORMED;
+            out_err->offending_word = outer_word_pos + 1 + branch_pc;
+            out_err->offending_op   =
+                (uint8_t)((branch_inst & 0x3Fu) |
+                          (((branch_inst >> 15) & 0x1u) << 6));
+          }
+          return JIT_BRIDGE_MALFORMED;
+        }
+      }
+    }
+
     /* RONDB-1124: check the registers this instruction reads, then
      * carry the path state to the branch target and past this
      * instruction.  Only the aggregation path lowers register
@@ -2793,7 +2851,10 @@ static JitBridgeReason translate_embedded_block(
        * via the trailing tail. */
       /* TODO Phase 5.1: handle this more cleanly. For Phase
        * 5.0's narrow scope (BRANCH_ATTR_NE_NULL → EXIT_REFUSE)
-       * this case shouldn't arise. Reject defensively. */
+       * this case shouldn't arise. Reject defensively.
+       * (RONDB-1124: every pc with no op index lies inside an
+       * instruction, and pass 1 refuses a branch there as
+       * MALFORMED, so this is not reached.) */
       if (out_err) {
         out_err->reason         = JIT_BRIDGE_UNSUPPORTED_OP;
         out_err->offending_word = outer_word_pos;

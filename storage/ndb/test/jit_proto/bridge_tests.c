@@ -4053,6 +4053,96 @@ static void test_guard_zero_reject(void) {
                   /*want_word=*/2, EMB_BRANCH_REG_EQ_NULL);
 }
 
+/* T72h: a branch into the operand words of an instruction is MALFORMED
+ * (RONDB-1124): the interpreter runs the word it lands on as an
+ * instruction.  BRANCH lands on the attribute header of the
+ * BRANCH_ATTR_EQ_NULL after it; pass 2 refused it as UNSUPPORTED_OP,
+ * naming the block. */
+static void test_branch_into_attr_word_reject(void) {
+  uint32_t filter_prog[5] = {
+    enc_emb_branch_uncond(/*offset=*/2),                   /* -> 2 */
+    enc_emb_branch_attr_null(EMB_BRANCH_ATTR_EQ_NULL, /*offset=*/3),
+    enc_emb_attr_id(/*attrId=*/1),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  assert_scan_filter_rejected("T72h branch_into_attr_word_reject",
+                              filter_prog, 5,
+                              JIT_BRIDGE_MALFORMED,
+                              /*want_word=*/1, EMB_BRANCH_UNCOND);
+}
+
+/* T72i: a conditional branch of offset 1 from a two-word instruction
+ * lands on its own attribute header. */
+static void test_cond_branch_into_itself_reject(void) {
+  uint32_t filter_prog[4] = {
+    enc_emb_branch_attr_null(EMB_BRANCH_ATTR_EQ_NULL, /*offset=*/1),
+    enc_emb_attr_id(/*attrId=*/1),
+    enc_emb_op_word(EMB_EXIT_REFUSE, (626u << 16)),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  assert_scan_filter_rejected("T72i cond_branch_into_itself_reject",
+                              filter_prog, 4,
+                              JIT_BRIDGE_MALFORMED,
+                              /*want_word=*/1, EMB_BRANCH_ATTR_EQ_NULL);
+}
+
+/* T72j / T72k: the guard of a READ_ATTR over a LOAD_CONST64 (3 words),
+ * whose low constant word reads as LOAD_CONST16 of register 2:
+ *   emb(8): 0 READ_ATTR attr7 -> r0
+ *           1 BRANCH_REG_EQ_NULL r0, +offset
+ *           2 LOAD_CONST64 r1, low, high
+ *           3   low  (LOAD_CONST16 r2, 0 as an instruction)
+ *           4   high (0)
+ *           5 LOAD_CONST16 r2, 0
+ *           6 WRITE_INTERPRETER_OUTPUT r2, 0
+ *           7 EXIT_OK
+ *   outer: kOpLoadCol(r0, c0), kOpSum(r0, agg0) */
+static void enc_guard_over_const64(uint32_t *prog, uint32_t offset) {
+  prog[0] = enc_op(kOpEmbeddedInterp, /*emb_len=*/8);
+  prog[1] = enc_emb_read_attr(/*attr_id=*/7, /*reg=*/0);
+  prog[2] = enc_emb_branch_reg_eq_null(/*reg=*/0, offset);
+  prog[3] = enc_emb_load_const64_hdr(/*reg=*/1);
+  prog[4] = enc_emb_load_const16(/*reg=*/2, /*val=*/0);
+  prog[5] = 0;
+  prog[6] = enc_emb_load_const16(/*reg=*/2, /*val=*/0);
+  prog[7] = enc_emb_write_output(/*reg=*/2, /*out_idx=*/0);
+  prog[8] = enc_emb_op_word(EMB_EXIT_OK, 0);
+  prog[9] = enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/0);
+  prog[10] = enc_sum(/*reg=*/0, /*agg=*/0);
+}
+
+/* T72j: the control.  The guard lands on word 5, after the
+ * LOAD_CONST64, and fuses with the READ_ATTR (T60a).
+ * Expected ops (8): [0]LOAD_COL_NDB_NB(c=2) [1]LOAD_CONST_INT [2]LC16
+ *   [3]JUMP [4]outer load [5]SUM [6]tail EXIT [7]OVERFLOW_EXIT. */
+static void test_guard_over_const64_accept(void) {
+  const char *name = "T72j guard_over_const64_accept";
+  uint32_t prog[11];
+  enc_guard_over_const64(prog, /*offset=*/4);              /* -> 5 */
+  Program p;
+  if (!expect_accepted(name, prog, 11, &p, /*expected_n_ops=*/8)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                       OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 2)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                       OP_LOAD_CONST_INT)) return;
+  mark_pass(name);
+}
+
+/* T72k: the guard lands on the low constant word.  The null path from
+ * there is not safe (word 4 is no instruction), so the guard was
+ * folded, which left no fixup to fail in pass 2, and the program
+ * compiled, where the interpreter runs words 3 and 4 as instructions
+ * for a row whose attr7 is NULL. */
+static void test_guard_into_const64_reject(void) {
+  uint32_t prog[11];
+  enc_guard_over_const64(prog, /*offset=*/2);              /* -> 3 */
+  assert_rejected("T72k guard_into_const64_reject", prog, 11,
+                  JIT_BRIDGE_MALFORMED,
+                  /*want_word=*/2, EMB_BRANCH_REG_EQ_NULL);
+}
+
 
 /* ------------------------------------------------------------------ */
 /* ronsql_jit slice 2 item 4 — READ_LINKED_COLUMN_TO_REG (op 44).     */
@@ -6092,6 +6182,10 @@ int main(void) {
   test_agg_uncond_branch_accept();
   test_cond_branch_zero_reject();
   test_guard_zero_reject();
+  test_branch_into_attr_word_reject();
+  test_cond_branch_into_itself_reject();
+  test_guard_over_const64_accept();
+  test_guard_into_const64_reject();
   test_linked_col_bigint_accept();
   test_linked_col_smallint_accept();
   test_linked_col_bigunsigned_accept();
