@@ -4,9 +4,20 @@ set -e
 TYPE=$1
 SRC_DIR=$2
 INSTALL_DIR=$3
+# PGO profile directory, required for TRAIN and RELEASE. The TRAIN build
+# writes its profiles there and the RELEASE build reads them, so both must
+# get the same directory, and must be configured in build directories of
+# the same absolute path: GCC names each profile file after the absolute
+# path of its object file. See build_all.sh and cmake/fprofile.cmake.
+PROFILE_DIR=$4
 
 if [[ -z "$TYPE" || -z "$SRC_DIR" || -z "$INSTALL_DIR" ]]; then
   echo "Error:  TYPE/ SRC_DIR / INSTALL_DIR not defined"
+  exit 1
+fi
+
+if [[ ("$TYPE" == "TRAIN" || "$TYPE" == "RELEASE") && -z "$PROFILE_DIR" ]]; then
+  echo "Error: PROFILE_DIR not defined; required for a $TYPE build"
   exit 1
 fi
 
@@ -93,6 +104,7 @@ if [[ "$TYPE" == "TRAIN" ]]; then
 
   cmake "$SRC_DIR" \
     -DFPROFILE_GENERATE=1 \
+    "-DFPROFILE_DIR=$PROFILE_DIR" \
     "${COMMON_OPTIONS[@]}"
 
 elif [[ "$TYPE" == "RELEASE" ]]; then
@@ -101,6 +113,7 @@ elif [[ "$TYPE" == "RELEASE" ]]; then
 
   cmake "$SRC_DIR" \
     -DFPROFILE_USE=1 \
+    "-DFPROFILE_DIR=$PROFILE_DIR" \
     -DCPACK_MONOLITHIC_INSTALL=true \
     "${COMMON_OPTIONS[@]}"
 
