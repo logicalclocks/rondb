@@ -450,6 +450,7 @@ ErrorBundle ErrorCodes[] = {
   { 4350, DMEC, IE, "Transaction already aborted" },
   { 4351, HA_ERR_LOCK_WAIT_TIMEOUT, TO, "Timeout/deadlock during index build" },
   { 4352, DMEC, IE, "Wrong type for input parameter" },
+  { 4357, DMEC, IE, "Operation defined after the transaction committed" },
   { 294,  DMEC, IE, "Unlocked operation has out of range index" },
   { 295,  DMEC, IE, "Unlocked operation has invalid state" },
   { 298,  DMEC, IE, "Invalid distribution key" },

@@ -2529,7 +2529,15 @@ NdbBlob::BlobAction NdbBlob::preExecute(NdbTransaction::ExecType anExecType) {
       rc = BA_EXEC;
     }
   }
-  if (isInsertOp() && theSetFlag) {
+  /*
+   * TTL related: an insert on a TTL table has blob work even when no value
+   * was set, since the old length is unknown (see initBlobTask): the NULL
+   * head rewrite and the part probe. That work must be defined here, before
+   * a Commit batch, as a postExecute after the commit can no longer send it.
+   */
+  const bool ttlTable =
+      (theTable->m_ttl_sec != RNIL && theTable->m_ttl_col_no != RNIL);
+  if (isInsertOp() && (theSetFlag || ttlTable)) {
     /* If the main operation uses AbortOnError then
      * we can add operations to insert parts and update
      * the Blob head+inline here.
@@ -2777,6 +2785,17 @@ int NdbBlob::initBlobTask(NdbTransaction::ExecType anExecType
       m_blobOp.m_state = BlobTask::BTS_WRITE_HEAD;
       m_blobOp.m_writeBuffer = theSetBuf;
       m_blobOp.m_writeBufferLen = theGetSetBytes;
+      m_blobOp.m_oldLen = insert_old_len;
+      m_blobOp.m_position = 0;
+    } else if (!theSetFlag && insert_old_len == ~Uint64(0)) {
+      /*
+       * TTL related: NdbRecAttr writes the head only from setValue(). With
+       * no value set, an insert over an expired row would keep the old head
+       * while the probe below deletes its parts, so rewrite the head NULL.
+       */
+      m_blobOp.m_state = BlobTask::BTS_WRITE_HEAD;
+      m_blobOp.m_writeBuffer = nullptr;
+      m_blobOp.m_writeBufferLen = 0;
       m_blobOp.m_oldLen = insert_old_len;
       m_blobOp.m_position = 0;
     } else {

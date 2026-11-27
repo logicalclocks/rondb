@@ -1,0 +1,99 @@
+SET time_zone = '+00:00';
+DROP TABLE IF EXISTS test.tbn, test.tbt, test.tbl, test.src;
+CREATE TABLE test.tbn (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+v       TEXT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE TABLE test.src (id INT PRIMARY KEY) ENGINE=NDB;
+INSERT INTO test.src VALUES (6), (7), (8), (9);
+#
+# Multi-row VALUES with NULL
+#
+INSERT INTO test.tbn VALUES (1, NOW(), NULL), (2, NOW(), NULL), (3, NOW(), NULL);
+#
+# Multi-row with the TEXT column omitted
+#
+INSERT INTO test.tbn (id, ttl_col) VALUES (4, NOW()), (5, NOW());
+#
+# INSERT ... SELECT with NULL, several rows and one row
+#
+INSERT INTO test.tbn SELECT id, NOW(), NULL FROM test.src WHERE id IN (6, 7, 8);
+INSERT INTO test.tbn SELECT id, NOW(), NULL FROM test.src WHERE id = 9;
+#
+# transaction_allow_batching=ON: one-row insert, BEGIN ... COMMIT insert
+#
+SET transaction_allow_batching = ON;
+INSERT INTO test.tbn VALUES (20, NOW(), NULL);
+BEGIN;
+INSERT INTO test.tbn VALUES (21, NOW(), NULL);
+COMMIT;
+SET transaction_allow_batching = OFF;
+#
+# Controls: one-row NULL insert, multi-row non-NULL insert
+#
+INSERT INTO test.tbn VALUES (30, NOW(), NULL);
+INSERT INTO test.tbn VALUES (31, NOW(), 'x'), (32, NOW(), REPEAT('y', 5000));
+# every row is there, NULL where no value was given
+SELECT id, v IS NULL AS v_is_null, LENGTH(v) FROM test.tbn ORDER BY id;
+id	v_is_null	LENGTH(v)
+1	1	NULL
+2	1	NULL
+3	1	NULL
+4	1	NULL
+5	1	NULL
+6	1	NULL
+7	1	NULL
+8	1	NULL
+9	1	NULL
+20	1	NULL
+21	1	NULL
+30	1	NULL
+31	0	1
+32	0	5000
+#
+# TINYTEXT column (no parts): multi-row NULL insert
+#
+CREATE TABLE test.tbt (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+v       TINYTEXT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+INSERT INTO test.tbt VALUES (1, NOW(), NULL), (2, NOW(), NULL);
+SELECT id, v IS NULL AS v_is_null FROM test.tbt ORDER BY id;
+id	v_is_null
+1	1
+2	1
+#
+# Leak side: multi-row NULL insert over two expired 5-part rows
+#
+CREATE TABLE test.tbl (
+id      INT PRIMARY KEY,
+ttl_col DATETIME,
+v       TEXT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=2@ttl_col";
+INSERT INTO test.tbl VALUES (1, NOW(), REPEAT('a', 10256)), (2, NOW(), REPEAT('b', 10256));
+SELECT id, LENGTH(v) FROM test.tbl ORDER BY id;
+id	LENGTH(v)
+1	10256
+2	10256
+# part rows: 2 rows x 5 parts (= 20 across 2 replicas)
+SELECT SUM(fixed_elem_count) AS part_rows_x_replicas
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = (SELECT CONCAT('test/def/NDB', CHAR(36), 'BLOB_', id, '_2')
+FROM ndbinfo.dict_obj_info WHERE fq_name = 'test/def/tbl');
+part_rows_x_replicas
+20
+INSERT INTO test.tbl VALUES (1, NOW(), NULL), (2, NOW(), NULL);
+SELECT id, v IS NULL AS v_is_null FROM test.tbl ORDER BY id;
+id	v_is_null
+1	1
+2	1
+# part rows after the NULL insert: 0 (all old parts probe-deleted)
+SELECT SUM(fixed_elem_count) AS part_rows_x_replicas
+FROM ndbinfo.memory_per_fragment
+WHERE fq_name = (SELECT CONCAT('test/def/NDB', CHAR(36), 'BLOB_', id, '_2')
+FROM ndbinfo.dict_obj_info WHERE fq_name = 'test/def/tbl');
+part_rows_x_replicas
+0
+DROP TABLE test.tbn, test.tbt, test.tbl, test.src;
