@@ -5376,14 +5376,22 @@ testMultiFragmentEviction(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 /* Helper: build, execute, and verify the standard t14 aggregation     */
 /* query.  Returns 0 on success. Used by Tests 20-22 to confirm the   */
 /* cluster is healthy after an error path has been exercised.          */
+/*                                                                     */
+/* invalidate == false keeps the cached t14 tables: invalidateTable()  */
+/* frees the NdbTableImpl that a query definition prepared earlier     */
+/* still points to, so a caller that executes such a definition after  */
+/* this call (Test 26) must pass false.                                */
 /* ------------------------------------------------------------------ */
 
 static int
-runAndVerifyT14Query(Ndb *ndb, MYSQL *conn, const char *label)
+runAndVerifyT14Query(Ndb *ndb, MYSQL *conn, const char *label,
+                     bool invalidate = true)
 {
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
-  dict->invalidateTable(T14_PARENT);
-  dict->invalidateTable(T14_CHILD);
+  if (invalidate) {
+    dict->invalidateTable(T14_PARENT);
+    dict->invalidateTable(T14_CHILD);
+  }
   const NdbDictionary::Table *parentTab = dict->getTable(T14_PARENT);
   const NdbDictionary::Table *childTab = dict->getTable(T14_CHILD);
   if (parentTab == nullptr || childTab == nullptr) {
@@ -6111,8 +6119,9 @@ testDuplicateEndOfData(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
   for (int round = 0; round < rounds && !failed; round++) {
     /* Read to the end: the second EndOfData comes while the API waits
      * for the aggregate rows or reads them.  A failure prints its own
-     * FAILED line. */
-    if (runAndVerifyT14Query(ndb, conn, "8320 read") != 0) {
+     * FAILED line.  The tables are not invalidated: queryDef, used
+     * below, points to them. */
+    if (runAndVerifyT14Query(ndb, conn, "8320 read", false) != 0) {
       failed = true;
       break;
     }
