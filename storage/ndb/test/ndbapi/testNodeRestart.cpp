@@ -9795,11 +9795,13 @@ static int checkRowsAbsent(Ndb *pNdb, const NdbDictionary::Table *tab,
 /**
  * Batches that write the same rows two or three times: update/update,
  * delete/insert, locked read/update, update/locked read, and
- * insert/update/delete of rows that did not exist. The results, also
- * those of the locked reads, must be those of the batch executed in
- * order. TcErrorInsert
- * is set in all data nodes during the step, and the DBTC counter
- * TcCounter must have increased.
+ * insert/update/delete of rows that did not exist. The writes of a row
+ * must apply in batch order. A locked read returns the row as it was
+ * before its batch, whether the write of the row comes before or after
+ * it in the batch: all operations of a batch have the same savepoint, and
+ * a read sees only the changes of earlier savepoints
+ * (Dbtup::find_savepoint()). TcErrorInsert is set in all data nodes
+ * during the step, and the DBTC counter TcCounter must have increased.
  */
 int runSameRowBatches(NDBT_Context *ctx, NDBT_Step *step) {
   Ndb *pNdb = GETNDB(step);
@@ -9876,14 +9878,17 @@ int runSameRowBatches(NDBT_Context *ctx, NDBT_Step *step) {
       break;
     }
 
-    /* A locked read after an update of the row reads the update */
+    /*
+     * A locked read after an update of the row in the same batch also
+     * reads the row before the batch; the commit keeps the update
+     */
     HugoOperations updRead(*tab);
     rc = -1;
     if (updRead.startTransaction(pNdb) == 0 &&
         updRead.pkUpdateRecord(pNdb, row, batch, u + 4) == 0 &&
         updRead.pkReadRecord(pNdb, row, batch, NdbOperation::LM_Read) == 0 &&
         (rc = updRead.execute_Commit(pNdb)) == 0 &&
-        updRead.verifyUpdatesValue(u + 4, batch) != NDBT_OK) {
+        updRead.verifyUpdatesValue(u + 3, batch) != NDBT_OK) {
       rc = -2;
     }
     updRead.closeTransaction(pNdb);
